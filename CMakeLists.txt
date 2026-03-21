@@ -38,6 +38,10 @@ option(APEX_USE_HIGHWAY    "Enable Highway SIMD"         ON)
 # ============================================================================
 add_compile_options(-Wall -Wextra -Wpedantic -fno-omit-frame-pointer)
 
+# clang이 GCC 11 sysroot의 오래된 libstdc++ (6.0.29)를 먼저 찾는 문제 회피
+# GCC 14의 libstdc++ (6.0.33, GLIBCXX_3.4.30+) 경로를 우선 지정
+link_directories(BEFORE /usr/lib64)
+
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG   "-g -O0 -fsanitize=address,undefined")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
@@ -170,6 +174,7 @@ endif()
 add_library(apex_execution STATIC
     src/execution/vectorized_engine.cpp
     src/execution/query_planner.cpp
+    src/execution/jit_engine.cpp
 )
 target_include_directories(apex_execution PUBLIC
     ${CMAKE_SOURCE_DIR}/include
@@ -182,10 +187,11 @@ if(APEX_USE_HIGHWAY)
     target_link_libraries(apex_execution PUBLIC PkgConfig::HWY)
 endif()
 if(APEX_USE_JIT)
-    llvm_map_components_to_libnames(LLVM_LIBS
-        core orcjit native support
+    # LLVM-19 shared lib + GCC 11의 libstdc++ 경로 명시 (clang 기본 경로 우선순위 문제 해결)
+    target_link_libraries(apex_execution PUBLIC
+        /usr/lib64/llvm19/lib/libLLVM-19.so
+        /usr/lib/gcc/x86_64-amazon-linux/11/libstdc++.so
     )
-    target_link_libraries(apex_execution PUBLIC ${LLVM_LIBS})
 endif()
 
 # --- Core Pipeline (Layer 1+2+3 통합) ---
@@ -223,6 +229,19 @@ if(APEX_BUILD_BENCH)
         apex_execution
     )
     target_compile_options(bench_pipeline PRIVATE
+        -O3 -march=native
+    )
+
+    add_executable(bench_simd_jit
+        tests/bench/bench_simd_jit.cpp
+    )
+    target_link_libraries(bench_simd_jit PRIVATE
+        apex_core
+        apex_storage
+        apex_ingestion
+        apex_execution
+    )
+    target_compile_options(bench_simd_jit PRIVATE
         -O3 -march=native
     )
 endif()

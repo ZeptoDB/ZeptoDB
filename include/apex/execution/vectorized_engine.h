@@ -32,6 +32,9 @@ public:
     [[nodiscard]] const uint32_t* data() const { return indices_.get(); }
     [[nodiscard]] uint32_t operator[](size_t i) const { return indices_[i]; }
 
+    // SIMD 필터가 indices_에 직접 기록한 후 크기를 설정
+    void set_size(size_t n) { size_ = n; }
+
 private:
     std::unique_ptr<uint32_t[]> indices_;
     size_t size_ = 0;
