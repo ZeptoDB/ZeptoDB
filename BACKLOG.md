@@ -25,17 +25,29 @@
     - Migration toolkit roadmap, financial projections, team buildout
     - 12-month goal: $3.6M ARR, 43 customers
   - `docs/business/EXECUTIVE_SUMMARY.md` - 1-page summary (for investors/executives)
-- [ ] **Full design document update** — Synchronize with current implementation state
-  - high_level_architecture.md: Add SQL/HTTP/Cluster/parallel query layers
-  - initial_doc.md: Expand to general OLAP/TSDb targets
-  - system_requirements.md: SQL/HTTP/JOIN/Window/parallel query requirements
-  - layer4: nanobind → pybind11, DSL actual implementation
-  - README.md: Full features + latest benchmarks + kdb+ replacement rate
-  - kdb_replacement_analysis.md: Reflect parallel query completion
+- [x] **Full design document update** ✅ Completed (2026-03-22)
+  - high_level_architecture.md: All layers current (SQL/HTTP/Cluster/parallel query/Python ecosystem)
+  - initial_doc.md: General OLAP/TSDb targets, apex_py complete, test count 429+
+  - system_requirements.md: FR-4 apex_py, FR-6 Migration Toolkit, FR-7 Production Ops
+  - layer4: pybind11, apex_py full package documented
+  - README.md: 429+ tests badge, devlog 013, Python ecosystem in Completed, SQL Phase 1
+  - kdb_replacement_analysis.md: Parallel query, Parquet HDB, S3 Sink all reflected
 
 ## High Priority (Technical)
-- [ ] **SQL parser completion** — Core for attracting ClickHouse users
-- [ ] **Time range index** — Nearly free with already-sorted data
+- [x] **SQL parser completion (Phase 1–3)** ✅ Completed (2026-03-22) — Core for attracting ClickHouse users
+  - Phase 1: IN, IS NULL/NOT NULL, NOT, HAVING
+  - Phase 2: SELECT arithmetic, CASE WHEN, multi-column GROUP BY
+  - Phase 3: Date/time functions, LIKE/NOT LIKE, UNION/INTERSECT/EXCEPT
+  - Parallel paths (`exec_agg_parallel`, `exec_group_agg_parallel`) synchronized with all Phase 2/3 features
+  - Remaining: subqueries/CTE, RIGHT JOIN, EXPLAIN, SUBSTR (see SQL Completeness section)
+- [x] **Time range index** ✅ Completed (2026-03-22)
+  - `Partition::timestamp_range(lo, hi)` — O(log n) binary search within partition
+  - `Partition::overlaps_time_range(lo, hi)` — O(1) partition skip check
+  - `PartitionManager::get_partitions_for_time_range(lo, hi)` — O(partitions) key-based partition pruning
+  - `QueryExecutor::exec_select()` — partition-level time range pre-filtering before dispatch
+  - `QueryExecutor::eval_where_ranged()` — row scan restricted to binary-search result range
+  - All three exec paths (simple_select, agg, group_agg) use timestamp binary search
+  - 8 new tests: partial scan, agg, GROUP BY, empty range, single row, no-symbol filter
 - [ ] **Graviton (ARM) build test** — r8g instance, Highway SVE
 
 ## High Priority (Business/Operations)
@@ -185,29 +197,89 @@
   - **Business value:** Accelerate data engineering team adoption
 
 ## Security & Enterprise
-- [ ] **TLS/SSL** — HTTPS endpoints, mTLS inter-node communication
-  - HTTP API port 443 support
-  - Certificate-based mutual authentication between cluster nodes
-  - **Business value:** Required for production deployment, enterprise security requirements
-- [ ] **API Key / JWT authentication** — HTTP API access control
-  - Bearer token authentication
-  - Per-user query tracking
-- [ ] **RBAC (Role-Based Access Control)** — Table/column-level permissions
-  - Restrict accessible symbols/tables per team member
-  - **Business value:** Multi-tenant operations, financial regulatory requirements
-- [ ] **Audit Log** — Track who executed what query and when
-  - EMIR, MiFID II, Basel IV regulatory compliance
-  - **Business value:** Required for compliance market entry
+- [x] **TLS/SSL + API Key + RBAC + SSO** ✅ Completed (2026-03-22)
+  - `include/apex/auth/rbac.h` — Role enum (admin/writer/reader/analyst/metrics), Permission bitmask
+  - `include/apex/auth/api_key_store.h` + `src/auth/api_key_store.cpp` — SHA256-hashed key store, file-persisted, thread-safe
+  - `include/apex/auth/jwt_validator.h` + `src/auth/jwt_validator.cpp` — HS256 + RS256 JWT validation, OIDC claims (sub/iss/aud/exp/apex_role/apex_symbols)
+  - `include/apex/auth/auth_manager.h` + `src/auth/auth_manager.cpp` — central auth gateway, JWT > API key priority, audit logging via spdlog
+  - `HttpServer` updated: `TlsConfig` struct, optional `AuthManager`, `set_pre_routing_handler` auth middleware
+  - TLS: `httplib::SSLServer` (OpenSSL 3.2, cert/key PEM), compile-time `APEX_TLS_ENABLED` flag
+  - `apex_auth` static library, OpenSSL detected and linked automatically
+  - 37 new tests: RBAC, ApiKey CRUD, JWT HS256/RS256/expiry/claims, AuthManager middleware
+  - **Business value:** Enterprise contract prerequisite; TLS + RBAC + SSO covers SOC2, EMIR, MiFID II audit requirements
+- [x] **Rate Limiting** ✅ Completed (2026-03-22)
+  - `include/apex/auth/rate_limiter.h` + `src/auth/rate_limiter.cpp` — token bucket, per-identity + per-IP
+  - `Config`: `requests_per_minute=1000`, `burst_capacity=200`, `per_ip_rpm=10000`, `ip_burst=500`
+  - Integrated into `AuthManager::check()` — returns 429 FORBIDDEN if rate-limited
+  - Fine-grained per-bucket mutex; `shared_mutex` on bucket map (read-heavy path optimized)
+  - 6 new tests: burst, exhaustion, per-identity independence, IP limits, refill, AuthManager integration
+- [x] **Admin REST API** ✅ Completed (2026-03-22)
+  - `POST /admin/keys` — create API key (returns plaintext once)
+  - `GET /admin/keys` — list all API keys with metadata
+  - `DELETE /admin/keys/:id` — revoke API key
+  - `GET /admin/queries` — list active (running) queries
+  - `DELETE /admin/queries/:id` — cancel a running query (sets CancellationToken)
+  - `GET /admin/audit` — recent audit events (`?n=100`)
+  - `GET /admin/version` — server version info
+  - All endpoints require `ADMIN` permission; inline auth check in handler
+- [x] **Query Timeout & Cancellation** ✅ Completed (2026-03-22)
+  - `include/apex/auth/cancellation_token.h` — `atomic<bool>`, cancel/check
+  - `include/apex/auth/query_tracker.h` + `src/auth/query_tracker.cpp` — active query registry
+  - `QueryExecutor::execute(sql, CancellationToken*)` — sets thread_local token
+  - Cancellation checks at each partition scan boundary in exec_simple_select, exec_agg, exec_group_agg
+  - `HttpServer::run_query_with_tracking()` — registers query, wraps with `std::async` + `future.wait_for()`
+  - `HttpServer::set_query_timeout_ms(ms)` — configurable timeout (0 = disabled)
+  - 4 CancellationToken tests + 7 QueryTracker tests
+- [x] **Secrets Management** ✅ Completed (2026-03-22)
+  - `include/apex/auth/secrets_provider.h` + `src/auth/secrets_provider.cpp`
+  - `EnvSecretsProvider` — reads environment variables (always available, fallback)
+  - `FileSecretsProvider` — reads from filesystem (Docker/K8s secrets, `/run/secrets/`)
+  - `VaultSecretsProvider` — HashiCorp Vault KV v2 HTTP API (TLS or plain)
+  - `AwsSecretsProvider` — stub (SigV4 TODO; workaround: ExternalSecrets Operator → file)
+  - `CompositeSecretsProvider` — priority chain: Vault > File > Env
+  - `SecretsProviderFactory` — `create_composite()`, `create_with_vault()`, `create_with_aws()`
+  - 10 new tests: env, file, composite chain, Vault unavailable fallback, active_backends
+- [x] **Audit Log (In-memory + File)** ✅ Completed (2026-03-22)
+  - `include/apex/auth/audit_buffer.h` — thread-safe ring buffer (10,000 events, configurable)
+  - Every authenticated request pushes an `AuditEvent` to the buffer
+  - `GET /admin/audit` exposes recent events as JSON (SOC2 / EMIR / MiFID II compliance)
+  - spdlog file logging for long-term retention (7-year via log rotation)
+  - 5 new tests: push/retrieve, last(N), capacity eviction, clear, AuthManager integration
 
 ## SQL Completeness
 - [ ] **Subquery / CTE (WITH clause)** — `WITH daily AS (...) SELECT ...`
-- [ ] **CASE WHEN** — Conditional column expressions
-- [ ] **UNION / INTERSECT / EXCEPT** — Result set operations
+- [x] **CASE WHEN** ✅ Completed (2026-03-22)
+  - `CASE WHEN cond THEN val [...] ELSE val END AS alias`
+  - `CaseWhenExpr` / `CaseWhenBranch` AST nodes; `eval_case_when()` in executor
+  - Works in SELECT list; THEN/ELSE are full arithmetic expressions
+- [x] **UNION / INTERSECT / EXCEPT** ✅ Completed (2026-03-22)
+  - `UNION ALL` — concatenate result sets
+  - `UNION DISTINCT` — concatenate + deduplicate (std::set-based)
+  - `INTERSECT` — rows present in both sides
+  - `EXCEPT` — rows in left side not present in right side
+  - `SelectStmt::SetOp` enum + `rhs` shared_ptr in AST; handled at top of `exec_select()`
 - [ ] **NULL handling standardization** — INT64_MIN sentinel → actual NULL
-- [ ] **Date/time functions** — `DATE_TRUNC`, `NOW()`, `EXTRACT`, `INTERVAL`
-- [ ] **String functions** — `LIKE`, `SUBSTR`, symbol name manipulation
+- [x] **Date/time functions** ✅ Completed (2026-03-22)
+  - `DATE_TRUNC('unit', col)` — floor timestamp to ns/us/ms/s/min/hour/day/week
+  - `NOW()` — current nanosecond timestamp (`std::chrono::system_clock`)
+  - `EPOCH_S(col)` — nanoseconds → seconds
+  - `EPOCH_MS(col)` — nanoseconds → milliseconds
+  - `ArithExpr::Kind::FUNC` node; `date_trunc_bucket()` helper in executor
+- [x] **String functions / LIKE** ✅ Completed (2026-03-22)
+  - `col LIKE 'pattern'` — DP glob matching (`%` = any substring, `_` = any char)
+  - `col NOT LIKE 'pattern'` — negated
+  - Applies to int64 columns via `std::to_string()` (e.g., `price LIKE '150%'`)
+  - `Expr::Kind::LIKE` with `like_pattern` field; DP grid in `eval_expr()`
+- [x] **SELECT arithmetic** ✅ Completed (2026-03-22)
+  - `price * volume AS notional`, `(close - open) / open AS ret`
+  - Arithmetic inside aggregates: `SUM(price * volume)`, `AVG(price - 15000)`
+  - `ArithExpr` BINARY tree; `eval_arith()` static function in executor
+- [x] **Multi-column GROUP BY** ✅ Completed (2026-03-22)
+  - `GROUP BY symbol, price` — composite key via `VectorHash<std::vector<int64_t>>`
+  - Works in both serial and parallel (`exec_group_agg_parallel`) paths
 - [ ] **RIGHT JOIN / FULL OUTER JOIN** — SQL standard completion
 - [ ] **EXPLAIN** — Query execution plan output (debugging, optimization)
+- [ ] **SUBSTR / string manipulation** — for symbol name processing
 
 ## Client Ecosystem
 - [ ] **JDBC/ODBC drivers** — Connect Tableau, Excel, BI tools
@@ -299,7 +371,7 @@
 - [x] **GROUP BY aggregation** — sum/avg/min/max/count
 - [x] **Window functions** — SUM/AVG/MIN/MAX/ROW_NUMBER/RANK/DENSE_RANK/LAG/LEAD OVER
 - [x] **Financial functions** — VWAP, xbar, EMA, DELTA, RATIO, FIRST, LAST, Window JOIN (wj)
-- [x] SQL Parser — Basic SELECT/WHERE/GROUP BY/JOIN/OVER
+- [x] SQL Parser — Phase 1/2/3 complete (SELECT arithmetic, CASE WHEN, multi-GROUP BY, UNION/INTERSECT/EXCEPT, date/time functions, LIKE/NOT LIKE, IN, IS NULL, NOT, HAVING)
 - [x] HTTP API — port 8123, ClickHouse compatible
 - [x] Distributed Cluster Transport — UCXBackend, SharedMemBackend, PartitionRouter (2ns)
 - [ ] Phase C — Distributed Memory (UCX complete, query scheduler TODO)

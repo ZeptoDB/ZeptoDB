@@ -1,6 +1,6 @@
 # APEX-DB System Requirements
 
-*Version 2.2 — Last updated: 2026-03-22 (FR-4 Python ecosystem — apex_py completed)*
+*Version 2.3 — Last updated: 2026-03-22 (FR-8 Security: TLS + Auth + RBAC + SSO completed)*
 
 ---
 
@@ -75,6 +75,29 @@
 - FR-7.5: systemd service with auto-restart
 - FR-7.6: Kubernetes deployment (HPA, PVC, LoadBalancer)
 
+### FR-8: Security & Access Control ✅ (2026-03-22)
+- FR-8.1: **TLS/HTTPS** — OpenSSL 3.2, cert/key PEM, port 8443; falls back to HTTP if not compiled in
+- FR-8.2: **API Key Authentication** — `apex_<256-bit>` format, SHA256-hashed store, CRUD lifecycle, file-persisted
+- FR-8.3: **JWT/SSO Authentication** — HS256 (shared secret) + RS256 (PEM public key); OIDC-compatible
+  - Claims: `sub`, `exp`, `iss`, `aud`, `apex_role`, `apex_symbols`
+  - Supported IdPs: Okta, Azure AD, Google Workspace, Auth0 (any OIDC RS256 provider)
+- FR-8.4: **RBAC** — 5 roles: `admin`, `writer`, `reader`, `analyst`, `metrics`
+  - Permission bitmask: READ / WRITE / ADMIN / METRICS
+  - Symbol-level ACL per identity (allowlist; empty = unrestricted)
+- FR-8.5: **Auth Middleware** — `set_pre_routing_handler` intercepts all requests before route dispatch
+  - JWT priority over API key when both presented
+  - Public paths exempt: `/ping`, `/health`, `/ready`
+  - Returns `401 Unauthorized` (no/invalid credentials) or `403 Forbidden` (insufficient role)
+- FR-8.6: **Audit Logging** — per-request identity + action + IP, spdlog to configurable file
+  - Format: `[timestamp] [AUDIT] subject=<id> role=<role> action="<method> <path>" detail=<auth-method> from=<ip>`
+  - Meets EMIR / MiFID II / SOC2 / ISO 27001 audit trail requirements
+- FR-8.7: **Enterprise Governance** — see `docs/design/layer5_security_auth.md` for:
+  - Key rotation policy (90-day), access review cadence (monthly/quarterly)
+  - Separation of duties (create/revoke keys: admin only)
+  - Incident response procedures (key compromise, JWT secret compromise)
+  - Multi-tenant symbol isolation model
+  - Security hardening checklist (network, key management, operational)
+
 ---
 
 ## Non-Functional Requirements
@@ -99,6 +122,13 @@
 - Health endpoint for load balancer integration
 - Automated daily backup with S3 upload
 
+### NFR-6: Security
+- All data in transit encrypted (TLS 1.2+ mandatory in production)
+- No plaintext API keys stored at rest (SHA256 hash only)
+- Authentication latency: API key < 2μs, JWT HS256 < 5μs, JWT RS256 < 100μs
+- Audit log retention: 7 years (EMIR/MiFID II compliance)
+- Zero auth overhead for public health endpoints
+
 ### NFR-4: Compatibility
 - SQL: ANSI SQL subset (SELECT/WHERE/GROUP BY/JOIN/OVER)
 - HTTP: ClickHouse wire protocol (port 8123)
@@ -117,11 +147,11 @@
 
 | Suite | Count | Coverage |
 |---|---|---|
-| Unit tests (core) | 151+ | Storage, Execution, SQL, JOIN, Window, Parquet, S3 |
+| Unit tests (core) | 383 | Storage, Execution, SQL, JOIN, Window, Parquet, S3, **Security/Auth (69): RBAC, ApiKey, JWT HS256/RS256, AuthManager, RateLimiter, CancellationToken, QueryTracker, SecretsProvider, AuditBuffer** |
 | Feed handler tests | 37 | FIX parser, ITCH parser, benchmarks |
 | Migration tests | 70 | q→SQL (20), HDB (15), ClickHouse (18), DuckDB (17), TimescaleDB (18) |
 | Python ecosystem tests | 208 | from_pandas/polars/arrow (47), ArrowSession (46), pandas (20), polars (16), StreamingSession (41), ingest_batch (47) |
-| **Total** | **429+** | — |
+| **Total** | **698+** | — |
 
 > Python ecosystem suite includes ingest_batch tests (test_ingest_batch.py) which
 > overlap with test_arrow_integration.py for ArrowSession paths.

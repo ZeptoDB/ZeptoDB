@@ -9,7 +9,7 @@
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![LLVM 19](https://img.shields.io/badge/LLVM-19-orange)
 ![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)
-![Tests](https://img.shields.io/badge/tests-221%2B%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-466%2B%20passing-brightgreen)
 ![kdb+ replacement](https://img.shields.io/badge/kdb%2B%20replacement-95%25-success)
 
 </div>
@@ -69,32 +69,37 @@ APEX-DB is an ultra-low latency in-memory database designed for HFT, combining
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────┐
-│  Layer 5: Client Interface                         │
-│  HTTP API (port 8123) · Python DSL · C++ API      │
-├───────────────────────────────────────────────────┤
-│  Layer 4: SQL + Query Planning                     │
-│  Recursive descent parser · AST executor          │
-├───────────────────────────────────────────────────┤
-│  Layer 3: Execution Engine                         │
-│  Highway SIMD · LLVM JIT · JOIN (ASOF/Hash/LEFT)  │
-│  Window Functions (EMA/DELTA/RATIO/SUM/LAG/LEAD)  │
-│  Financial functions (xbar/FIRST/LAST/Window JOIN)│
-│  QueryScheduler (Local/Distributed DI pattern)    │
-├───────────────────────────────────────────────────┤
-│  Layer 2: Ingestion (Tick Plant)                   │
-│  MPMC Ring Buffer · UCX/RDMA · WAL                │
-│  Feed Handlers (FIX, NASDAQ ITCH, Binance)        │
-├───────────────────────────────────────────────────┤
-│  Layer 1: Storage Engine (DMMT)                    │
-│  Arena Allocator · Column Store · HDB (LZ4)       │
-├───────────────────────────────────────────────────┤
-│  Migration Toolkit                                 │
-│  kdb+ · ClickHouse · DuckDB · TimescaleDB         │
-├───────────────────────────────────────────────────┤
-│  Layer 0: Distributed Cluster                      │
-│  Transport (UCX→CXL) · Consistent Hash · Health  │
-└───────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  Security Layer (Cross-cutting)                         │
+│  TLS/HTTPS · API Key · JWT/OIDC · RBAC (5 roles)      │
+│  Rate Limiting · Admin REST API · Secrets Management   │
+│  Query Timeout/Kill · Audit Log (SOC2/EMIR/MiFID II)  │
+├────────────────────────────────────────────────────────┤
+│  Layer 5: Client Interface                              │
+│  HTTP API (port 8123) · Python DSL · C++ API          │
+├────────────────────────────────────────────────────────┤
+│  Layer 4: SQL + Query Planning                          │
+│  Recursive descent parser · AST executor               │
+├────────────────────────────────────────────────────────┤
+│  Layer 3: Execution Engine                              │
+│  Highway SIMD · LLVM JIT · JOIN (ASOF/Hash/LEFT)      │
+│  Window Functions (EMA/DELTA/RATIO/SUM/LAG/LEAD)      │
+│  Financial functions (xbar/FIRST/LAST/Window JOIN)    │
+│  QueryScheduler (Local/Distributed DI pattern)        │
+├────────────────────────────────────────────────────────┤
+│  Layer 2: Ingestion (Tick Plant)                        │
+│  MPMC Ring Buffer · UCX/RDMA · WAL                    │
+│  Feed Handlers (FIX, NASDAQ ITCH, Binance)            │
+├────────────────────────────────────────────────────────┤
+│  Layer 1: Storage Engine (DMMT)                         │
+│  Arena Allocator · Column Store · HDB (LZ4)           │
+├────────────────────────────────────────────────────────┤
+│  Migration Toolkit                                      │
+│  kdb+ · ClickHouse · DuckDB · TimescaleDB             │
+├────────────────────────────────────────────────────────┤
+│  Layer 0: Distributed Cluster                           │
+│  Transport (UCX→CXL) · Consistent Hash · Health       │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -177,6 +182,40 @@ SELECT symbol, price,
        LAG(price, 1) OVER (PARTITION BY symbol) AS prev_price,
        RANK() OVER (ORDER BY price DESC) AS rank
 FROM trades
+
+-- SELECT arithmetic (Phase 2)
+SELECT symbol, price * volume AS notional,
+       (price - 15000) / 100 AS premium,
+       SUM(price * volume) AS total_notional
+FROM trades WHERE symbol = 1
+
+-- CASE WHEN (Phase 2)
+SELECT symbol, price,
+       CASE WHEN price > 15050 THEN 1 ELSE 0 END AS is_high
+FROM trades WHERE symbol = 1
+
+-- Multi-column GROUP BY (Phase 2)
+SELECT symbol, price, SUM(volume) AS vol
+FROM trades GROUP BY symbol, price
+
+-- Date/time functions (Phase 3)
+SELECT DATE_TRUNC('min', timestamp) AS minute, SUM(volume) AS vol
+FROM trades WHERE symbol = 1
+GROUP BY DATE_TRUNC('min', timestamp)
+
+SELECT EPOCH_S(timestamp) AS ts_sec, price FROM trades WHERE symbol = 1
+
+-- LIKE / NOT LIKE (Phase 3)
+SELECT symbol, price FROM trades WHERE price LIKE '150%'
+
+-- UNION / INTERSECT / EXCEPT (Phase 3)
+SELECT price FROM trades WHERE symbol = 1
+UNION ALL
+SELECT price FROM trades WHERE symbol = 2
+
+SELECT price FROM trades WHERE symbol = 1
+INTERSECT
+SELECT price FROM trades WHERE price > 15050
 ```
 
 ---
@@ -208,8 +247,10 @@ apex-db/
 │   ├── storage/        # Arena, ColumnStore, PartitionManager, HDB
 │   ├── ingestion/      # RingBuffer, TickPlant, WAL
 │   ├── execution/      # VectorizedEngine, JIT, JOIN, WindowFunctions, QueryScheduler
-│   ├── sql/            # Tokenizer, Parser, AST, Executor
-│   ├── server/         # HttpServer (ClickHouse compatible)
+│   ├── sql/            # Tokenizer, Parser, AST, Executor (+ CancellationToken)
+│   ├── server/         # HttpServer (ClickHouse compatible, Admin API, query timeout)
+│   ├── auth/           # RBAC, ApiKeyStore, JwtValidator, AuthManager, RateLimiter,
+│   │                   # AuditBuffer, CancellationToken, QueryTracker, SecretsProvider
 │   ├── feeds/          # FIX, NASDAQ ITCH, Binance feed handlers
 │   ├── migration/      # kdb+/ClickHouse/DuckDB/TimescaleDB migrators
 │   ├── core/           # ApexPipeline (E2E integration)
@@ -217,9 +258,10 @@ apex-db/
 │   └── transpiler/     # Python binding (pybind11)
 ├── src/                # Implementation
 ├── tests/
-│   ├── unit/           # Google Test (151+ tests)
+│   ├── unit/           # Google Test (383 tests — includes 69 auth/security tests)
 │   ├── feeds/          # Feed handler tests (37 tests)
 │   ├── migration/      # Migration toolkit tests (70 tests)
+│   ├── python/         # Python ecosystem tests (208 tests)
 │   └── bench/          # Benchmarks
 ├── scripts/
 │   ├── tune_bare_metal.sh  # Bare-metal auto-tuning
@@ -237,7 +279,7 @@ apex-db/
     ├── feeds/          # Feed handler guides
     ├── requirements/   # PRD/SRS
     ├── bench/          # Benchmark results
-    └── devlog/         # Development log (000~012)
+    └── devlog/         # Development log (000~013)
 ```
 
 ---
@@ -252,6 +294,56 @@ apex-db/
 | OLAP | ClickHouse replacement, SQL, HTTP API, Grafana | — |
 | IoT/Monitoring | Time-series aggregation, xbar, LZ4 compression | — |
 | ML Feature Store | Real-time feature serving, zero-copy numpy | — |
+
+---
+
+## Enterprise Security
+
+APEX-DB ships with a complete enterprise security layer — all contract-blocker requirements
+are implemented and tested.
+
+| Feature | Details |
+|---------|---------|
+| **TLS/HTTPS** | OpenSSL 3.2, cert/key PEM, port 8443 |
+| **Authentication** | API Key (Bearer, SHA256-hashed) + JWT/OIDC (HS256/RS256) |
+| **Authorization** | RBAC: 5 roles (admin/writer/reader/analyst/metrics) + symbol-level ACL |
+| **Rate Limiting** | Token bucket per-identity + per-IP, configurable burst |
+| **Admin REST API** | Key CRUD, query list/kill, audit log, version — all behind ADMIN role |
+| **Query Timeout** | `set_query_timeout_ms(ms)` — auto-cancel via `CancellationToken` |
+| **Query Kill** | `DELETE /admin/queries/:id` — cancels running query at partition boundary |
+| **Secrets Management** | Vault KV v2 → K8s file secrets → env var (priority chain) |
+| **Audit Log** | spdlog file (7-year retention) + in-memory ring buffer → `GET /admin/audit` |
+| **Compliance** | SOC2, EMIR, MiFID II, ISO 27001 — see `docs/design/layer5_security_auth.md` |
+
+```bash
+# Secure server startup
+AuthManager::Config auth;
+auth.api_keys_file   = "keys.txt";
+auth.jwt_enabled     = true;
+auth.jwt.hs256_secret = secrets->get("JWT_SECRET");
+auth.rate_limit.requests_per_minute = 1000;
+
+TlsConfig tls;
+tls.enabled   = true;
+tls.cert_path = "/etc/apex/cert.pem";
+tls.key_path  = "/etc/apex/key.pem";
+
+HttpServer server(executor, 8443, tls, std::make_shared<AuthManager>(auth));
+server.set_query_timeout_ms(30000);
+server.start_async();
+
+# Admin: create a key
+curl -X POST https://apex:8443/admin/keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"name":"algo-service","role":"writer"}'
+
+# Admin: list running queries
+curl https://apex:8443/admin/queries -H "Authorization: Bearer $ADMIN_KEY"
+
+# Admin: kill a query
+curl -X DELETE https://apex:8443/admin/queries/q_a1b2c3 \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
 
 ---
 
@@ -296,11 +388,15 @@ apex-db/
 - [x] **Migration toolkit** — kdb+ HDB loader, q→SQL, ClickHouse DDL/query translation, DuckDB Parquet, TimescaleDB hypertable (70 tests)
 - [x] **Parquet HDB** — SNAPPY/ZSTD/LZ4_RAW, DuckDB/Polars/Spark direct query (Arrow C++ API)
 - [x] **S3 HDB Flush** — async upload, MinIO compatible, cloud data lake
+- [x] **Python Ecosystem** — apex_py: from_pandas/polars/arrow, ArrowSession, StreamingSession, ApexConnection (208 tests)
+- [x] **SQL Phase 1** — IN operator, IS NULL/NOT NULL, NOT, HAVING clause
+- [x] **SQL Phase 2** — SELECT arithmetic (`price * volume AS notional`), CASE WHEN, multi-column GROUP BY
+- [x] **SQL Phase 3** — Date/time functions (DATE_TRUNC/NOW/EPOCH_S/EPOCH_MS), LIKE/NOT LIKE, UNION ALL/DISTINCT/INTERSECT/EXCEPT
+- [x] **Time range index** — O(log n) binary search within partitions, O(1) partition skip
+- [x] **Enterprise Security** — TLS/HTTPS, API Key + JWT/OIDC, RBAC, Rate Limiting, Admin REST API, Query Timeout/Kill, Secrets Management (Vault/File/Env), Audit Log (SOC2/EMIR/MiFID II) — 69 tests
 
 ### In Progress
-- [ ] SQL parser completion (subqueries, complex queries)
-- [ ] Time range index
-- [ ] Python ecosystem (Polars/Pandas integration)
+- [ ] SQL subqueries / CTE (WITH clause)
 - [ ] ARM Graviton build verification
 - [ ] Distributed query scheduler (DistributedQueryScheduler + UCX)
 

@@ -1,6 +1,6 @@
 # Layer 4: Client & Transpilation Layer
 
-*Last updated: 2026-03-22 (Python ecosystem — apex_py package completed)*
+*Last updated: 2026-03-22 (SQL Phase 2/3 — arithmetic, CASE WHEN, multi-GROUP BY, date/time functions, LIKE, UNION/INTERSECT/EXCEPT)*
 
 This document covers the client interface layer of APEX-DB: HTTP API, Python
 DSL/ecosystem, C++ direct API, SQL support, and the migration toolkit.
@@ -219,13 +219,28 @@ tests/python/
 
 ## 3. SQL Support (current implementation)
 
+### 3-A. Core SELECT / Aggregation / JOIN
+
 ```sql
 -- Basic aggregation
 SELECT count(*), sum(volume), avg(price), vwap(price, volume)
 FROM trades WHERE symbol = 1
 
--- GROUP BY
+-- GROUP BY (single and multi-column)
 SELECT symbol, sum(volume) FROM trades GROUP BY symbol
+SELECT symbol, price, SUM(volume) FROM trades GROUP BY symbol, price
+
+-- DISTINCT
+SELECT DISTINCT symbol FROM trades
+
+-- HAVING (post-aggregation filter)
+SELECT symbol, SUM(volume) AS total_vol
+FROM trades GROUP BY symbol HAVING total_vol > 1000
+
+-- IN / IS NULL / NOT
+SELECT * FROM trades WHERE symbol IN (1, 2, 3)
+SELECT * FROM trades WHERE risk_score IS NOT NULL
+SELECT * FROM trades WHERE NOT price > 15100
 
 -- ASOF JOIN (time-series key operation)
 SELECT t.price, q.bid, q.ask
@@ -263,6 +278,134 @@ WINDOW JOIN quotes q ON t.symbol = q.symbol
 AND q.timestamp BETWEEN t.timestamp - 5000000000 AND t.timestamp + 5000000000
 ```
 
+### 3-B. Phase 2: SELECT Arithmetic + CASE WHEN + Multi-Column GROUP BY (2026-03-22)
+
+```sql
+-- SELECT arithmetic: full expression trees in column list
+SELECT symbol,
+       price * volume        AS notional,
+       (price - 15000) / 100 AS premium,
+       SUM(price * volume)   AS total_notional,
+       AVG(price - 15000)    AS avg_premium
+FROM trades WHERE symbol = 1
+
+-- CASE WHEN: conditional column expressions
+SELECT symbol, price,
+       CASE WHEN price > 15050 THEN 1 ELSE 0 END            AS is_high,
+       CASE WHEN volume > 105 THEN price * 2 ELSE price END  AS adj_price
+FROM trades WHERE symbol = 1
+
+-- Multi-column GROUP BY: composite VectorHash key
+SELECT symbol, price, SUM(volume) AS vol
+FROM trades GROUP BY symbol, price
+ORDER BY price ASC
+
+-- Arithmetic in GROUP BY key (xbar + arithmetic combined)
+SELECT xbar(timestamp, 60000000000) AS min_bar,
+       SUM(price * volume) AS total_notional
+FROM trades WHERE symbol = 1
+GROUP BY xbar(timestamp, 60000000000)
+```
+
+**Implementation notes:**
+- `ArithExpr` tree: `Kind::COLUMN | LITERAL | BINARY | FUNC` nodes
+- Binary operators: `ADD (+)`, `SUB (-)`, `MUL (*)`, `DIV (/)`
+- `eval_arith(node, part, row_idx)` recursive evaluator in executor
+- Arithmetic inside aggregates: `agg_val` lambda wraps `eval_arith` or direct column read
+- Both serial (`exec_agg`, `exec_group_agg`) and parallel paths support all Phase 2 features
+
+### 3-C. Phase 3: Date/Time Functions + LIKE + Set Operations (2026-03-22)
+
+```sql
+-- DATE_TRUNC: floor timestamp to time unit
+-- Units: 'ns', 'us', 'ms', 's', 'min', 'hour', 'day', 'week'
+SELECT DATE_TRUNC('min', timestamp) AS minute, SUM(volume) AS vol
+FROM trades WHERE symbol = 1
+GROUP BY DATE_TRUNC('min', timestamp)
+
+SELECT DATE_TRUNC('hour', timestamp) AS hour,
+       first(price) AS open, last(price) AS close
+FROM trades GROUP BY DATE_TRUNC('hour', timestamp)
+
+-- NOW(): current timestamp (nanoseconds, system_clock)
+SELECT * FROM trades WHERE timestamp > NOW() - 60000000000
+
+-- EPOCH_S / EPOCH_MS: convert nanosecond timestamp to seconds/milliseconds
+SELECT EPOCH_S(timestamp) AS ts_sec,   price FROM trades WHERE symbol = 1
+SELECT EPOCH_MS(timestamp) AS ts_ms,   price FROM trades WHERE symbol = 1
+
+-- LIKE / NOT LIKE: glob pattern matching
+-- '%' = any substring, '_' = any single character
+SELECT symbol, price FROM trades WHERE price LIKE '150%'
+SELECT symbol, price FROM trades WHERE price NOT LIKE '%9'
+
+-- UNION ALL: concatenate result sets (duplicates kept)
+SELECT price FROM trades WHERE symbol = 1
+UNION ALL
+SELECT price FROM trades WHERE symbol = 2
+
+-- UNION DISTINCT: concatenate + deduplicate
+SELECT price FROM trades WHERE symbol = 1
+UNION
+SELECT price FROM trades WHERE symbol = 2
+
+-- INTERSECT: rows present in both
+SELECT price FROM trades WHERE symbol = 1
+INTERSECT
+SELECT price FROM trades WHERE price > 15050
+
+-- EXCEPT: rows in left not in right
+SELECT price FROM trades WHERE symbol = 1
+EXCEPT
+SELECT price FROM trades WHERE price > 15050
+```
+
+**Implementation notes:**
+- `ArithExpr::Kind::FUNC`: `func_name` (`date_trunc`/`now`/`epoch_s`/`epoch_ms`), `func_unit`, `func_arg`
+- `date_trunc_bucket(unit_str)` maps unit strings to nanosecond bucket sizes
+- `NOW()` evaluates via `std::chrono::system_clock::now()` at query time
+- `Expr::Kind::LIKE`: DP grid glob match, int64 values converted via `std::to_string()`
+- Set operations handled at the top of `exec_select()` before normal dispatch; `UNION DISTINCT` uses `std::set<std::vector<int64_t>>`
+
+### 3-D. SQL Feature Matrix
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SELECT * / col list | ✅ | |
+| SELECT arithmetic (`a * b`) | ✅ Phase 2 | Full expression tree |
+| CASE WHEN | ✅ Phase 2 | THEN/ELSE are arith exprs |
+| DISTINCT | ✅ | |
+| FROM / table alias | ✅ | |
+| WHERE (compare/BETWEEN/AND/OR/NOT) | ✅ | |
+| WHERE IN (v1, v2, ...) | ✅ Phase 1 | |
+| WHERE IS NULL / IS NOT NULL | ✅ Phase 1 | INT64_MIN sentinel |
+| WHERE LIKE / NOT LIKE | ✅ Phase 3 | DP glob, `%` and `_` |
+| INNER / HASH JOIN | ✅ | |
+| ASOF JOIN | ✅ | |
+| LEFT JOIN | ✅ | NULL = INT64_MIN |
+| WINDOW JOIN (wj) | ✅ | O(n log m) |
+| GROUP BY (single col) | ✅ | |
+| GROUP BY xbar(col, bucket) | ✅ | kdb+ style |
+| GROUP BY (multi-column) | ✅ Phase 2 | VectorHash composite key |
+| HAVING | ✅ Phase 1 | Post-aggregation filter |
+| ORDER BY | ✅ | ASC/DESC, multi-col |
+| LIMIT | ✅ | |
+| Aggregates (COUNT/SUM/AVG/MIN/MAX) | ✅ | |
+| VWAP / FIRST / LAST | ✅ | Financial |
+| Window functions (SUM/AVG/.../LAG/LEAD) | ✅ | OVER clause |
+| EMA / DELTA / RATIO | ✅ | Financial window |
+| ROW_NUMBER / RANK / DENSE_RANK | ✅ | |
+| DATE_TRUNC | ✅ Phase 3 | ns/us/ms/s/min/hour/day/week |
+| NOW() | ✅ Phase 3 | Nanosecond precision |
+| EPOCH_S / EPOCH_MS | ✅ Phase 3 | ns → s / ms |
+| UNION ALL / DISTINCT | ✅ Phase 3 | |
+| INTERSECT / EXCEPT | ✅ Phase 3 | |
+| Subquery / CTE | ❌ Planned | |
+| RIGHT JOIN / FULL OUTER | ❌ Planned | |
+| EXPLAIN | ❌ Planned | |
+| SUBSTR / string functions | ❌ Planned | |
+| NULL standardization | ❌ Planned | INT64_MIN → actual NULL |
+
 ---
 
 ## 4. Design Decisions: Original vs Actual
@@ -299,6 +442,10 @@ auto result = executor.execute(ast);
 - [x] pybind11 zero-copy Python binding ✅
 - [x] Migration Toolkit (kdb+/ClickHouse/DuckDB/TimescaleDB) ✅
 - [x] **Python Ecosystem** (`apex_py` full package — vectorized ingest_batch) ✅
+- [x] **SQL Phase 1** — IN, IS NULL, NOT, HAVING ✅
+- [x] **SQL Phase 2** — SELECT arithmetic, CASE WHEN, multi-column GROUP BY ✅
+- [x] **SQL Phase 3** — DATE_TRUNC/NOW/EPOCH_S/EPOCH_MS, LIKE/NOT LIKE, UNION/INTERSECT/EXCEPT ✅
+- [ ] SQL Subquery / CTE (WITH clause)
 - [ ] SQL Window RANGE mode (currently ROWS only)
 - [ ] Python DSL → LLVM JIT direct compilation
 - [ ] Arrow Flight server (stream results as Arrow over network)

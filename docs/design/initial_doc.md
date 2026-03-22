@@ -1,5 +1,5 @@
 # APEX-DB Initial Vision and Design Principles
-**Last updated: 2026-03-22 (General OLAP/TSDb expansion, kdb+ 95% replacement, Migration Toolkit, Parquet HDB, S3 Sink completed)**
+**Last updated: 2026-03-22 (General OLAP/TSDb expansion, kdb+ 95% replacement, Migration Toolkit, Parquet HDB, S3 Sink, Python Ecosystem apex_py completed)**
 
 APEX-DB is an **ultra-low latency in-memory database** that started as a finance-focused system and has expanded to **general-purpose OLAP, time-series DB, and ML Feature Store**.
 
@@ -87,11 +87,11 @@ APEX-DB is an **ultra-low latency in-memory database** that started as a finance
 | **Financial functions** | xbar, EMA, DELTA, RATIO, FIRST, LAST, Window JOIN | 2.2ms EMA, 24ms xbar |
 | **Parallel query** | LocalQueryScheduler, WorkerPool (scatter/gather) | 3.48x (8T) |
 | **SQL** | Parser, HTTP API (port 8123), GROUP BY, Window functions | 1.5~4.5μs parsing |
-| **Python** | pybind11, zero-copy numpy, lazy eval DSL | 522ns zero-copy |
+| **Python** | pybind11, zero-copy numpy, apex_py (from_pandas/polars/arrow, ArrowSession, StreamingSession, 208 tests) | 522ns zero-copy |
 | **Cluster** | UCX/SharedMem transport, Partition routing | 13.5ns SHM, 2ns routing |
 | **Operations** | Monitoring, Backup, systemd service | Prometheus + Grafana |
 
-**Tests:** 221 tests PASS (unit 151 + feed handler 37 + migration 70 + benchmark 10)
+**Tests:** 429+ tests PASS (unit 226 + feed handler 37 + migration 70 + Python ecosystem 208)
 
 ---
 
@@ -106,9 +106,8 @@ APEX-DB is an **ultra-low latency in-memory database** that started as a finance
 - [ ] Graviton (ARM) build test (Highway SVE)
 
 #### **High Priority (Business)**
-- [ ] **Migration Toolkit** ✅ **Complete** (kdb+/ClickHouse/DuckDB/TimescaleDB, 70 tests)
-- [ ] **Python ecosystem** — Research-to-Production
-  - `apex.from_polars/pandas`, direct Arrow support
+- [x] **Migration Toolkit** ✅ **Complete** (kdb+/ClickHouse/DuckDB/TimescaleDB, 70 tests)
+- [x] **Python ecosystem** ✅ **Complete** (apex_py: from_pandas/polars/arrow, ArrowSession, StreamingSession, ApexConnection, 208 tests)
 - [ ] **DSL AOT compilation** — Nuitka/Cython, production deployment + IP protection
 
 #### **Medium Priority**
@@ -123,5 +122,5 @@ APEX-DB is an **ultra-low latency in-memory database** that started as a finance
 - Detailed architecture: `docs/design/high_level_architecture.md`
 - Business strategy: `docs/business/BUSINESS_STRATEGY.md`
 - kdb+ replacement analysis: `docs/design/kdb_replacement_analysis.md`
-- Development log: `docs/devlog/` (001~012)
+- Development log: `docs/devlog/` (001~013)
 - Deployment guide: `docs/deployment/PRODUCTION_DEPLOYMENT.md`

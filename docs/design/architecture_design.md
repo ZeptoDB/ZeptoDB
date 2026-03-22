@@ -75,15 +75,67 @@ Key implementation details:
 
 ---
 
-## 3. Summary and Recommended First Milestone
+## 3. Security Architecture (Layer 5) — ✅ Implemented
+
+Enterprise security is built as a cross-cutting layer that intercepts all HTTP API
+requests before they reach any route handler.
+
+### 3-A. Security Stack
+
+```
+HTTPS (TLS 1.2+, OpenSSL 3.2)
+    │
+    ▼
+AuthManager::check()                ← set_pre_routing_handler
+    ├── JwtValidator (HS256/RS256)   ← OIDC: Okta, Azure AD, Google
+    ├── ApiKeyStore (SHA256 hash)    ← Service-to-service auth
+    └── RBAC Engine                 ← 5 roles + symbol-level ACL
+            │
+            ▼
+    AuditLogger (spdlog)            ← EMIR / MiFID II compliance
+```
+
+### 3-B. RBAC Layer (5 Roles)
+
+| Role | Permissions | Typical user |
+|------|------------|-------------|
+| `admin` | ALL | DBA, ops team |
+| `writer` | READ + WRITE | Feed handlers, pipelines |
+| `reader` | READ | Quant researchers, BI |
+| `analyst` | READ (symbol whitelist) | External/contracted analysts |
+| `metrics` | /metrics only | Prometheus scraper |
+
+### 3-C. Identity Priority
+
+When a request carries a Bearer token:
+1. Token starts with `ey` → try JWT/SSO first (human identity)
+2. JWT invalid or not configured → try API key (service identity)
+3. Both fail → `401 Unauthorized`
+
+Public paths (`/ping`, `/health`, `/ready`) always bypass auth.
+
+### 3-D. Enterprise Governance
+
+Full policy documentation in `docs/design/layer5_security_auth.md`:
+- API key lifecycle (create → active → revoke)
+- Certificate rotation schedule (TLS: 90 days, mTLS node certs: 365 days)
+- Access review cadence (monthly key inventory, quarterly RBAC review)
+- Incident response procedures (key compromise, JWT secret compromise)
+- Multi-tenant symbol isolation model
+- Regulatory compliance mapping (EMIR, MiFID II, SOC2, ISO 27001)
+
+---
+
+## 4. Summary and Implemented Milestones
 
 This architecture allows scripts written in Python — the language quant developers know — to be **immediately deployed to HFT at Ultra-Low Latency C++ level performance**, without a single line of manual translation.
 
-**MVP steps — all completed:**
+**All core milestones completed:**
 1. ✅ **Lock-Free MPMC Ring Buffer** (C++20, 5.52M ticks/sec)
 2. ✅ **Arena Allocator** — columnar Arrow-layout memory, no malloc in hot path
 3. ✅ **pybind11 Zero-copy Read API** — `get_column()` returns numpy view (522ns)
 4. ✅ **apex_py package** — full ecosystem: from_pandas/polars/arrow, ArrowSession,
    StreamingSession, ApexConnection (208 tests)
+5. ✅ **Security Layer** — TLS/SSL + API Key + JWT/SSO + RBAC + Audit (37 tests)
 
 *Last updated: 2026-03-22*
