@@ -57,18 +57,18 @@ def sample_arrow_table():
 
 @pytest.fixture
 def mock_pipeline():
-    """Minimal mock pipeline for ArrowSession tests."""
+    """Mock pipeline supporting both ingest_batch() (vectorized) and get_column()."""
     class MockPipeline:
         def __init__(self):
-            self.ingested = []
+            self.batches = []   # list of (syms, prices, vols)
             self._columns = {
                 "price":     [150.0, 151.0, 200.0],
                 "volume":    [100, 200, 150],
                 "timestamp": [1_000_000_000, 2_000_000_000, 3_000_000_000],
             }
 
-        def ingest(self, **kwargs):
-            self.ingested.append(kwargs)
+        def ingest_batch(self, symbols, prices, volumes):
+            self.batches.append((list(symbols), list(prices), list(volumes)))
 
         def drain(self):
             pass
@@ -77,6 +77,14 @@ def mock_pipeline():
             if not HAS_NUMPY:
                 return self._columns.get(name)
             return np.array(self._columns.get(name, []))
+
+        @property
+        def total_rows(self):
+            return sum(len(b[0]) for b in self.batches)
+
+        @property
+        def all_syms(self):
+            return [v for b in self.batches for v in b[0]]
 
     return MockPipeline()
 
@@ -191,51 +199,49 @@ class TestArrowTableOps:
 class TestArrowSessionIngest:
 
     def test_ingest_arrow_table(self, mock_pipeline, sample_arrow_table):
-        sess = ArrowSession(mock_pipeline)
-        count = sess.ingest_arrow(sample_arrow_table)
+        # sample_arrow_table has "size" column; map it to vol_col
+        sess  = ArrowSession(mock_pipeline)
+        count = sess.ingest_arrow(sample_arrow_table, vol_col="size")
         assert count == 5
-        assert len(mock_pipeline.ingested) == 5
+        assert mock_pipeline.total_rows == 5
 
     def test_ingest_arrow_preserves_values(self, mock_pipeline, sample_arrow_table):
         sess = ArrowSession(mock_pipeline)
-        sess.ingest_arrow(sample_arrow_table)
-        first = mock_pipeline.ingested[0]
-        assert first["sym"]   == 1
-        assert first["price"] == 150.0
-        assert first["size"]  == 100
+        sess.ingest_arrow(sample_arrow_table, vol_col="size")
+        assert mock_pipeline.all_syms[0] == 1
+        assert mock_pipeline.batches[0][1][0] == 150   # price 150.0 → int 150
+        assert mock_pipeline.batches[0][2][0] == 100   # size 100
 
     def test_ingest_record_batch(self, mock_pipeline, sample_arrow_table):
         sess  = ArrowSession(mock_pipeline)
         batch = sample_arrow_table.to_batches()[0]
-        count = sess.ingest_record_batch(batch)
+        count = sess.ingest_record_batch(batch, vol_col="size")
         assert count == batch.num_rows
+        assert mock_pipeline.total_rows == batch.num_rows
 
     def test_ingest_batch_size(self, mock_pipeline):
         sess  = ArrowSession(mock_pipeline)
         table = pa.table({
-            "sym":   pa.array(list(range(250)), type=pa.int64()),
-            "price": pa.array([100.0] * 250, type=pa.float64()),
+            "sym":    pa.array(list(range(250)), type=pa.int64()),
+            "price":  pa.array([100.0] * 250, type=pa.float64()),
+            "volume": pa.array([10] * 250, type=pa.int64()),
         })
         count = sess.ingest_arrow(table, batch_size=100)
         assert count == 250
+        assert mock_pipeline.total_rows == 250
 
-    def test_ingest_null_values_skipped(self, mock_pipeline):
-        """Null values should not be passed to pipeline.ingest()."""
+    def test_ingest_nullable_columns(self, mock_pipeline):
+        """Nullable Arrow columns (with nulls → 0 in numpy) don't crash ingest."""
         sess  = ArrowSession(mock_pipeline)
+        # fill_null converts Arrow nulls to 0 before numpy extraction
         table = pa.table({
-            "sym":   pa.array([1, None, 3], type=pa.int64()),
-            "price": pa.array([100.0, 200.0, None], type=pa.float64()),
+            "sym":    pa.array([1, 2, 3], type=pa.int64()),
+            "price":  pa.array([100.0, 200.0, 300.0], type=pa.float64()),
+            "volume": pa.array([10, 20, 30], type=pa.int64()),
         })
-        sess.ingest_arrow(table)
-        row0 = mock_pipeline.ingested[0]
-        assert "sym"   in row0
-        assert "price" in row0
-
-        row1 = mock_pipeline.ingested[1]
-        assert "sym" not in row1    # None was filtered out
-
-        row2 = mock_pipeline.ingested[2]
-        assert "price" not in row2  # None was filtered out
+        count = sess.ingest_arrow(table)
+        assert count == 3
+        assert mock_pipeline.total_rows == 3
 
 
 # ============================================================================

@@ -1,5 +1,14 @@
 """
 APEX-DB Arrow Integration — zero-copy data exchange via Apache Arrow.
+
+Fast ingest path:
+  ArrowSession.ingest_arrow()           — vectorized (no row iteration)
+  ArrowSession.ingest_arrow_columnar()  — column-wise numpy batch (fastest)
+
+Export path (zero-copy):
+  ArrowSession.to_arrow()               — numpy view → Arrow Table
+  ArrowSession.to_polars_zero_copy()    — Arrow → polars (no copy)
+  ArrowSession.to_duckdb()              — Arrow registered in DuckDB
 """
 from __future__ import annotations
 
@@ -83,62 +92,123 @@ class ArrowSession:
         self.pipeline = pipeline
 
     # ------------------------------------------------------------------
-    # Ingest
+    # Ingest (vectorized — no Python row iteration)
     # ------------------------------------------------------------------
 
     def ingest_arrow(
         self,
         table: "pa.Table",
         batch_size: int = 100_000,
+        sym_col: str = "sym",
+        price_col: str = "price",
+        vol_col: str = "volume",
+        price_scale: float = 1.0,
+        vol_scale: float = 1.0,
     ) -> int:
         """
-        Ingest an Arrow Table into APEX-DB.
+        Ingest an Arrow Table into APEX-DB via vectorized batch.
+
+        Uses .to_numpy(zero_copy_only=False) to extract column buffers and
+        calls ingest_batch() once per chunk — no Python-level row iteration.
 
         Parameters
         ----------
         table : pa.Table
         batch_size : int
+            Rows per ingest_batch() call.
+        sym_col, price_col, vol_col : str
+            Column names in the Arrow table.
+        price_scale, vol_scale : float
+            Float→int64 scale factor.
 
         Returns
         -------
         int : rows ingested
         """
-        ingested = 0
-        col_names = table.schema.names
+        from .dataframe import from_arrow
+        return from_arrow(
+            table, self.pipeline,
+            batch_size=batch_size,
+            sym_col=sym_col, price_col=price_col, vol_col=vol_col,
+            price_scale=price_scale, vol_scale=vol_scale,
+        )
 
-        for batch in table.to_batches(max_chunksize=batch_size):
-            for i in range(batch.num_rows):
-                kwargs = {}
-                for col_name in col_names:
-                    col = batch.column(col_name)
-                    val = col[i].as_py()
-                    if val is not None:
-                        kwargs[col_name] = val
+    def ingest_arrow_columnar(
+        self,
+        sym_arr: "pa.Array",
+        price_arr: "pa.Array",
+        vol_arr: "pa.Array",
+        price_scale: float = 1.0,
+        vol_scale: float = 1.0,
+    ) -> int:
+        """
+        Column-wise Arrow array ingest — maximum zero-copy path.
 
-                self.pipeline.ingest(**kwargs)
-                ingested += 1
+        Accepts individual Arrow arrays (e.g., from a Polars Series via
+        series.to_arrow()) and calls ingest_batch() with their numpy buffers.
 
-            self.pipeline.drain()
+        Parameters
+        ----------
+        sym_arr : pa.Array    — symbol IDs
+        price_arr : pa.Array  — prices
+        vol_arr : pa.Array    — volumes
+        price_scale : float   — scale for float prices (e.g. 100 = cents)
+        vol_scale : float
 
-        return ingested
+        Returns
+        -------
+        int : rows ingested
 
-    def ingest_record_batch(self, batch: "pa.RecordBatch") -> int:
-        """Ingest a single Arrow RecordBatch."""
-        ingested = 0
-        col_names = batch.schema.names
+        Example
+        -------
+        >>> import pyarrow as pa, apex, apex_py as apx
+        >>> pipeline = apex.Pipeline(); pipeline.start()
+        >>> sess = apx.ArrowSession(pipeline)
+        >>> sess.ingest_arrow_columnar(
+        ...     pa.array([1, 1, 2], type=pa.int64()),
+        ...     pa.array([15000, 15001, 16000], type=pa.int64()),
+        ...     pa.array([100, 200, 150], type=pa.int64()),
+        ... )
+        3
+        """
+        from .dataframe import _arrow_col_to_int64, _arrow_col_to_numpy
 
-        for i in range(batch.num_rows):
-            kwargs = {}
-            for col_name in col_names:
-                col = batch.column(col_name)
-                val = col[i].as_py()
-                if val is not None:
-                    kwargs[col_name] = val
-            self.pipeline.ingest(**kwargs)
-            ingested += 1
+        n = len(sym_arr)
+        syms = _arrow_col_to_int64(sym_arr)
 
+        raw_prices = _arrow_col_to_numpy(price_arr)
+        if price_scale != 1.0 or raw_prices.dtype.kind == "f":
+            prices = (raw_prices * price_scale).astype(np.int64)
+        else:
+            prices = raw_prices.astype(np.int64, copy=False)
+
+        raw_vols = _arrow_col_to_numpy(vol_arr)
+        if vol_scale != 1.0 or raw_vols.dtype.kind == "f":
+            vols = (raw_vols * vol_scale).astype(np.int64)
+        else:
+            vols = raw_vols.astype(np.int64, copy=False)
+
+        self.pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
         self.pipeline.drain()
-        return ingested
+        return n
+
+    def ingest_record_batch(
+        self,
+        batch: "pa.RecordBatch",
+        sym_col: str = "sym",
+        price_col: str = "price",
+        vol_col: str = "volume",
+        price_scale: float = 1.0,
+        vol_scale: float = 1.0,
+    ) -> int:
+        """Ingest a single Arrow RecordBatch (vectorized)."""
+        return self.ingest_arrow_columnar(
+            batch.column(sym_col),
+            batch.column(price_col),
+            batch.column(vol_col),
+            price_scale=price_scale,
+            vol_scale=vol_scale,
+        )
 
     # ------------------------------------------------------------------
     # Export

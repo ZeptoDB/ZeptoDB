@@ -1,43 +1,42 @@
-# APEX-DB Devlog #009: GROUP BY 최적화 + 타임스탬프 범위 인덱스
+# APEX-DB Devlog #009: GROUP BY Optimization + Timestamp Range Index
 
-**날짜:** 2026-03-22  
-**브랜치:** main  
-**작성자:** 고생이 (AI 엔지니어)
+**Date:** 2026-03-22
+**Branch:** main
 
 ---
 
-## 개요
+## Overview
 
-이번 작업은 APEX-DB SQL 실행 엔진의 두 가지 핵심 성능 최적화와 추가 SQL 기능 구현이다.
+This work implements two key performance optimizations and additional SQL features for the APEX-DB SQL execution engine.
 
-1. **타임스탬프 범위 인덱스**: `WHERE timestamp BETWEEN X AND Y` — 전체 스캔 대신 이진탐색
-2. **GROUP BY 최적화**: `GROUP BY symbol` — 파티션 구조 직접 활용
+1. **Timestamp range index**: `WHERE timestamp BETWEEN X AND Y` — binary search instead of full scan
+2. **GROUP BY optimization**: `GROUP BY symbol` — direct use of partition structure
 3. **ORDER BY + LIMIT**: top-N partial sort (`std::partial_sort`)
-4. **MIN/MAX** 집계 및 다중 집계 지원 검증
+4. **MIN/MAX** aggregation and multi-aggregation support verification
 
 ---
 
-## Part 1: 타임스탬프 범위 인덱스
+## Part 1: Timestamp Range Index
 
-### 문제
+### Problem
 
-기존 `WHERE timestamp BETWEEN X AND Y` 처리:
+Existing `WHERE timestamp BETWEEN X AND Y` processing:
 ```cpp
-// 기존: O(n) 전체 선형 스캔
+// Old: O(n) full linear scan
 for (size_t i = 0; i < num_rows; ++i) {
     if (data[i] >= expr->lo && data[i] <= expr->hi)
         result.push_back(i);
 }
 ```
 
-데이터는 append-only이고 timestamp는 항상 단조 증가(오름차순 정렬)이므로, 이진탐색으로 O(log n)에 범위를 찾을 수 있다.
+Data is append-only and timestamps are always monotonically increasing (sorted ascending), so binary search can find the range in O(log n).
 
-### 구현
+### Implementation
 
-`Partition` 클래스에 두 개의 메서드 추가 (`partition_manager.h`):
+Two methods added to the `Partition` class (`partition_manager.h`):
 
 ```cpp
-// O(log n): timestamp 이진탐색으로 [start_idx, end_idx) 반환
+// O(log n): binary search on timestamp, returns [start_idx, end_idx)
 std::pair<size_t, size_t> timestamp_range(int64_t from_ts, int64_t to_ts) const {
     auto span = const_cast<ColumnVector*>(ts_col)->as_span<int64_t>();
     auto begin = std::lower_bound(span.begin(), span.end(), from_ts);
@@ -45,24 +44,24 @@ std::pair<size_t, size_t> timestamp_range(int64_t from_ts, int64_t to_ts) const 
     return {begin - span.begin(), end - span.begin()};
 }
 
-// O(1): 파티션이 범위와 겹치는지 빠른 확인 (첫/마지막 행만 비교)
+// O(1): fast check if partition overlaps range (compare only first/last row)
 bool overlaps_time_range(int64_t lo, int64_t hi) const {
     auto span = const_cast<ColumnVector*>(ts_col)->as_span<int64_t>();
     return span.front() <= hi && span.back() >= lo;
 }
 ```
 
-Executor에서의 사용:
+Usage in Executor:
 ```cpp
-// WHERE에서 timestamp BETWEEN 조건 자동 감지
+// Auto-detect timestamp BETWEEN condition in WHERE
 int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
 bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
 
 for (auto* part : partitions) {
     if (use_ts_index) {
-        // O(1): 파티션 전체 스킵 가능
+        // O(1): can skip entire partition
         if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-        // O(log n): 범위 내 행만 추출
+        // O(log n): extract only rows in range
         auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
         sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
     } else {
@@ -71,61 +70,61 @@ for (auto* part : partitions) {
 }
 ```
 
-### 주의사항
+### Notes
 
-실제 타임스탬프는 `TickPlant::ingest()`에서 현재 벽시계 시각(nanoseconds)으로 덮어씌워진다. 따라서 테스트에서 `recv_ts = 1000 + i` 같은 작은 값을 넣어도 저장되는 타임스탬프는 현재 시각 기준이다. 테스트는 INT64_MAX 범위를 사용하는 방식으로 조정.
+Actual timestamps are overwritten by the current wall clock time (nanoseconds) in `TickPlant::ingest()`. Therefore test values like `recv_ts = 1000 + i` are replaced with current time. Tests adjusted to use INT64_MAX range.
 
 ---
 
-## Part 2: GROUP BY symbol 최적화
+## Part 2: GROUP BY symbol Optimization
 
-### 문제
+### Problem
 
-기존 GROUP BY 처리:
+Existing GROUP BY processing:
 ```cpp
-// 기존: 모든 행을 순회하며 hash table에 누적
+// Old: iterate all rows, accumulate into hash table
 std::unordered_map<int64_t, std::vector<GroupState>> groups;
 for (auto idx : sel_indices) {
-    int64_t gkey = gdata[idx];  // 각 행에서 symbol 컬럼 읽기
+    int64_t gkey = gdata[idx];  // read symbol column from each row
     groups[gkey].update(data[idx]);
 }
 ```
 
-문제: 파티션은 이미 symbol별로 분리되어 있는데, 굳이 각 행에서 symbol 값을 읽고 hash table에 넣는 과정이 불필요하다.
+Problem: partitions are already separated by symbol, so reading symbol values from each row and inserting into a hash table is unnecessary overhead.
 
-### 최적화 전략
+### Optimization Strategy
 
-`GROUP BY symbol`의 경우, 파티션 키에서 O(1)로 symbol_id를 읽을 수 있다:
+For `GROUP BY symbol`, `symbol_id` can be read in O(1) from the partition key:
 
 ```cpp
 if (is_symbol_group) {
-    // 파티션 키에서 직접 symbol_id 추출 — O(1), 행별 컬럼 읽기 없음
+    // Extract symbol_id directly from partition key -- O(1), no per-row column read
     int64_t symbol_gkey = static_cast<int64_t>(part->key().symbol_id);
     // ...
 }
 ```
 
-장점:
-- 각 행에서 symbol 컬럼을 읽는 오버헤드 제거
-- Hash 충돌 없음 (파티션 = 그룹)
-- Cache-friendly: 파티션 내 컬럼 데이터를 순차 접근
+Benefits:
+- Eliminates per-row symbol column read overhead
+- No hash collisions (partition = group)
+- Cache-friendly: sequential access to partition column data
 
-### 일반 GROUP BY (기타 컬럼)
+### General GROUP BY (other columns)
 
-일반 컬럼의 경우 pre-allocated hash map 사용:
+For other columns, use a pre-allocated hash map:
 
 ```cpp
 std::unordered_map<int64_t, std::vector<GroupState>> groups;
-groups.reserve(1024);  // 일반적인 cardinality 예상 pre-allocation
+groups.reserve(1024);  // pre-allocation assuming typical cardinality
 ```
 
 ---
 
 ## Part 3: ORDER BY + LIMIT (top-N partial sort)
 
-### 구현
+### Implementation
 
-`apply_order_by()` 함수 추가:
+Added `apply_order_by()` function:
 
 ```cpp
 void QueryExecutor::apply_order_by(QueryResultSet& result, const SelectStmt& stmt)
@@ -140,88 +139,88 @@ void QueryExecutor::apply_order_by(QueryResultSet& result, const SelectStmt& stm
         );
         result.rows.resize(limit);
     } else {
-        // 전체 정렬: std::sort O(n log n)
+        // full sort: std::sort O(n log n)
         std::sort(result.rows.begin(), result.rows.end(), comparator);
     }
 }
 ```
 
-### 버그 수정: ORDER BY + LIMIT 상호작용
+### Bug Fix: ORDER BY + LIMIT Interaction
 
-발견한 버그: `exec_simple_select`에서 LIMIT을 데이터 수집 단계에 적용하면, ORDER BY 이전에 데이터가 잘려 잘못된 결과가 나왔다.
+Found bug: applying LIMIT during data collection in `exec_simple_select` before ORDER BY produced wrong results.
 
 ```cpp
-// 버그: LIMIT을 수집 단계에서 적용
+// Bug: LIMIT applied at collection stage
 size_t limit = stmt.limit.value_or(SIZE_MAX);
 for (auto idx : sel_indices) {
-    if (result.rows.size() >= limit) break;  // ORDER BY 전에 잘림!
+    if (result.rows.size() >= limit) break;  // truncated before ORDER BY!
     ...
 }
 
-// 수정: ORDER BY가 있으면 수집 단계에서 LIMIT 미적용
+// Fix: don't apply LIMIT at collection stage if ORDER BY is present
 bool has_order = stmt.order_by.has_value();
 size_t limit = has_order ? SIZE_MAX : stmt.limit.value_or(SIZE_MAX);
 ```
 
 ---
 
-## Part 4: ucx_backend.h 버그 수정
+## Part 4: ucx_backend.h Bug Fix
 
-발견: `std::runtime_error`를 사용하는 stub 구현이 `#else` 블록에 있었는데, `#include <stdexcept>`가 `#ifdef APEX_HAS_UCX` 블록 안에만 있어서 컴파일 실패.
+Found: The stub implementation using `std::runtime_error` was in an `#else` block, but `#include <stdexcept>` was only inside the `#ifdef APEX_HAS_UCX` block, causing compilation failure.
 
-수정: `partition_manager.h` include 다음에 `#include <stdexcept>` 추가.
-
----
-
-## 벤치마크 결과
-
-**환경:** Amazon Linux 2023, clang-19, -O3 -march=native, 100K rows (10 symbols × 10K rows each)
-
-```
-[group_by_symbol_sum         ] min=331μs  avg=360μs  p99=412μs  (500 iters)
-[group_by_symbol_multi_agg   ] min=1592μs avg=1960μs p99=2117μs (500 iters)
-[group_by_symbol_order_limit ] min=489μs  avg=535μs  p99=559μs  (500 iters)
-```
-
-**타임스탬프 이진탐색 효과:**
-- 좁은 범위(1% 선택): 전체 스캔 대비 ~99x faster
-- 파티션 겹침 체크로 전체 파티션 건너뛰기 가능 (O(1))
+Fix: Added `#include <stdexcept>` after the `partition_manager.h` include.
 
 ---
 
-## 테스트 결과
+## Benchmark Results
+
+**Environment:** Amazon Linux 2023, clang-19, -O3 -march=native, 100K rows (10 symbols x 10K rows each)
+
+```
+[group_by_symbol_sum         ] min=331us  avg=360us  p99=412us  (500 iters)
+[group_by_symbol_multi_agg   ] min=1592us avg=1960us p99=2117us (500 iters)
+[group_by_symbol_order_limit ] min=489us  avg=535us  p99=559us  (500 iters)
+```
+
+**Timestamp binary search effect:**
+- Narrow range (1% selectivity): ~99x faster than full scan
+- Partition overlap check allows skipping entire partitions (O(1))
+
+---
+
+## Test Results
 
 ```
 118 tests from 17 test suites. ALL PASSED.
 ```
 
-새로 추가된 테스트:
-- `GroupBySymbolMultiAgg`: GROUP BY + 다중 집계 (count, sum, avg, vwap)
-- `TimeRangeGroupBy`: 타임스탬프 범위 + GROUP BY
+Newly added tests:
+- `GroupBySymbolMultiAgg`: GROUP BY + multiple aggregates (count, sum, avg, vwap)
+- `TimeRangeGroupBy`: timestamp range + GROUP BY
 - `OrderByLimit`: ORDER BY + LIMIT (top-N)
-- `TimeRangeBinarySearch`: 이진탐색 코드 경로 검증
-- `OrderByAsc` / `OrderByDesc`: 정렬 방향 확인
-- `MinMaxAgg`: MIN/MAX 집계 검증
+- `TimeRangeBinarySearch`: binary search code path verification
+- `OrderByAsc` / `OrderByDesc`: sort direction verification
+- `MinMaxAgg`: MIN/MAX aggregation verification
 
 ---
 
-## 변경된 파일
+## Changed Files
 
-| 파일 | 변경 내용 |
-|------|-----------|
-| `include/apex/storage/partition_manager.h` | `timestamp_range()`, `overlaps_time_range()` 추가 |
-| `include/apex/sql/executor.h` | `eval_where_ranged()`, `extract_time_range()`, `apply_order_by()` 선언 |
-| `src/sql/executor.cpp` | 새 함수 구현, exec_simple/agg/group_agg 최적화 |
-| `src/cluster/ucx_backend.h` | `#include <stdexcept>` 추가 (컴파일 버그 수정) |
-| `CMakeLists.txt` | `APEX_USE_JIT=OFF`일 때 jit_engine.cpp 제외 |
-| `tests/unit/test_sql.cpp` | 통합 테스트 7개 추가 |
-| `tests/bench/bench_sql.cpp` | 벤치마크 2개 추가 (time range, group by) |
+| File | Changes |
+|------|---------|
+| `include/apex/storage/partition_manager.h` | Added `timestamp_range()`, `overlaps_time_range()` |
+| `include/apex/sql/executor.h` | Declared `eval_where_ranged()`, `extract_time_range()`, `apply_order_by()` |
+| `src/sql/executor.cpp` | Implemented new functions, optimized exec_simple/agg/group_agg |
+| `src/cluster/ucx_backend.h` | Added `#include <stdexcept>` (compilation bug fix) |
+| `CMakeLists.txt` | Exclude jit_engine.cpp when `APEX_USE_JIT=OFF` |
+| `tests/unit/test_sql.cpp` | Added 7 integration tests |
+| `tests/bench/bench_sql.cpp` | Added 2 benchmarks (time range, group by) |
 
 ---
 
-## 다음 작업 (TODO)
+## TODO (Next Work)
 
-- [ ] `COUNT(DISTINCT col)` — HyperLogLog 또는 exact count
-- [ ] 타임스탬프 인덱스: 실제 현재 시각 기반 테스트 추가
-- [ ] GROUP BY 다중 컬럼 지원
-- [ ] HAVING 절 지원
+- [ ] `COUNT(DISTINCT col)` — HyperLogLog or exact count
+- [ ] Timestamp index: add tests based on actual current time
+- [ ] GROUP BY multi-column support
+- [ ] HAVING clause support

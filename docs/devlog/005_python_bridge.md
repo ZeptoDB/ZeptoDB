@@ -1,33 +1,32 @@
 # 005 — Phase D: Python Transpiler Bridge
 
-**날짜:** 2026-03-22  
-**작업자:** 고생이  
-**브랜치:** phase-d/python-bridge  
+**Date:** 2026-03-22
+**Branch:** phase-d/python-bridge
 
 ---
 
-## 개요
+## Overview
 
-Phase D는 퀀트 연구자가 Python에서 APEX-DB를 직접 조작할 수 있는 브릿지 레이어를 구축하는 단계다. 설계 문서(layer4_transpiler_client.md)에 명시된 세 가지 핵심 요구사항을 모두 달성했다:
+Phase D builds the bridge layer allowing quant researchers to manipulate APEX-DB directly from Python. All three core requirements specified in the design document (`layer4_transpiler_client.md`) were achieved:
 
-1. **Zero-copy**: C++ RDB 메모리를 복사 없이 numpy array로 노출
-2. **Lazy Evaluation**: Polars 스타일의 `.collect()` 패러다임
-3. **Python ↔ C++ 바인딩**: pybind11 기반 네이티브 모듈
+1. **Zero-copy**: Expose C++ RDB memory as numpy arrays without copying
+2. **Lazy Evaluation**: `.collect()` paradigm in the style of Polars
+3. **Python to C++ Binding**: pybind11-based native module
 
 ---
 
-## 구현 내용
+## Implementation
 
-### Part 1: pybind11 바인딩 (`src/transpiler/python_binding.cpp`)
+### Part 1: pybind11 Binding (`src/transpiler/python_binding.cpp`)
 
-**선택: pybind11 v3.0.2 (nanobind 대신)**  
-nanobind의 CMake 통합 복잡도와 Amazon Linux 2023 환경의 Python 3.9 조합에서 발생하는 호환성 문제를 피하기 위해 pybind11을 선택했다. 성숙도와 문서화 면에서 실무 선택으로 더 안전하다.
+**Choice: pybind11 v3.0.2 (over nanobind)**
+Chose pybind11 to avoid nanobind's complex CMake integration and compatibility issues with the Python 3.9 / Amazon Linux 2023 environment. More mature and better documented — a safer practical choice.
 
-**핵심 구현: Zero-copy `get_column()`**
+**Core implementation: Zero-copy `get_column()`**
 
 ```cpp
-// RDB ArenaAllocator가 관리하는 raw ptr을 numpy가 직접 참조
-py::capsule base(raw, [](void*) { /* 소유권 없음 */ });
+// numpy directly references the raw ptr managed by RDB ArenaAllocator
+py::capsule base(raw, [](void*) { /* no ownership */ });
 return py::array_t<int64_t>(
     { static_cast<py::ssize_t>(nrows) },
     { sizeof(int64_t) },
@@ -36,150 +35,150 @@ return py::array_t<int64_t>(
 );
 ```
 
-`py::capsule`에 no-op 소멸자를 등록해서 numpy가 메모리를 해제하지 않게 막았다. 실제 메모리 소유권은 `ApexPipeline` → `ArenaAllocator`가 유지한다. 결과 배열의 `OWNDATA=False`로 zero-copy 검증 가능.
+Registered a no-op destructor in `py::capsule` to prevent numpy from freeing the memory. Actual memory ownership remains with `ApexPipeline` -> `ArenaAllocator`. Zero-copy is verified by `OWNDATA=False` on the result array.
 
-**drain() race condition 해결**  
-백그라운드 drain 스레드와 `drain_sync()` 동시 실행 시 `ColumnVector::append()` race가 발생했다. 해결책:
+**Resolving the drain() race condition**
+A race in `ColumnVector::append()` occurred when the background drain thread and `drain_sync()` ran concurrently. Fix:
 
 ```cpp
-// ticks_stored 카운터가 ticks_ingested에 따라잡을 때까지 폴링
+// Poll until ticks_stored counter catches up to ticks_ingested
 while (...) {
     if (stored >= target) break;
     sleep(1ms);
 }
 ```
 
-`drain_sync()` 직접 호출을 완전히 제거하고 백그라운드 스레드에 전적으로 위임했다.
+Completely removed direct `drain_sync()` calls and delegated entirely to the background thread.
 
 ---
 
 ### Part 2: Lazy DSL (`src/transpiler/apex_py/dsl.py`)
 
-Polars `.lazy()` → `.collect()` 패러다임을 Python 순수 구현으로 재현했다.
+Reproduced the Polars `.lazy()` -> `.collect()` paradigm in pure Python.
 
-**표현식 트리 구조:**
+**Expression tree structure:**
 
 ```
 DataFrame(db, symbol=1)
   └── FilteredFrame (df[df['price'] > 15000])
         └── FilteredColumn (['volume'])
-              └── _FilterSumNode → filter_sum(symbol, 'volume', 15000)
-                    └── LazyResult (collect() 전까지 미실행)
+              └── _FilterSumNode -> filter_sum(symbol, 'volume', 15000)
+                    └── LazyResult (not executed until collect())
 ```
 
-**LazyResult 캐싱:**
+**LazyResult caching:**
 
 ```python
 result = df[df['price'] > 15000]['volume'].sum()
-v1 = result.collect()  # C++ 실행
-v2 = result.collect()  # 캐시 히트, 재실행 없음
+v1 = result.collect()  # C++ execution
+v2 = result.collect()  # cache hit, no re-execution
 ```
 
-**지원 연산:**
-- `df.vwap()` → `query_vwap()`
-- `df.count()` → `query_count()`
-- `df[condition]['col'].sum()` → `query_filter_sum()`
-- `df['col'].collect()` → `get_column()` (zero-copy numpy)
+**Supported operations:**
+- `df.vwap()` -> `query_vwap()`
+- `df.count()` -> `query_count()`
+- `df[condition]['col'].sum()` -> `query_filter_sum()`
+- `df['col'].collect()` -> `get_column()` (zero-copy numpy)
 
 ---
 
-### Part 3: CMake 통합
+### Part 3: CMake Integration
 
-`CMAKE_POSITION_INDEPENDENT_CODE ON` 추가가 핵심이었다. 정적 라이브러리들이 `-fPIC` 없이 컴파일되어 있어서 `.so` 링크 시 `R_X86_64_32S relocation` 오류가 발생했다. 전역 PIC 설정으로 해결.
+The key was adding `CMAKE_POSITION_INDEPENDENT_CODE ON`. Static libraries were compiled without `-fPIC`, causing `R_X86_64_32S relocation` errors during `.so` linking. Fixed with a global PIC setting.
 
 ```cmake
-# Python .so 링크를 위해 모든 정적 라이브러리에 -fPIC 적용
+# Apply -fPIC to all static libraries for Python .so linking
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 ```
 
-pybind11 CMake dir은 `python3 -m pybind11 --cmakedir`로 동적으로 탐색.
+pybind11 CMake dir is dynamically discovered via `python3 -m pybind11 --cmakedir`.
 
 ---
 
-### Part 4: 테스트 결과
+### Part 4: Test Results
 
 ```
 31 passed in 14.58s
 ```
 
-전체 31개 Python 테스트 통과. C++ 테스트 29/29도 유지.
+All 31 Python tests passed. C++ tests 29/29 also maintained.
 
-**테스트 커버리지:**
-- `TestBasicPipeline` (8): 단건 ingest, VWAP, filter_sum, count
-- `TestBatchIngest` (4): list/numpy 배치, 에러 처리
-- `TestZeroCopy` (6): numpy view 검증, OWNDATA=False 확인
-- `TestStats` (3): stats dict 구조
-- `TestLazyDSL` (8): 전체 DSL 체인, 캐싱, lazy value
-- `TestMultiSymbol` (2): symbol 격리성
+**Test coverage:**
+- `TestBasicPipeline` (8): single ingest, VWAP, filter_sum, count
+- `TestBatchIngest` (4): list/numpy batch, error handling
+- `TestZeroCopy` (6): numpy view verification, OWNDATA=False check
+- `TestStats` (3): stats dict structure
+- `TestLazyDSL` (8): full DSL chain, caching, lazy values
+- `TestMultiSymbol` (2): symbol isolation
 
 ---
 
-### Part 5: 벤치마크 결과 (Polars v1.36.1 vs APEX-DB, N=100K rows)
+### Part 5: Benchmark Results (Polars v1.36.1 vs APEX-DB, N=100K rows)
 
-| 쿼리 | APEX | Polars Lazy | Speedup |
-|------|------|-------------|---------|
-| VWAP | **56.9μs** | 228.7μs | **4.0x** |
-| Filter+Sum | **66.9μs** | 98.8μs | **1.5x** |
-| COUNT | **716ns** | 26.3μs | **36.7x** |
+| Query | APEX | Polars Lazy | Speedup |
+|-------|------|-------------|---------|
+| VWAP | **56.9us** | 228.7us | **4.0x** |
+| Filter+Sum | **66.9us** | 98.8us | **1.5x** |
+| COUNT | **716ns** | 26.3us | **36.7x** |
 | get_column | **522ns** | 760ns (Series) | **1.5x** |
-| DSL chain | **66.1μs** | 96.8μs | **1.5x** |
+| DSL chain | **66.1us** | 96.8us | **1.5x** |
 
-**인상적인 결과:**
-- COUNT가 Polars 대비 **37배** 빠름: 파티션 행 수를 집계만 하면 되므로 실제로 스캔 없음
-- VWAP **4배** 우세: SIMD 8-way 언롤 + `__int128` 정수 누산기의 위력
-- Zero-copy `get_column()`: numpy OWNDATA=False 확인, 실제 메모리 복사 0
+**Notable results:**
+- COUNT is **37x** faster than Polars: only needs to aggregate partition row counts — no actual scan
+- VWAP **4x** faster: power of SIMD 8-way unroll + `__int128` integer accumulator
+- Zero-copy `get_column()`: numpy OWNDATA=False confirmed, zero actual memory copies
 
-**Polars Eager vs Lazy:**  
-Polars Eager VWAP (82.2μs)가 Lazy (228.7μs)보다 빠름. 소규모 데이터셋에서 Lazy의 쿼리 플래닝 오버헤드가 오히려 불리하게 작용한 것.
+**Polars Eager vs Lazy:**
+Polars Eager VWAP (82.2us) is faster than Lazy (228.7us). On small datasets, Lazy's query planning overhead is actually a disadvantage.
 
 ---
 
-## 트러블슈팅 기록
+## Troubleshooting Notes
 
-### 1. pybind11 3.0에서 `array::c_contiguous` 제거됨
-pybind11 2.x에 있던 `py::array::c_contiguous` 상수가 3.0에서 제거됨.  
-→ `py::array::forcecast`만 사용하도록 수정.
+### 1. `array::c_contiguous` removed in pybind11 3.0
+The `py::array::c_contiguous` constant from pybind11 2.x was removed in 3.0.
+Fixed by using only `py::array::forcecast`.
 
-### 2. `-fPIC` 없는 정적 라이브러리 링크 오류
+### 2. Link error with static libraries missing `-fPIC`
 ```
 relocation R_X86_64_32S against `.rodata.str1.1' can not be used when making a shared object
 ```
-→ `set(CMAKE_POSITION_INDEPENDENT_CODE ON)` 전역 설정으로 해결.
+Fixed with `set(CMAKE_POSITION_INDEPENDENT_CODE ON)` global setting.
 
-### 3. drain() race condition (백그라운드 스레드 vs drain_sync)
-drain_sync()와 백그라운드 스레드가 동시에 `ColumnVector::append()`를 호출해서 데이터 누락 발생 (N개 저장했는데 N-1 또는 N-2 반환).  
-→ `drain_sync()` 제거. `ticks_stored >= ticks_ingested` 조건 폴링으로 교체.
+### 3. drain() race condition (background thread vs drain_sync)
+`drain_sync()` and background thread both calling `ColumnVector::append()` concurrently caused data loss (stored N-1 or N-2 instead of N).
+Removed `drain_sync()`. Replaced with polling for `ticks_stored >= ticks_ingested` condition.
 
-### 4. Arena exhausted (벤치마크 N=100K)
-파티션 당 아레나 32MB, ColumnVector의 초기 용량 확장 전략으로 100K rows 연속 저장 시 메모리 부족 로그 발생.  
-→ 실제 데이터는 정상 저장됨 (append 실패 시 fallback 없이 그냥 skip). 벤치마크에서 50K 청크 단위 인제스트로 회피. 프로덕션에서는 아레나 크기를 충분히 키워야 함.
+### 4. Arena exhausted (benchmark N=100K)
+32MB arena per partition; continuous storage of 100K rows triggered out-of-memory log due to ColumnVector initial capacity expansion strategy.
+Actual data stored correctly (no fallback on append failure). Workaround in benchmark: 50K chunk ingest. In production, the arena size must be set large enough.
 
 ---
 
-## 파일 목록
+## File List
 
 ```
 src/transpiler/
-  python_binding.cpp       # pybind11 C++ 모듈 (apex.so)
+  python_binding.cpp       # pybind11 C++ module (apex.so)
   apex_py/
-    dsl.py                 # Polars 스타일 Lazy DSL
+    dsl.py                 # Polars-style Lazy DSL
 
 tests/
-  test_python.py           # Python 바인딩 테스트 (31개)
+  test_python.py           # Python binding tests (31 tests)
   bench/
-    bench_python.py        # Polars vs APEX 벤치마크
+    bench_python.py        # Polars vs APEX benchmark
 
 docs/devlog/
-  005_python_bridge.md     # 이 파일
+  005_python_bridge.md     # this file
 
-CMakeLists.txt             # pybind11 통합, -fPIC 전역 설정
+CMakeLists.txt             # pybind11 integration, -fPIC global setting
 ```
 
 ---
 
-## 다음 단계 (Phase D 후속)
+## Next Steps (Phase D follow-up)
 
-- **FlatBuffers AST 직렬화**: 복잡한 쿼리 트리를 C++로 직렬화 전송
-- **Arrow C-Data Interface**: `get_column()` 반환값을 직접 Polars DataFrame으로 변환
-- **Async Pipeline**: `asyncio` 통합, `await db.drain()`
-- **아레나 크기 자동 조정**: 파티션 데이터 크기 예측 기반 동적 확장
+- **FlatBuffers AST serialization**: Serialize complex query trees to C++ for transmission
+- **Arrow C-Data Interface**: Convert `get_column()` return value directly to Polars DataFrame
+- **Async Pipeline**: `asyncio` integration, `await db.drain()`
+- **Arena auto-sizing**: Dynamic expansion based on partition data size prediction

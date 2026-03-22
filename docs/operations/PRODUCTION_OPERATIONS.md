@@ -1,167 +1,167 @@
-# APEX-DB 프로덕션 운영 가이드
+# APEX-DB Production Operations Guide
 
-## 목차
-- [1. 초기 설치](#1-초기-설치)
-- [2. 모니터링](#2-모니터링)
-- [3. 로깅](#3-로깅)
-- [4. 백업 & 복구](#4-백업--복구)
-- [5. 자동화](#5-자동화)
-- [6. 트러블슈팅](#6-트러블슈팅)
+## Table of Contents
+- [1. Initial Setup](#1-initial-setup)
+- [2. Monitoring](#2-monitoring)
+- [3. Logging](#3-logging)
+- [4. Backup & Recovery](#4-backup--recovery)
+- [5. Automation](#5-automation)
+- [6. Troubleshooting](#6-troubleshooting)
 
 ---
 
-## 1. 초기 설치
+## 1. Initial Setup
 
-### 1.1 서비스 설치
+### 1.1 Service Installation
 
 ```bash
-# 1. APEX-DB 빌드
+# 1. Build APEX-DB
 cd /home/ec2-user/apex-db
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 
-# 2. 프로덕션 서비스 설치 (root 권한 필요)
+# 2. Install production service (requires root)
 cd ..
 sudo ./scripts/install_service.sh
 ```
 
-설치 내용:
-- ✅ `apex` 사용자 생성
-- ✅ 디렉토리: `/opt/apex-db`, `/data/apex-db`, `/var/log/apex-db`
-- ✅ systemd 서비스: `apex-db.service`
-- ✅ cron 작업: 백업 (02:00), EOD (18:00 평일)
-- ✅ 로그 로테이션: 30일 보관
+Installation includes:
+- ✅ `apex` user created
+- ✅ Directories: `/opt/apex-db`, `/data/apex-db`, `/var/log/apex-db`
+- ✅ systemd service: `apex-db.service`
+- ✅ Cron jobs: backup (02:00), EOD (18:00 weekdays)
+- ✅ Log rotation: 30-day retention
 
-### 1.2 서비스 시작
+### 1.2 Start Service
 
 ```bash
-# 서비스 시작
+# Start service
 sudo systemctl start apex-db
 
-# 상태 확인
+# Check status
 sudo systemctl status apex-db
 
-# 로그 확인
+# View logs
 sudo journalctl -u apex-db -f
 ```
 
-### 1.3 헬스체크
+### 1.3 Health Check
 
 ```bash
-# Liveness probe (서버 살아있는지)
+# Liveness probe (server alive?)
 curl http://localhost:8123/health
 # {"status":"healthy"}
 
-# Readiness probe (쿼리 받을 준비됐는지)
+# Readiness probe (ready to serve queries?)
 curl http://localhost:8123/ready
 # {"status":"ready"}
 
-# 통계
+# Statistics
 curl http://localhost:8123/stats
 ```
 
 ---
 
-## 2. 모니터링
+## 2. Monitoring
 
-### 2.1 Prometheus + Grafana 설치
+### 2.1 Prometheus + Grafana Setup
 
 ```bash
-# Docker Compose로 모니터링 스택 실행
+# Run monitoring stack with Docker Compose
 cd /home/ec2-user/apex-db/monitoring
 docker-compose up -d
 
-# 서비스 확인
+# Check services
 docker-compose ps
 ```
 
-**접속:**
+**Access:**
 - Grafana: http://localhost:3000 (admin/apex-admin-2026)
 - Prometheus: http://localhost:9090
 
-### 2.2 Grafana 대시보드 설정
+### 2.2 Grafana Dashboard Configuration
 
-1. Grafana 로그인
+1. Log in to Grafana
 2. Configuration → Data Sources → Add Prometheus
    - URL: `http://prometheus:9090`
 3. Dashboards → Import
-   - 파일: `grafana-dashboard.json`
+   - File: `grafana-dashboard.json`
 
-### 2.3 메트릭 확인
+### 2.3 Check Metrics
 
 ```bash
-# Prometheus 메트릭 확인
+# Check Prometheus metrics
 curl http://localhost:8123/metrics
 ```
 
-**주요 메트릭:**
+**Key metrics:**
 
-| 메트릭 | 타입 | 설명 |
-|--------|------|------|
-| `apex_ticks_ingested_total` | counter | 총 인제스션 틱 수 |
-| `apex_ticks_stored_total` | counter | 저장된 틱 수 |
-| `apex_ticks_dropped_total` | counter | 드롭된 틱 수 |
-| `apex_queries_executed_total` | counter | 실행된 쿼리 수 |
-| `apex_rows_scanned_total` | counter | 스캔된 행 수 |
-| `apex_server_up` | gauge | 서버 실행 상태 (0/1) |
-| `apex_server_ready` | gauge | Readiness 상태 (0/1) |
+| Metric | Type | Description |
+|--------|------|-------------|
+| `apex_ticks_ingested_total` | counter | Total ingested ticks |
+| `apex_ticks_stored_total` | counter | Stored ticks |
+| `apex_ticks_dropped_total` | counter | Dropped ticks |
+| `apex_queries_executed_total` | counter | Executed queries |
+| `apex_rows_scanned_total` | counter | Scanned rows |
+| `apex_server_up` | gauge | Server running state (0/1) |
+| `apex_server_ready` | gauge | Readiness state (0/1) |
 
-### 2.4 알림 설정
+### 2.4 Alert Configuration
 
-Alertmanager 설정 편집:
+Edit Alertmanager configuration:
 
 ```bash
 vi /home/ec2-user/apex-db/monitoring/alertmanager.yml
 ```
 
-**Slack Webhook 설정:**
+**Slack Webhook setup:**
 1. Slack → Apps → Incoming Webhooks
-2. Webhook URL 복사
-3. `alertmanager.yml`에서 `YOUR_SLACK_WEBHOOK_URL` 교체
+2. Copy Webhook URL
+3. Replace `YOUR_SLACK_WEBHOOK_URL` in `alertmanager.yml`
 
-**PagerDuty 설정:**
+**PagerDuty setup:**
 1. PagerDuty → Service → Integrations → Prometheus
-2. Integration Key 복사
-3. `alertmanager.yml`에서 `YOUR_PAGERDUTY_SERVICE_KEY` 교체
+2. Copy Integration Key
+3. Replace `YOUR_PAGERDUTY_SERVICE_KEY` in `alertmanager.yml`
 
 ---
 
-## 3. 로깅
+## 3. Logging
 
-### 3.1 구조화된 로깅
+### 3.1 Structured Logging
 
-APEX-DB는 JSON 형식의 구조화된 로그를 생성합니다.
+APEX-DB produces structured logs in JSON format.
 
-**로그 위치:**
-- 파일: `/var/log/apex-db/apex-db.log`
+**Log locations:**
+- File: `/var/log/apex-db/apex-db.log`
 - systemd: `journalctl -u apex-db`
 
-**로그 레벨:**
-- `TRACE` - 디버깅 상세
-- `DEBUG` - 개발 정보
-- `INFO` - 일반 정보
-- `WARN` - 경고
-- `ERROR` - 에러
-- `CRITICAL` - 치명적 에러
+**Log levels:**
+- `TRACE` - Detailed debug
+- `DEBUG` - Development info
+- `INFO` - General info
+- `WARN` - Warnings
+- `ERROR` - Errors
+- `CRITICAL` - Fatal errors
 
-### 3.2 로그 확인
+### 3.2 Viewing Logs
 
 ```bash
-# 최근 로그 (journalctl)
+# Recent logs (journalctl)
 sudo journalctl -u apex-db -n 100
 
-# 실시간 로그
+# Live logs
 sudo journalctl -u apex-db -f
 
-# JSON 로그 파일
+# JSON log file
 sudo tail -f /var/log/apex-db/apex-db.log | jq .
 
-# 에러만 필터링
+# Filter errors only
 sudo journalctl -u apex-db -p err
 ```
 
-### 3.3 로그 예시
+### 3.3 Log Example
 
 ```json
 {
@@ -173,291 +173,291 @@ sudo journalctl -u apex-db -p err
 }
 ```
 
-### 3.4 로그 로테이션
+### 3.4 Log Rotation
 
-자동 설정됨 (`/etc/logrotate.d/apex-db`):
-- 일별 로테이션
-- 30일 보관
-- 압축 저장
+Automatically configured (`/etc/logrotate.d/apex-db`):
+- Daily rotation
+- 30-day retention
+- Compressed storage
 
 ---
 
-## 4. 백업 & 복구
+## 4. Backup & Recovery
 
-### 4.1 자동 백업
+### 4.1 Automatic Backup
 
-**cron 설정 (자동 실행):**
+**Cron configuration (auto-runs):**
 ```
 0 2 * * * /opt/apex-db/scripts/backup.sh
 ```
 
-**수동 백업:**
+**Manual backup:**
 ```bash
 sudo -u apex /opt/apex-db/scripts/backup.sh
 ```
 
-**백업 내용:**
+**Backup contents:**
 - HDB (Historical Database)
 - WAL (Write-Ahead Log)
-- Config 파일
-- 메타데이터
+- Config files
+- Metadata
 
-**백업 위치:**
-- 로컬: `/backup/apex-db/apex-db-backup-YYYYMMDD_HHMMSS.tar.gz`
-- S3: `s3://${S3_BUCKET}/backups/` (옵션)
+**Backup location:**
+- Local: `/backup/apex-db/apex-db-backup-YYYYMMDD_HHMMSS.tar.gz`
+- S3: `s3://${S3_BUCKET}/backups/` (optional)
 
-### 4.2 S3 백업 설정
+### 4.2 S3 Backup Configuration
 
 ```bash
-# 환경 변수 설정
+# Set environment variables
 export APEX_S3_BACKUP_BUCKET="my-apex-backups"
 export AWS_REGION="us-east-1"
 
-# IAM 권한 필요:
+# Required IAM permissions:
 # - s3:PutObject
 # - s3:GetObject
 # - s3:ListBucket
 # - s3:DeleteObject
 ```
 
-### 4.3 재해 복구
+### 4.3 Disaster Recovery
 
-**로컬 백업 복원:**
+**Restore from local backup:**
 ```bash
-# 1. APEX-DB 중지
+# 1. Stop APEX-DB
 sudo systemctl stop apex-db
 
-# 2. 백업 복원
+# 2. Restore backup
 sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000
 
-# 3. 서비스 재시작
+# 3. Restart service
 sudo systemctl start apex-db
 ```
 
-**S3 백업 복원:**
+**Restore from S3 backup:**
 ```bash
 sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000 --from-s3
 ```
 
-**WAL replay 건너뛰기:**
+**Skip WAL replay:**
 ```bash
 sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000 --skip-wal-replay
 ```
 
-### 4.4 백업 보관 정책
+### 4.4 Backup Retention Policy
 
-**로컬:**
-- 보관 기간: 30일 (기본)
-- 설정: `BACKUP_RETENTION_DAYS` 환경 변수
+**Local:**
+- Retention period: 30 days (default)
+- Configure via `BACKUP_RETENTION_DAYS` environment variable
 
 **S3:**
-- Lifecycle policy 권장
-- STANDARD_IA (Infrequent Access) 스토리지 클래스
+- Lifecycle policy recommended
+- STANDARD_IA (Infrequent Access) storage class
 
 ---
 
-## 5. 자동화
+## 5. Automation
 
-### 5.1 systemd 서비스
+### 5.1 systemd Service
 
-**서비스 관리:**
+**Service management:**
 ```bash
-# 시작
+# Start
 sudo systemctl start apex-db
 
-# 중지
+# Stop
 sudo systemctl stop apex-db
 
-# 재시작
+# Restart
 sudo systemctl restart apex-db
 
-# 상태
+# Status
 sudo systemctl status apex-db
 
-# 부팅 시 자동 시작
+# Enable auto-start on boot
 sudo systemctl enable apex-db
 ```
 
-**서비스 특징:**
-- ✅ 자동 재시작 (실패 시 5초 후)
-- ✅ CPU affinity (코어 0-7)
-- ✅ OOM 방지 (우선순위 -900)
-- ✅ 리소스 제한 (파일 1M, 메모리 무제한)
+**Service features:**
+- ✅ Auto-restart (5 seconds after failure)
+- ✅ CPU affinity (cores 0-7)
+- ✅ OOM protection (priority -900)
+- ✅ Resource limits (1M files, unlimited memory)
 
-### 5.2 EOD (End-of-Day) 프로세스
+### 5.2 EOD (End-of-Day) Process
 
-**자동 실행 (cron):**
+**Auto-runs (cron):**
 ```
 0 18 * * 1-5 /opt/apex-db/scripts/eod_process.sh
 ```
 
-**수동 실행:**
+**Manual run:**
 ```bash
 sudo -u apex /opt/apex-db/scripts/eod_process.sh
 ```
 
-**EOD 작업 내용:**
-1. RDB → HDB 플러시
-2. 통계 수집
-3. WAL 정리 (7일 압축, 30일 삭제)
-4. 자동 백업
-5. 디스크 사용량 체크
+**EOD tasks:**
+1. RDB → HDB flush
+2. Statistics collection
+3. WAL cleanup (compress after 7 days, delete after 30 days)
+4. Automatic backup
+5. Disk usage check
 
-**로그:**
+**Logs:**
 ```bash
 tail -f /var/log/apex-db/eod.log
 ```
 
-### 5.3 자동 튜닝
+### 5.3 Auto Tuning
 
-**베어메탈 튜닝:**
+**Bare metal tuning:**
 ```bash
 sudo /opt/apex-db/scripts/tune_bare_metal.sh
 ```
 
-튜닝 항목:
+Tuning items:
 - CPU governor → performance
-- Turbo Boost 활성화
+- Turbo Boost enabled
 - Hugepages 32GB
 - IRQ affinity
-- 네트워크 스택
+- Network stack
 
 ---
 
-## 6. 트러블슈팅
+## 6. Troubleshooting
 
-### 6.1 서비스가 시작 안됨
+### 6.1 Service Won't Start
 
 ```bash
-# 로그 확인
+# Check logs
 sudo journalctl -u apex-db -n 100
 
-# 설정 파일 확인
+# Check config file
 cat /opt/apex-db/config.yaml
 
-# 포트 충돌 확인
+# Check port conflict
 sudo lsof -i :8123
 
-# 권한 확인
+# Check permissions
 ls -la /data/apex-db
 ```
 
-### 6.2 높은 틱 드롭률
+### 6.2 High Tick Drop Rate
 
-**원인:**
-- Ring buffer 부족
-- CPU 오버로드
-- 디스크 I/O 병목
+**Causes:**
+- Ring buffer too small
+- CPU overload
+- Disk I/O bottleneck
 
-**해결:**
+**Resolution:**
 ```bash
-# 1. 메트릭 확인
+# 1. Check metrics
 curl http://localhost:8123/metrics | grep dropped
 
-# 2. CPU 사용률 확인
+# 2. Check CPU usage
 top -u apex
 
-# 3. Ring buffer 크기 증가 (config.yaml)
-ring_buffer_size: 1048576  # 기본 524288
+# 3. Increase ring buffer size (config.yaml)
+ring_buffer_size: 1048576  # default 524288
 
-# 4. 재시작
+# 4. Restart
 sudo systemctl restart apex-db
 ```
 
-### 6.3 쿼리 느림
+### 6.3 Slow Queries
 
 ```bash
-# 1. 스캔 행 수 확인
+# 1. Check rows scanned
 curl http://localhost:8123/stats
 
-# 2. 쿼리 실행 계획 확인 (EXPLAIN)
+# 2. Check query execution plan (EXPLAIN)
 curl -X POST http://localhost:8123/ -d "EXPLAIN SELECT ..."
 
-# 3. HDB 압축 상태 확인
+# 3. Check HDB compression status
 du -sh /data/apex-db/hdb
 
-# 4. 병렬 쿼리 활성화 확인 (config.yaml)
+# 4. Verify parallel query enabled (config.yaml)
 query_threads: 8
 ```
 
-### 6.4 디스크 가득참
+### 6.4 Disk Full
 
 ```bash
-# 1. 사용량 확인
+# 1. Check usage
 df -h /data/apex-db
 
-# 2. 오래된 HDB 정리
+# 2. Clean old HDB
 find /data/apex-db/hdb -type d -mtime +90 -exec rm -rf {} \;
 
-# 3. WAL 압축
+# 3. Compress WAL
 find /data/apex-db/wal -name "*.wal" -mtime +7 -exec gzip {} \;
 
-# 4. 백업 정리
+# 4. Clean backups
 find /backup/apex-db -name "*.tar.gz" -mtime +30 -delete
 ```
 
-### 6.5 메모리 부족
+### 6.5 Out of Memory
 
 ```bash
-# 1. 메모리 사용량 확인
+# 1. Check memory usage
 free -h
 pmap -x $(pgrep apex-server)
 
-# 2. OOM killer 로그
+# 2. OOM killer logs
 dmesg | grep -i "out of memory"
 
-# 3. Hugepages 확인
+# 3. Check hugepages
 cat /proc/meminfo | grep Huge
 
-# 4. 프로세스 재시작 (메모리 정리)
+# 4. Restart process (clear memory)
 sudo systemctl restart apex-db
 ```
 
-### 6.6 Prometheus 메트릭 안보임
+### 6.6 Prometheus Metrics Not Visible
 
 ```bash
-# 1. /metrics 엔드포인트 확인
+# 1. Check /metrics endpoint
 curl http://localhost:8123/metrics
 
-# 2. Prometheus 타겟 확인
+# 2. Check Prometheus targets
 curl http://localhost:9090/api/v1/targets | jq .
 
-# 3. Prometheus 로그
+# 3. Prometheus logs
 docker logs apex-prometheus
 
-# 4. 방화벽 확인
+# 4. Check firewall
 sudo iptables -L -n | grep 8123
 ```
 
 ---
 
-## 7. 성능 최적화
+## 7. Performance Optimization
 
-### 7.1 베어메탈 환경
+### 7.1 Bare Metal Environment
 
 ```bash
 # CPU isolation (GRUB)
 vi /etc/default/grub
 # GRUB_CMDLINE_LINUX="isolcpus=0-7 nohz_full=0-7"
 
-# 자동 튜닝
+# Auto tuning
 sudo /opt/apex-db/scripts/tune_bare_metal.sh
 
-# NUMA 확인
+# Check NUMA topology
 numactl --hardware
 ```
 
-### 7.2 클라우드 환경
+### 7.2 Cloud Environment
 
-**AWS 최적화:**
-- 인스턴스: `c7g.16xlarge` (64 vCPU, 128GB RAM)
-- 스토리지: `io2` EBS (64K IOPS)
-- 네트워크: Enhanced Networking (ENA)
+**AWS optimization:**
+- Instance: `c7g.16xlarge` (64 vCPU, 128GB RAM)
+- Storage: `io2` EBS (64K IOPS)
+- Network: Enhanced Networking (ENA)
 - Placement Group: `cluster`
 
-**Kubernetes 최적화:**
+**Kubernetes optimization:**
 ```yaml
-# 리소스 할당
+# Resource allocation
 resources:
   requests:
     cpu: "32"
@@ -473,12 +473,12 @@ nodeSelector:
 
 ---
 
-## 8. 보안
+## 8. Security
 
-### 8.1 네트워크 보안
+### 8.1 Network Security
 
 ```bash
-# 방화벽 설정 (iptables)
+# Firewall configuration (iptables)
 sudo iptables -A INPUT -p tcp --dport 8123 -s 10.0.0.0/8 -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 8123 -j DROP
 
@@ -486,7 +486,7 @@ sudo iptables -A INPUT -p tcp --dport 8123 -j DROP
 sudo ufw allow from 10.0.0.0/8 to any port 8123
 ```
 
-### 8.2 TLS 설정
+### 8.2 TLS Configuration
 
 ```yaml
 # config.yaml
@@ -497,7 +497,7 @@ server:
     key_file: /etc/apex-db/server.key
 ```
 
-### 8.3 인증
+### 8.3 Authentication
 
 ```yaml
 # config.yaml
@@ -511,13 +511,13 @@ auth:
 
 ---
 
-## 9. 연락처
+## 9. Contact
 
-**문제 발생 시:**
+**For issues:**
 - GitHub Issues: https://github.com/apex-db/apex-db/issues
 - Slack: #apex-db-support
 - Email: support@apex-db.io
 
-**긴급 장애:**
+**Critical incidents:**
 - PagerDuty: APEX-DB Critical Alerts
 - On-call: +1-XXX-XXX-XXXX

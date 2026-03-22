@@ -35,6 +35,8 @@ option(APEX_USE_UCX        "Enable UCX (RDMA/CXL)"      ON)
 option(APEX_USE_JIT        "Enable LLVM JIT engine"      ON)
 option(APEX_USE_HIGHWAY    "Enable Highway SIMD"         ON)
 option(APEX_USE_LZ4        "Enable LZ4 compression"     ON)
+option(APEX_USE_PARQUET    "Enable Apache Parquet output" ON)
+option(APEX_USE_S3         "Enable AWS S3 upload"        ON)
 
 # ============================================================================
 # Compiler Flags
@@ -96,6 +98,37 @@ endif()
 
 # --- NUMA ---
 find_library(NUMA_LIB numa REQUIRED)
+
+# --- Apache Arrow + Parquet (optional) ---
+if(APEX_USE_PARQUET)
+    find_package(Arrow CONFIG QUIET)
+    find_package(Parquet CONFIG QUIET)
+    if(Arrow_FOUND AND Parquet_FOUND)
+        message(STATUS "Arrow: ${Arrow_VERSION}, Parquet: ${Parquet_VERSION} (Parquet 활성화)")
+    else()
+        pkg_check_modules(ARROW IMPORTED_TARGET arrow QUIET)
+        pkg_check_modules(PARQUET IMPORTED_TARGET parquet QUIET)
+        if(ARROW_FOUND AND PARQUET_FOUND)
+            message(STATUS "Arrow (pkg-config): ${ARROW_VERSION} (Parquet 활성화)")
+        else()
+            message(STATUS "Arrow/Parquet: 없음 — Parquet 저장 비활성화")
+            message(STATUS "  설치: sudo dnf install -y arrow-devel parquet-devel")
+            set(APEX_USE_PARQUET OFF)
+        endif()
+    endif()
+endif()
+
+# --- AWS SDK C++ S3 (optional) ---
+if(APEX_USE_S3)
+    find_package(AWSSDK CONFIG COMPONENTS s3 QUIET)
+    if(AWSSDK_FOUND)
+        message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (S3 업로드 활성화)")
+    else()
+        message(STATUS "AWS SDK C++: 없음 — S3 업로드 비활성화")
+        message(STATUS "  설치: sudo dnf install -y aws-sdk-cpp-s3")
+        set(APEX_USE_S3 OFF)
+    endif()
+endif()
 
 # --- LZ4 (optional) ---
 if(APEX_USE_LZ4)
@@ -159,6 +192,8 @@ add_library(apex_storage STATIC
     src/storage/hdb_writer.cpp
     src/storage/hdb_reader.cpp
     src/storage/flush_manager.cpp
+    src/storage/parquet_writer.cpp
+    src/storage/s3_sink.cpp
 )
 target_include_directories(apex_storage PUBLIC
     ${CMAKE_SOURCE_DIR}/include
@@ -173,6 +208,18 @@ endif()
 if(APEX_USE_LZ4)
     target_link_libraries(apex_storage PUBLIC PkgConfig::LZ4)
     target_compile_definitions(apex_storage PUBLIC APEX_HDB_FORCE_LZ4=1)
+endif()
+if(APEX_USE_PARQUET)
+    if(Arrow_FOUND AND Parquet_FOUND)
+        target_link_libraries(apex_storage PUBLIC Arrow::arrow_shared Parquet::parquet_shared)
+    elseif(ARROW_FOUND AND PARQUET_FOUND)
+        target_link_libraries(apex_storage PUBLIC PkgConfig::ARROW PkgConfig::PARQUET)
+    endif()
+    target_compile_definitions(apex_storage PUBLIC APEX_PARQUET_ENABLED=1)
+endif()
+if(APEX_USE_S3)
+    target_link_libraries(apex_storage PUBLIC ${AWSSDK_LINK_LIBRARIES})
+    target_compile_definitions(apex_storage PUBLIC APEX_S3_ENABLED=1)
 endif()
 
 # --- Layer 2: Ingestion (Tick Plant) ---
@@ -562,5 +609,7 @@ message(STATUS "  UCX (RDMA):    ${APEX_USE_UCX}")
 message(STATUS "  Highway SIMD:  ${APEX_USE_HIGHWAY}")
 message(STATUS "  LLVM JIT:      ${APEX_USE_JIT}")
 message(STATUS "  LZ4:           ${APEX_USE_LZ4}")
+message(STATUS "  Parquet:       ${APEX_USE_PARQUET}")
+message(STATUS "  S3 Upload:     ${APEX_USE_S3}")
 message(STATUS "  Tests:         ${APEX_BUILD_TESTS}")
 message(STATUS "=================================")

@@ -6,6 +6,7 @@
 
 #include <bit>
 #include <chrono>
+#include <filesystem>
 
 namespace apex::storage {
 
@@ -19,10 +20,27 @@ FlushManager::FlushManager(PartitionManager& pm,
     , writer_(writer)
     , config_(config)
 {
-    APEX_INFO("FlushManager 초기화: threshold={:.0f}%, interval={}ms, compression={}",
+    // Parquet writer 초기화 (필요 시)
+    if (config_.output_format == HDBOutputFormat::PARQUET ||
+        config_.output_format == HDBOutputFormat::BOTH) {
+        parquet_writer_ = std::make_unique<ParquetWriter>(config_.parquet_config);
+    }
+
+    // S3 sink 초기화 (필요 시)
+    if (config_.enable_s3_upload && !config_.s3_config.bucket.empty()) {
+        s3_sink_ = std::make_unique<S3Sink>(config_.s3_config);
+    } else if (config_.enable_s3_upload) {
+        APEX_WARN("FlushManager: S3 업로드 활성화됐지만 bucket이 비어있음 — 비활성화");
+    }
+
+    APEX_INFO("FlushManager 초기화: threshold={:.0f}%, interval={}ms, "
+              "compression={}, format={}, s3={}",
               config_.memory_threshold * 100.0,
               config_.check_interval_ms,
-              config_.enable_compression ? "LZ4" : "OFF");
+              config_.enable_compression ? "LZ4" : "OFF",
+              config_.output_format == HDBOutputFormat::BINARY   ? "BINARY"  :
+              config_.output_format == HDBOutputFormat::PARQUET  ? "PARQUET" : "BOTH",
+              s3_sink_ ? config_.s3_config.bucket : "disabled");
 }
 
 FlushManager::~FlushManager() {
@@ -121,31 +139,93 @@ size_t FlushManager::do_flush_sealed() {
     for (Partition* part : sealed) {
         if (!part) continue;
 
-        // FLUSHING 상태로 전이 (원자적이지 않지만 단일 flush 스레드)
+        // FLUSHING 상태로 전이 (단일 flush 스레드)
         part->set_state(Partition::State::FLUSHING);
 
-        const size_t bytes = writer_.flush_partition(*part);
+        size_t bytes = 0;
 
-        if (bytes > 0) {
-            // 플러시 완료 → 아레나 회수
+        // --- BINARY 저장 ---
+        if (config_.output_format == HDBOutputFormat::BINARY ||
+            config_.output_format == HDBOutputFormat::BOTH) {
+            bytes = writer_.flush_partition(*part);
+        }
+
+        // --- PARQUET 저장 + 선택적 S3 업로드 ---
+        if (config_.output_format == HDBOutputFormat::PARQUET ||
+            config_.output_format == HDBOutputFormat::BOTH) {
+            flush_partition_parquet(*part);
+            // PARQUET 전용 모드: Parquet 쓰기 성공 시 bytes 설정
+            if (config_.output_format == HDBOutputFormat::PARQUET &&
+                parquet_writer_ && parquet_writer_->files_written() > 0) {
+                bytes = parquet_writer_->bytes_written();
+            }
+        }
+
+        const bool success = (bytes > 0) ||
+            (parquet_writer_ && parquet_writer_->files_written() > 0) ||
+            (s3_sink_        && s3_sink_->uploads_succeeded() > 0);
+
+        if (success) {
             part->set_state(Partition::State::FLUSHED);
-
             if (config_.reclaim_after_flush) {
                 part->reclaim_arena();
             }
-
             stat_partitions_flushed_.fetch_add(1, std::memory_order_relaxed);
             stat_bytes_written_.fetch_add(bytes, std::memory_order_relaxed);
             stat_last_flush_ns_.store(now_ns(), std::memory_order_relaxed);
             ++count;
         } else {
-            // 플러시 실패 → SEALED 상태로 복원 (재시도 가능)
             APEX_WARN("do_flush_sealed: 플러시 실패, SEALED 상태 복원");
             part->set_state(Partition::State::SEALED);
         }
     }
 
     return count;
+}
+
+// ============================================================================
+// flush_partition_parquet: 단일 파티션 Parquet 저장 + S3 업로드
+// ============================================================================
+void FlushManager::flush_partition_parquet(const Partition& partition)
+{
+    if (!parquet_writer_) return;
+
+    const auto& key = partition.key();
+
+    // 파티션 디렉토리: {hdb_base}/{symbol}/{hour}/
+    const std::string parquet_dir = writer_.base_path() + "/" +
+                                    std::to_string(key.symbol_id) + "/" +
+                                    std::to_string(key.hour_epoch);
+
+    const std::string filepath = parquet_writer_->flush_to_file(partition, parquet_dir);
+
+    if (filepath.empty()) {
+        APEX_WARN("flush_partition_parquet: Parquet 쓰기 실패 (symbol={}, hour={})",
+                  key.symbol_id, key.hour_epoch);
+        return;
+    }
+
+    // S3 업로드
+    if (s3_sink_) {
+        const std::string s3_key = s3_sink_->make_s3_key(
+            key.symbol_id, key.hour_epoch, "parquet");
+
+        const bool uploaded = s3_sink_->upload_file(filepath, s3_key);
+
+        if (uploaded) {
+            APEX_INFO("S3 업로드: {} → {}",
+                      filepath, s3_sink_->make_s3_uri(s3_key));
+
+            // 로컬 파일 삭제 (S3 업로드 후 스토리지 절약)
+            if (config_.delete_local_after_s3) {
+                std::error_code ec;
+                std::filesystem::remove(filepath, ec);
+                if (ec) {
+                    APEX_WARN("로컬 Parquet 삭제 실패: {} ({})", filepath, ec.message());
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================

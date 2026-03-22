@@ -1,6 +1,6 @@
 # APEX-DB High-Level Architecture
 
-*Last updated: 2026-03-22*
+*Last updated: 2026-03-22 (Python Ecosystem — apex_py package completed)*
 
 ## Overview
 
@@ -23,6 +23,11 @@ open-source licensing.
 │  Layer 5: Client Interface                               │
 │  HTTP API (port 8123, ClickHouse-compatible)             │
 │  Python DSL (pybind11, zero-copy numpy/Arrow)            │
+│  Python Ecosystem (apex_py):                             │
+│    from_pandas/polars/arrow — vectorized ingest_batch    │
+│    ArrowSession — zero-copy Arrow/DuckDB/Polars export   │
+│    StreamingSession — batch ingest + progress callbacks  │
+│    ApexConnection — HTTP client → pandas/polars/numpy    │
 │  C++ API (direct, lowest latency)                        │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 4: SQL + Query Planning                           │
@@ -53,6 +58,8 @@ open-source licensing.
 │  Column Store (typed arrays, cache-line aligned)         │
 │  PartitionManager (symbol-based sharding)                │
 │  HDB (disk persistence, LZ4, 4.8 GB/s flush)            │
+│  Parquet Writer (SNAPPY/ZSTD/LZ4_RAW, Arrow C++ API)    │
+│  S3 Sink (async upload, MinIO compatible, hive partitioning) │
 │  CXL Backend (future: CXL memory pooling)                │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 0: Distributed Cluster                            │
@@ -154,7 +161,9 @@ apex-migrate timescaledb # Generate TimescaleDB hypertable + continuous aggregat
 | Parallel Query | ✅ | 3.48x @ 8 threads |
 | Feed Handlers | ✅ | FIX 350ns, ITCH 250ns |
 | Migration Toolkit | ✅ | kdb+/ClickHouse/DuckDB/TimescaleDB |
+| Parquet HDB | ✅ | SNAPPY/ZSTD/LZ4_RAW, direct DuckDB/Polars queries |
+| S3 HDB Flush | ✅ | Async upload, MinIO compatible, cloud data lake |
 | Production Ops | ✅ | Monitoring, backup, k8s |
+| Python Ecosystem | ✅ | apex_py: from_pandas/polars/arrow, ArrowSession, StreamingSession (208 tests) |
 | Distributed Query | 🚧 | DistributedQueryScheduler + UCX |
-| Python Ecosystem | 🚧 | Polars/Pandas zero-copy |
 | Snowflake/Delta Lake | 📋 | Backlog |

@@ -1,9 +1,26 @@
 """
-APEX-DB DataFrame utilities — standalone functions for pandas/polars conversion.
+APEX-DB DataFrame utilities — pandas/polars/Arrow conversion.
+
+Fast paths (in order of performance):
+  1. from_polars()       — polars .to_numpy() zero-copy + C++ ingest_batch()
+  2. from_pandas()       — numpy vectorized extraction + C++ ingest_batch()
+  3. from_arrow()        — Arrow → numpy + C++ ingest_batch()
+
+All fast paths avoid Python-level row iteration (no iterrows / col[i].as_py()).
+
+Column mapping defaults (sym_col, price_col, vol_col) can be overridden to
+match any DataFrame schema.  Float prices are scaled to int64 via price_scale
+(e.g. price_scale=100 stores cents; default 1 truncates to integer).
 """
 from __future__ import annotations
 
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Union, List, Any
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
 
 try:
     import pandas as pd
@@ -18,39 +35,53 @@ except ImportError:
     HAS_POLARS = False
 
 try:
-    import numpy as np
-    HAS_NUMPY = True
+    import pyarrow as pa
+    HAS_PYARROW = True
 except ImportError:
-    HAS_NUMPY = False
+    HAS_PYARROW = False
 
 
 # ============================================================================
-# Pandas ↔ APEX-DB
+# Pandas → APEX-DB
 # ============================================================================
 
 def from_pandas(
     df: "pd.DataFrame",
     pipeline: Any,
-    batch_size: int = 10_000,
+    batch_size: int = 50_000,
     sym_col: str = "sym",
-    timestamp_col: Optional[str] = "timestamp",
+    price_col: str = "price",
+    vol_col: str = "volume",
+    price_scale: float = 1.0,
+    vol_scale: float = 1.0,
     show_progress: bool = False,
 ) -> int:
     """
-    Ingest a pandas DataFrame into APEX-DB via the pipeline object.
+    Ingest a pandas DataFrame into APEX-DB via the C++ pipeline.
+
+    Uses vectorized numpy extraction + ingest_batch() instead of iterrows(),
+    giving 100-1000x speedup for large DataFrames.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Source data.
-    pipeline : ApexPipeline (C++ object)
-        APEX-DB pipeline instance.
+        Source data. Must contain sym_col, price_col, vol_col columns.
+    pipeline : ApexPipeline (C++ pybind11 object)
+        APEX-DB pipeline instance (apex.Pipeline()).
     batch_size : int
-        Rows per batch flush.
+        Rows per C++ batch call. Larger = fewer Python↔C++ crossings.
     sym_col : str
-        Column name containing the symbol/key.
-    timestamp_col : str or None
-        Column name containing timestamps (ns since epoch).
+        Column name containing the symbol ID (int).
+    price_col : str
+        Column name containing the price.
+    vol_col : str
+        Column name containing the volume.
+    price_scale : float
+        Multiply float prices by this factor before converting to int64.
+        E.g. price_scale=100 stores prices in cents (2 decimal places).
+        Default 1.0 truncates float to int64.
+    vol_scale : float
+        Same scaling for volume. Default 1.0.
     show_progress : bool
         Print progress to stdout.
 
@@ -60,50 +91,30 @@ def from_pandas(
 
     Example
     -------
-    >>> import apex, apex_py, pandas as pd
-    >>> pipeline = apex.Pipeline()
-    >>> pipeline.start()
-    >>> df = pd.DataFrame({"sym": [1]*100, "price": [150.0]*100, "volume": [100]*100})
-    >>> apex_py.from_pandas(df, pipeline)
-    100
+    >>> import apex, apex_py as apx, pandas as pd
+    >>> pipeline = apex.Pipeline(); pipeline.start()
+    >>> df = pd.DataFrame({"sym": [1]*1000, "price": [150.25]*1000, "volume": [100]*1000})
+    >>> apx.from_pandas(df, pipeline, price_scale=100)   # store cents
+    1000
     """
     if not HAS_PANDAS:
         raise ImportError("pandas is required: pip install pandas")
+    if not HAS_NUMPY:
+        raise ImportError("numpy is required: pip install numpy")
 
-    cols = list(df.columns)
+    _require_cols(df, [sym_col, price_col, vol_col], "pandas DataFrame")
+
     total = len(df)
     ingested = 0
 
     for start in range(0, total, batch_size):
         chunk = df.iloc[start : start + batch_size]
-
-        for _, row in chunk.iterrows():
-            kwargs = {}
-            for col in cols:
-                val = row[col]
-                # Convert numpy scalars to Python native
-                if hasattr(val, 'item'):
-                    val = val.item()
-                # Convert pandas Timestamp to int64 (ns)
-                if HAS_PANDAS and isinstance(val, pd.Timestamp):
-                    val = int(val.value)
-                kwargs[col] = val
-
-            try:
-                pipeline.ingest(**kwargs)
-                ingested += 1
-            except Exception as e:
-                raise RuntimeError(f"Ingest failed at row {start + ingested}: {e}") from e
-
-        # Drain every batch
-        try:
-            pipeline.drain()
-        except Exception:
-            pass
-
+        ingested += _ingest_pandas_chunk(
+            chunk, pipeline, sym_col, price_col, vol_col, price_scale, vol_scale
+        )
         if show_progress:
-            print(f"\rIngested {min(start + batch_size, total)}/{total}",
-                  end="", flush=True)
+            done = min(start + batch_size, total)
+            print(f"\rIngested {done}/{total}", end="", flush=True)
 
     if show_progress:
         print()
@@ -111,12 +122,41 @@ def from_pandas(
     return ingested
 
 
+def _ingest_pandas_chunk(
+    chunk: "pd.DataFrame",
+    pipeline: Any,
+    sym_col: str,
+    price_col: str,
+    vol_col: str,
+    price_scale: float,
+    vol_scale: float,
+) -> int:
+    """Vectorized ingest of one pandas chunk."""
+    syms = chunk[sym_col].to_numpy(dtype=np.int64, copy=False)
+
+    raw_prices = chunk[price_col].to_numpy(copy=False)
+    if price_scale != 1.0 or raw_prices.dtype.kind == "f":
+        prices = (raw_prices * price_scale).astype(np.int64)
+    else:
+        prices = raw_prices.astype(np.int64, copy=False)
+
+    raw_vols = chunk[vol_col].to_numpy(copy=False)
+    if vol_scale != 1.0 or raw_vols.dtype.kind == "f":
+        vols = (raw_vols * vol_scale).astype(np.int64)
+    else:
+        vols = raw_vols.astype(np.int64, copy=False)
+
+    pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+    pipeline.drain()
+    return len(chunk)
+
+
 def to_pandas(
     pipeline: Any,
     symbol: int,
     columns: Optional[List[str]] = None,
     start_ts: Optional[int] = None,
-    end_ts:   Optional[int] = None,
+    end_ts: Optional[int] = None,
 ) -> "pd.DataFrame":
     """
     Export APEX-DB data to a pandas DataFrame (zero-copy via numpy).
@@ -127,78 +167,85 @@ def to_pandas(
     symbol : int
         Symbol ID to export.
     columns : list of str, optional
-        Column names to export. None = all columns.
+        Column names to export. None = ["price", "volume", "timestamp"].
     start_ts, end_ts : int, optional
         Nanosecond timestamps for range filter.
 
     Returns
     -------
     pd.DataFrame
-
-    Example
-    -------
-    >>> df = apex_py.to_pandas(pipeline, symbol=1)
-    >>> df.head()
     """
     if not HAS_PANDAS:
         raise ImportError("pandas is required: pip install pandas")
     if not HAS_NUMPY:
         raise ImportError("numpy is required: pip install numpy")
 
-    data = {}
     target_cols = columns or ["price", "volume", "timestamp"]
+    data: dict = {}
 
     for col_name in target_cols:
         try:
             arr = pipeline.get_column(symbol=symbol, name=col_name)
             if arr is not None:
-                data[col_name] = arr  # zero-copy numpy array
+                data[col_name] = arr  # zero-copy numpy view
         except Exception:
             pass
 
     df = pd.DataFrame(data)
 
-    # Convert timestamp column if present
     if "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ns", utc=True)
 
-    # Apply time range filter
     if start_ts is not None or end_ts is not None:
         if "timestamp" in df.columns:
-            mask = pd.Series([True] * len(df))
+            mask = pd.Series([True] * len(df), index=df.index)
             if start_ts is not None:
-                ts_start = pd.Timestamp(start_ts, unit="ns", tz="UTC")
-                mask &= df["timestamp"] >= ts_start
+                mask &= df["timestamp"] >= pd.Timestamp(start_ts, unit="ns", tz="UTC")
             if end_ts is not None:
-                ts_end = pd.Timestamp(end_ts, unit="ns", tz="UTC")
-                mask &= df["timestamp"] <= ts_end
+                mask &= df["timestamp"] <= pd.Timestamp(end_ts, unit="ns", tz="UTC")
             df = df[mask].reset_index(drop=True)
 
     return df
 
 
 # ============================================================================
-# Polars ↔ APEX-DB
+# Polars → APEX-DB  (zero-copy fast path)
 # ============================================================================
 
 def from_polars(
     df: "pl.DataFrame",
     pipeline: Any,
-    batch_size: int = 50_000,
+    batch_size: int = 100_000,
+    sym_col: str = "sym",
+    price_col: str = "price",
+    vol_col: str = "volume",
+    price_scale: float = 1.0,
+    vol_scale: float = 1.0,
     show_progress: bool = False,
 ) -> int:
     """
-    Ingest a polars DataFrame into APEX-DB.
+    Zero-copy Polars DataFrame → APEX-DB ingest.
 
-    Uses Arrow IPC for efficient column-wise transfer.
-    Polars is Arrow-native, so this path has minimal overhead.
+    Polars .to_numpy() on a numeric Series without nulls returns a numpy
+    array backed directly by the Arrow buffer (no copy).  Combined with
+    ingest_batch() this gives the minimum possible Python overhead.
 
     Parameters
     ----------
     df : pl.DataFrame
     pipeline : ApexPipeline
-    batch_size : int, default 50_000
-        Larger batches are more efficient with polars.
+    batch_size : int, default 100_000
+        Larger batches amortize C++ call overhead.
+    sym_col : str
+        Column with symbol IDs.
+    price_col : str
+        Column with prices.
+    vol_col : str
+        Column with volumes.
+    price_scale : float
+        Float→int64 scale factor (e.g. 100 for cents).
+    vol_scale : float
+        Same for volume.
     show_progress : bool
 
     Returns
@@ -207,58 +254,105 @@ def from_polars(
 
     Example
     -------
-    >>> import polars as pl, apex_py
-    >>> df = pl.DataFrame({"sym": [1]*1000, "price": [150.0]*1000})
-    >>> apex_py.from_polars(df, pipeline)
-    1000
+    >>> import polars as pl, apex, apex_py as apx
+    >>> pipeline = apex.Pipeline(); pipeline.start()
+    >>> df = pl.DataFrame({"sym": [1]*1_000_000, "price": [15000]*1_000_000,
+    ...                    "volume": [100]*1_000_000})
+    >>> apx.from_polars(df, pipeline)   # ~zero-copy, single ingest_batch call
+    1000000
     """
     if not HAS_POLARS:
         raise ImportError("polars is required: pip install polars")
+    if not HAS_NUMPY:
+        raise ImportError("numpy is required: pip install numpy")
 
-    # Polars → pandas → from_pandas (fallback path)
-    # For zero-copy path, use from_polars_arrow() below
-    pd_df = df.to_pandas()
-    return from_pandas(pd_df, pipeline, batch_size=batch_size,
-                       show_progress=show_progress)
+    _require_cols(df, [sym_col, price_col, vol_col], "polars DataFrame")
+
+    total = len(df)
+    ingested = 0
+
+    for start in range(0, total, batch_size):
+        # df.slice() is zero-copy in Polars (returns a view)
+        chunk = df.slice(start, batch_size)
+        ingested += _ingest_polars_chunk(
+            chunk, pipeline, sym_col, price_col, vol_col, price_scale, vol_scale
+        )
+        if show_progress:
+            done = min(start + batch_size, total)
+            print(f"\rIngested {done}/{total}", end="", flush=True)
+
+    if show_progress:
+        print()
+
+    return ingested
+
+
+def _ingest_polars_chunk(
+    chunk: "pl.DataFrame",
+    pipeline: Any,
+    sym_col: str,
+    price_col: str,
+    vol_col: str,
+    price_scale: float,
+    vol_scale: float,
+) -> int:
+    """Vectorized ingest of one polars chunk.
+
+    For numeric Series without nulls, .to_numpy() returns the Arrow buffer
+    directly — no allocation, no copy.
+    """
+    # allow_copy=False would raise if copy is needed; we allow it for safety
+    syms = chunk[sym_col].to_numpy().astype(np.int64, copy=False)
+
+    raw_prices = chunk[price_col].to_numpy()
+    if price_scale != 1.0 or raw_prices.dtype.kind == "f":
+        prices = (raw_prices * price_scale).astype(np.int64)
+    else:
+        prices = raw_prices.astype(np.int64, copy=False)
+
+    raw_vols = chunk[vol_col].to_numpy()
+    if vol_scale != 1.0 or raw_vols.dtype.kind == "f":
+        vols = (raw_vols * vol_scale).astype(np.int64)
+    else:
+        vols = raw_vols.astype(np.int64, copy=False)
+
+    pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+    pipeline.drain()
+    return len(chunk)
 
 
 def from_polars_arrow(
     df: "pl.DataFrame",
     pipeline: Any,
+    sym_col: str = "sym",
+    price_col: str = "price",
+    vol_col: str = "volume",
+    price_scale: float = 1.0,
+    vol_scale: float = 1.0,
 ) -> int:
     """
-    Zero-copy ingest from polars via Arrow RecordBatch.
-    Requires pyarrow.
+    Polars → Arrow → numpy zero-copy ingest (requires pyarrow).
 
-    Each column's Arrow buffer is passed directly to the C++ layer
-    without any Python-level copying.
+    Uses df.to_arrow() (zero-copy in Polars) then Arrow .to_numpy()
+    (zero-copy for contiguous primitive arrays without nulls).
+
+    Falls back to from_polars() if pyarrow is unavailable.
     """
     if not HAS_POLARS:
         raise ImportError("polars is required")
 
-    try:
-        import pyarrow as pa
-    except ImportError:
-        # Fallback to pandas path
-        return from_polars(df, pipeline)
+    if not HAS_PYARROW:
+        return from_polars(df, pipeline, sym_col=sym_col,
+                           price_col=price_col, vol_col=vol_col,
+                           price_scale=price_scale, vol_scale=vol_scale)
 
-    # polars → Arrow Table (zero-copy)
+    _require_cols(df, [sym_col, price_col, vol_col], "polars DataFrame")
+
+    # to_arrow() is zero-copy: Polars uses Arrow memory internally
     arrow_table = df.to_arrow()
-    total = len(df)
-
-    # Pass each column as Arrow buffer
-    for batch in arrow_table.to_batches():
-        for i in range(batch.num_rows):
-            kwargs = {}
-            for col_name in batch.schema.names:
-                col = batch.column(col_name)
-                val = col[i].as_py()
-                if val is not None:
-                    kwargs[col_name] = val
-            pipeline.ingest(**kwargs)
-
-    pipeline.drain()
-    return total
+    return from_arrow(arrow_table, pipeline,
+                      sym_col=sym_col, price_col=price_col, vol_col=vol_col,
+                      price_scale=price_scale, vol_scale=vol_scale)
 
 
 def to_polars(
@@ -267,9 +361,7 @@ def to_polars(
     columns: Optional[List[str]] = None,
 ) -> "pl.DataFrame":
     """
-    Export APEX-DB data to a polars DataFrame.
-
-    Uses the zero-copy numpy path and wraps with polars.from_numpy().
+    Export APEX-DB data to a polars DataFrame (zero-copy via numpy view).
 
     Parameters
     ----------
@@ -280,11 +372,6 @@ def to_polars(
     Returns
     -------
     pl.DataFrame
-
-    Example
-    -------
-    >>> df = apex_py.to_polars(pipeline, symbol=1)
-    >>> df.describe()
     """
     if not HAS_POLARS:
         raise ImportError("polars is required: pip install polars")
@@ -299,17 +386,91 @@ def to_polars(
             arr = pipeline.get_column(symbol=symbol, name=col_name)
             if arr is not None:
                 if col_name == "timestamp":
-                    series = pl.Series(col_name, arr, dtype=pl.Datetime("ns", "UTC"))
+                    s = pl.Series(col_name, arr, dtype=pl.Datetime("ns", "UTC"))
                 else:
-                    series = pl.Series(col_name, arr)
-                series_list.append(series)
+                    s = pl.Series(col_name, arr)
+                series_list.append(s)
         except Exception:
             pass
 
-    if not series_list:
-        return pl.DataFrame()
+    return pl.DataFrame(series_list) if series_list else pl.DataFrame()
 
-    return pl.DataFrame(series_list)
+
+# ============================================================================
+# Arrow → APEX-DB  (requires pyarrow)
+# ============================================================================
+
+def from_arrow(
+    table: "pa.Table",
+    pipeline: Any,
+    batch_size: int = 100_000,
+    sym_col: str = "sym",
+    price_col: str = "price",
+    vol_col: str = "volume",
+    price_scale: float = 1.0,
+    vol_scale: float = 1.0,
+) -> int:
+    """
+    Apache Arrow Table → APEX-DB vectorized ingest.
+
+    Arrow .to_numpy(zero_copy_only=False) extracts column buffers with
+    minimal copying (zero-copy when the array is contiguous without nulls).
+    Combined with ingest_batch() this avoids all Python-level row iteration.
+
+    Parameters
+    ----------
+    table : pa.Table
+        Source Arrow table.
+    pipeline : ApexPipeline
+    batch_size : int, default 100_000
+    sym_col, price_col, vol_col : str
+        Column names.
+    price_scale, vol_scale : float
+        Float→int64 scaling.
+
+    Returns
+    -------
+    int : rows ingested
+
+    Example
+    -------
+    >>> import pyarrow as pa, apex, apex_py as apx
+    >>> pipeline = apex.Pipeline(); pipeline.start()
+    >>> tbl = pa.table({"sym": [1, 2], "price": [15000, 16000], "volume": [100, 200]})
+    >>> apx.from_arrow(tbl, pipeline)
+    2
+    """
+    if not HAS_PYARROW:
+        raise ImportError("pyarrow is required: pip install pyarrow")
+    if not HAS_NUMPY:
+        raise ImportError("numpy is required: pip install numpy")
+
+    _require_cols(table, [sym_col, price_col, vol_col], "Arrow Table")
+
+    total = table.num_rows
+    ingested = 0
+
+    for batch in table.to_batches(max_chunksize=batch_size):
+        # Fill nulls before conversion so numpy cast doesn't warn
+        syms = _arrow_col_to_int64(batch.column(sym_col))
+
+        raw_prices = _arrow_col_to_numpy(batch.column(price_col))
+        if price_scale != 1.0 or raw_prices.dtype.kind == "f":
+            prices = (raw_prices * price_scale).astype(np.int64)
+        else:
+            prices = raw_prices.astype(np.int64, copy=False)
+
+        raw_vols = _arrow_col_to_numpy(batch.column(vol_col))
+        if vol_scale != 1.0 or raw_vols.dtype.kind == "f":
+            vols = (raw_vols * vol_scale).astype(np.int64)
+        else:
+            vols = raw_vols.astype(np.int64, copy=False)
+
+        pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+        pipeline.drain()
+        ingested += batch.num_rows
+
+    return ingested
 
 
 # ============================================================================
@@ -335,7 +496,7 @@ def ingest_polars(
 
 
 # ============================================================================
-# HTTP-based query result conversion
+# HTTP query result conversion (JSON → DataFrame)
 # ============================================================================
 
 def query_to_pandas(json_response: Union[str, dict]) -> "pd.DataFrame":
@@ -345,7 +506,6 @@ def query_to_pandas(json_response: Union[str, dict]) -> "pd.DataFrame":
     Parameters
     ----------
     json_response : str or dict
-        JSON response from APEX-DB HTTP API.
 
     Returns
     -------
@@ -360,10 +520,7 @@ def query_to_pandas(json_response: Union[str, dict]) -> "pd.DataFrame":
     else:
         data = json_response
 
-    columns = data.get("columns", [])
-    rows    = data.get("data", [])
-
-    return pd.DataFrame(rows, columns=columns)
+    return pd.DataFrame(data.get("data", []), columns=data.get("columns", []))
 
 
 def query_to_polars(json_response: Union[str, dict]) -> "pl.DataFrame":
@@ -373,7 +530,6 @@ def query_to_polars(json_response: Union[str, dict]) -> "pl.DataFrame":
     Parameters
     ----------
     json_response : str or dict
-        JSON response from APEX-DB HTTP API.
 
     Returns
     -------
@@ -389,9 +545,47 @@ def query_to_polars(json_response: Union[str, dict]) -> "pl.DataFrame":
         data = json_response
 
     columns = data.get("columns", [])
-    rows    = data.get("data", [])
+    rows = data.get("data", [])
 
     if not rows:
         return pl.DataFrame(schema=columns)
 
     return pl.from_records(rows, schema=columns, orient="row")
+
+
+# ============================================================================
+# Internal helpers
+# ============================================================================
+
+def _require_cols(container, cols: List[str], label: str) -> None:
+    """Raise ValueError if any required column is missing."""
+    if HAS_POLARS and isinstance(container, pl.DataFrame):
+        available = set(container.columns)
+    elif HAS_PYARROW and isinstance(container, pa.Table):
+        available = set(container.schema.names)
+    elif HAS_PANDAS and isinstance(container, pd.DataFrame):
+        available = set(container.columns)
+    else:
+        available = set(getattr(container, "columns", []))
+
+    missing = [c for c in cols if c not in available]
+    if missing:
+        raise ValueError(
+            f"Missing columns in {label}: {missing}. "
+            f"Available: {sorted(available)}. "
+            f"Use sym_col/price_col/vol_col to map your column names."
+        )
+
+
+def _arrow_col_to_numpy(col: "pa.Array") -> np.ndarray:
+    """Arrow Array → numpy, filling nulls with 0 to avoid cast warnings."""
+    if col.null_count > 0:
+        import pyarrow.compute as pc
+        col = pc.if_else(pc.is_null(col), 0, col)
+    return col.to_numpy(zero_copy_only=False)
+
+
+def _arrow_col_to_int64(col: "pa.Array") -> np.ndarray:
+    """Arrow Array → int64 numpy, filling nulls with 0."""
+    arr = _arrow_col_to_numpy(col)
+    return arr.astype(np.int64, copy=False)

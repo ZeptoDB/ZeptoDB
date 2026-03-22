@@ -1,313 +1,313 @@
-# APEX-DB 비즈니스 전략 문서
-**작성일:** 2026-03-22
-**버전:** 1.0
+# APEX-DB Business Strategy
+**Date:** 2026-03-22
+**Version:** 1.0
 
 ---
 
 ## Executive Summary
 
-APEX-DB는 kdb+를 대체하는 오픈소스 시계열 데이터베이스로, HFT(High-Frequency Trading) 시장을 타겟으로 한다.
+APEX-DB is an open-source time-series database that replaces kdb+, targeting the HFT (High-Frequency Trading) market.
 
-**핵심 차별화:**
-- **성능:** kdb+ 동등 (5.52M ticks/sec, <1μs 지연)
-- **가격:** TCO 90% 절감 (오픈소스)
-- **생산성:** SQL (vs q 언어)
-- **Python 통합:** zero-copy (522ns)
+**Key differentiators:**
+- **Performance:** kdb+ equivalent (5.52M ticks/sec, <1us latency)
+- **Price:** 90% TCO reduction (open-source)
+- **Productivity:** SQL (vs q language)
+- **Python integration:** zero-copy (522ns)
 
-**12개월 목표:**
-- **매출:** $6.85M - $12.1M ARR
-- **고객:** 45-65개
-- **시장:** HFT, 암호화폐, 헤지펀드, 광고 테크
+**12-month targets:**
+- **Revenue:** $6.85M - $12.1M ARR
+- **Customers:** 45-65
+- **Markets:** HFT, crypto, hedge funds, ad tech
 
 ---
 
-## 1. 시장 분석
+## 1. Market Analysis
 
-### 1.1 타겟 시장 (연 매출 잠재력 순)
+### 1.1 Target Markets (by annual revenue potential)
 
-| 시장 | 규모 | ARPU | 예상 매출 | 우선순위 |
-|------|------|------|----------|----------|
-| **HFT/Prop Trading** | 500+ firms | $250K-500K | $2.5M-12M | P0 ⭐⭐⭐⭐⭐ |
-| **암호화폐 거래소** | 10 Tier-1 | $50K-200K | $1M-3M | P0 ⭐⭐⭐⭐ |
-| **헤지펀드/자산운용** | 100+ funds | $20K-100K | $1M-3M | P1 ⭐⭐⭐⭐ |
-| **은행/투자은행** | 50+ banks | $50K-200K | $1M-3M | P1 ⭐⭐⭐ |
-| **광고 테크** | 20+ companies | $100K-300K | $1M-3M | P1 ⭐⭐⭐⭐ |
+| Market | Size | ARPU | Projected Revenue | Priority |
+|--------|------|------|-------------------|----------|
+| **HFT/Prop Trading** | 500+ firms | $250K-500K | $2.5M-12M | P0 |
+| **Crypto Exchanges** | 10 Tier-1 | $50K-200K | $1M-3M | P0 |
+| **Hedge Funds/Asset Mgmt** | 100+ funds | $20K-100K | $1M-3M | P1 |
+| **Banks/Investment Banks** | 50+ banks | $50K-200K | $1M-3M | P1 |
+| **Ad Tech** | 20+ companies | $100K-300K | $1M-3M | P1 |
 
 **Total Addressable Market:** $7.5M-24M ARR (Year 1-3)
 
 ---
 
-### 1.2 경쟁 분석
+### 1.2 Competitive Analysis
 
 #### vs kdb+
 
-| 항목 | kdb+ | APEX-DB | 우위 |
-|------|------|---------|------|
-| **가격** | $100K-500K/년 | 오픈소스 | ✅ APEX-DB |
-| **학습 곡선** | q (6-12개월) | SQL (1주) | ✅ APEX-DB |
-| **Python 연동** | PyKX (IPC) | zero-copy 522ns | ✅ APEX-DB |
-| **성능** | 기준 | 95% 동등 | ≈ 동등 |
-| **클라우드** | 제한적 | Kubernetes native | ✅ APEX-DB |
-| **생태계** | 성숙 | 신생 | ❌ kdb+ |
+| Item | kdb+ | APEX-DB | Advantage |
+|------|------|---------|-----------|
+| **Price** | $100K-500K/year | Open-source | APEX-DB |
+| **Learning curve** | q (6-12 months) | SQL (1 week) | APEX-DB |
+| **Python integration** | PyKX (IPC) | zero-copy 522ns | APEX-DB |
+| **Performance** | Baseline | 95% equivalent | Equivalent |
+| **Cloud** | Limited | Kubernetes native | APEX-DB |
+| **Ecosystem** | Mature | New | kdb+ |
 
-**킬링 메시지:**
-> "kdb+의 성능 + 오픈소스의 가격 + SQL의 생산성"
+**Killing message:**
+> "kdb+ performance + open-source price + SQL productivity"
 
-**TCO 비교 (3년):**
-- kdb+: $900K (라이선스 $300K + 인력 $600K)
-- APEX-DB: $150K (인력 $150K)
-- **절감: $750K (83%)**
+**TCO Comparison (3 years):**
+- kdb+: $900K (license $300K + staffing $600K)
+- APEX-DB: $150K (staffing $150K)
+- **Savings: $750K (83%)**
 
 ---
 
 #### vs ClickHouse
 
-| 항목 | ClickHouse | APEX-DB | 우위 |
-|------|-----------|---------|------|
-| **금융 함수** | 없음 (UDF 필요) | xbar/EMA/wj native | ✅ APEX-DB |
-| **실시간** | 초당 100K | 5.52M ticks/sec | ✅ APEX-DB (55x) |
-| **Python DSL** | 없음 | 4-37x faster Polars | ✅ APEX-DB |
-| **SIMD** | SSE4.2 | AVX-512 | ✅ APEX-DB |
+| Item | ClickHouse | APEX-DB | Advantage |
+|------|-----------|---------|-----------|
+| **Financial functions** | None (UDF required) | xbar/EMA/wj native | APEX-DB |
+| **Real-time** | 100K/sec | 5.52M ticks/sec | APEX-DB (55x) |
+| **Python DSL** | None | 4-37x faster than Polars | APEX-DB |
+| **SIMD** | SSE4.2 | AVX-512 | APEX-DB |
 
-**킬링 메시지:**
-> "ClickHouse + 금융 함수 + Python 퀀트 툴"
+**Killing message:**
+> "ClickHouse + financial functions + Python quant tools"
 
 ---
 
 #### vs TimescaleDB
 
-| 항목 | TimescaleDB | APEX-DB | 우위 |
-|------|------------|---------|------|
-| **성능** | PostgreSQL 기반 | 100x 빠름 | ✅ APEX-DB |
-| **인제스션** | 초당 10K | 5.52M ticks/sec | ✅ APEX-DB (552x) |
-| **금융 함수** | 없음 | kdb+ 호환 | ✅ APEX-DB |
+| Item | TimescaleDB | APEX-DB | Advantage |
+|------|------------|---------|-----------|
+| **Performance** | PostgreSQL-based | 100x faster | APEX-DB |
+| **Ingestion** | 10K/sec | 5.52M ticks/sec | APEX-DB (552x) |
+| **Financial functions** | None | kdb+ compatible | APEX-DB |
 
 ---
 
-#### vs Snowflake/Databricks (보완재 전략)
+#### vs Snowflake/Databricks (Complementary Strategy)
 
-| 워크로드 | Snowflake/Databricks | APEX-DB | 전략 |
-|---------|---------------------|---------|------|
-| **배치 분석** | ✅ 최적 | ❌ | 양보 |
-| **ML/AI** | ✅ 최적 | ❌ | 양보 |
-| **실시간 분석** | ❌ 느림 | ✅ 최적 | 공략 |
-| **고빈도 인제스션** | ❌ 비쌈 | ✅ 최적 | 공략 |
-| **온프레미스** | ❌ 불가 | ✅ 가능 | 공략 |
+| Workload | Snowflake/Databricks | APEX-DB | Strategy |
+|---------|---------------------|---------|----------|
+| **Batch analytics** | Optimal | No | Yield |
+| **ML/AI** | Optimal | No | Yield |
+| **Real-time analytics** | Slow | Optimal | Target |
+| **High-frequency ingestion** | Expensive | Optimal | Target |
+| **On-premises** | Not possible | Possible | Target |
 
-**포지셔닝:**
+**Positioning:**
 > "The Real-time Companion to Snowflake"
 > "Keep your Data Warehouse, add Real-time Analytics"
 
 ---
 
-## 2. 제품 현황
+## 2. Product Status
 
-### 2.1 핵심 기능 (완료)
+### 2.1 Core Features (Complete)
 
-| 기능 | 상태 | 성능 |
-|------|------|------|
-| **인제스션** | ✅ | 5.52M ticks/sec |
-| **금융 함수** | ✅ | xbar, EMA, wj |
-| **병렬 쿼리** | ✅ | 8T = 3.48x |
-| **Python 통합** | ✅ | zero-copy 522ns |
-| **Feed Handler** | ✅ | FIX, ITCH, UDP |
-| **프로덕션 운영** | ✅ | 모니터링, 백업 |
+| Feature | Status | Performance |
+|---------|--------|-------------|
+| **Ingestion** | Complete | 5.52M ticks/sec |
+| **Financial functions** | Complete | xbar, EMA, wj |
+| **Parallel query** | Complete | 8T = 3.48x |
+| **Python integration** | Complete | zero-copy 522ns |
+| **Feed Handler** | Complete | FIX, ITCH, UDP |
+| **Production operations** | Complete | Monitoring, backup |
 
-**kdb+ 대체율:**
+**kdb+ replacement rate:**
 - HFT: 95%
-- 퀀트: 90%
-- 리스크: 95%
+- Quant: 90%
+- Risk: 95%
 
 ---
 
-### 2.2 Feed Handler Toolkit (신규 완료)
+### 2.2 Feed Handler Toolkit (Newly Complete)
 
-**비즈니스 가치:** HFT 시장 진입 핵심
+**Business value:** Core for HFT market entry
 
-| 프로토콜 | 파싱 속도 | 지연시간 | 용도 |
-|----------|-----------|---------|------|
-| **FIX** | 350ns | 100μs-1ms | 데이터 벤더 (Bloomberg, Reuters) |
-| **ITCH** | 250ns | 1-5μs | 거래소 직접 (NASDAQ) |
-| **UDP** | N/A | <1μs | 멀티캐스트 (초저지연) |
+| Protocol | Parse Speed | Latency | Use Case |
+|----------|-------------|---------|----------|
+| **FIX** | 350ns | 100us-1ms | Data vendors (Bloomberg, Reuters) |
+| **ITCH** | 250ns | 1-5us | Direct exchange (NASDAQ) |
+| **UDP** | N/A | <1us | Multicast (ultra-low latency) |
 
-**최적화:**
-- Zero-copy 파싱 (2-3x)
+**Optimizations:**
+- Zero-copy parsing (2-3x)
 - SIMD AVX2 (5-10x)
 - Memory Pool (10-20x)
 - Lock-free Ring Buffer (3-5x)
 
-**테스트 커버리지:** 100% (27 단위 + 10 벤치마크)
+**Test coverage:** 100% (27 unit + 10 benchmarks)
 
-**ROI:** HFT 시장 진입 가능 ($2.5M-12M)
+**ROI:** Enables HFT market entry ($2.5M-12M)
 
 ---
 
-## 3. Go-to-Market 전략
+## 3. Go-to-Market Strategy
 
-### 3.1 3개월 로드맵 (ROI 최적화)
+### 3.1 3-Month Roadmap (ROI Optimized)
 
 ```
-Month 1: Quick Wins (첫 매출)
-├─ Week 1-4: ClickHouse 마이그레이션 (4주)
-└─ Week 3-4: DuckDB 통합 (병렬, 2주)
-    → 목표: 첫 PoC $150K
+Month 1: Quick Wins (first revenue)
+├─ Week 1-4: ClickHouse migration (4 weeks)
+└─ Week 3-4: DuckDB integration (parallel, 2 weeks)
+    -> Target: first PoC $150K
 
-Month 2-3: Big Bet (큰 판)
-└─ Week 5-11: kdb+ 마이그레이션 (7주)
-    → 목표: HFT 파이프라인 구축
+Month 2-3: Big Bet
+└─ Week 5-11: kdb+ migration (7 weeks)
+    -> Target: HFT pipeline establishment
 
-병렬 작업:
-- Marketing: ClickHouse 케이스 스터디
-- Sales: HFT 고객 발굴
+Parallel work:
+- Marketing: ClickHouse case study
+- Sales: HFT customer prospecting
 ```
 
 ---
 
-### 3.2 마이그레이션 툴킷 (고객 확보 핵심)
+### 3.2 Migration Toolkit (Core for Customer Acquisition)
 
-#### Priority 0: kdb+ → APEX-DB (7주, $2.5M-12M)
-**개발 항목:**
-1. q → SQL 트랜스파일러 (4주)
-   - `select`, `where`, `fby`, `aj`, `wj` 자동 변환
-2. HDB 데이터 로더 (2주)
-   - Splayed tables → Columnar format
-3. 성능 검증 도구 (1주)
-   - TPC-H + 금융 쿼리 벤치마크
+#### Priority 0: kdb+ -> APEX-DB (7 weeks, $2.5M-12M)
+**Development items:**
+1. q -> SQL transpiler (4 weeks)
+   - Auto-convert `select`, `where`, `fby`, `aj`, `wj`
+2. HDB data loader (2 weeks)
+   - Splayed tables -> Columnar format
+3. Performance validation tool (1 week)
+   - TPC-H + financial query benchmarks
 
-**비즈니스 가치:**
-- 가장 큰 ARPU ($250K-500K/고객)
-- HFT 시장 진입
-- Feed Handler와 시너지
+**Business value:**
+- Highest ARPU ($250K-500K/customer)
+- HFT market entry
+- Synergy with Feed Handler
 
-**킬링 메시지:**
-> "kdb+의 모든 것 + 오픈소스 + TCO 90% 절감"
-
----
-
-#### Priority 1: ClickHouse → APEX-DB (4주, $1M-3M)
-**개발 항목:**
-1. SQL 방언 변환 (1주)
-   - `arrayJoin` → `UNNEST`
-   - `uniq` → `COUNT(DISTINCT)`
-2. 데이터 마이그레이션 (1주)
-   - MergeTree → Columnar
-3. 쿼리 최적화 (1주)
-   - 느린 쿼리 감지 + Index 추천
-4. PoC 자동화 (1주)
-
-**비즈니스 가치:**
-- **빠른 첫 매출:** 3개월
-- 광고 테크, SaaS 분석 시장
-- 레퍼런스 고객 확보
-
-**타겟 고객:**
-- 광고 테크 (실시간 입찰)
-- SaaS 분석 (Amplitude, Mixpanel 대체)
-- 게임 분석
-
-**킬링 메시지:**
-> "ClickHouse + 금융 함수 + Python 통합"
+**Killing message:**
+> "Everything in kdb+ + open-source + 90% TCO reduction"
 
 ---
 
-#### Priority 1: DuckDB 상호운용성 (2주, 전략적)
-**개발 항목:**
-1. DuckDB Parquet → APEX-DB (1주)
+#### Priority 1: ClickHouse -> APEX-DB (4 weeks, $1M-3M)
+**Development items:**
+1. SQL dialect conversion (1 week)
+   - `arrayJoin` -> `UNNEST`
+   - `uniq` -> `COUNT(DISTINCT)`
+2. Data migration (1 week)
+   - MergeTree -> Columnar
+3. Query optimization (1 week)
+   - Slow query detection + Index recommendations
+4. PoC automation (1 week)
+
+**Business value:**
+- **Fast first revenue:** 3 months
+- Ad tech, SaaS analytics market
+- Reference customer acquisition
+
+**Target customers:**
+- Ad tech (real-time bidding)
+- SaaS analytics (Amplitude, Mixpanel replacement)
+- Gaming analytics
+
+**Killing message:**
+> "ClickHouse + financial functions + Python integration"
+
+---
+
+#### Priority 1: DuckDB Interoperability (2 weeks, Strategic)
+**Development items:**
+1. DuckDB Parquet -> APEX-DB (1 week)
    - Arrow zero-copy
-2. 벤치마크 + 블로그 (1주)
+2. Benchmarks + blog post (1 week)
 
-**비즈니스 가치:**
-- **마케팅 레버리지:** Hacker News 론칭
-- **인바운드 리드:** 월 50-100개
-- Python 커뮤니티 진입
+**Business value:**
+- **Marketing leverage:** Hacker News launch
+- **Inbound leads:** 50-100/month
+- Python community entry
 
-**킬링 메시지:**
-> "DuckDB의 실시간 버전"
-> "Jupyter에서 바로 프로덕션으로"
-
----
-
-#### Priority 2: TimescaleDB → APEX-DB (3주, $500K-1M)
-**개발 항목:**
-1. 스키마 변환 (1주): Hypertables → APEX-DB
-2. pg_dump 자동 변환 (1주)
-3. 함수 매핑 (1주): `time_bucket` → `xbar`
-
-**타겟 고객:**
-- IoT 플랫폼
-- DevOps 모니터링
+**Killing message:**
+> "Real-time version of DuckDB"
+> "From Jupyter directly to production"
 
 ---
 
-#### 전략적: Snowflake/Delta Lake Hybrid (4주, $3.5M)
-**개발 항목:**
-1. Snowflake 커넥터 (2주)
-   - JDBC/ODBC 통합
-   - Cold data 쿼리
-2. Delta Lake Reader (2주)
+#### Priority 2: TimescaleDB -> APEX-DB (3 weeks, $500K-1M)
+**Development items:**
+1. Schema conversion (1 week): Hypertables -> APEX-DB
+2. pg_dump auto-conversion (1 week)
+3. Function mapping (1 week): `time_bucket` -> `xbar`
+
+**Target customers:**
+- IoT platforms
+- DevOps monitoring
+
+---
+
+#### Strategic: Snowflake/Delta Lake Hybrid (4 weeks, $3.5M)
+**Development items:**
+1. Snowflake connector (2 weeks)
+   - JDBC/ODBC integration
+   - Cold data queries
+2. Delta Lake Reader (2 weeks)
    - Parquet + transaction log
 
-**타겟 워크로드:**
-- 실시간 금융 분석 (20 고객 × $50K = $1M)
-- IoT/센서 데이터 (10 고객 × $50K = $500K)
-- 광고 테크 실시간 입찰 (10 고객 × $100K = $1M)
-- 규제 산업 온프레미스 (5 고객 × $200K = $1M)
+**Target workloads:**
+- Real-time financial analytics (20 customers x $50K = $1M)
+- IoT/sensor data (10 customers x $50K = $500K)
+- Ad tech real-time bidding (10 customers x $100K = $1M)
+- Regulated industry on-premises (5 customers x $200K = $1M)
 
-**포지셔닝:**
+**Positioning:**
 > "Snowflake for batch, APEX-DB for real-time"
 
-**Hybrid 아키텍처:**
+**Hybrid Architecture:**
 ```
-┌─────────────────┐
-│   Snowflake     │  배치 분석, ML, Data Lake
-│   (Cold Data)   │  - 월별 리포트
-└────────┬────────┘  - 예측 모델
-         │ ETL (매일)
-         ↓
-┌────────▼────────┐
-│   APEX-DB       │  실시간 분석, 금융
-│   (Hot Data)    │  - 실시간 대시보드
-└─────────────────┘  - HFT 트레이딩
++─────────────────+
+│   Snowflake     │  Batch analytics, ML, Data Lake
+│   (Cold Data)   │  - Monthly reports
++────────┬────────+  - Predictive models
+         | ETL (daily)
+         v
++────────v────────+
+│   APEX-DB       │  Real-time analytics, finance
+│   (Hot Data)    │  - Real-time dashboards
++─────────────────+  - HFT trading
 ```
 
 ---
 
-## 4. 재무 전망
+## 4. Financial Projections
 
-### 4.1 매출 타임라인 (12개월)
+### 4.1 Revenue Timeline (12 months)
 
 #### Q1 (Month 1-3)
-- ClickHouse PoC: 3개 × $50K = **$150K**
-- DuckDB 인바운드: 리드 생성
-- kdb+ 파이프라인: 2-3개 잠재 고객
+- ClickHouse PoC: 3 x $50K = **$150K**
+- DuckDB inbound: lead generation
+- kdb+ pipeline: 2-3 potential customers
 
 #### Q2 (Month 4-6)
-- ClickHouse 계약: 5개 × $100K = **$500K**
-- kdb+ 첫 계약: 1개 × $250K = **$250K**
-- DuckDB 전환: 5개 × $30K = **$150K**
+- ClickHouse contracts: 5 x $100K = **$500K**
+- kdb+ first contract: 1 x $250K = **$250K**
+- DuckDB conversion: 5 x $30K = **$150K**
 - **Subtotal: $900K**
 
 #### Q3 (Month 7-9)
-- ClickHouse: 3개 × $100K = **$300K**
-- kdb+: 2개 × $250K = **$500K**
-- Snowflake Hybrid: 5개 × $50K = **$250K**
+- ClickHouse: 3 x $100K = **$300K**
+- kdb+: 2 x $250K = **$500K**
+- Snowflake Hybrid: 5 x $50K = **$250K**
 - **Subtotal: $1.05M**
 
 #### Q4 (Month 10-12)
-- ClickHouse: 2개 × $100K = **$200K**
-- kdb+: 2개 × $250K = **$500K**
-- DuckDB: 10개 × $30K = **$300K**
-- TimescaleDB: 10개 × $50K = **$500K**
+- ClickHouse: 2 x $100K = **$200K**
+- kdb+: 2 x $250K = **$500K**
+- DuckDB: 10 x $30K = **$300K**
+- TimescaleDB: 10 x $50K = **$500K**
 - **Subtotal: $1.5M**
 
 **Year 1 Total: $3.6M ARR**
 
 ---
 
-### 4.2 마이그레이션 툴킷별 매출
+### 4.2 Revenue by Migration Toolkit
 
-| 툴킷 | 12개월 매출 | 3년 매출 |
-|------|-------------|----------|
+| Toolkit | 12-Month Revenue | 3-Year Revenue |
+|---------|-----------------|----------------|
 | kdb+ | $1.25M | $7.5M |
 | ClickHouse | $1.0M | $3.0M |
 | DuckDB | $600K | $1.8M |
@@ -317,316 +317,316 @@ Month 2-3: Big Bet (큰 판)
 
 ---
 
-### 4.3 고객 수 전망
+### 4.3 Customer Count Projections
 
-| 세그먼트 | Year 1 | Year 2 | Year 3 |
+| Segment | Year 1 | Year 2 | Year 3 |
 |---------|--------|--------|--------|
 | HFT/Prop Trading | 5 | 15 | 30 |
-| 암호화폐 거래소 | 3 | 8 | 15 |
-| 헤지펀드 | 10 | 30 | 60 |
-| 광고 테크 | 10 | 20 | 40 |
-| 은행/규제 산업 | 5 | 10 | 20 |
+| Crypto Exchanges | 3 | 8 | 15 |
+| Hedge Funds | 10 | 30 | 60 |
+| Ad Tech | 10 | 20 | 40 |
+| Banks/Regulated | 5 | 10 | 20 |
 | IoT/DevOps | 10 | 25 | 50 |
 | **Total** | **43** | **108** | **215** |
 
 ---
 
-### 4.4 단위 경제학 (Unit Economics)
+### 4.4 Unit Economics
 
-#### 고객 획득 비용 (CAC)
-- **HFT/kdb+:** $50K (Enterprise 영업 12개월)
-- **ClickHouse:** $10K (빠른 PoC 3개월)
-- **DuckDB:** $1K (인바운드)
+#### Customer Acquisition Cost (CAC)
+- **HFT/kdb+:** $50K (Enterprise sales, 12 months)
+- **ClickHouse:** $10K (Fast PoC, 3 months)
+- **DuckDB:** $1K (inbound)
 
-#### 고객 생애 가치 (LTV)
-- **HFT:** $1.5M (3년 계약, $500K/년)
-- **ClickHouse:** $300K (3년 계약, $100K/년)
-- **DuckDB:** $90K (3년 계약, $30K/년)
+#### Customer Lifetime Value (LTV)
+- **HFT:** $1.5M (3-year contract, $500K/year)
+- **ClickHouse:** $300K (3-year contract, $100K/year)
+- **DuckDB:** $90K (3-year contract, $30K/year)
 
-#### LTV/CAC 비율
-- **HFT:** 30x (건강)
-- **ClickHouse:** 30x (건강)
-- **DuckDB:** 90x (매우 건강)
+#### LTV/CAC Ratio
+- **HFT:** 30x (healthy)
+- **ClickHouse:** 30x (healthy)
+- **DuckDB:** 90x (very healthy)
 
 ---
 
-## 5. 데이터 인제스션 전략
+## 5. Data Ingestion Strategy
 
-### 5.1 HFT 데이터 흐름
+### 5.1 HFT Data Flow
 
 ```
-거래소 Matching Engine
-    ↓ UDP Multicast (1-10 Gbps)
+Exchange Matching Engine
+    | UDP Multicast (1-10 Gbps)
 Feed Handler (C++)
-    ↓ 파싱 (ITCH, SBE, FIX)
+    | Parsing (ITCH, SBE, FIX)
 APEX-DB TickerPlant
-    ↓ 5.52M ticks/sec
-RDB (실시간) + HDB (히스토리)
+    | 5.52M ticks/sec
+RDB (real-time) + HDB (historical)
 ```
 
-**프로토콜:**
-- **NASDAQ ITCH:** 바이너리, UDP (1-5μs)
-- **CME iLink3:** FIX/SBE, TCP (10-50μs)
-- **Bloomberg B-PIPE:** TCP, 전용 프로토콜
+**Protocols:**
+- **NASDAQ ITCH:** Binary, UDP (1-5us)
+- **CME iLink3:** FIX/SBE, TCP (10-50us)
+- **Bloomberg B-PIPE:** TCP, proprietary protocol
 
-**APEX-DB 우위:**
-- ✅ FIX Parser: 350ns
-- ✅ ITCH Parser: 250ns
-- ✅ UDP Multicast: <1μs
-- ✅ 완전한 테스트 커버리지
+**APEX-DB advantages:**
+- FIX Parser: 350ns
+- ITCH Parser: 250ns
+- UDP Multicast: <1us
+- Full test coverage
 
 ---
 
-## 6. 경쟁 전략
+## 6. Competitive Strategy
 
-### 6.1 시장별 전략
+### 6.1 Market-Specific Strategy
 
-#### HFT 시장 (Priority 0)
-**전략:** 정면 승부 (kdb+ 대체)
+#### HFT Market (Priority 0)
+**Strategy:** Direct competition (kdb+ replacement)
 
-**차별화:**
-1. **가격:** TCO 90% 절감
-2. **생산성:** SQL vs q
+**Differentiation:**
+1. **Price:** 90% TCO reduction
+2. **Productivity:** SQL vs q
 3. **Python:** zero-copy
-4. **오픈소스:** 커뮤니티
+4. **Open-source:** community
 
-**진입 장벽:**
-- Feed Handler ✅ (완료)
-- kdb+ 마이그레이션 (7주 개발 필요)
-- HFT 레퍼런스 (첫 고객 확보)
+**Entry barriers:**
+- Feed Handler (complete)
+- kdb+ migration (7 weeks development needed)
+- HFT reference (first customer acquisition)
 
-**킬링 메시지:**
-> "같은 성능, 1/10 가격, 10배 생산성"
-
----
-
-#### 광고 테크/SaaS (Priority 1)
-**전략:** ClickHouse 대체
-
-**차별화:**
-1. **금융 함수:** xbar, EMA (광고 분석에도 유용)
-2. **Python 통합:** Jupyter 리서치
-3. **실시간:** 55x 빠름
-
-**진입 장벽:** 낮음 (PoC 3개월)
+**Killing message:**
+> "Same performance, 1/10 price, 10x productivity"
 
 ---
 
-#### Snowflake 고객 (전략적)
-**전략:** 보완재 (Hybrid)
+#### Ad Tech/SaaS (Priority 1)
+**Strategy:** ClickHouse replacement
 
-**차별화:**
-1. **실시간:** Snowflake는 배치만
-2. **비용:** 실시간 워크로드 이동으로 Snowflake 비용 절감
-3. **온프레미스:** 규제 산업
+**Differentiation:**
+1. **Financial functions:** xbar, EMA (also useful for ad analytics)
+2. **Python integration:** Jupyter research
+3. **Real-time:** 55x faster
 
-**진입 장벽:** 중간 (파트너십 필요)
+**Entry barrier:** Low (PoC in 3 months)
 
 ---
 
-## 7. 마케팅 전략
+#### Snowflake Customers (Strategic)
+**Strategy:** Complementary (Hybrid)
 
-### 7.1 컨텐츠 마케팅
+**Differentiation:**
+1. **Real-time:** Snowflake is batch-only
+2. **Cost:** Moving real-time workloads reduces Snowflake costs
+3. **On-premises:** Regulated industries
+
+**Entry barrier:** Medium (partnership needed)
+
+---
+
+## 7. Marketing Strategy
+
+### 7.1 Content Marketing
 
 #### Phase 1 (Month 1-2): ClickHouse
-**목표:** 첫 고객 확보
+**Goal:** First customer acquisition
 
-**컨텐츠:**
-1. 블로그: "ClickHouse → APEX-DB 마이그레이션 가이드"
-2. 벤치마크: "ClickHouse vs APEX-DB (금융 쿼리)"
-3. 웨비나: "실시간 금융 분석 구축"
+**Content:**
+1. Blog: "ClickHouse -> APEX-DB Migration Guide"
+2. Benchmark: "ClickHouse vs APEX-DB (financial queries)"
+3. Webinar: "Building Real-time Financial Analytics"
 
 ---
 
 #### Phase 2 (Month 2-3): DuckDB
-**목표:** 커뮤니티 구축
+**Goal:** Community building
 
-**컨텐츠:**
+**Content:**
 1. Hacker News: "DuckDB + Real-time = APEX-DB"
-2. Reddit r/datascience: 튜토리얼
-3. Twitter: 성능 벤치마크
+2. Reddit r/datascience: tutorials
+3. Twitter: performance benchmarks
 
-**예상 효과:**
-- GitHub 스타: 500+
-- 인바운드 리드: 월 50+
+**Expected impact:**
+- GitHub stars: 500+
+- Inbound leads: 50+/month
 
 ---
 
 #### Phase 3 (Month 4-6): kdb+
-**목표:** HFT 시장 진입
+**Goal:** HFT market entry
 
-**컨텐츠:**
-1. 백서: "kdb+ 마이그레이션 완전 가이드"
-2. 컨퍼런스: QuantCon, Battle of the Quants
-3. 케이스 스터디: ClickHouse 고객 레퍼런스
-
----
-
-### 7.2 영업 전략
-
-#### Enterprise (HFT, 은행)
-- **사이클:** 12-24개월
-- **접근:** 직접 영업
-- **PoC:** $50K (전체 DB)
-
-#### Mid-Market (광고 테크, 헤지펀드)
-- **사이클:** 3-6개월
-- **접근:** 인바운드 + 직접
-- **PoC:** 무료 (1 테이블)
-
-#### SMB (스타트업, DuckDB 사용자)
-- **사이클:** 1-2개월
-- **접근:** 셀프서비스
-- **PoC:** 무료
+**Content:**
+1. Whitepaper: "Complete kdb+ Migration Guide"
+2. Conferences: QuantCon, Battle of the Quants
+3. Case study: ClickHouse customer reference
 
 ---
 
-## 8. 파트너십 전략
+### 7.2 Sales Strategy
+
+#### Enterprise (HFT, Banks)
+- **Cycle:** 12-24 months
+- **Approach:** Direct sales
+- **PoC:** $50K (full DB)
+
+#### Mid-Market (Ad tech, Hedge funds)
+- **Cycle:** 3-6 months
+- **Approach:** Inbound + direct
+- **PoC:** Free (1 table)
+
+#### SMB (Startups, DuckDB users)
+- **Cycle:** 1-2 months
+- **Approach:** Self-service
+- **PoC:** Free
+
+---
+
+## 8. Partnership Strategy
 
 ### 8.1 Snowflake/Databricks
-**전략:** 공식 파트너
+**Strategy:** Official partner
 
-**제안:**
-- "우리는 경쟁자 아님, 보완재"
-- "고객에게 실시간 솔루션 제공"
+**Proposal:**
+- "We are not competitors, we are complementary"
+- "Provide real-time solution to customers"
 
 **Win-Win:**
-- Snowflake: 실시간 갭 해결, 고객 이탈 방지
-- APEX-DB: 브랜드 신뢰도, 리드 생성
+- Snowflake: Fills real-time gap, prevents customer churn
+- APEX-DB: Brand credibility, lead generation
 
 ---
 
-### 8.2 클라우드 파트너 (AWS, GCP, Azure)
-**전략:** Marketplace 출시
+### 8.2 Cloud Partners (AWS, GCP, Azure)
+**Strategy:** Marketplace launch
 
-**혜택:**
-- 고객 발굴
-- 빌링 통합
-- 공동 마케팅
+**Benefits:**
+- Customer discovery
+- Billing integration
+- Co-marketing
 
-**목표:** Year 2 출시
-
----
-
-## 9. 리스크 관리
-
-### 9.1 기술 리스크
-
-| 리스크 | 영향 | 완화 전략 |
-|--------|------|----------|
-| kdb+ 호환성 불완전 | 높음 | 95% 달성, 핵심 기능 우선 |
-| 성능 미달 | 높음 | 지속적 벤치마크, 최적화 |
-| 버그/안정성 | 중간 | 100% 테스트 커버리지 |
+**Target:** Year 2 launch
 
 ---
 
-### 9.2 비즈니스 리스크
+## 9. Risk Management
 
-| 리스크 | 영향 | 완화 전략 |
-|--------|------|----------|
-| kdb+ 가격 인하 | 높음 | 오픈소스 장점 (커뮤니티) |
-| ClickHouse 금융 함수 추가 | 중간 | 선점 효과, 레퍼런스 |
-| HFT 진입 실패 | 높음 | ClickHouse로 빠른 검증 |
-| 긴 영업 사이클 | 중간 | 단기(ClickHouse) + 장기(kdb+) 병행 |
+### 9.1 Technical Risks
 
----
-
-## 10. 팀 빌드업
-
-### 10.1 필요 인력
-
-| 시기 | 역할 | 인원 |
-|------|------|------|
-| **Month 1-2** | 엔지니어 (ClickHouse) | 2명 |
-| **Month 3-6** | 엔지니어 (kdb+) | +2명 (총 4명) |
-| | Sales (Enterprise) | +1명 |
-| **Month 7-12** | 엔지니어 | +2명 (총 6명) |
-| | Sales | +1명 (총 2명) |
-| | Customer Success | +1명 |
-
-**Year 1 Total: 9명**
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Incomplete kdb+ compatibility | High | 95% achieved, core features first |
+| Performance shortfall | High | Continuous benchmarking, optimization |
+| Bugs/stability | Medium | 100% test coverage |
 
 ---
 
-## 11. 핵심 성공 지표 (KPI)
+### 9.2 Business Risks
 
-### 11.1 제품 KPI
-- **성능:** 5M+ ticks/sec 유지
-- **안정성:** 99.9% Uptime
-- **테스트:** 100% 커버리지 유지
-
-### 11.2 비즈니스 KPI
-- **MRR:** 월별 반복 매출
-- **CAC:** 고객 획득 비용
-- **LTV/CAC:** 30x 이상 유지
-- **Churn:** <5% 연간
-
-### 11.3 마케팅 KPI
-- **GitHub 스타:** 500+ (6개월)
-- **인바운드 리드:** 50+/월
-- **컨퍼런스 발표:** 4회/년
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| kdb+ price reduction | High | Open-source advantage (community) |
+| ClickHouse adds financial functions | Medium | First-mover advantage, references |
+| HFT market entry failure | High | Fast validation via ClickHouse (3 months) |
+| Long sales cycle | Medium | Short-term (ClickHouse) + long-term (kdb+) in parallel |
 
 ---
 
-## 12. 실행 우선순위 (Immediate Actions)
+## 10. Team Build-up
 
-### 즉시 시작 (Week 1-4)
-1. ✅ **Feed Handler 완료** (완료)
-2. ⏩ **ClickHouse 마이그레이션** 시작 (4주)
-3. ⏩ **DuckDB 통합** 병렬 진행 (2주)
+### 10.1 Staffing Needs
 
-### 다음 단계 (Week 5-11)
-4. **kdb+ 마이그레이션** 시작 (7주)
-5. **첫 HFT 고객** PoC
+| Timeline | Role | Headcount |
+|----------|------|-----------|
+| **Month 1-2** | Engineers (ClickHouse) | 2 |
+| **Month 3-6** | Engineers (kdb+) | +2 (total 4) |
+| | Sales (Enterprise) | +1 |
+| **Month 7-12** | Engineers | +2 (total 6) |
+| | Sales | +1 (total 2) |
+| | Customer Success | +1 |
 
-### 전략적 (Month 4-6)
-6. **Snowflake Hybrid** 전략 실행
-7. **파트너십** 추진
-
----
-
-## 13. 결론
-
-### 13.1 핵심 강점
-1. ✅ **기술 준비:** kdb+ 95% 대체 달성
-2. ✅ **Feed Handler:** HFT 진입 가능
-3. ✅ **마이그레이션 툴킷:** 명확한 로드맵
-4. ✅ **차별화:** 성능 + 가격 + 생산성
-
-### 13.2 성공 확률
-- **ClickHouse 시장:** 90% (빠른 검증)
-- **kdb+ 시장:** 60% (고위험 고수익)
-- **Snowflake Hybrid:** 70% (보완재)
-
-### 13.3 최종 목표
-- **Year 1:** $3.6M ARR (43 고객)
-- **Year 2:** $8.5M ARR (108 고객)
-- **Year 3:** $24.3M ARR (215 고객)
-
-**Break-even:** Month 9-12 (매출 > 비용)
+**Year 1 Total: 9 people**
 
 ---
 
-## 부록
+## 11. Key Success Metrics (KPI)
 
-### A. 참고 문서
-- `docs/feeds/FEED_HANDLER_COMPLETE.md` - Feed Handler 완료 보고서
-- `docs/deployment/PRODUCTION_DEPLOYMENT.md` - 배포 가이드
-- `docs/operations/PRODUCTION_OPERATIONS.md` - 운영 가이드
-- `BACKLOG.md` - 개발 백로그
+### 11.1 Product KPI
+- **Performance:** Maintain 5M+ ticks/sec
+- **Stability:** 99.9% uptime
+- **Testing:** Maintain 100% coverage
 
-### B. 경쟁사 링크
+### 11.2 Business KPI
+- **MRR:** Monthly recurring revenue
+- **CAC:** Customer acquisition cost
+- **LTV/CAC:** Maintain 30x or above
+- **Churn:** <5% annual
+
+### 11.3 Marketing KPI
+- **GitHub stars:** 500+ (6 months)
+- **Inbound leads:** 50+/month
+- **Conference presentations:** 4/year
+
+---
+
+## 12. Execution Priorities (Immediate Actions)
+
+### Start Immediately (Week 1-4)
+1. **Feed Handler complete** (done)
+2. **ClickHouse migration** start (4 weeks)
+3. **DuckDB integration** in parallel (2 weeks)
+
+### Next Steps (Week 5-11)
+4. **kdb+ migration** start (7 weeks)
+5. **First HFT customer** PoC
+
+### Strategic (Month 4-6)
+6. **Snowflake Hybrid** strategy execution
+7. **Partnership** development
+
+---
+
+## 13. Conclusion
+
+### 13.1 Core Strengths
+1. **Technology ready:** kdb+ 95% replacement achieved
+2. **Feed Handler:** HFT market entry possible
+3. **Migration toolkit:** Clear roadmap
+4. **Differentiation:** Performance + price + productivity
+
+### 13.2 Success Probability
+- **ClickHouse market:** 90% (fast validation)
+- **kdb+ market:** 60% (high risk, high reward)
+- **Snowflake Hybrid:** 70% (complementary)
+
+### 13.3 Final Targets
+- **Year 1:** $3.6M ARR (43 customers)
+- **Year 2:** $8.5M ARR (108 customers)
+- **Year 3:** $24.3M ARR (215 customers)
+
+**Break-even:** Month 9-12 (revenue > cost)
+
+---
+
+## Appendix
+
+### A. Reference Documents
+- `docs/feeds/FEED_HANDLER_COMPLETE.md` - Feed Handler completion report
+- `docs/deployment/PRODUCTION_DEPLOYMENT.md` - Deployment guide
+- `docs/operations/PRODUCTION_OPERATIONS.md` - Operations guide
+- `BACKLOG.md` - Development backlog
+
+### B. Competitor Links
 - kdb+: https://kx.com
 - ClickHouse: https://clickhouse.com
 - Snowflake: https://snowflake.com
 - DuckDB: https://duckdb.org
 
-### C. 연락처
-- 제품 문의: product@apex-db.io
-- 영업 문의: sales@apex-db.io
-- 파트너십: partners@apex-db.io
+### C. Contact
+- Product inquiries: product@apex-db.io
+- Sales inquiries: sales@apex-db.io
+- Partnerships: partners@apex-db.io
 
 ---
 
-**문서 이력:**
-- 2026-03-22: v1.0 초안 작성
+**Document History:**
+- 2026-03-22: v1.0 initial draft

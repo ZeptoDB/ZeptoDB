@@ -1,112 +1,111 @@
-# APEX-DB Phase 007: SQL 파서 + HTTP API + JOIN 프레임워크
+# APEX-DB Phase 007: SQL Parser + HTTP API + JOIN Framework
 
-**날짜:** 2026-03-22  
-**작업자:** 고생이  
+**Date:** 2026-03-22
 **Phase:** 007 — SQL/HTTP/JOIN
 
 ---
 
-## 개요
+## Overview
 
-APEX-DB의 핵심 레이어(E, B, A, D, C)가 완성된 이후, 실제 클라이언트가 사용할 수 있는 인터페이스를 추가했다. 이번 Phase에서는 다음 세 가지를 구현했다:
+After completing the core layers (E, B, A, D, C), we added the interface that actual clients can use. This phase implements:
 
-1. **SQL 파서** — 재귀 하강 파서 (no yacc/bison)
-2. **쿼리 실행기** — AST → ApexPipeline API 변환
-3. **JOIN 프레임워크** — ASOF JOIN (금융 핵심) + HashJoin 스텁
-4. **HTTP API 서버** — ClickHouse 호환 포트 8123
+1. **SQL Parser** — recursive descent parser (no yacc/bison)
+2. **Query Executor** — AST -> ApexPipeline API translation
+3. **JOIN Framework** — ASOF JOIN (finance core) + HashJoin stub
+4. **HTTP API Server** — ClickHouse-compatible port 8123
 
 ---
 
-## Part 1: SQL 파서
+## Part 1: SQL Parser
 
-### 설계 원칙
-- **완전 자체 구현**: flex/bison/ANTLR 의존성 없음. 순수 C++ 재귀 하강 파서
-- **실용적 서브셋**: 금융 DB에서 실제로 쓰이는 SQL만 지원
-- **토크나이저 → AST → 실행기** 파이프라인
+### Design Principles
+- **Fully self-implemented**: No flex/bison/ANTLR dependencies. Pure C++ recursive descent parser
+- **Practical subset**: Only SQL actually used in financial databases
+- **Tokenizer -> AST -> Executor** pipeline
 
-### 지원 SQL 문법
+### Supported SQL Syntax
 
 ```sql
--- 기본 SELECT + WHERE
+-- Basic SELECT + WHERE
 SELECT price, volume FROM trades WHERE symbol = 1 AND price > 15000
 
--- 집계 함수 (COUNT, SUM, AVG, MIN, MAX, VWAP)
+-- Aggregate functions (COUNT, SUM, AVG, MIN, MAX, VWAP)
 SELECT count(*), sum(volume), avg(price) FROM trades WHERE symbol = 1
-SELECT VWAP(price, volume) FROM trades  -- 금융 특화
+SELECT VWAP(price, volume) FROM trades  -- finance-specific
 
 -- GROUP BY
 SELECT symbol, sum(volume) FROM trades GROUP BY symbol
 
--- ASOF JOIN (금융 핵심)
+-- ASOF JOIN (finance core)
 SELECT t.price, t.volume, q.bid, q.ask
 FROM trades t
 ASOF JOIN quotes q ON t.symbol = q.symbol AND t.timestamp >= q.timestamp
 
--- 시간 범위
+-- Time range
 SELECT * FROM trades WHERE price BETWEEN 15000 AND 16000
 
--- 표준 JOIN (스텁)
+-- Standard JOIN (stub)
 SELECT t.price, q.bid FROM trades t JOIN quotes q ON t.symbol = q.symbol
 
--- 정렬 + 제한
+-- Sort + limit
 SELECT price FROM trades ORDER BY price DESC LIMIT 100
 ```
 
-### 파싱 성능
+### Parsing Performance
 
-| 쿼리 유형 | 평균 | P99 |
-|-----------|------|-----|
-| 단순 SELECT | 1.17μs | 1.23μs |
-| 집계 쿼리 | 1.79μs | 1.85μs |
-| GROUP BY | 1.39μs | 1.43μs |
-| ASOF JOIN | 4.56μs | 4.63μs |
-| 복잡한 JOIN | 5.06μs | 5.14μs |
+| Query Type | Average | P99 |
+|-----------|---------|-----|
+| Simple SELECT | 1.17us | 1.23us |
+| Aggregate query | 1.79us | 1.85us |
+| GROUP BY | 1.39us | 1.43us |
+| ASOF JOIN | 4.56us | 4.63us |
+| Complex JOIN | 5.06us | 5.14us |
 
-→ **모든 쿼리 50μs 이하** 목표 달성 ✓
+All queries under 50us target achieved.
 
 ---
 
-## Part 2: 쿼리 실행기
+## Part 2: Query Executor
 
-### APEX 스키마 특이사항
+### APEX Schema Specifics
 
-APEX-DB 파티션은 `symbol` 컬럼이 없다. `SymbolId`는 `PartitionKey.symbol_id`로 인코딩된다.  
-따라서 `WHERE symbol = N` 조건은 **컬럼 레벨 평가가 아닌 파티션 레벨 필터링**으로 처리된다.
+APEX-DB partitions have no `symbol` column. `SymbolId` is encoded in `PartitionKey.symbol_id`.
+Therefore `WHERE symbol = N` conditions are handled as **partition-level filtering, not column-level evaluation**.
 
 ```cpp
-// symbol 조건 감지 → get_partitions_for_symbol() 사용
+// Detect symbol condition -> use get_partitions_for_symbol()
 if (has_where_symbol(stmt, sym_filter, alias)) {
     auto parts = pm.get_partitions_for_symbol(sym_filter);
-    // 이 파티션들만 스캔
+    // Scan only these partitions
 }
 ```
 
-### GROUP BY symbol 처리
+### GROUP BY symbol Handling
 
-GROUP BY symbol의 경우, 파티션 키에서 `symbol_id`를 직접 읽는다:
+For GROUP BY symbol, `symbol_id` is read directly from the partition key:
 
 ```cpp
 bool is_symbol_group = (group_col == "symbol");
-int64_t gkey = is_symbol_group 
+int64_t gkey = is_symbol_group
     ? static_cast<int64_t>(part->key().symbol_id)
     : gdata[idx];
 ```
 
-### VWAP 집계
+### VWAP Aggregation
 
-SQL에서 `VWAP(price, volume)`을 집계 함수로 지원:
+SQL supports `VWAP(price, volume)` as an aggregate function:
 
 ```sql
 SELECT VWAP(price, volume) FROM trades WHERE symbol = 1
 ```
 
-내부적으로 `sum(price * volume) / sum(volume)` 계산.
+Internally computes `sum(price * volume) / sum(volume)`.
 
 ---
 
-## Part 3: JOIN 프레임워크
+## Part 3: JOIN Framework
 
-### 제네릭 인터페이스
+### Generic Interface
 
 ```cpp
 class JoinOperator {
@@ -114,30 +113,30 @@ public:
     virtual JoinResult execute(
         const ColumnVector& left_key,
         const ColumnVector& right_key,
-        const ColumnVector* left_time  = nullptr,  // ASOF용
+        const ColumnVector* left_time  = nullptr,  // for ASOF
         const ColumnVector* right_time = nullptr
     ) = 0;
 };
 ```
 
-### ASOF JOIN 알고리즘
+### ASOF JOIN Algorithm
 
-**두 포인터 + 이진 탐색** 조합으로 구현:
-1. 오른쪽 테이블을 심볼별로 그룹화
-2. 각 그룹 내에서 타임스탬프 기준 정렬 (안전장치)
-3. 각 왼쪽 행에 대해 `upper_bound`로 O(log m) 매칭
+Implemented with **two-pointer + binary search** combination:
+1. Group right table by symbol
+2. Sort by timestamp within each group (safety guard)
+3. For each left row, use `upper_bound` for O(log m) matching
 
 ```
-왼쪽: trades [t=100, t=200, t=300]  (symbol=1)
-오른쪽: quotes [t=50, t=150, t=250] (symbol=1)
+Left: trades [t=100, t=200, t=300]  (symbol=1)
+Right: quotes [t=50, t=150, t=250] (symbol=1)
 
-ASOF 매칭:
-  trade(t=100) → quote(t=50)   ← t=50 ≤ 100 중 최신
-  trade(t=200) → quote(t=150)  ← t=150 ≤ 200 중 최신
-  trade(t=300) → quote(t=250)  ← t=250 ≤ 300 중 최신
+ASOF matching:
+  trade(t=100) -> quote(t=50)   <- most recent where t <= 100
+  trade(t=200) -> quote(t=150)  <- most recent where t <= 200
+  trade(t=300) -> quote(t=250)  <- most recent where t <= 300
 ```
 
-### HashJoin 스텁
+### HashJoin Stub
 
 ```cpp
 class HashJoinOperator : public JoinOperator {
@@ -148,28 +147,28 @@ public:
 };
 ```
 
-향후 Phase에서 해시 테이블 빌드 + 프로브 구현 예정.
+Full hash table build + probe implementation planned for a future phase.
 
 ---
 
 ## Part 4: HTTP API
 
-### ClickHouse 호환 서버
+### ClickHouse-Compatible Server
 
-- **포트**: 8123 (ClickHouse 기본 포트)
-- **라이브러리**: cpp-httplib v0.18.3 (헤더 전용)
-- **Grafana/클라이언트 직접 연결 가능**
+- **Port**: 8123 (ClickHouse default port)
+- **Library**: cpp-httplib v0.18.3 (header-only)
+- **Direct Grafana/client connectivity**
 
-### 엔드포인트
+### Endpoints
 
 ```
-POST /        — SQL 쿼리 실행 (바디: SQL 문자열)
-GET  /        — SQL 쿼리 (query 파라미터)
-GET  /ping    — 헬스체크 → "Ok"
-GET  /stats   — 파이프라인 통계 (JSON)
+POST /        — SQL query execution (body: SQL string)
+GET  /        — SQL query (query parameter)
+GET  /ping    — health check -> "Ok"
+GET  /stats   — pipeline statistics (JSON)
 ```
 
-### 응답 형식
+### Response Format
 
 ```json
 {
@@ -183,77 +182,73 @@ GET  /stats   — 파이프라인 통계 (JSON)
 
 ---
 
-## Part 5: 테스트 결과
+## Part 5: Test Results
 
 ```
-=== 새로운 테스트 (32개) ===
-Tokenizer.*      7/7  PASS
-Parser.*        12/12 PASS
-AsofJoin.*       4/4  PASS
+=== New Tests (32) ===
+Tokenizer.*       7/7  PASS
+Parser.*         12/12 PASS
+AsofJoin.*        4/4  PASS
 SqlExecutorTest.* 9/9  PASS
 
-=== 기존 테스트 유지 ===
-C++ 유닛 테스트: 76/76 PASS (ClusterNode/TransportSwap은 기존 실패)
-Python 테스트:   31/31 PASS
+=== Existing Tests Maintained ===
+C++ unit tests: 76/76 PASS
+Python tests:   31/31 PASS
 ```
 
 ---
 
-## Part 6: 벤치마크 결과
+## Part 6: Benchmark Results
 
-### SQL 파싱 속도
+### SQL Parsing Speed
 
-| 쿼리 | avg | 목표 |
-|------|-----|------|
-| 단순 SELECT | 1.17μs | <50μs ✓ |
-| 집계 | 1.79μs | <50μs ✓ |
-| ASOF JOIN 파싱 | 4.56μs | <50μs ✓ |
+| Query | avg | Target |
+|-------|-----|--------|
+| Simple SELECT | 1.17us | <50us OK |
+| Aggregate | 1.79us | <50us OK |
+| ASOF JOIN parse | 4.56us | <50us OK |
 
-### SQL 실행 오버헤드 (vs 직접 C++ API)
+### SQL Execution Overhead (vs direct C++ API)
 
-| 작업 | SQL | 직접 C++ |
-|------|-----|---------|
-| VWAP (100K rows) | 112μs | 50μs |
-| COUNT | 13μs | 0.12μs |
-| SUM (100K rows) | 52μs | N/A |
+| Operation | SQL | Direct C++ |
+|-----------|-----|-----------|
+| VWAP (100K rows) | 112us | 50us |
+| COUNT | 13us | 0.12us |
+| SUM (100K rows) | 52us | N/A |
 
-→ SQL 오버헤드 = 파싱(~2μs) + AST 해석 + 함수 포인터 디스패치
+SQL overhead = parsing (~2us) + AST interpretation + function pointer dispatch
 
-### ASOF JOIN 성능
+### ASOF JOIN Performance
 
-| 데이터 크기 | 처리 시간 |
-|------------|---------|
-| N=1,000 | 149μs |
+| Data Size | Processing Time |
+|-----------|----------------|
+| N=1,000 | 149us |
 | N=10,000 | 1.5ms |
 | N=1,000,000 | 53ms |
 
 ---
 
-## 아키텍처 레이어 업데이트
+## Architecture Layer Update
 
 ```
 Layer 6: HTTP API (apex_server)
-    ↓
+    |
 Layer 5: SQL Parser + Executor (apex_sql)
-    ↓
+    |
 Layer 4: Transpiler (Python DSL, apex_py)
-    ↓
+    |
 Layer 3: Vectorized Engine (apex_execution)
-    ↓
+    |
 Layer 2: Ingestion (apex_ingestion)
-    ↓
+    |
 Layer 1: Storage (apex_storage)
 ```
 
 ---
 
-## 다음 Phase 예정
+## Next Phase
 
-- **HashJoin 풀 구현** — 해시 테이블 빌드 + 프로브 (SIMD 최적화)
-- **쿼리 플래너 고도화** — JOIN 재정렬, 푸시다운 최적화
-- **HTTP API 확장** — TSV 출력 모드, 비동기 쿼리
-- **ASOF JOIN SIMD 최적화** — 이진 탐색의 벡터화
-
----
-
-*작성: 고생이 | APEX-DB 개발 로그*
+- **HashJoin full implementation** — hash table build + probe (SIMD optimized)
+- **Query planner enhancement** — JOIN reordering, pushdown optimization
+- **HTTP API extension** — TSV output mode, async queries
+- **ASOF JOIN SIMD optimization** — vectorize binary search

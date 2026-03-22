@@ -1,6 +1,6 @@
 # APEX-DB System Requirements
 
-*Version 2.0 — Last updated: 2026-03-22*
+*Version 2.2 — Last updated: 2026-03-22 (FR-4 Python ecosystem — apex_py completed)*
 
 ---
 
@@ -24,14 +24,33 @@
 
 ### FR-3: Storage
 - FR-3.1: Column-oriented in-memory store (typed arrays)
-- FR-3.2: HDB disk persistence with LZ4 compression
+- FR-3.2: HDB disk persistence with LZ4 compression (4.8 GB/s flush)
 - FR-3.3: Partition-by-symbol routing (2ns overhead)
 - FR-3.4: Arena allocator — no malloc in hot path
+- FR-3.5: Parquet output (SNAPPY/ZSTD/LZ4_RAW) — Arrow C++ API, directly queryable from DuckDB/Polars/Spark
+- FR-3.6: S3 Sink — Parquet/Binary → S3 async upload, MinIO compatible, hive partitioning (`{symbol}/{hour}.parquet`)
 
 ### FR-4: APIs
 - FR-4.1: HTTP API on port 8123 (ClickHouse wire protocol compatible)
+  - `POST /` — SQL query execution (JSON response)
+  - `GET /ping` — ClickHouse-compatible health check
+  - `GET /health` — Kubernetes liveness probe
+  - `GET /ready` — Kubernetes readiness probe
+  - `GET /stats` — Pipeline statistics
+  - `GET /metrics` — Prometheus OpenMetrics format
 - FR-4.2: Python binding (pybind11, zero-copy numpy/Arrow, < 1μs)
 - FR-4.3: C++ API (direct struct access, lowest latency)
+- FR-4.4: Python Ecosystem — `apex_py` package ✅
+  - `from_pandas(df, pipeline)` — vectorized numpy batch ingest
+  - `from_polars(df, pipeline)` — zero-copy Arrow buffer → ingest_batch
+  - `from_polars_arrow(df, pipeline)` — polars.to_arrow() → ingest_batch
+  - `from_arrow(table, pipeline)` — Arrow Table → ingest_batch
+  - `ArrowSession` — zero-copy ingest/export, DuckDB registration, RecordBatchReader
+  - `StreamingSession` — batch ingest with progress callbacks, error modes, generator support
+  - `ApexConnection` — HTTP client returning pandas/polars/numpy DataFrames
+  - `query_to_pandas()` / `query_to_polars()` — SQL JSON result → DataFrame
+  - Supports: numpy, pandas, polars, pyarrow, duckdb interoperability
+  - Null-safe Arrow extraction via `_arrow_col_to_numpy()` (fills null → 0)
 
 ### FR-5: Distributed
 - FR-5.1: UCX transport (RDMA/InfiniBand/TCP)
@@ -83,7 +102,7 @@
 ### NFR-4: Compatibility
 - SQL: ANSI SQL subset (SELECT/WHERE/GROUP BY/JOIN/OVER)
 - HTTP: ClickHouse wire protocol (port 8123)
-- Python: numpy/Arrow zero-copy
+- Python: numpy/Arrow zero-copy; pandas/polars/duckdb interop via apex_py
 - Monitoring: Prometheus + Grafana
 
 ### NFR-5: Build & Platform
@@ -98,7 +117,11 @@
 
 | Suite | Count | Coverage |
 |---|---|---|
-| Unit tests (core) | 151+ | Storage, Execution, SQL, JOIN, Window |
+| Unit tests (core) | 151+ | Storage, Execution, SQL, JOIN, Window, Parquet, S3 |
 | Feed handler tests | 37 | FIX parser, ITCH parser, benchmarks |
 | Migration tests | 70 | q→SQL (20), HDB (15), ClickHouse (18), DuckDB (17), TimescaleDB (18) |
-| **Total** | **258+** | — |
+| Python ecosystem tests | 208 | from_pandas/polars/arrow (47), ArrowSession (46), pandas (20), polars (16), StreamingSession (41), ingest_batch (47) |
+| **Total** | **429+** | — |
+
+> Python ecosystem suite includes ingest_batch tests (test_ingest_batch.py) which
+> overlap with test_arrow_integration.py for ArrowSession paths.

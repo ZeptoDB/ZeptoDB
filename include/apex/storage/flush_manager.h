@@ -14,13 +14,26 @@
 #include "apex/common/logger.h"
 #include "apex/storage/partition_manager.h"
 #include "apex/storage/hdb_writer.h"
+#include "apex/storage/parquet_writer.h"
+#include "apex/storage/s3_sink.h"
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
 namespace apex::storage {
+
+// ============================================================================
+// HDBOutputFormat: 저장 형식 선택
+// ============================================================================
+enum class HDBOutputFormat : uint8_t {
+    BINARY,   ///< 기존 .bin 형식 (기본값, 최고속)
+    PARQUET,  ///< Apache Parquet (Arrow 호환, DuckDB/Spark 상호운용)
+    BOTH,     ///< BINARY + PARQUET 동시 저장
+};
 
 // ============================================================================
 // FlushConfig: 플러시 매니저 설정
@@ -32,7 +45,7 @@ struct FlushConfig {
     /// 메모리 모니터링 주기 (밀리초)
     uint32_t check_interval_ms   = 1000;
 
-    /// LZ4 압축 사용 여부
+    /// LZ4 압축 사용 여부 (BINARY 형식)
     bool     enable_compression  = true;
 
     /// 플러시 후 아레나 리셋 (메모리 회수 여부)
@@ -40,6 +53,25 @@ struct FlushConfig {
 
     /// 파티션을 자동 봉인하는 나이 기준 (시간 단위)
     int64_t  auto_seal_age_hours = 1;
+
+    // -----------------------------------------------------------------------
+    // 출력 형식 옵션 (Parquet / S3)
+    // -----------------------------------------------------------------------
+
+    /// 저장 형식: BINARY (기본), PARQUET, BOTH
+    HDBOutputFormat output_format = HDBOutputFormat::BINARY;
+
+    /// Parquet 설정 (output_format == PARQUET or BOTH 시 적용)
+    ParquetWriterConfig parquet_config;
+
+    /// S3 업로드 활성화
+    bool enable_s3_upload = false;
+
+    /// S3 설정 (enable_s3_upload == true 시 적용)
+    S3SinkConfig s3_config;
+
+    /// S3 업로드 후 로컬 Parquet 파일 삭제 여부 (스토리지 절약)
+    bool delete_local_after_s3 = false;
 };
 
 // ============================================================================
@@ -97,12 +129,19 @@ private:
     /// 모든 SEALED 파티션 플러시 (내부 공통 로직)
     size_t do_flush_sealed();
 
+    /// 단일 파티션 Parquet 저장 + 선택적 S3 업로드
+    void flush_partition_parquet(const Partition& partition);
+
     /// 현재 시간 (나노초)
     static int64_t now_ns();
 
     PartitionManager&  pm_;
     HDBWriter&         writer_;
     FlushConfig        config_;
+
+    // Parquet / S3 (선택적 — 설정에 따라 초기화)
+    std::unique_ptr<ParquetWriter> parquet_writer_;
+    std::unique_ptr<S3Sink>        s3_sink_;
 
     std::thread        flush_thread_;
     std::atomic<bool>  running_{false};

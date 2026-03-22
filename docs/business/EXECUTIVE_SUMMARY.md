@@ -5,137 +5,137 @@
 
 ## What is APEX-DB?
 
-오픈소스 시계열 데이터베이스로 kdb+를 대체하며, HFT(High-Frequency Trading) 시장을 타겟으로 합니다.
+An open-source time-series database that replaces kdb+, targeting the HFT (High-Frequency Trading) market.
 
-**핵심 가치:**
-- ⚡ **성능:** kdb+ 동등 (5.52M ticks/sec, <1μs 지연)
-- 💰 **가격:** TCO 90% 절감 (오픈소스)
-- 🚀 **생산성:** SQL (vs q 언어 6개월 학습)
-- 🐍 **Python:** zero-copy 통합 (522ns)
+**Core value:**
+- **Performance:** kdb+ equivalent (5.52M ticks/sec, <1us latency)
+- **Price:** 90% TCO reduction (open-source)
+- **Productivity:** SQL (vs 6-month q language learning curve)
+- **Python:** zero-copy integration (522ns)
 
 ---
 
 ## Market Opportunity
 
-| 시장 | 예상 매출 (Year 1) | 우선순위 |
-|------|-------------------|----------|
-| HFT/Prop Trading | $1.25M - $5M | ⭐⭐⭐⭐⭐ |
-| 암호화폐 거래소 | $500K - $1M | ⭐⭐⭐⭐ |
-| 광고 테크 | $1M - $3M | ⭐⭐⭐⭐ |
-| 헤지펀드 | $500K - $1M | ⭐⭐⭐ |
+| Market | Projected Revenue (Year 1) | Priority |
+|--------|---------------------------|----------|
+| HFT/Prop Trading | $1.25M - $5M | P0 |
+| Crypto Exchanges | $500K - $1M | P0 |
+| Ad Tech | $1M - $3M | P1 |
+| Hedge Funds | $500K - $1M | P1 |
 
-**Total Year 1:** $3.6M ARR (43 고객)
+**Total Year 1:** $3.6M ARR (43 customers)
 
 ---
 
 ## Competitive Advantage
 
-### vs kdb+ (가장 큰 시장)
-- ✅ **가격:** $0 vs $100K-500K/년
-- ✅ **생산성:** SQL (1주) vs q (6개월)
-- ✅ **Python:** zero-copy vs IPC 직렬화
-- ≈ **성능:** 95% 동등
+### vs kdb+ (largest market)
+- **Price:** $0 vs $100K-500K/year
+- **Productivity:** SQL (1 week) vs q (6 months)
+- **Python:** zero-copy vs IPC serialization
+- **Performance:** 95% equivalent
 
 ### vs ClickHouse
-- ✅ **금융 함수:** xbar, EMA, wj native
-- ✅ **실시간:** 55x 빠름 (5.52M vs 100K ticks/sec)
-- ✅ **Python DSL:** 4-37x faster than Polars
+- **Financial functions:** xbar, EMA, wj native
+- **Real-time:** 55x faster (5.52M vs 100K ticks/sec)
+- **Python DSL:** 4-37x faster than Polars
 
 ---
 
 ## Go-to-Market Strategy
 
 ### Phase 1 (Month 1-3): Quick Win
-**ClickHouse 마이그레이션 + DuckDB 통합**
-- 개발: 4주 + 2주
-- 첫 매출: $150K (3개월)
-- 레퍼런스 고객 확보
+**ClickHouse migration + DuckDB integration**
+- Development: 4 weeks + 2 weeks
+- First revenue: $150K (3 months)
+- Reference customer acquisition
 
 ### Phase 2 (Month 4-6): Big Bet
-**kdb+ 마이그레이션**
-- 개발: 7주
-- HFT 시장 진입
-- 매출: $250K-500K per deal
+**kdb+ migration**
+- Development: 7 weeks
+- HFT market entry
+- Revenue: $250K-500K per deal
 
 ### Phase 3 (Month 7-12): Scale
 **Snowflake Hybrid + TimescaleDB**
-- 보완재 전략
-- IoT/DevOps 확장
+- Complementary strategy
+- IoT/DevOps expansion
 
 ---
 
 ## Financial Projection
 
 ### Year 1 (Month 12)
-- **매출:** $3.6M ARR
-- **고객:** 43개
+- **Revenue:** $3.6M ARR
+- **Customers:** 43
 - **Break-even:** Month 9-12
-- **팀:** 9명 (6 eng, 2 sales, 1 CS)
+- **Team:** 9 (6 eng, 2 sales, 1 CS)
 
 ### Year 3
-- **매출:** $24.3M ARR
-- **고객:** 215개
-- **팀:** 25명
+- **Revenue:** $24.3M ARR
+- **Customers:** 215
+- **Team:** 25
 
 ---
 
 ## Key Milestones
 
-| 시기 | 마일스톤 |
-|------|---------|
-| **✅ 완료** | Feed Handler (FIX, ITCH, UDP) |
-| **✅ 완료** | kdb+ 기능 95% 달성 |
-| **✅ 완료** | 프로덕션 운영 (모니터링, 백업) |
-| **Week 1-4** | ClickHouse 마이그레이션 |
-| **Week 5-11** | kdb+ 마이그레이션 |
-| **Month 3** | 첫 PoC $150K |
-| **Month 6** | 첫 HFT 고객 $250K |
+| Timeline | Milestone |
+|----------|-----------|
+| **Complete** | Feed Handler (FIX, ITCH, UDP) |
+| **Complete** | kdb+ feature parity 95% |
+| **Complete** | Production operations (monitoring, backup) |
+| **Week 1-4** | ClickHouse migration |
+| **Week 5-11** | kdb+ migration |
+| **Month 3** | First PoC $150K |
+| **Month 6** | First HFT customer $250K |
 | **Month 12** | $3.6M ARR |
 
 ---
 
 ## What We Need
 
-### Immediate (이번 주)
-1. ClickHouse 마이그레이션 시작 (엔지니어 2명)
-2. DuckDB 통합 병렬 진행 (엔지니어 1명)
+### Immediate (this week)
+1. Start ClickHouse migration (2 engineers)
+2. DuckDB integration in parallel (1 engineer)
 
 ### Month 3-6
-3. kdb+ 마이그레이션 (엔지니어 +2명)
-4. Enterprise Sales (영업 +1명)
+3. kdb+ migration (+2 engineers)
+4. Enterprise Sales (+1 sales)
 
 ### Investment Ask
 - **Seed Round:** $1M-2M
-- **용도:** 팀 확장 (9명), 마케팅, 운영 비용
+- **Use of funds:** Team expansion (9 people), marketing, operating costs
 - **Burn Rate:** $150K/month (Year 1)
-- **Runway:** 12-18개월
+- **Runway:** 12-18 months
 
 ---
 
 ## Risk Mitigation
 
-| 리스크 | 완화 |
-|--------|------|
-| kdb+ 호환성 | 95% 달성, 핵심 우선 |
-| HFT 진입 실패 | ClickHouse로 빠른 검증 (3개월) |
-| 긴 영업 사이클 | 단기(ClickHouse) + 장기(kdb+) 병행 |
+| Risk | Mitigation |
+|------|------------|
+| kdb+ compatibility | 95% achieved, core features first |
+| HFT market entry failure | Fast validation via ClickHouse (3 months) |
+| Long sales cycle | Short-term (ClickHouse) + long-term (kdb+) in parallel |
 
 ---
 
 ## Why Now?
 
-1. ✅ **기술 준비 완료:** Feed Handler + kdb+ 95%
-2. 📈 **시장 타이밍:** kdb+ 비용 부담 증가
-3. 🚀 **Python 트렌드:** 퀀트들의 Jupyter 사용 증가
-4. ☁️ **클라우드 전환:** HFT도 클라우드 검토 시작
+1. **Technology ready:** Feed Handler + kdb+ 95%
+2. **Market timing:** Rising kdb+ cost burden
+3. **Python trend:** Growing quant use of Jupyter
+4. **Cloud migration:** HFT beginning to consider cloud
 
 ---
 
 ## The Ask
 
 **Funding:** $1M-2M Seed
-**Timeline:** 12개월
-**Goal:** $3.6M ARR, Break-even
+**Timeline:** 12 months
+**Goal:** $3.6M ARR, break-even
 
 **Contact:**
 - Email: founders@apex-db.io

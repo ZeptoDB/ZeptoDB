@@ -105,6 +105,55 @@ public:
     }
 
     // -------------------------------------------------------------------------
+    // 배치 인제스트: float64 가격/볼륨 배열 (scale 적용 후 int64 변환)
+    //
+    // Polars/pandas DataFrame의 float 컬럼을 직접 받아 C++ 내부에서 변환.
+    // Python 루프 없이 단일 C++ 루프로 처리 — row-by-row ingest 대비 ~100x.
+    //
+    // price_scale: 소수점 변환 계수 (예: 100.0 → 센트 단위로 저장)
+    // vol_scale:   볼륨 변환 계수 (보통 1.0)
+    // -------------------------------------------------------------------------
+    void ingest_float_batch(py::object symbols_obj,
+                            py::object prices_obj,
+                            py::object volumes_obj,
+                            double price_scale = 1.0,
+                            double vol_scale   = 1.0)
+    {
+        py::array_t<int64_t, py::array::forcecast> syms(symbols_obj);
+        py::array_t<double,  py::array::forcecast> prs(prices_obj);
+        py::array_t<double,  py::array::forcecast> vols(volumes_obj);
+
+        auto s_buf = syms.request();
+        auto p_buf = prs.request();
+        auto v_buf = vols.request();
+
+        size_t n = static_cast<size_t>(s_buf.size);
+        if (static_cast<size_t>(p_buf.size) != n ||
+            static_cast<size_t>(v_buf.size) != n) {
+            throw std::invalid_argument(
+                "ingest_float_batch: symbols, prices, volumes must have the same length");
+        }
+
+        const int64_t* sym_ptr = static_cast<int64_t*>(s_buf.ptr);
+        const double*  prc_ptr = static_cast<double*>(p_buf.ptr);
+        const double*  vol_ptr = static_cast<double*>(v_buf.ptr);
+
+        int64_t ts = now_ns();
+        for (size_t i = 0; i < n; ++i) {
+            TickMessage msg{};
+            msg.symbol_id = static_cast<uint32_t>(sym_ptr[i]);
+            msg.price     = static_cast<int64_t>(prc_ptr[i] * price_scale);
+            msg.volume    = static_cast<int64_t>(vol_ptr[i] * vol_scale);
+            msg.recv_ts   = ts + static_cast<int64_t>(i);
+            msg.msg_type  = 0;
+            if (!pipeline_->ingest_tick(msg)) {
+                throw std::runtime_error(
+                    "ingest_float_batch: queue full at index " + std::to_string(i));
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // drain: ticks_ingested == ticks_stored 될 때까지 대기
     //
     // queue_depth == 0 체크만으론 부족하다:
@@ -326,7 +375,16 @@ PYBIND11_MODULE(apex, m) {
              "단건 틱 인제스트")
         .def("ingest_batch", &PyPipeline::ingest_batch,
              py::arg("symbols"), py::arg("prices"), py::arg("volumes"),
-             "배치 틱 인제스트 (numpy array 또는 list)")
+             "배치 틱 인제스트 (numpy int64 array 또는 list)")
+        .def("ingest_float_batch", &PyPipeline::ingest_float_batch,
+             py::arg("symbols"),
+             py::arg("prices"),
+             py::arg("volumes"),
+             py::arg("price_scale") = 1.0,
+             py::arg("vol_scale")   = 1.0,
+             "배치 인제스트 (float64 가격/볼륨).\n"
+             "price_scale: float→int64 변환 계수 (예: 100.0 = 센트 단위)\n"
+             "Polars/pandas float 컬럼을 직접 전달 가능 — Python 루프 없음")
         .def("drain", &PyPipeline::drain,
              "큐의 틱을 동기적으로 스토리지에 반영. 반환값: 저장된 틱 수")
 

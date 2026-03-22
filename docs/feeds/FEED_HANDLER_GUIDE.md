@@ -1,18 +1,19 @@
-## APEX-DB Feed Handler 가이드
+## APEX-DB Feed Handler Guide
 
-Feed Handler는 거래소, 데이터 벤더, Feed Handler로부터 실시간 마켓 데이터를 수신하여 APEX-DB로 인제스션하는 컴포넌트입니다.
+Feed Handlers are components that receive real-time market data from exchanges, data vendors,
+and feed providers and ingest it into APEX-DB.
 
 ---
 
-## 지원 프로토콜
+## Supported Protocols
 
 ### 1. FIX (Financial Information eXchange)
-**용도:** Bloomberg, Reuters, ICE 등 데이터 벤더 연동
+**Purpose:** Integration with data vendors such as Bloomberg, Reuters, ICE
 
 ```cpp
 #include "apex/feeds/fix_feed_handler.h"
 
-// FIX 설정
+// FIX configuration
 feeds::FeedConfig config;
 config.host = "bloomberg-feed.com";
 config.port = 5000;
@@ -21,35 +22,35 @@ config.password = "password";
 
 feeds::FIXFeedHandler feed_handler(config, &mapper);
 
-// Tick 콜백
+// Tick callback
 feed_handler.on_tick([&](const feeds::Tick& tick) {
     pipeline.ingest(tick.symbol_id, tick.price, tick.volume, tick.timestamp_ns);
 });
 
-// 연결 및 구독
+// Connect and subscribe
 feed_handler.connect();
 feed_handler.subscribe({"AAPL", "MSFT", "TSLA"});
 ```
 
-**특징:**
-- TCP 기반
-- 자동 재연결
-- Heartbeat 유지
-- 지연시간: 100μs-1ms
+**Characteristics:**
+- TCP-based
+- Automatic reconnection
+- Heartbeat maintenance
+- Latency: 100μs-1ms
 
 ---
 
-### 2. Multicast UDP (거래소 직접 연결)
-**용도:** NASDAQ, NYSE, CME 등 거래소 직접 연결
+### 2. Multicast UDP (Direct Exchange Connectivity)
+**Purpose:** Direct connection to exchanges such as NASDAQ, NYSE, CME
 
 ```cpp
 #include "apex/feeds/multicast_receiver.h"
 
-// 멀티캐스트 수신
+// Multicast reception
 feeds::MulticastReceiver receiver("239.1.1.1", 10000);
 
 receiver.on_packet([&](const uint8_t* data, size_t len) {
-    // 프로토콜별 파서로 처리
+    // Process with protocol-specific parser
     parser.parse_packet(data, len);
 });
 
@@ -57,16 +58,16 @@ receiver.join();
 receiver.start();
 ```
 
-**특징:**
-- UDP 멀티캐스트
-- 초저지연: 1-5μs
-- 패킷 손실 가능 (재전송 없음)
-- 대용량 처리: 10+ Gbps
+**Characteristics:**
+- UDP multicast
+- Ultra-low latency: 1-5μs
+- Packet loss possible (no retransmission)
+- High throughput: 10+ Gbps
 
 ---
 
 ### 3. NASDAQ ITCH 5.0
-**용도:** NASDAQ TotalView 마켓 데이터
+**Purpose:** NASDAQ TotalView market data
 
 ```cpp
 #include "apex/feeds/nasdaq_itch.h"
@@ -84,26 +85,26 @@ receiver.on_packet([&](const uint8_t* data, size_t len) {
 });
 ```
 
-**지원 메시지:**
+**Supported messages:**
 - Add Order (Type A)
 - Order Executed (Type E)
 - Trade (Type P)
 - Order Cancel (Type X)
 
-**특징:**
-- 바이너리 프로토콜 (packed structs)
+**Characteristics:**
+- Binary protocol (packed structs)
 - Big-endian
-- 파싱 속도: ~500ns per message
+- Parsing speed: ~500ns per message
 
 ---
 
-### 4. Binance WebSocket (암호화폐)
-**용도:** Binance Spot/Futures 실시간 데이터
+### 4. Binance WebSocket (Cryptocurrency)
+**Purpose:** Binance Spot/Futures real-time data
 
 ```cpp
 #include "apex/feeds/binance_feed.h"
 
-// TODO: WebSocket 라이브러리 통합 필요
+// TODO: WebSocket library integration needed
 feeds::BinanceFeedHandler feed_handler(config, &mapper);
 
 feed_handler.on_tick([&](const feeds::Tick& tick) {
@@ -114,15 +115,15 @@ feed_handler.connect();
 feed_handler.subscribe({"btcusdt@trade", "ethusdt@trade"});
 ```
 
-**스트림 타입:**
-- `@trade` - 실시간 체결
-- `@aggTrade` - 집계 체결
-- `@depth` - 호가창
-- `@bookTicker` - 최우선 호가
+**Stream types:**
+- `@trade` - real-time trades
+- `@aggTrade` - aggregated trades
+- `@depth` - order book
+- `@bookTicker` - best bid/ask
 
 ---
 
-## 아키텍처
+## Architecture
 
 ```
 ┌────────────────────┐
@@ -131,7 +132,7 @@ feed_handler.subscribe({"btcusdt@trade", "ethusdt@trade"});
 └─────────┬──────────┘
           ↓
 ┌─────────▼──────────┐
-│ Feed Handler       │  프로토콜 파서
+│ Feed Handler       │  Protocol parser
 │ (FIX, ITCH, etc)   │  - FIX: tag=value
 └─────────┬──────────┘  - ITCH: binary
           ↓             - WebSocket: JSON
@@ -147,62 +148,62 @@ feed_handler.subscribe({"btcusdt@trade", "ethusdt@trade"});
 
 ---
 
-## 성능 최적화
+## Performance Optimization
 
-### 1. Zero-Copy 파싱
+### 1. Zero-Copy Parsing
 ```cpp
-// ❌ 나쁜 예: 복사
+// Bad: copy
 std::string msg_copy(data, len);
 parser.parse(msg_copy);
 
-// ✅ 좋은 예: zero-copy
-parser.parse(data, len);  // 포인터만 전달
+// Good: zero-copy
+parser.parse(data, len);  // pass pointer only
 ```
 
-### 2. SIMD 배치 파싱
+### 2. SIMD Batch Parsing
 ```cpp
-// ITCH 메시지 배치 파싱
+// ITCH message batch parsing
 auto ticks = parser.parse_batch_simd(data, len);  // AVX-512
-pipeline.batch_ingest(ticks);  // 배치 인제스션
+pipeline.batch_ingest(ticks);  // batch ingestion
 ```
 
 ### 3. CPU Pinning
 ```cpp
-// Feed Handler 전용 코어 할당
+// Dedicate a core to Feed Handler
 cpu_set_t cpuset;
 CPU_ZERO(&cpuset);
-CPU_SET(0, &cpuset);  // 코어 0 전용
+CPU_SET(0, &cpuset);  // core 0 dedicated
 pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 ```
 
 ---
 
-## 프로덕션 체크리스트
+## Production Checklist
 
-### 설정
-- [ ] CPU pinning (코어 0-1 전용)
+### Configuration
+- [ ] CPU pinning (cores 0-1 dedicated)
 - [ ] Huge pages (2MB pages)
-- [ ] IRQ affinity (네트워크 카드 → 전용 코어)
+- [ ] IRQ affinity (NIC → dedicated core)
 - [ ] UDP receive buffer (2MB+)
 - [ ] Kernel bypass (Solarflare, Mellanox)
 
-### 모니터링
-- [ ] 틱 처리량 (ticks/sec)
-- [ ] 패킷 드롭률
-- [ ] 파싱 에러율
-- [ ] 지연시간 (end-to-end)
+### Monitoring
+- [ ] Tick throughput (ticks/sec)
+- [ ] Packet drop rate
+- [ ] Parse error rate
+- [ ] Latency (end-to-end)
 
-### 장애 대응
-- [ ] 재연결 로직 (FIX)
-- [ ] Gap fill (시퀀스 갭 감지)
+### Failure Handling
+- [ ] Reconnect logic (FIX)
+- [ ] Gap fill (sequence gap detection)
 - [ ] Failover (Primary/Secondary Feed)
-- [ ] 알림 (PagerDuty)
+- [ ] Alerting (PagerDuty)
 
 ---
 
-## 예제
+## Examples
 
-### 완전한 통합 예제
+### Complete Integration Example
 ```bash
 cd /home/ec2-user/apex-db
 mkdir build && cd build
@@ -215,61 +216,61 @@ make feed_handler_integration
 # NASDAQ ITCH
 ./feed_handler_integration itch
 
-# 성능 테스트
+# Performance test
 ./feed_handler_integration perf
 ```
 
-**예제 파일:**
+**Example file:**
 - `examples/feed_handler_integration.cpp`
 
 ---
 
-## 향후 계획
+## Roadmap
 
-### Phase 1 (완료)
-- [x] FIX 프로토콜 파서
-- [x] Multicast UDP 리시버
-- [x] NASDAQ ITCH 파서
-- [x] 통합 예제
+### Phase 1 (Complete)
+- [x] FIX protocol parser
+- [x] Multicast UDP receiver
+- [x] NASDAQ ITCH parser
+- [x] Integration example
 
 ### Phase 2 (TODO)
 - [ ] CME SBE (Simple Binary Encoding)
-- [ ] NYSE Pillar 프로토콜
-- [ ] Binance WebSocket (실제 구현)
-- [ ] Gap fill / 재전송 로직
+- [ ] NYSE Pillar protocol
+- [ ] Binance WebSocket (actual implementation)
+- [ ] Gap fill / retransmission logic
 
 ### Phase 3 (TODO)
-- [ ] SIMD 배치 파싱
+- [ ] SIMD batch parsing
 - [ ] Kernel bypass (DPDK)
-- [ ] GPU 오프로딩
-- [ ] 멀티캐스트 Failover
+- [ ] GPU offloading
+- [ ] Multicast Failover
 
 ---
 
-## 비즈니스 가치
+## Business Value
 
-### HFT 시장 진입
-✅ **Before:** HTTP API만 지원 (ms 단위 지연)
-✅ **After:** UDP Multicast + FIX (μs 단위 지연)
+### HFT Market Entry
+✅ **Before:** HTTP API only (ms-level latency)
+✅ **After:** UDP Multicast + FIX (μs-level latency)
 
 **ROI:**
-- HFT 고객 타겟 가능: $2.5M-12M 시장
-- kdb+ 완전 대체: FIX + ITCH 지원
-- 데이터 벤더 통합: Bloomberg, Reuters
+- HFT customer targeting possible: $2.5M-12M market
+- Full kdb+ replacement: FIX + ITCH support
+- Data vendor integration: Bloomberg, Reuters
 
-### 경쟁 우위
-| 항목 | kdb+ | ClickHouse | APEX-DB |
+### Competitive Advantages
+| Item | kdb+ | ClickHouse | APEX-DB |
 |------|------|------------|---------|
-| FIX 지원 | ✅ (외부) | ❌ | ✅ Native |
-| ITCH 지원 | ✅ (외부) | ❌ | ✅ Native |
-| 멀티캐스트 | ✅ | ❌ | ✅ |
-| 성능 | 기준 | N/A | 동등 |
+| FIX support | ✅ (external) | ❌ | ✅ Native |
+| ITCH support | ✅ (external) | ❌ | ✅ Native |
+| Multicast | ✅ | ❌ | ✅ |
+| Performance | baseline | N/A | equivalent |
 
 ---
 
-## 지원
+## Support
 
-**문제 발생 시:**
+**For issues:**
 - GitHub Issues: https://github.com/apex-db/apex-db/issues
-- 예제: `/home/ec2-user/apex-db/examples/feed_handler_integration.cpp`
-- 문서: `/home/ec2-user/apex-db/docs/feeds/`
+- Examples: `/home/ec2-user/apex-db/examples/feed_handler_integration.cpp`
+- Documentation: `/home/ec2-user/apex-db/docs/feeds/`

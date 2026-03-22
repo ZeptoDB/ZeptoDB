@@ -24,6 +24,8 @@ from .connection import ApexConnection, connect
 from .dataframe import (
     from_pandas,
     from_polars,
+    from_polars_arrow,
+    from_arrow,
     to_pandas,
     to_polars,
     ingest_pandas,
@@ -39,6 +41,8 @@ __all__ = [
     "ApexConnection",
     "from_pandas",
     "from_polars",
+    "from_polars_arrow",
+    "from_arrow",
     "to_pandas",
     "to_polars",
     "ingest_pandas",
