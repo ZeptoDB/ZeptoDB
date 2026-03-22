@@ -91,6 +91,11 @@ enum class WJAggFunc {
     MAX,
 };
 
+// Forward declarations for types referenced before their full definition.
+struct ArithExpr;
+struct CaseWhenExpr;
+struct Expr;
+
 // ============================================================================
 // SelectExpr: SELECT 목록의 단일 항목
 // ============================================================================
@@ -115,6 +120,60 @@ struct SelectExpr {
     double      ema_alpha      = 0.0;   // EMA alpha 파라미터 (0이면 period 기반)
     int64_t     ema_period     = 0;     // EMA period (alpha = 2/(period+1))
     std::optional<WindowSpec> window_spec;  // OVER (...)
+
+    // Arithmetic expression: price * volume AS notional, etc.
+    // Non-null overrides column/agg for value computation.
+    std::shared_ptr<ArithExpr>   arith_expr;
+
+    // CASE WHEN expression (non-null overrides all above for value computation)
+    std::shared_ptr<CaseWhenExpr> case_when;
+};
+
+// ============================================================================
+// ArithOp: Arithmetic operator
+// ============================================================================
+enum class ArithOp { ADD, SUB, MUL, DIV };
+
+// ============================================================================
+// ArithExpr: Value expression node — column ref, integer literal, or binary op
+// Supports: price * volume, price - 15000, (close - open) / open, etc.
+// ============================================================================
+struct ArithExpr {
+    enum class Kind { COLUMN, LITERAL, BINARY, FUNC };
+    Kind kind = Kind::COLUMN;
+
+    // COLUMN: qualified column reference
+    std::string table_alias;
+    std::string column;
+
+    // LITERAL: integer constant
+    int64_t literal = 0;
+
+    // BINARY: left op right
+    ArithOp arith_op = ArithOp::MUL;
+    std::shared_ptr<ArithExpr> left;
+    std::shared_ptr<ArithExpr> right;
+
+    // FUNC: date/time function call
+    // func_name: "date_trunc" | "now" | "epoch_s" | "epoch_ms"
+    // func_unit: unit string for date_trunc ("ns","us","ms","s","min","hour","day","week")
+    // func_arg:  argument expression (nullptr for NOW())
+    std::string func_name;
+    std::string func_unit;
+    std::shared_ptr<ArithExpr> func_arg;
+};
+
+// ============================================================================
+// CaseWhenExpr: CASE WHEN cond THEN val [...] [ELSE val] END
+// ============================================================================
+struct CaseWhenBranch {
+    std::shared_ptr<Expr>      when_cond; // WHEN condition (uses Expr tree)
+    std::shared_ptr<ArithExpr> then_val;  // THEN value expression
+};
+
+struct CaseWhenExpr {
+    std::vector<CaseWhenBranch> branches;
+    std::shared_ptr<ArithExpr>  else_val; // ELSE value (nullptr → 0)
 };
 
 // ============================================================================
@@ -131,6 +190,10 @@ struct Expr {
         BETWEEN,     // col BETWEEN lo AND hi
         AND,         // left AND right
         OR,          // left OR right
+        NOT,         // NOT expr  (left = subexpr)
+        IN,          // col IN (v1, v2, ...)
+        IS_NULL,     // col IS [NOT] NULL  (negated=true → IS NOT NULL)
+        LIKE,        // col LIKE 'pattern'  (negated=true → NOT LIKE)
     };
 
     Kind kind = Kind::COMPARE;
@@ -147,7 +210,16 @@ struct Expr {
     int64_t     lo = 0;
     int64_t     hi = 0;
 
-    // AND / OR 결합
+    // IN 필드: col IN (v1, v2, ...)
+    std::vector<int64_t> in_values;
+
+    // LIKE 필드: col LIKE 'pattern'
+    std::string like_pattern;
+
+    // IS_NULL / NOT / LIKE: negated=true → IS NOT NULL / NOT LIKE
+    bool negated = false;
+
+    // AND / OR / NOT 결합
     std::shared_ptr<Expr> left;
     std::shared_ptr<Expr> right;
 };
@@ -227,6 +299,12 @@ struct SelectStmt {
     std::optional<GroupByClause> group_by;     // GROUP BY 절
     std::optional<OrderByClause> order_by;     // ORDER BY 절
     std::optional<int64_t>      limit;         // LIMIT n
+    std::optional<WhereClause>  having;        // HAVING 절 (GROUP BY 이후 집계 필터)
+
+    // Set operations: UNION [ALL] / INTERSECT / EXCEPT
+    enum class SetOp { NONE, UNION_ALL, UNION_DISTINCT, INTERSECT, EXCEPT };
+    SetOp                       set_op = SetOp::NONE;
+    std::shared_ptr<SelectStmt> rhs;           // right-hand side of set operation
 };
 
 } // namespace apex::sql

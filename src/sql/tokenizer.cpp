@@ -22,6 +22,9 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "AND")         return TokenType::AND;
     if (upper == "OR")          return TokenType::OR;
     if (upper == "NOT")         return TokenType::NOT;
+    if (upper == "IN")          return TokenType::IN;
+    if (upper == "IS")          return TokenType::IS;
+    if (upper == "NULL")        return TokenType::NULL_KW;
     if (upper == "GROUP")       return TokenType::GROUP;
     if (upper == "BY")          return TokenType::BY;
     if (upper == "ORDER")       return TokenType::ORDER;
@@ -68,6 +71,24 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "DELTA")       return TokenType::DELTA;
     if (upper == "RATIO")       return TokenType::RATIO;
     if (upper == "WINDOW")      return TokenType::WINDOW;
+    // CASE WHEN 키워드
+    if (upper == "CASE")        return TokenType::CASE;
+    if (upper == "WHEN")        return TokenType::WHEN;
+    if (upper == "THEN")        return TokenType::THEN;
+    if (upper == "ELSE")        return TokenType::ELSE;
+    if (upper == "END")         return TokenType::CASE_END;
+    // 날짜/시간 함수
+    if (upper == "DATE_TRUNC")  return TokenType::DATE_TRUNC;
+    if (upper == "NOW")         return TokenType::NOW;
+    if (upper == "EPOCH_S")     return TokenType::EPOCH_S;
+    if (upper == "EPOCH_MS")    return TokenType::EPOCH_MS;
+    // 문자열 연산자
+    if (upper == "LIKE")        return TokenType::LIKE;
+    // 집합 연산
+    if (upper == "UNION")       return TokenType::UNION;
+    if (upper == "ALL")         return TokenType::ALL;
+    if (upper == "INTERSECT")   return TokenType::INTERSECT;
+    if (upper == "EXCEPT")      return TokenType::EXCEPT;
     // 일반 식별자
     return TokenType::IDENT;
 }
@@ -230,6 +251,7 @@ std::vector<Token> Tokenizer::tokenize(const std::string& sql) {
             case '*': tokens.push_back({TokenType::STAR,  "*"}); break;
             case '+': tokens.push_back({TokenType::PLUS,  "+"}); break;
             case '-': tokens.push_back({TokenType::MINUS, "-"}); break;
+            case '/': tokens.push_back({TokenType::SLASH, "/"}); break;
             case '=': tokens.push_back({TokenType::EQ,    "="}); break;
             case '>':
                 if (!at_end() && peek() == '=') {

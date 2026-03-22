@@ -52,6 +52,26 @@ enum class TokenType {
     RATIO,      // RATIO(col) OVER (...) — 행간 비율
     WINDOW,     // WINDOW JOIN 에 사용
 
+    // 날짜/시간 함수 키워드
+    DATE_TRUNC, // DATE_TRUNC('unit', col)
+    NOW,        // NOW()
+    EPOCH_S,    // EPOCH_S(col) — nanoseconds → seconds
+    EPOCH_MS,   // EPOCH_MS(col) — nanoseconds → milliseconds
+
+    // 문자열 연산자
+    LIKE,       // col LIKE 'pattern'
+
+    // 집합 연산
+    UNION,      // UNION [ALL]
+    ALL,        // UNION ALL
+    INTERSECT,  // INTERSECT
+    EXCEPT,     // EXCEPT
+
+    // 집합 / NULL 연산자
+    IN,       // IN (...)
+    IS,       // IS [NOT] NULL
+    NULL_KW,  // NULL keyword
+
     // 비교 연산자
     GT,   // >
     LT,   // <
@@ -63,6 +83,14 @@ enum class TokenType {
     // 산술 연산자
     PLUS,     // +
     MINUS,    // - (이항)
+    SLASH,    // /
+
+    // CASE WHEN 키워드
+    CASE,     // CASE
+    WHEN,     // WHEN
+    THEN,     // THEN
+    ELSE,     // ELSE
+    CASE_END, // END (CASE ... END 의 닫는 키워드)
 
     // 구분자/특수문자
     COMMA,    // ,

@@ -47,10 +47,19 @@ private:
     OrderByClause   parse_order_by();
     WindowSpec      parse_window_spec();  // OVER (...) 파싱
 
+    // ====== 산술 표현식 파싱 (SELECT 컬럼 값식) ======
+    std::shared_ptr<ArithExpr> parse_arith_expr_node(); // + and -
+    std::shared_ptr<ArithExpr> parse_arith_term();      // * and /
+    std::shared_ptr<ArithExpr> parse_arith_primary();   // column, literal, (expr)
+
+    // ====== CASE WHEN 파싱 ======
+    std::shared_ptr<CaseWhenExpr> parse_case_when_expr();
+
     // ====== 헬퍼 ======
     CompareOp       parse_compare_op();
     std::string     parse_qualified_name(std::string& out_alias, std::string& out_col);
     int64_t         parse_integer_literal();
+    std::string     parse_string_literal();   // 'unit' → "unit" without quotes
 };
 
 } // namespace apex::sql

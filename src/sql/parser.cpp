@@ -64,7 +64,25 @@ SelectStmt Parser::parse(const std::string& sql) {
     Tokenizer tok;
     tokens_ = tok.tokenize(sql);
     pos_ = 0;
-    return parse_select();
+    SelectStmt stmt = parse_select();
+
+    // UNION [ALL] / INTERSECT / EXCEPT chaining
+    while (check(TokenType::UNION) || check(TokenType::INTERSECT) || check(TokenType::EXCEPT)) {
+        SelectStmt::SetOp op;
+        if (match(TokenType::UNION)) {
+            op = match(TokenType::ALL)
+                ? SelectStmt::SetOp::UNION_ALL
+                : SelectStmt::SetOp::UNION_DISTINCT;
+        } else if (match(TokenType::INTERSECT)) {
+            op = SelectStmt::SetOp::INTERSECT;
+        } else {
+            advance(); // EXCEPT
+            op = SelectStmt::SetOp::EXCEPT;
+        }
+        stmt.set_op = op;
+        stmt.rhs    = std::make_shared<SelectStmt>(parse_select());
+    }
+    return stmt;
 }
 
 // ============================================================================
@@ -114,7 +132,10 @@ SelectStmt Parser::parse_select() {
         && current().type != TokenType::LIMIT
         && current().type != TokenType::INNER
         && current().type != TokenType::LEFT
-        && current().type != TokenType::WINDOW) {
+        && current().type != TokenType::WINDOW
+        && current().type != TokenType::UNION
+        && current().type != TokenType::INTERSECT
+        && current().type != TokenType::EXCEPT) {
         stmt.from_alias = current().value;
         advance();
     }
@@ -136,6 +157,12 @@ SelectStmt Parser::parse_select() {
         advance();
         expect(TokenType::BY, "BY");
         stmt.group_by = parse_group_by();
+    }
+
+    // HAVING (GROUP BY 이후 집계 필터)
+    if (check(TokenType::HAVING)) {
+        advance();
+        stmt.having = parse_where();
     }
 
     // ORDER BY
@@ -185,10 +212,15 @@ SelectExpr Parser::parse_select_expr() {
             expect(TokenType::COMMA, ",");
             expr.xbar_bucket = parse_integer_literal();
         } else {
-            std::string alias, col;
-            parse_qualified_name(alias, col);
-            expr.table_alias = alias;
-            expr.column = col;
+            // SUM/AVG/MIN/MAX/FIRST/LAST: allow arithmetic expression
+            // e.g. SUM(price * volume), AVG(price - 15000)
+            auto arith = parse_arith_expr_node();
+            if (arith->kind == ArithExpr::Kind::COLUMN && !arith->left) {
+                expr.table_alias = arith->table_alias;
+                expr.column      = arith->column;
+            } else {
+                expr.arith_expr = std::move(arith);
+            }
         }
         expect(TokenType::RPAREN, ")");
     };
@@ -283,6 +315,13 @@ SelectExpr Parser::parse_select_expr() {
             expr.is_star = true;
             break;
 
+        case TokenType::CASE: {
+            // CASE WHEN cond THEN val [...] [ELSE val] END
+            advance(); // consume CASE
+            expr.case_when = parse_case_when_expr();
+            break;
+        }
+
         default: {
             // 일반 컬럼: [alias.]col
             // 단, wj_avg(col), wj_sum(col), wj_count(col) 등 처리
@@ -312,14 +351,20 @@ SelectExpr Parser::parse_select_expr() {
                     break;
                 }
             }
-            // 일반 컬럼 처리
-            std::string alias, col;
-            parse_qualified_name(alias, col);
-            expr.table_alias = alias;
-            if (col == "*") {
-                expr.is_star = true;
+            // Plain column or arithmetic expression
+            // parse_arith_expr_node handles single column ref as trivial case
+            auto arith = parse_arith_expr_node();
+            if (arith->kind == ArithExpr::Kind::COLUMN && !arith->left) {
+                // Simple column ref (no arithmetic)
+                expr.table_alias = arith->table_alias;
+                if (arith->column == "*") {
+                    expr.is_star = true;
+                } else {
+                    expr.column = arith->column;
+                }
             } else {
-                expr.column = col;
+                // Arithmetic expression: price * volume, price - 15000, etc.
+                expr.arith_expr = std::move(arith);
             }
             break;
         }
@@ -640,12 +685,13 @@ std::shared_ptr<Expr> Parser::parse_and_expr() {
 // 기본 조건 표현식
 // ============================================================================
 std::shared_ptr<Expr> Parser::parse_primary_expr() {
-    // NOT 지원 (NOT col = val)
+    // NOT expr
     if (match(TokenType::NOT)) {
-        // 간단히 NOT을 무시하거나 NE로 처리
-        // 여기서는 간단히 하위 표현식 파싱 후 반환
         auto sub = parse_primary_expr();
-        return sub;
+        auto node = std::make_shared<Expr>();
+        node->kind  = Expr::Kind::NOT;
+        node->left  = std::move(sub);
+        return node;
     }
 
     // 괄호
@@ -655,7 +701,7 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
         return sub;
     }
 
-    // col [op val | BETWEEN lo AND hi]
+    // col [op val | BETWEEN lo AND hi | IN (...) | IS [NOT] NULL]
     auto node = std::make_shared<Expr>();
     parse_qualified_name(node->table_alias, node->column);
 
@@ -665,6 +711,73 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
         node->lo   = parse_integer_literal();
         expect(TokenType::AND, "AND");
         node->hi   = parse_integer_literal();
+        return node;
+    }
+
+    // IN (v1, v2, ...)
+    if (match(TokenType::IN)) {
+        node->kind = Expr::Kind::IN;
+        expect(TokenType::LPAREN, "(");
+        // Parse comma-separated integer/float literals
+        if (check(TokenType::NUMBER)) {
+            std::string s = current().value;
+            advance();
+            node->in_values.push_back(
+                s.find('.') != std::string::npos
+                    ? static_cast<int64_t>(std::stod(s))
+                    : std::stoll(s));
+        } else if (check(TokenType::STRING)) {
+            // String literals: attempt numeric parse; keep 0 if not numeric
+            std::string s = current().value;
+            advance();
+            try { node->in_values.push_back(std::stoll(s)); }
+            catch (...) { node->in_values.push_back(0); }
+        }
+        while (match(TokenType::COMMA)) {
+            if (check(TokenType::NUMBER)) {
+                std::string s = current().value;
+                advance();
+                node->in_values.push_back(
+                    s.find('.') != std::string::npos
+                        ? static_cast<int64_t>(std::stod(s))
+                        : std::stoll(s));
+            } else if (check(TokenType::STRING)) {
+                std::string s = current().value;
+                advance();
+                try { node->in_values.push_back(std::stoll(s)); }
+                catch (...) { node->in_values.push_back(0); }
+            } else {
+                break;
+            }
+        }
+        expect(TokenType::RPAREN, ")");
+        return node;
+    }
+
+    // IS [NOT] NULL
+    if (match(TokenType::IS)) {
+        node->kind = Expr::Kind::IS_NULL;
+        if (match(TokenType::NOT)) {
+            node->negated = true;
+        }
+        expect(TokenType::NULL_KW, "NULL");
+        return node;
+    }
+
+    // [NOT] LIKE 'pattern'
+    if (check(TokenType::LIKE)) {
+        advance();
+        node->kind         = Expr::Kind::LIKE;
+        node->negated      = false;
+        node->like_pattern = parse_string_literal();
+        return node;
+    }
+    if (check(TokenType::NOT) && peek().type == TokenType::LIKE) {
+        advance(); // consume NOT
+        advance(); // consume LIKE
+        node->kind         = Expr::Kind::LIKE;
+        node->negated      = true;
+        node->like_pattern = parse_string_literal();
         return node;
     }
 
@@ -824,6 +937,152 @@ int64_t Parser::parse_integer_literal() {
     }
     throw std::runtime_error(
         "Parser: expected integer literal, got '" + current().value + "'");
+}
+
+// ============================================================================
+// 문자열 리터럴 파싱: 'value' → "value" (quotes stripped)
+// ============================================================================
+std::string Parser::parse_string_literal() {
+    if (check(TokenType::STRING)) {
+        std::string s = current().value;
+        advance();
+        return s;
+    }
+    throw std::runtime_error(
+        "Parser: expected string literal, got '" + current().value + "'");
+}
+
+// ============================================================================
+// Arithmetic expression parsing (value expressions in SELECT list)
+// Precedence: primary > term (* /) > expr (+ -)
+// ============================================================================
+
+// Primary: column ref, integer literal, parenthesized expression, or function call
+std::shared_ptr<ArithExpr> Parser::parse_arith_primary() {
+    auto node = std::make_shared<ArithExpr>();
+
+    if (match(TokenType::LPAREN)) {
+        node = parse_arith_expr_node();
+        expect(TokenType::RPAREN, ")");
+        return node;
+    }
+
+    if (check(TokenType::NUMBER)) {
+        node->kind = ArithExpr::Kind::LITERAL;
+        std::string s = current().value;
+        advance();
+        node->literal = s.find('.') != std::string::npos
+            ? static_cast<int64_t>(std::stod(s))
+            : std::stoll(s);
+        return node;
+    }
+
+    // DATE_TRUNC('unit', expr)
+    if (check(TokenType::DATE_TRUNC)) {
+        advance();
+        expect(TokenType::LPAREN, "(");
+        node->kind      = ArithExpr::Kind::FUNC;
+        node->func_name = "date_trunc";
+        node->func_unit = parse_string_literal();
+        expect(TokenType::COMMA, ",");
+        node->func_arg  = parse_arith_expr_node();
+        expect(TokenType::RPAREN, ")");
+        return node;
+    }
+
+    // NOW()
+    if (check(TokenType::NOW)) {
+        advance();
+        expect(TokenType::LPAREN, "(");
+        expect(TokenType::RPAREN, ")");
+        node->kind      = ArithExpr::Kind::FUNC;
+        node->func_name = "now";
+        return node;
+    }
+
+    // EPOCH_S(expr)
+    if (check(TokenType::EPOCH_S)) {
+        advance();
+        expect(TokenType::LPAREN, "(");
+        node->kind      = ArithExpr::Kind::FUNC;
+        node->func_name = "epoch_s";
+        node->func_arg  = parse_arith_expr_node();
+        expect(TokenType::RPAREN, ")");
+        return node;
+    }
+
+    // EPOCH_MS(expr)
+    if (check(TokenType::EPOCH_MS)) {
+        advance();
+        expect(TokenType::LPAREN, "(");
+        node->kind      = ArithExpr::Kind::FUNC;
+        node->func_name = "epoch_ms";
+        node->func_arg  = parse_arith_expr_node();
+        expect(TokenType::RPAREN, ")");
+        return node;
+    }
+
+    // Column reference: [alias.]col
+    node->kind = ArithExpr::Kind::COLUMN;
+    parse_qualified_name(node->table_alias, node->column);
+    return node;
+}
+
+// Term: primary (* primary | / primary)*
+std::shared_ptr<ArithExpr> Parser::parse_arith_term() {
+    auto left = parse_arith_primary();
+    while (check(TokenType::STAR) || check(TokenType::SLASH)) {
+        ArithOp op = check(TokenType::STAR) ? ArithOp::MUL : ArithOp::DIV;
+        advance();
+        auto right = parse_arith_primary();
+        auto node = std::make_shared<ArithExpr>();
+        node->kind = ArithExpr::Kind::BINARY;
+        node->arith_op = op;
+        node->left = std::move(left);
+        node->right = std::move(right);
+        left = std::move(node);
+    }
+    return left;
+}
+
+// Expr: term (+ term | - term)*
+std::shared_ptr<ArithExpr> Parser::parse_arith_expr_node() {
+    auto left = parse_arith_term();
+    while (check(TokenType::PLUS) || check(TokenType::MINUS)) {
+        ArithOp op = check(TokenType::PLUS) ? ArithOp::ADD : ArithOp::SUB;
+        advance();
+        auto right = parse_arith_term();
+        auto node = std::make_shared<ArithExpr>();
+        node->kind = ArithExpr::Kind::BINARY;
+        node->arith_op = op;
+        node->left = std::move(left);
+        node->right = std::move(right);
+        left = std::move(node);
+    }
+    return left;
+}
+
+// ============================================================================
+// CASE WHEN cond THEN val [WHEN cond THEN val ...] [ELSE val] END
+// ============================================================================
+std::shared_ptr<CaseWhenExpr> Parser::parse_case_when_expr() {
+    auto cwe = std::make_shared<CaseWhenExpr>();
+
+    while (check(TokenType::WHEN)) {
+        advance(); // consume WHEN
+        CaseWhenBranch branch;
+        branch.when_cond = parse_expr();         // full condition expression
+        expect(TokenType::THEN, "THEN");
+        branch.then_val = parse_arith_expr_node(); // value expression
+        cwe->branches.push_back(std::move(branch));
+    }
+
+    if (match(TokenType::ELSE)) {
+        cwe->else_val = parse_arith_expr_node();
+    }
+
+    expect(TokenType::CASE_END, "END");
+    return cwe;
 }
 
 } // namespace apex::sql
