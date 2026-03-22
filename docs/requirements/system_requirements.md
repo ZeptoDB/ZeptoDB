@@ -1,86 +1,104 @@
-# 차세대 HFT 인메모리 DB 시스템 요구사항 정의서
-# ⚠️ 최종 업데이트: 2026-03-22 (SQL/HTTP/JOIN/Window/병렬쿼리/금융함수 반영)
+# APEX-DB System Requirements
+
+*Version 2.0 — Last updated: 2026-03-22*
 
 ---
 
-## 1. 비즈니스 및 목표 시장
+## Functional Requirements
 
-### 1차 타겟 (HFT/금융)
-- 고빈도 매매(HFT), 퀀트 리서치, 리스크 관리, FDS
+### FR-1: Time-Series Ingestion
+- FR-1.1: Ingest > 1M ticks/sec sustained (**achieved: 5.52M/sec**)
+- FR-1.2: Lock-free MPMC ring buffer (no blocking in hot path)
+- FR-1.3: WAL for durability across restarts
+- FR-1.4: Feed handler support: FIX, NASDAQ ITCH, UDP multicast, WebSocket
 
-### 2차 타겟 (확장, 2026 추가)
-- **ClickHouse 대체**: 실시간 OLAP, 대시보드
-- **TSDb**: IoT, 인프라 모니터링
-- **ML Feature Store**: 실시간 피처 서빙
+### FR-2: Query Engine
+- FR-2.1: Standard SQL (SELECT / WHERE / GROUP BY / ORDER BY / LIMIT)
+- FR-2.2: ASOF JOIN (time-series join, O(n) two-pointer)
+- FR-2.3: Hash JOIN (equi-join)
+- FR-2.4: LEFT JOIN with NULL sentinel
+- FR-2.5: Window JOIN (wj) — time-window range join
+- FR-2.6: Window functions: SUM/AVG/MIN/MAX/ROW_NUMBER/RANK/DENSE_RANK/LAG/LEAD
+- FR-2.7: Financial functions: xbar, EMA, VWAP, DELTA, RATIO, FIRST, LAST
+- FR-2.8: Parallel query execution (scatter/gather, N threads)
 
-### 핵심 가치
-1. μs 레이턴시 (kdb+ 동등 이상)
-2. Python ↔ C++ 무번역 (Research to Production)
-3. SQL + HTTP API (범용 에코시스템 연결)
-4. Transport 교체 가능 (RDMA → CXL)
+### FR-3: Storage
+- FR-3.1: Column-oriented in-memory store (typed arrays)
+- FR-3.2: HDB disk persistence with LZ4 compression
+- FR-3.3: Partition-by-symbol routing (2ns overhead)
+- FR-3.4: Arena allocator — no malloc in hot path
 
----
+### FR-4: APIs
+- FR-4.1: HTTP API on port 8123 (ClickHouse wire protocol compatible)
+- FR-4.2: Python binding (pybind11, zero-copy numpy/Arrow, < 1μs)
+- FR-4.3: C++ API (direct struct access, lowest latency)
 
-## 2. 비기능 요구사항
+### FR-5: Distributed
+- FR-5.1: UCX transport (RDMA/InfiniBand/TCP)
+- FR-5.2: Shared memory transport (same-host, zero-copy IPC)
+- FR-5.3: Consistent hash partition router
+- FR-5.4: Health monitoring + cluster management
 
-- **N-1 초저지연**: filter 1M < 300μs, VWAP 1M < 600μs ✅ 달성
-- **N-2 Zero-Copy**: NIC→스토리지→Python 무복사 ✅ 달성
-- **N-3 Memory Disaggregation**: CXL/RDMA 모듈형 ✅ 설계 완료
-- **N-4 스토리지 모드**: In-Memory / Tiered / On-Disk ✅ 구현
-- **N-5 SIMD 가속**: AVX-512 / ARM SVE ✅ Highway 자동 디스패치
-- **N-6 SQL 호환**: ClickHouse 호환 SQL + HTTP ✅ 구현
-- **N-7 JOIN 지원**: ASOF, Hash, LEFT, Window JOIN ✅ 구현
-- **N-8 병렬 쿼리**: 멀티코어 활용, scatter/gather ✅ 구현 (3.48x@8T)
-- **N-9 kdb+ 호환**: xbar, EMA, Window JOIN, asof ✅ 93% 대체율
+### FR-6: Migration Toolkit
+- FR-6.1: kdb+ q language → APEX SQL transpiler (lexer/parser/transformer)
+- FR-6.2: kdb+ HDB splayed table loader (mmap, zero-copy)
+- FR-6.3: ClickHouse schema generator (MergeTree, codecs, LowCardinality)
+- FR-6.4: ClickHouse query translator (xbar, ASOF JOIN, argMin/argMax)
+- FR-6.5: DuckDB/Parquet exporter (SNAPPY/ZSTD, hive partitioning)
+- FR-6.6: TimescaleDB hypertable DDL + continuous aggregates generator
+- FR-6.7: `apex-migrate` CLI (5 modes: query/hdb/clickhouse/duckdb/timescaledb)
 
----
-
-## 3. 기능 요구사항
-
-### 3.1 스토리지 (Layer 1) ✅
-- Arrow 호환 컬럼형, Arena Allocator, Partition Manager
-- HDB flush (LZ4, 4.8GB/s), mmap zero-copy read
-
-### 3.2 인제스션 (Layer 2) ✅
-- MPMC Ring Buffer 65K slots, Lock-free
-- UCX/RDMA 커널 바이패스, WAL 복구 로그
-
-### 3.3 실행 엔진 (Layer 3) ✅
-- BitMask filter (11x speedup vs SelectionVector)
-- Highway SIMD (filter 3x, VWAP 2-3x)
-- LLVM JIT O3 (동적 쿼리 컴파일)
-- **JOIN 연산자**: ASOF O(n log m), Hash JOIN, LEFT JOIN (NULL 센티넬), Window JOIN O(n log m)
-- **병렬 쿼리**: LocalQueryScheduler (scatter/gather), WorkerPool (jthread), 3.48x@8T
-- **금융 함수**: xbar (시간 바), EMA, DELTA, RATIO, FIRST, LAST, wj_avg/sum/count/min/max
-
-### 3.4 SQL + API (Layer 4/5) ✅
-- Recursive descent SQL parser (1.5~4.5μs)
-- HTTP API port 8123 (ClickHouse 호환)
-- pybind11 Python 바인딩 + Lazy DSL
-- zero-copy numpy (522ns)
-
-### 3.5 분산 클러스터 (Layer 0) ✅ (단일노드 검증)
-- Transport 추상화 (UCX→CXL 1줄 교체)
-- Consistent Hashing (2ns routing)
-- Health Monitor (heartbeat + failover)
-- CXL 시뮬레이션 (200/300ns 레이턴시 검증)
+### FR-7: Production Operations
+- FR-7.1: Prometheus /metrics endpoint (OpenMetrics format)
+- FR-7.2: /health and /ready liveness/readiness endpoints
+- FR-7.3: Grafana dashboard + 9 alert rules
+- FR-7.4: Automated backup (HDB/WAL/Config → S3)
+- FR-7.5: systemd service with auto-restart
+- FR-7.6: Kubernetes deployment (HPA, PVC, LoadBalancer)
 
 ---
 
-## 4. 성능 목표 vs 달성
+## Non-Functional Requirements
 
-| 지표 | 목표 | 달성 | 상태 |
-|---|---|---|---|
-| 인제스션 | 5M/sec | **5.52M/sec** | ✅ |
-| filter 1M | < 300μs | **272μs** | ✅ |
-| VWAP 1M | < 600μs | **532μs** | ✅ |
-| **xbar (시간 바)** | < 30ms | **24ms (1M→3.3K)** | ✅ |
-| **EMA** | < 3ms | **2.2ms/1M** | ✅ |
-| **DELTA/RATIO** | < 3ms | **<2ms/1M** | ✅ |
-| **ASOF JOIN** | < 100ms | **53ms/1M** | ✅ |
-| **Hash JOIN** | < 100ms | **42ms/1M** | ✅ |
-| **GROUP BY 병렬 (8T)** | > 2x | **3.48x** | ✅ |
-| HDB flush | > 1GB/s | **4.8GB/s** | ✅ |
-| SQL parse | < 50μs | **1.5~4.5μs** | ✅ |
-| Python zero-copy | < 1μs | **522ns** | ✅ |
-| Transport routing | < 10ns | **2ns** | ✅ |
+### NFR-1: Latency
+| Operation | Requirement | Achieved |
+|---|---|---|
+| Tick ingest (p99) | < 1μs | < 200ns |
+| Filter 1M rows | < 500μs | 272μs |
+| VWAP 1M rows | < 1ms | 532μs |
+| SQL parse | < 10μs | 1.5–4.5μs |
+| Python zero-copy | < 1μs | 522ns |
+| Partition routing | < 10ns | 2ns |
+
+### NFR-2: Throughput
+- Ingest: > 1M ticks/sec sustained (**5.52M/sec**)
+- HDB flush: > 1 GB/s (**4.8 GB/s**)
+- Query parallelism: > 3x speedup @ 8 threads (**3.48x**)
+
+### NFR-3: Reliability
+- No data loss on graceful shutdown (WAL)
+- Health endpoint for load balancer integration
+- Automated daily backup with S3 upload
+
+### NFR-4: Compatibility
+- SQL: ANSI SQL subset (SELECT/WHERE/GROUP BY/JOIN/OVER)
+- HTTP: ClickHouse wire protocol (port 8123)
+- Python: numpy/Arrow zero-copy
+- Monitoring: Prometheus + Grafana
+
+### NFR-5: Build & Platform
+- C++20, clang-19, LLVM 19
+- Linux (Amazon Linux 2023 / Ubuntu 22.04+)
+- x86_64 (AVX2/AVX-512) + ARM64 (SVE, roadmap)
+- CMake + Ninja build system
+
+---
+
+## Test Requirements
+
+| Suite | Count | Coverage |
+|---|---|---|
+| Unit tests (core) | 151+ | Storage, Execution, SQL, JOIN, Window |
+| Feed handler tests | 37 | FIX parser, ITCH parser, benchmarks |
+| Migration tests | 70 | q→SQL (20), HDB (15), ClickHouse (18), DuckDB (17), TimescaleDB (18) |
+| **Total** | **258+** | — |
