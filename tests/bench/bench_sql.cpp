@@ -347,6 +347,111 @@ void bench_rolling_avg_compare() {
 }
 
 // ============================================================================
+// 8. 타임스탬프 범위 인덱스 벤치마크 (이진탐색 vs 전체 스캔)
+// ============================================================================
+void bench_time_range_index() {
+    printf("\n=== Time Range Index: Binary Search vs Full Scan ===\n");
+
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ApexPipeline pipeline(cfg);
+    pipeline.start();
+
+    // 1M 행 삽입 (symbol=1, timestamp: 0..999999)
+    constexpr size_t N = 1'000'000;
+    for (size_t i = 0; i < N; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 1;
+        msg.recv_ts   = static_cast<int64_t>(i);
+        msg.price     = 15000 + static_cast<int64_t>(i % 1000);
+        msg.volume    = 100;
+        msg.msg_type  = 0;
+        pipeline.ingest_tick(msg);
+    }
+    pipeline.drain_sync(N + 100);
+
+    QueryExecutor executor(pipeline);
+    printf("Stored: %zu rows\n", pipeline.total_stored_rows());
+
+    // 1%만 선택하는 좁은 범위 (10K rows out of 1M)
+    const int64_t range_lo = 400000;
+    const int64_t range_hi = 410000;
+
+    bench("time_range_index_1pct", 200, [&]() {
+        auto r = executor.execute(
+            "SELECT count(*) FROM trades WHERE symbol = 1 AND timestamp BETWEEN "
+            + std::to_string(range_lo) + " AND " + std::to_string(range_hi));
+        (void)r;
+    });
+
+    // 전체 스캔 (BETWEEN 없이 count)
+    bench("full_scan_count", 200, [&]() {
+        auto r = executor.execute(
+            "SELECT count(*) FROM trades WHERE symbol = 1");
+        (void)r;
+    });
+
+    pipeline.stop();
+}
+
+// ============================================================================
+// 9. GROUP BY 최적화 벤치마크 (파티션 기반 vs 전체 스캔)
+// ============================================================================
+void bench_group_by_symbol() {
+    printf("\n=== GROUP BY symbol: Partition-based Optimization ===\n");
+
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ApexPipeline pipeline(cfg);
+    pipeline.start();
+
+    // 10개 symbol, 각 10K 행 → 총 100K 행
+    constexpr size_t SYMBOLS = 10;
+    constexpr size_t ROWS_PER_SYM = 10000;
+    for (size_t s = 1; s <= SYMBOLS; ++s) {
+        for (size_t i = 0; i < ROWS_PER_SYM; ++i) {
+            apex::ingestion::TickMessage msg{};
+            msg.symbol_id = static_cast<apex::SymbolId>(s);
+            msg.recv_ts   = static_cast<int64_t>(i);
+            msg.price     = 15000 + static_cast<int64_t>(i % 100);
+            msg.volume    = 100 + static_cast<int64_t>(i % 50);
+            msg.msg_type  = 0;
+            pipeline.ingest_tick(msg);
+        }
+    }
+    pipeline.drain_sync(SYMBOLS * ROWS_PER_SYM + 100);
+
+    QueryExecutor executor(pipeline);
+    printf("Stored: %zu rows (%zu symbols x %zu rows)\n",
+           pipeline.total_stored_rows(), SYMBOLS, ROWS_PER_SYM);
+
+    // GROUP BY symbol — 파티션 최적화 경로
+    bench("group_by_symbol_sum", 500, [&]() {
+        auto r = executor.execute(
+            "SELECT symbol, sum(volume) FROM trades GROUP BY symbol");
+        (void)r;
+    });
+
+    // GROUP BY symbol + 다중 집계
+    bench("group_by_symbol_multi_agg", 500, [&]() {
+        auto r = executor.execute(
+            "SELECT symbol, count(*), sum(volume), avg(price), vwap(price, volume) "
+            "FROM trades GROUP BY symbol");
+        (void)r;
+    });
+
+    // ORDER BY sum DESC LIMIT 3 (top-N partial sort)
+    bench("group_by_symbol_order_limit", 500, [&]() {
+        auto r = executor.execute(
+            "SELECT symbol, sum(volume) as total_vol FROM trades "
+            "GROUP BY symbol ORDER BY total_vol DESC LIMIT 3");
+        (void)r;
+    });
+
+    pipeline.stop();
+}
+
+// ============================================================================
 // 메인
 // ============================================================================
 int main() {
@@ -360,6 +465,8 @@ int main() {
     bench_hash_join();
     bench_window_sum();
     bench_rolling_avg_compare();
+    bench_time_range_index();
+    bench_group_by_symbol();
 
     return 0;
 }

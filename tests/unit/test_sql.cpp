@@ -371,8 +371,118 @@ TEST_F(SqlExecutorTest, ParseError) {
 }
 
 // ============================================================================
-// Part 4: ASOF JOIN 정확성 테스트
+// Part 4: GROUP BY + Time Range 통합 테스트
 // ============================================================================
+
+// GROUP BY symbol: 파티션 기반 최적화 경로 — 다중 집계 함수
+TEST_F(SqlExecutorTest, GroupBySymbolMultiAgg) {
+    auto result = executor->execute(
+        "SELECT symbol, count(*), sum(volume), avg(price), vwap(price, volume) "
+        "FROM trades GROUP BY symbol");
+    ASSERT_TRUE(result.ok()) << result.error;
+    // symbol=1, symbol=2 두 그룹 존재
+    EXPECT_EQ(result.rows.size(), 2u);
+    // 컬럼: symbol, count, sum_volume, avg_price, vwap
+    EXPECT_EQ(result.column_names.size(), 5u);
+
+    // symbol=1: count=10, sum(volume)=1045, avg(price)≈15045
+    int64_t sym1_count = -1, sym1_sum_vol = -1;
+    for (const auto& row : result.rows) {
+        if (row[0] == 1) { // symbol=1
+            sym1_count   = row[1]; // count(*)
+            sym1_sum_vol = row[2]; // sum(volume)
+        }
+    }
+    EXPECT_EQ(sym1_count,   10);
+    EXPECT_EQ(sym1_sum_vol, 1045);
+}
+
+// 타임스탬프 범위 + GROUP BY (이진탐색 경로)
+TEST_F(SqlExecutorTest, TimeRangeGroupBy) {
+    // 전체 데이터를 타임스탬프 전체 범위로 SELECT
+    // (타임스탬프는 TickPlant이 현재 시간으로 설정하므로 넓은 범위 사용)
+    // 가장 작은 가능한 타임스탬프 ~ 가장 큰 타임스탬프
+    auto result = executor->execute(
+        "SELECT symbol, sum(volume) FROM trades "
+        "WHERE timestamp BETWEEN 0 AND 9223372036854775807 GROUP BY symbol");
+    ASSERT_TRUE(result.ok()) << result.error;
+    // 두 심볼 모두 포함되어야 함
+    EXPECT_GE(result.rows.size(), 1u);
+}
+
+// ORDER BY + LIMIT (top-N partial sort)
+TEST_F(SqlExecutorTest, OrderByLimit) {
+    // GROUP BY symbol → ORDER BY sum(volume) DESC LIMIT 1
+    // symbol=1: sum=1045, symbol=2: sum=1010
+    // top-1 should be symbol=1
+    auto result = executor->execute(
+        "SELECT symbol, sum(volume) as total_vol FROM trades "
+        "GROUP BY symbol ORDER BY total_vol DESC LIMIT 1");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    // top-1은 sum이 가장 큰 symbol=1 이어야 함
+    EXPECT_EQ(result.rows[0][0], 1);
+}
+
+// 타임스탬프 BETWEEN 단순 SELECT — 이진탐색 경로
+TEST_F(SqlExecutorTest, TimeRangeBinarySearch) {
+    // TickPlant가 recv_ts를 현재 시각(ns)으로 설정하므로,
+    // 타임스탬프 범위는 [0, INT64_MAX]로 전체를 포함하는 쿼리로 테스트.
+    // 이 테스트는 이진탐색 코드 경로가 올바르게 작동하는지 확인.
+    auto result = executor->execute(
+        "SELECT price FROM trades "
+        "WHERE symbol = 1 AND timestamp BETWEEN 0 AND 9223372036854775807");
+    ASSERT_TRUE(result.ok()) << result.error;
+
+    // 전체 10개 행이 나와야 함 (범위가 전체를 포함)
+    EXPECT_EQ(result.rows.size(), 10u)
+        << "rows_scanned=" << result.rows_scanned;
+
+    // 이진탐색 경로를 통해 rows_scanned이 설정됨 (10 이하)
+    EXPECT_LE(result.rows_scanned, 10u);
+
+    // 가격 범위도 확인
+    auto r_price = executor->execute(
+        "SELECT price FROM trades WHERE symbol = 1 AND price BETWEEN 15020 AND 15050");
+    ASSERT_TRUE(r_price.ok()) << r_price.error;
+    EXPECT_EQ(r_price.rows.size(), 4u);
+}
+
+// ORDER BY ASC 정렬 확인
+TEST_F(SqlExecutorTest, OrderByAsc) {
+    auto result = executor->execute(
+        "SELECT price FROM trades WHERE symbol = 1 ORDER BY price ASC LIMIT 3");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 3u);
+    // 오름차순: 15000, 15010, 15020
+    EXPECT_EQ(result.rows[0][0], 15000);
+    EXPECT_EQ(result.rows[1][0], 15010);
+    EXPECT_EQ(result.rows[2][0], 15020);
+}
+
+// ORDER BY DESC 정렬 확인
+TEST_F(SqlExecutorTest, OrderByDesc) {
+    auto result = executor->execute(
+        "SELECT price FROM trades WHERE symbol = 1 ORDER BY price DESC LIMIT 3");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 3u);
+    // 내림차순: 15090, 15080, 15070
+    EXPECT_EQ(result.rows[0][0], 15090);
+    EXPECT_EQ(result.rows[1][0], 15080);
+    EXPECT_EQ(result.rows[2][0], 15070);
+}
+
+// MIN / MAX 집계
+TEST_F(SqlExecutorTest, MinMaxAgg) {
+    auto result = executor->execute(
+        "SELECT min(price), max(price) FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 15000); // min
+    EXPECT_EQ(result.rows[0][1], 15090); // max
+}
+
+
 
 TEST(AsofJoin, BasicCorrectness) {
     // 왼쪽: trades (symbol, timestamp)

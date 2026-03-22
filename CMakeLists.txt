@@ -196,8 +196,10 @@ endif()
 add_library(apex_execution STATIC
     src/execution/vectorized_engine.cpp
     src/execution/query_planner.cpp
-    src/execution/jit_engine.cpp
 )
+if(APEX_USE_JIT)
+    target_sources(apex_execution PRIVATE src/execution/jit_engine.cpp)
+endif()
 target_include_directories(apex_execution PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )

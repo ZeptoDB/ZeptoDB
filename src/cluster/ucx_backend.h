@@ -13,6 +13,7 @@
 // ============================================================================
 
 #include "apex/cluster/transport.h"
+#include <stdexcept>
 
 #ifdef APEX_HAS_UCX
 #include <ucp/api/ucp.h>

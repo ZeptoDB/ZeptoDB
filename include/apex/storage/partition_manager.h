@@ -84,6 +84,41 @@ public:
         }
     }
 
+    // =========================================================================
+    // 타임스탬프 범위 인덱스 (이진 탐색)
+    // =========================================================================
+    // 데이터는 append-only이므로 timestamp 컬럼은 항상 오름차순 정렬됨.
+    // std::lower_bound / upper_bound를 사용해 O(log n) 범위 조회.
+    //
+    // 반환: [start_idx, end_idx) — 해당 범위에 속하는 행 인덱스 구간
+    //
+    std::pair<size_t, size_t> timestamp_range(int64_t from_ts, int64_t to_ts) const {
+        const ColumnVector* ts_col = get_column("timestamp");
+        if (!ts_col || ts_col->size() == 0) return {0, 0};
+        // const_cast는 읽기 전용 접근이므로 안전
+        auto span = const_cast<ColumnVector*>(ts_col)->as_span<int64_t>();
+        // lower_bound: from_ts 이상인 첫 위치
+        auto begin = std::lower_bound(span.begin(), span.end(), from_ts);
+        // upper_bound: to_ts 초과하는 첫 위치
+        auto end   = std::upper_bound(span.begin(), span.end(), to_ts);
+        return {
+            static_cast<size_t>(begin - span.begin()),
+            static_cast<size_t>(end   - span.begin())
+        };
+    }
+
+    /// 이 파티션의 타임스탬프 범위가 [lo, hi]와 겹치는지 O(1)로 확인
+    /// (정렬 보장: 첫 행과 마지막 행만 비교하면 됨)
+    bool overlaps_time_range(int64_t lo, int64_t hi) const {
+        const ColumnVector* ts_col = get_column("timestamp");
+        if (!ts_col || ts_col->size() == 0) return false;
+        // const_cast는 읽기 전용 접근이므로 안전
+        auto span = const_cast<ColumnVector*>(ts_col)->as_span<int64_t>();
+        if (span.empty()) return false;
+        // 파티션 전체가 [lo, hi] 밖에 있으면 false
+        return span.front() <= hi && span.back() >= lo;
+    }
+
 private:
     PartitionKey                              key_;
     State                                     state_ = State::ACTIVE;

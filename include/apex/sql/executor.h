@@ -57,6 +57,13 @@ private:
         const apex::storage::Partition& part,
         size_t num_rows);
 
+    // WHERE 절 평가 — 타임스탬프 범위 힌트를 이용해 [row_begin, row_end) 범위만 스캔
+    std::vector<uint32_t> eval_where_ranged(
+        const SelectStmt& stmt,
+        const apex::storage::Partition& part,
+        size_t row_begin,
+        size_t row_end);
+
     // WHERE Expr 재귀 평가
     std::vector<uint32_t> eval_expr(
         const std::shared_ptr<Expr>& expr,
@@ -107,6 +114,13 @@ private:
     // SymbolId 조회 (trades, quotes 테이블 공통)
     bool has_where_symbol(const SelectStmt& stmt, int64_t& out_sym,
                           const std::string& alias) const;
+
+    // WHERE timestamp BETWEEN X AND Y 조건 추출
+    bool extract_time_range(const SelectStmt& stmt,
+                            int64_t& out_lo, int64_t& out_hi) const;
+
+    // ORDER BY + LIMIT 적용 (top-N partial sort)
+    void apply_order_by(QueryResultSet& result, const SelectStmt& stmt);
 };
 
 } // namespace apex::sql
