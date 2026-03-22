@@ -315,6 +315,24 @@ if(APEX_BUILD_BENCH)
     target_compile_options(bench_cluster PRIVATE
         -O3 -march=native
     )
+
+    # Phase C: CXL Transport 벤치마크
+    add_executable(bench_cxl
+        tests/bench/bench_cxl.cpp
+    )
+    target_include_directories(bench_cxl PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/cluster
+    )
+    target_link_libraries(bench_cxl PRIVATE
+        apex_cluster
+        apex_core
+        apex_storage
+        apex_ingestion
+        apex_execution
+    )
+    target_compile_options(bench_cxl PRIVATE
+        -O3 -march=native
+    )
 endif()
 
 # ============================================================================

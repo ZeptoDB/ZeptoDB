@@ -11,6 +11,7 @@ add_executable(apex_tests
     unit/test_vectorized_engine.cpp
     unit/test_hdb.cpp
     unit/test_cluster.cpp
+    unit/test_cxl_backend.cpp
 )
 target_include_directories(apex_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h 접근
