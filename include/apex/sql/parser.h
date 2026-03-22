@@ -55,6 +55,9 @@ private:
     // ====== CASE WHEN 파싱 ======
     std::shared_ptr<CaseWhenExpr> parse_case_when_expr();
 
+    // ====== CTE ======
+    std::vector<CTEDef> parse_cte_list();     // WITH name AS (...) [, ...]
+
     // ====== 헬퍼 ======
     CompareOp       parse_compare_op();
     std::string     parse_qualified_name(std::string& out_alias, std::string& out_col);

@@ -61,6 +61,9 @@ enum class TokenType {
     // 문자열 연산자
     LIKE,       // col LIKE 'pattern'
 
+    // CTE / subquery
+    WITH,       // WITH name AS (...)
+
     // 집합 연산
     UNION,      // UNION [ALL]
     ALL,        // UNION ALL

@@ -64,7 +64,15 @@ SelectStmt Parser::parse(const std::string& sql) {
     Tokenizer tok;
     tokens_ = tok.tokenize(sql);
     pos_ = 0;
+
+    // WITH clause: parse CTE definitions before the main SELECT
+    std::vector<CTEDef> cte_defs;
+    if (check(TokenType::WITH)) {
+        cte_defs = parse_cte_list();
+    }
+
     SelectStmt stmt = parse_select();
+    stmt.cte_defs = std::move(cte_defs);
 
     // UNION [ALL] / INTERSECT / EXCEPT chaining
     while (check(TokenType::UNION) || check(TokenType::INTERSECT) || check(TokenType::EXCEPT)) {
@@ -114,30 +122,40 @@ SelectStmt Parser::parse_select() {
 
     // FROM
     expect(TokenType::FROM, "FROM");
-    stmt.from_table = expect(TokenType::IDENT, "table name").value;
 
-    // 테이블 별칭 (AS는 선택적)
-    match(TokenType::AS); // 선택적 AS
-    if (check(TokenType::IDENT)
-        && current().value != "WHERE"
-        && current().value != "JOIN"
-        && current().value != "GROUP"
-        && current().value != "ORDER"
-        && current().value != "LIMIT"
-        && current().type != TokenType::WHERE
-        && current().type != TokenType::JOIN
-        && current().type != TokenType::ASOF
-        && current().type != TokenType::GROUP
-        && current().type != TokenType::ORDER
-        && current().type != TokenType::LIMIT
-        && current().type != TokenType::INNER
-        && current().type != TokenType::LEFT
-        && current().type != TokenType::WINDOW
-        && current().type != TokenType::UNION
-        && current().type != TokenType::INTERSECT
-        && current().type != TokenType::EXCEPT) {
-        stmt.from_alias = current().value;
-        advance();
+    if (check(TokenType::LPAREN)) {
+        // Subquery: FROM (SELECT ...) AS alias
+        advance(); // consume (
+        stmt.from_subquery = std::make_shared<SelectStmt>(parse_select());
+        expect(TokenType::RPAREN, ")");
+        match(TokenType::AS); // optional AS
+        stmt.from_alias = expect(TokenType::IDENT, "subquery alias").value;
+    } else {
+        stmt.from_table = expect(TokenType::IDENT, "table name").value;
+
+        // 테이블 별칭 (AS는 선택적)
+        match(TokenType::AS); // 선택적 AS
+        if (check(TokenType::IDENT)
+            && current().value != "WHERE"
+            && current().value != "JOIN"
+            && current().value != "GROUP"
+            && current().value != "ORDER"
+            && current().value != "LIMIT"
+            && current().type != TokenType::WHERE
+            && current().type != TokenType::JOIN
+            && current().type != TokenType::ASOF
+            && current().type != TokenType::GROUP
+            && current().type != TokenType::ORDER
+            && current().type != TokenType::LIMIT
+            && current().type != TokenType::INNER
+            && current().type != TokenType::LEFT
+            && current().type != TokenType::WINDOW
+            && current().type != TokenType::UNION
+            && current().type != TokenType::INTERSECT
+            && current().type != TokenType::EXCEPT) {
+            stmt.from_alias = current().value;
+            advance();
+        }
     }
 
     // JOIN (ASOF JOIN, INNER JOIN, JOIN, LEFT JOIN, WINDOW JOIN)
@@ -1083,6 +1101,26 @@ std::shared_ptr<CaseWhenExpr> Parser::parse_case_when_expr() {
 
     expect(TokenType::CASE_END, "END");
     return cwe;
+}
+
+// ============================================================================
+// CTE list parsing: WITH name AS (SELECT ...) [, name AS (SELECT ...)]
+// ============================================================================
+std::vector<CTEDef> Parser::parse_cte_list() {
+    advance(); // consume WITH
+
+    std::vector<CTEDef> defs;
+    do {
+        CTEDef cte;
+        cte.name = expect(TokenType::IDENT, "CTE name").value;
+        expect(TokenType::AS, "AS");
+        expect(TokenType::LPAREN, "(");
+        cte.stmt = std::make_shared<SelectStmt>(parse_select());
+        expect(TokenType::RPAREN, ")");
+        defs.push_back(std::move(cte));
+    } while (match(TokenType::COMMA));
+
+    return defs;
 }
 
 } // namespace apex::sql

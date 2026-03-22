@@ -95,6 +95,15 @@ enum class WJAggFunc {
 struct ArithExpr;
 struct CaseWhenExpr;
 struct Expr;
+struct SelectStmt;
+
+// ============================================================================
+// CTEDef: single WITH clause entry — "name AS (SELECT ...)"
+// ============================================================================
+struct CTEDef {
+    std::string                 name;
+    std::shared_ptr<SelectStmt> stmt;
+};
 
 // ============================================================================
 // SelectExpr: SELECT 목록의 단일 항목
@@ -290,10 +299,14 @@ struct OrderByClause {
 // SelectStmt: 최상위 SELECT 문
 // ============================================================================
 struct SelectStmt {
+    // WITH clause CTE definitions (executed before the main SELECT)
+    std::vector<CTEDef>         cte_defs;
+
     bool                        distinct = false;
     std::vector<SelectExpr>     columns;       // SELECT 목록
-    std::string                 from_table;    // FROM 테이블명
+    std::string                 from_table;    // FROM 테이블명 (empty if from_subquery is set)
     std::string                 from_alias;    // 테이블 별칭 (없으면 "")
+    std::shared_ptr<SelectStmt> from_subquery; // FROM (SELECT ...) AS alias
     std::optional<JoinClause>   join;          // JOIN 절
     std::optional<WhereClause>  where;         // WHERE 절
     std::optional<GroupByClause> group_by;     // GROUP BY 절

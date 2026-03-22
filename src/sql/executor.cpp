@@ -34,6 +34,132 @@ static inline bool is_cancelled() {
     return tl_cancel_token && tl_cancel_token->is_cancelled();
 }
 
+// Thread-local CTE map — populated in execute() before exec_select(), cleared after.
+// Makes CTEs visible to recursive exec_select() calls (set operations, subqueries).
+static thread_local std::unordered_map<std::string, QueryResultSet> tl_cte_map;
+
+// ============================================================================
+// Virtual table helpers (CTE / FROM-subquery execution path)
+// ============================================================================
+
+// Retrieve a column value from a virtual row by column name.
+// Ignores table_alias — virtual tables are a flat namespace.
+static inline int64_t vt_col_val(
+    const std::string& col,
+    const QueryResultSet& src,
+    const std::unordered_map<std::string, size_t>& col_idx,
+    size_t row_idx)
+{
+    auto it = col_idx.find(col);
+    if (it == col_idx.end()) return 0;
+    return src.rows[row_idx][it->second];
+}
+
+// Evaluate an ArithExpr against a virtual-table row.
+static int64_t eval_arith_vt(const ArithExpr& e,
+                              const QueryResultSet& src,
+                              const std::unordered_map<std::string, size_t>& col_idx,
+                              size_t row_idx)
+{
+    switch (e.kind) {
+        case ArithExpr::Kind::LITERAL:
+            return e.literal;
+        case ArithExpr::Kind::COLUMN:
+            return vt_col_val(e.column, src, col_idx, row_idx);
+        case ArithExpr::Kind::BINARY: {
+            int64_t l = eval_arith_vt(*e.left,  src, col_idx, row_idx);
+            int64_t r = eval_arith_vt(*e.right, src, col_idx, row_idx);
+            switch (e.arith_op) {
+                case ArithOp::ADD: return l + r;
+                case ArithOp::SUB: return l - r;
+                case ArithOp::MUL: return l * r;
+                case ArithOp::DIV: return (r == 0) ? 0 : l / r;
+            }
+            break;
+        }
+        case ArithExpr::Kind::FUNC:
+            if (e.func_arg) return eval_arith_vt(*e.func_arg, src, col_idx, row_idx);
+            return 0;
+    }
+    return 0;
+}
+
+// Evaluate a WHERE Expr condition against a single virtual-table row.
+static bool eval_expr_vt(const std::shared_ptr<Expr>& expr,
+                          const QueryResultSet& src,
+                          const std::unordered_map<std::string, size_t>& col_idx,
+                          size_t row_idx)
+{
+    if (!expr) return true;
+    switch (expr->kind) {
+        case Expr::Kind::AND:
+            return eval_expr_vt(expr->left,  src, col_idx, row_idx)
+                && eval_expr_vt(expr->right, src, col_idx, row_idx);
+        case Expr::Kind::OR:
+            return eval_expr_vt(expr->left,  src, col_idx, row_idx)
+                || eval_expr_vt(expr->right, src, col_idx, row_idx);
+        case Expr::Kind::NOT:
+            return !eval_expr_vt(expr->left, src, col_idx, row_idx);
+        case Expr::Kind::COMPARE: {
+            int64_t v   = vt_col_val(expr->column, src, col_idx, row_idx);
+            int64_t cmp = expr->is_float
+                ? static_cast<int64_t>(expr->value_f) : expr->value;
+            switch (expr->op) {
+                case CompareOp::EQ: return v == cmp;
+                case CompareOp::NE: return v != cmp;
+                case CompareOp::GT: return v >  cmp;
+                case CompareOp::LT: return v <  cmp;
+                case CompareOp::GE: return v >= cmp;
+                case CompareOp::LE: return v <= cmp;
+            }
+            return false;
+        }
+        case Expr::Kind::BETWEEN: {
+            int64_t v = vt_col_val(expr->column, src, col_idx, row_idx);
+            return v >= expr->lo && v <= expr->hi;
+        }
+        case Expr::Kind::IN: {
+            int64_t v = vt_col_val(expr->column, src, col_idx, row_idx);
+            for (int64_t iv : expr->in_values)
+                if (v == iv) return true;
+            return false;
+        }
+        case Expr::Kind::IS_NULL: {
+            int64_t v = vt_col_val(expr->column, src, col_idx, row_idx);
+            bool is_null = (v == INT64_MIN);
+            return expr->negated ? !is_null : is_null;
+        }
+        case Expr::Kind::LIKE: {
+            int64_t v = vt_col_val(expr->column, src, col_idx, row_idx);
+            std::string s = std::to_string(v);
+            const std::string& pat = expr->like_pattern;
+            size_t m = s.size(), n = pat.size();
+            std::vector<std::vector<bool>> dp(m+1, std::vector<bool>(n+1, false));
+            dp[0][0] = true;
+            for (size_t j = 1; j <= n; ++j)
+                dp[0][j] = dp[0][j-1] && pat[j-1] == '%';
+            for (size_t i = 1; i <= m; ++i)
+                for (size_t j = 1; j <= n; ++j) {
+                    if (pat[j-1] == '%')                      dp[i][j] = dp[i-1][j] || dp[i][j-1];
+                    else if (pat[j-1] == '_' || pat[j-1] == s[i-1]) dp[i][j] = dp[i-1][j-1];
+                }
+            bool matched = dp[m][n];
+            return expr->negated ? !matched : matched;
+        }
+    }
+    return true;
+}
+
+// Resolve a SELECT column's output value from a virtual-table row.
+static int64_t sel_val_vt(const SelectExpr& sel,
+                           const QueryResultSet& src,
+                           const std::unordered_map<std::string, size_t>& col_idx,
+                           size_t row_idx)
+{
+    if (sel.arith_expr) return eval_arith_vt(*sel.arith_expr, src, col_idx, row_idx);
+    return vt_col_val(sel.column, src, col_idx, row_idx);
+}
+
 // ============================================================================
 // VectorHash: composite GROUP BY key hashing
 // ============================================================================
@@ -108,14 +234,26 @@ const PipelineStats& QueryExecutor::stats() const {
 // Main execution entry points
 // ============================================================================
 QueryResultSet QueryExecutor::execute(const std::string& sql) {
+    tl_cte_map.clear();
     double t0 = now_us();
     try {
         Parser parser;
         SelectStmt stmt = parser.parse(sql);
+
+        // Execute each CTE definition and store result in the thread-local map.
+        // Later CTEs may reference earlier ones (they are visible in tl_cte_map).
+        for (auto& cte : stmt.cte_defs) {
+            auto res = exec_select(*cte.stmt);
+            if (!res.ok()) { tl_cte_map.clear(); return res; }
+            tl_cte_map[cte.name] = std::move(res);
+        }
+
         auto result = exec_select(stmt);
         result.execution_time_us = now_us() - t0;
+        tl_cte_map.clear();
         return result;
     } catch (const std::exception& e) {
+        tl_cte_map.clear();
         QueryResultSet err;
         err.error = e.what();
         err.execution_time_us = now_us() - t0;
@@ -178,6 +316,23 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
         }
         result.rows_scanned = left.rows_scanned + right.rows_scanned;
         return result;
+    }
+
+    // FROM (subquery): execute the inner query and use the result as the source.
+    if (stmt.from_subquery) {
+        auto sub_res = exec_select(*stmt.from_subquery);
+        if (!sub_res.ok()) return sub_res;
+        return exec_select_virtual(stmt, sub_res, stmt.from_alias);
+    }
+
+    // CTE reference: check if from_table names a CTE in the thread-local map.
+    {
+        auto cte_it = tl_cte_map.find(stmt.from_table);
+        if (cte_it != tl_cte_map.end()) {
+            const std::string& alias = stmt.from_alias.empty()
+                                       ? stmt.from_table : stmt.from_alias;
+            return exec_select_virtual(stmt, cte_it->second, alias);
+        }
     }
 
     // Extract time range hint from WHERE for partition-level pruning.
@@ -716,6 +871,231 @@ static int64_t eval_case_when(const CaseWhenExpr& cwe,
         }
     }
     return cwe.else_val ? eval_arith(*cwe.else_val, part, idx) : 0;
+}
+
+// ============================================================================
+// exec_select_virtual: execute a SELECT against an in-memory result set
+// (CTE body or FROM-subquery).  Handles WHERE, aggregation, GROUP BY,
+// HAVING, ORDER BY, LIMIT, DISTINCT, SELECT *.
+// ============================================================================
+QueryResultSet QueryExecutor::exec_select_virtual(
+    const SelectStmt& stmt,
+    const QueryResultSet& src,
+    const std::string& src_alias)
+{
+    // ── Build column-name → index map for the virtual source ──────────────
+    std::unordered_map<std::string, size_t> col_idx;
+    col_idx.reserve(src.column_names.size());
+    for (size_t i = 0; i < src.column_names.size(); ++i)
+        col_idx[src.column_names[i]] = i;
+
+    // ── Apply WHERE filter ────────────────────────────────────────────────
+    std::vector<uint32_t> passing;
+    passing.reserve(src.rows.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(src.rows.size()); ++i) {
+        if (!stmt.where || eval_expr_vt(stmt.where->expr, src, col_idx, i))
+            passing.push_back(i);
+    }
+
+    // ── Detect aggregation ────────────────────────────────────────────────
+    bool has_agg = false;
+    for (const auto& sel : stmt.columns)
+        if (sel.agg != AggFunc::NONE && sel.agg != AggFunc::XBAR) {
+            has_agg = true; break;
+        }
+
+    // ── CASE 1: Simple projection (no aggregation) ────────────────────────
+    if (!has_agg || !stmt.group_by.has_value()) {
+        if (!has_agg) {
+            QueryResultSet result;
+            bool is_star = !stmt.columns.empty() && stmt.columns[0].is_star;
+            if (is_star) {
+                result.column_names = src.column_names;
+                result.column_types = src.column_types;
+            } else {
+                for (const auto& sel : stmt.columns) {
+                    result.column_names.push_back(sel.alias.empty() ? sel.column : sel.alias);
+                    result.column_types.push_back(ColumnType::INT64);
+                }
+            }
+
+            for (uint32_t ri : passing) {
+                if (is_star) {
+                    result.rows.push_back(src.rows[ri]);
+                } else {
+                    std::vector<int64_t> row;
+                    row.reserve(stmt.columns.size());
+                    for (const auto& sel : stmt.columns)
+                        row.push_back(sel_val_vt(sel, src, col_idx, ri));
+                    result.rows.push_back(std::move(row));
+                }
+            }
+
+            if (stmt.distinct) {
+                std::set<std::vector<int64_t>> seen;
+                std::vector<std::vector<int64_t>> deduped;
+                for (auto& row : result.rows)
+                    if (seen.insert(row).second) deduped.push_back(row);
+                result.rows = std::move(deduped);
+            }
+
+            result.rows_scanned = src.rows.size();
+            apply_order_by(result, stmt);
+            if (!stmt.order_by.has_value() && stmt.limit.has_value())
+                if (result.rows.size() > static_cast<size_t>(*stmt.limit))
+                    result.rows.resize(static_cast<size_t>(*stmt.limit));
+            return result;
+        }
+
+        // ── CASE 2: Scalar aggregation (no GROUP BY) ──────────────────────
+        QueryResultSet result;
+        std::vector<int64_t> row;
+        row.reserve(stmt.columns.size());
+
+        for (const auto& sel : stmt.columns) {
+            result.column_names.push_back(sel.alias.empty() ? sel.column : sel.alias);
+            result.column_types.push_back(ColumnType::INT64);
+
+            int64_t cnt   = 0;
+            double  sum   = 0.0;
+            int64_t mn    = INT64_MAX, mx = INT64_MIN;
+            int64_t first = INT64_MIN, last = INT64_MIN;
+
+            for (uint32_t ri : passing) {
+                int64_t v = sel_val_vt(sel, src, col_idx, ri);
+                switch (sel.agg) {
+                    case AggFunc::COUNT: cnt++; break;
+                    case AggFunc::SUM:   sum += v; break;
+                    case AggFunc::AVG:   sum += v; cnt++; break;
+                    case AggFunc::MIN:   if (v < mn) mn = v; break;
+                    case AggFunc::MAX:   if (v > mx) mx = v; break;
+                    case AggFunc::FIRST: if (first == INT64_MIN) first = v; break;
+                    case AggFunc::LAST:  last = v; break;
+                    default: break;
+                }
+            }
+            int64_t agg_val = 0;
+            switch (sel.agg) {
+                case AggFunc::COUNT: agg_val = cnt; break;
+                case AggFunc::SUM:   agg_val = static_cast<int64_t>(sum); break;
+                case AggFunc::AVG:   agg_val = cnt ? static_cast<int64_t>(sum / cnt) : 0; break;
+                case AggFunc::MIN:   agg_val = (mn != INT64_MAX) ? mn : 0; break;
+                case AggFunc::MAX:   agg_val = (mx != INT64_MIN) ? mx : 0; break;
+                case AggFunc::FIRST: agg_val = (first != INT64_MIN) ? first : 0; break;
+                case AggFunc::LAST:  agg_val = (last  != INT64_MIN) ? last  : 0; break;
+                default:
+                    if (!passing.empty()) agg_val = sel_val_vt(sel, src, col_idx, passing[0]);
+                    break;
+            }
+            row.push_back(agg_val);
+        }
+        result.rows.push_back(std::move(row));
+        result.rows_scanned = src.rows.size();
+        return result;
+    }
+
+    // ── CASE 3: GROUP BY aggregation ─────────────────────────────────────
+    const auto& gb = *stmt.group_by;
+
+    struct AggState {
+        std::vector<double>  sums;
+        std::vector<int64_t> counts;
+        std::vector<int64_t> mins;
+        std::vector<int64_t> maxs;
+        std::vector<int64_t> firsts; // INT64_MIN = not yet set
+        std::vector<int64_t> lasts;
+        std::vector<int64_t> first_non_agg; // first observed value for non-agg columns
+    };
+
+    std::unordered_map<std::vector<int64_t>, AggState, VectorHash> groups;
+    size_t ncols = stmt.columns.size();
+
+    for (uint32_t ri : passing) {
+        // Build composite group key
+        std::vector<int64_t> key;
+        key.reserve(gb.columns.size());
+        for (const auto& gc : gb.columns)
+            key.push_back(vt_col_val(gc, src, col_idx, ri));
+
+        auto& state = groups[key];
+        if (state.sums.empty()) {
+            state.sums.assign(ncols, 0.0);
+            state.counts.assign(ncols, 0);
+            state.mins.assign(ncols, INT64_MAX);
+            state.maxs.assign(ncols, INT64_MIN);
+            state.firsts.assign(ncols, INT64_MIN);
+            state.lasts.assign(ncols, INT64_MIN);
+            state.first_non_agg.assign(ncols, 0);
+        }
+
+        for (size_t ci = 0; ci < ncols; ++ci) {
+            const auto& sel = stmt.columns[ci];
+            int64_t v = sel_val_vt(sel, src, col_idx, ri);
+            switch (sel.agg) {
+                case AggFunc::COUNT: state.counts[ci]++; break;
+                case AggFunc::SUM:   state.sums[ci] += v; break;
+                case AggFunc::AVG:   state.sums[ci] += v; state.counts[ci]++; break;
+                case AggFunc::MIN:   if (v < state.mins[ci]) state.mins[ci] = v; break;
+                case AggFunc::MAX:   if (v > state.maxs[ci]) state.maxs[ci] = v; break;
+                case AggFunc::FIRST:
+                    if (state.firsts[ci] == INT64_MIN) state.firsts[ci] = v;
+                    break;
+                case AggFunc::LAST:  state.lasts[ci] = v; break;
+                default:
+                    if (state.counts[ci] == 0) state.first_non_agg[ci] = v;
+                    state.counts[ci]++;
+                    break;
+            }
+        }
+    }
+
+    QueryResultSet result;
+    for (const auto& sel : stmt.columns) {
+        result.column_names.push_back(sel.alias.empty() ? sel.column : sel.alias);
+        result.column_types.push_back(ColumnType::INT64);
+    }
+
+    for (auto& [key, state] : groups) {
+        std::vector<int64_t> row;
+        row.reserve(ncols);
+        for (size_t ci = 0; ci < ncols; ++ci) {
+            const auto& sel = stmt.columns[ci];
+            int64_t v = 0;
+            switch (sel.agg) {
+                case AggFunc::COUNT: v = state.counts[ci]; break;
+                case AggFunc::SUM:   v = static_cast<int64_t>(state.sums[ci]); break;
+                case AggFunc::AVG:   v = state.counts[ci] ? static_cast<int64_t>(state.sums[ci] / state.counts[ci]) : 0; break;
+                case AggFunc::MIN:   v = (state.mins[ci]   != INT64_MAX) ? state.mins[ci]   : 0; break;
+                case AggFunc::MAX:   v = (state.maxs[ci]   != INT64_MIN) ? state.maxs[ci]   : 0; break;
+                case AggFunc::FIRST: v = (state.firsts[ci] != INT64_MIN) ? state.firsts[ci] : 0; break;
+                case AggFunc::LAST:  v = (state.lasts[ci]  != INT64_MIN) ? state.lasts[ci]  : 0; break;
+                default: {
+                    // Non-aggregate column: find its value from the group key or first row
+                    bool found = false;
+                    for (size_t ki = 0; ki < gb.columns.size(); ++ki) {
+                        if (gb.columns[ki] == sel.column) {
+                            v = key[ki]; found = true; break;
+                        }
+                    }
+                    if (!found) v = state.first_non_agg[ci];
+                    break;
+                }
+            }
+            row.push_back(v);
+        }
+        result.rows.push_back(std::move(row));
+    }
+
+    result.rows_scanned = src.rows.size();
+
+    if (stmt.having)
+        result = apply_having_filter(std::move(result), *stmt.having);
+
+    apply_order_by(result, stmt);
+    if (!stmt.order_by.has_value() && stmt.limit.has_value())
+        if (result.rows.size() > static_cast<size_t>(*stmt.limit))
+            result.rows.resize(static_cast<size_t>(*stmt.limit));
+    return result;
 }
 
 // apply_having_filter: 집계 결과 행을 HAVING 조건으로 필터링

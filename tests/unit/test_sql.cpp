@@ -1917,3 +1917,219 @@ TEST_F(SqlExecutorTest, ExceptNoOverlap) {
     ASSERT_TRUE(r.ok()) << r.error;
     EXPECT_EQ(r.rows.size(), 10u);
 }
+
+// ============================================================================
+// CTE (WITH clause) tests
+// ============================================================================
+
+// Basic passthrough: CTE selects two columns, outer selects both
+TEST_F(SqlExecutorTest, CTE_SimplePassthrough) {
+    auto r = executor->execute(
+        "WITH t AS (SELECT symbol, price FROM trades WHERE symbol = 1) "
+        "SELECT symbol, price FROM t");
+    ASSERT_TRUE(r.ok()) << r.error;
+    // symbol=1 has 10 rows
+    EXPECT_EQ(r.rows.size(), 10u);
+    ASSERT_EQ(r.column_names.size(), 2u);
+    EXPECT_EQ(r.column_names[0], "symbol");
+    EXPECT_EQ(r.column_names[1], "price");
+    for (const auto& row : r.rows)
+        EXPECT_EQ(row[0], 1);
+}
+
+// WHERE filter applied to virtual CTE result
+TEST_F(SqlExecutorTest, CTE_WhereFilter) {
+    // CTE: all symbol=1 rows (price 15000..15090 step 10)
+    // Outer WHERE price > 15050 → prices 15060, 15070, 15080, 15090 → 4 rows
+    auto r = executor->execute(
+        "WITH t AS (SELECT symbol, price FROM trades WHERE symbol = 1) "
+        "SELECT symbol, price FROM t WHERE price > 15050");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 4u);
+    for (const auto& row : r.rows)
+        EXPECT_GT(row[1], 15050);
+}
+
+// Scalar aggregation over CTE result
+TEST_F(SqlExecutorTest, CTE_ScalarAgg) {
+    // sum(volume) for all rows in the CTE — includes both symbols
+    // symbol=1: 100..109 → 1045, symbol=2: 200..204 → 1010; total = 2055
+    auto r = executor->execute(
+        "WITH t AS (SELECT volume FROM trades) "
+        "SELECT sum(volume) AS total FROM t");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 2055);
+}
+
+// GROUP BY over CTE result
+TEST_F(SqlExecutorTest, CTE_GroupByAgg) {
+    // CTE brings all rows; outer groups by symbol and sums volume
+    auto r = executor->execute(
+        "WITH t AS (SELECT symbol, volume FROM trades) "
+        "SELECT symbol, sum(volume) AS total FROM t GROUP BY symbol");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 2u);
+    // Find each symbol's sum
+    int64_t sym1_total = 0, sym2_total = 0;
+    for (const auto& row : r.rows) {
+        if (row[0] == 1) sym1_total = row[1];
+        if (row[0] == 2) sym2_total = row[1];
+    }
+    EXPECT_EQ(sym1_total, 1045);
+    EXPECT_EQ(sym2_total, 1010);
+}
+
+// Chained CTEs: second CTE references first
+TEST_F(SqlExecutorTest, CTE_Chained) {
+    // CTE a: group by symbol → totals (sym1=1045, sym2=1010)
+    // CTE b: filter a WHERE total > 1040 → only sym1
+    // Outer: SELECT from b
+    auto r = executor->execute(
+        "WITH a AS (SELECT symbol, sum(volume) AS total FROM trades GROUP BY symbol), "
+        "     b AS (SELECT symbol, total FROM a WHERE total > 1040) "
+        "SELECT symbol, total FROM b");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 1);
+    EXPECT_EQ(r.rows[0][1], 1045);
+}
+
+// CTE with ORDER BY + LIMIT in outer query
+TEST_F(SqlExecutorTest, CTE_OrderByLimit) {
+    auto r = executor->execute(
+        "WITH t AS (SELECT symbol, price FROM trades WHERE symbol = 1) "
+        "SELECT symbol, price FROM t ORDER BY price DESC LIMIT 3");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 3u);
+    // Prices should be descending: 15090, 15080, 15070
+    EXPECT_EQ(r.rows[0][1], 15090);
+    EXPECT_EQ(r.rows[1][1], 15080);
+    EXPECT_EQ(r.rows[2][1], 15070);
+}
+
+// CTE combined with UNION ALL on the outer query
+TEST_F(SqlExecutorTest, CTE_WithUnionAll) {
+    // Build one CTE, union with a direct query
+    auto r = executor->execute(
+        "WITH t AS (SELECT symbol, price FROM trades WHERE symbol = 1 AND price = 15000) "
+        "SELECT symbol, price FROM t "
+        "UNION ALL "
+        "SELECT symbol, price FROM trades WHERE symbol = 2 AND price = 20000");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 2u);
+}
+
+// ============================================================================
+// Subquery in FROM clause tests
+// ============================================================================
+
+// Simple SELECT * from a subquery
+TEST_F(SqlExecutorTest, Subquery_StarPassthrough) {
+    auto r = executor->execute(
+        "SELECT symbol, price FROM "
+        "(SELECT symbol, price FROM trades WHERE symbol = 1) AS sub");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 10u);
+    for (const auto& row : r.rows)
+        EXPECT_EQ(row[0], 1);
+}
+
+// WHERE applied on top of subquery result
+TEST_F(SqlExecutorTest, Subquery_OuterWhere) {
+    // Inner selects all rows; outer filters price >= 15080 → 15080, 15090 → 2 rows
+    auto r = executor->execute(
+        "SELECT price FROM "
+        "(SELECT symbol, price FROM trades WHERE symbol = 1) AS sub "
+        "WHERE price >= 15080");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 2u);
+    for (const auto& row : r.rows)
+        EXPECT_GE(row[0], 15080);
+}
+
+// Aggregation over a subquery
+TEST_F(SqlExecutorTest, Subquery_Aggregate) {
+    auto r = executor->execute(
+        "SELECT sum(volume) AS total FROM "
+        "(SELECT volume FROM trades WHERE symbol = 2) AS sub");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 1010);
+}
+
+// GROUP BY aggregation over a subquery
+TEST_F(SqlExecutorTest, Subquery_GroupBy) {
+    auto r = executor->execute(
+        "SELECT symbol, sum(volume) AS total FROM "
+        "(SELECT symbol, volume FROM trades) AS sub "
+        "GROUP BY symbol");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 2u);
+    int64_t sym1 = 0, sym2 = 0;
+    for (const auto& row : r.rows) {
+        if (row[0] == 1) sym1 = row[1];
+        if (row[0] == 2) sym2 = row[1];
+    }
+    EXPECT_EQ(sym1, 1045);
+    EXPECT_EQ(sym2, 1010);
+}
+
+// Subquery with arithmetic expression in SELECT list
+TEST_F(SqlExecutorTest, Subquery_ArithInOuter) {
+    // Inner: price and volume; outer: volume * 2
+    auto r = executor->execute(
+        "SELECT volume FROM "
+        "(SELECT symbol, price, volume FROM trades WHERE symbol = 1 AND price = 15000) AS sub");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 100); // first row volume
+}
+
+// Parser: WITH keyword tokenized correctly
+TEST(TokenizerCTE, WithKeyword) {
+    Tokenizer tok;
+    auto tokens = tok.tokenize("WITH t AS (SELECT 1)");
+    ASSERT_GE(tokens.size(), 6u);
+    EXPECT_EQ(tokens[0].type, TokenType::WITH);
+    EXPECT_EQ(tokens[1].type, TokenType::IDENT);
+    EXPECT_EQ(tokens[1].value, "t");
+    EXPECT_EQ(tokens[2].type, TokenType::AS);
+    EXPECT_EQ(tokens[3].type, TokenType::LPAREN);
+}
+
+// Parser: CTE AST populated correctly
+TEST(ParserCTE, CTEDefsPresent) {
+    Parser p;
+    auto stmt = p.parse(
+        "WITH daily AS (SELECT symbol FROM trades) "
+        "SELECT symbol FROM daily");
+    EXPECT_EQ(stmt.cte_defs.size(), 1u);
+    EXPECT_EQ(stmt.cte_defs[0].name, "daily");
+    ASSERT_NE(stmt.cte_defs[0].stmt, nullptr);
+    EXPECT_EQ(stmt.cte_defs[0].stmt->from_table, "trades");
+    EXPECT_EQ(stmt.from_table, "daily");
+}
+
+// Parser: FROM subquery AST populated correctly
+TEST(ParserCTE, SubqueryFromClause) {
+    Parser p;
+    auto stmt = p.parse(
+        "SELECT price FROM (SELECT price FROM trades) AS sub");
+    EXPECT_EQ(stmt.from_table, "");
+    EXPECT_EQ(stmt.from_alias, "sub");
+    ASSERT_NE(stmt.from_subquery, nullptr);
+    EXPECT_EQ(stmt.from_subquery->from_table, "trades");
+}
+
+// Parser: multiple CTEs
+TEST(ParserCTE, MultipleCTEs) {
+    Parser p;
+    auto stmt = p.parse(
+        "WITH a AS (SELECT symbol FROM trades), "
+        "     b AS (SELECT symbol FROM a) "
+        "SELECT symbol FROM b");
+    EXPECT_EQ(stmt.cte_defs.size(), 2u);
+    EXPECT_EQ(stmt.cte_defs[0].name, "a");
+    EXPECT_EQ(stmt.cte_defs[1].name, "b");
+}

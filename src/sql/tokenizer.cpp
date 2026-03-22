@@ -84,6 +84,8 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "EPOCH_MS")    return TokenType::EPOCH_MS;
     // 문자열 연산자
     if (upper == "LIKE")        return TokenType::LIKE;
+    // CTE / subquery
+    if (upper == "WITH")        return TokenType::WITH;
     // 집합 연산
     if (upper == "UNION")       return TokenType::UNION;
     if (upper == "ALL")         return TokenType::ALL;

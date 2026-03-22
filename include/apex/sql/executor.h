@@ -174,6 +174,16 @@ private:
     QueryResultSet apply_having_filter(QueryResultSet result,
                                        const WhereClause& having) const;
 
+    // ── Virtual table (CTE / subquery) execution path ────────────────────────
+
+    // Execute a SELECT whose FROM source is an in-memory QueryResultSet
+    // (produced by a CTE or a FROM-subquery).  Handles WHERE, GROUP BY,
+    // ORDER BY, LIMIT on the virtual result set.
+    QueryResultSet exec_select_virtual(
+        const SelectStmt& stmt,
+        const QueryResultSet& src,
+        const std::string& src_alias);
+
     // ── 병렬 집계 경로 ──────────────────────────────────────────────────────
 
     // 병렬 단순 집계 (GROUP BY 없음)
