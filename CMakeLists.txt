@@ -17,6 +17,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Python .so 링크를 위해 모든 정적 라이브러리에 -fPIC 적용
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Build type default
 if(NOT CMAKE_BUILD_TYPE)
@@ -277,6 +279,77 @@ if(APEX_BUILD_BENCH)
     target_compile_options(bench_hdb PRIVATE
         -O3 -march=native
     )
+endif()
+
+# ============================================================================
+# Phase D: Python Binding (pybind11)
+# ============================================================================
+option(APEX_BUILD_PYTHON "Build Python binding module" ON)
+
+if(APEX_BUILD_PYTHON)
+    # Python 개발 헤더
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+    message(STATUS "Python3: ${Python3_VERSION} (${Python3_EXECUTABLE})")
+
+    # pybind11 — pip 설치 경로에서 CMake config 가져오기
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -m pybind11 --cmakedir
+        OUTPUT_VARIABLE PYBIND11_CMAKE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(PYBIND11_CMAKE_DIR)
+        list(APPEND CMAKE_PREFIX_PATH "${PYBIND11_CMAKE_DIR}")
+        message(STATUS "pybind11 CMake dir: ${PYBIND11_CMAKE_DIR}")
+    endif()
+
+    find_package(pybind11 CONFIG REQUIRED)
+    message(STATUS "pybind11: ${pybind11_VERSION}")
+
+    # NumPy include 경로
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c "import numpy; print(numpy.get_include())"
+        OUTPUT_VARIABLE NUMPY_INCLUDE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    message(STATUS "NumPy include: ${NUMPY_INCLUDE_DIR}")
+
+    # Python 모듈 빌드
+    pybind11_add_module(apex
+        src/transpiler/python_binding.cpp
+    )
+    target_include_directories(apex PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${NUMPY_INCLUDE_DIR}
+    )
+    target_link_libraries(apex PRIVATE
+        apex_core
+        apex_storage
+        apex_ingestion
+        apex_execution
+    )
+    target_compile_options(apex PRIVATE
+        -O3 -march=native
+        # pybind11이 -Wpedantic에서 일부 경고 발생 → 억제
+        -Wno-pedantic
+        -Wno-unused-parameter
+    )
+
+    # 빌드 디렉토리에 apex_py/dsl.py 복사 (테스트 시 import 용이)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/apex_py")
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/src/transpiler/apex_py/dsl.py"
+        "${CMAKE_BINARY_DIR}/apex_py/dsl.py"
+        COPYONLY
+    )
+    # apex 패키지로 인식되도록 __init__.py 생성
+    file(WRITE "${CMAKE_BINARY_DIR}/apex_py/__init__.py"
+        "# apex_py — APEX-DB lazy DSL package\n"
+        "from .dsl import DataFrame, LazyResult\n"
+        "__all__ = ['DataFrame', 'LazyResult']\n"
+    )
+    message(STATUS "Python module: apex (+ apex_py DSL)")
 endif()
 
 # ============================================================================
