@@ -45,6 +45,7 @@ private:
     std::shared_ptr<Expr> parse_primary_expr();
     GroupByClause   parse_group_by();
     OrderByClause   parse_order_by();
+    WindowSpec      parse_window_spec();  // OVER (...) 파싱
 
     // ====== 헬퍼 ======
     CompareOp       parse_compare_op();

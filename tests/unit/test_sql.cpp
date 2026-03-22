@@ -461,13 +461,15 @@ TEST(AsofJoin, NoMatch) {
     EXPECT_EQ(res.match_count, 0u);
 }
 
-TEST(AsofJoin, HashJoinThrows) {
+// HashJoinOperator는 이제 구현됨 — 빈 입력에 대해 0 매칭 반환 검증
+TEST(AsofJoin, HashJoinEmpty) {
     ArenaAllocator arena(ArenaConfig{.total_size = 1 << 20, .use_hugepages = false, .numa_node = -1});
     ColumnVector lk("symbol", ColumnType::INT64, arena);
     ColumnVector rk("symbol", ColumnType::INT64, arena);
 
     HashJoinOperator hj;
-    EXPECT_THROW(hj.execute(lk, rk), std::runtime_error);
+    auto result = hj.execute(lk, rk);
+    EXPECT_EQ(result.match_count, 0u);
 }
 
 // ============================================================================

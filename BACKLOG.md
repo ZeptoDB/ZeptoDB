@@ -1,5 +1,13 @@
 # APEX-DB 백로그
 
+## 즉시 (다음 커밋)
+- [ ] **설계 문서 전체 업데이트** — 현재 구현 상태에 맞게 동기화
+  - high_level_architecture.md: SQL/HTTP/Cluster 레이어 추가
+  - initial_doc.md: 범용 OLAP/TSDb 타겟 확장
+  - system_requirements.md: SQL/HTTP/JOIN/Window 요구사항
+  - layer4: nanobind → pybind11, DSL 실제 구현
+  - README.md: 전체 기능 + 최신 벤치마크
+
 ## 높은 우선순위
 - [ ] **SQL 파서 + HTTP API** — ClickHouse 사용자 유입 핵심
 - [ ] **시간 범위 인덱스** — 거의 공짜, 이미 정렬된 데이터

@@ -4,7 +4,10 @@
 // ============================================================================
 // 재귀 하강 파서를 위한 토크나이저
 // 지원 SQL 서브셋: SELECT, FROM, WHERE, JOIN, ASOF JOIN, GROUP BY, ORDER BY,
-//                  LIMIT, BETWEEN, LIKE 일부, 기본 집계 함수
+//                  LIMIT, BETWEEN, LIKE 일부, 기본 집계 함수,
+//                  윈도우 함수 (OVER, PARTITION, ROWS, PRECEDING, FOLLOWING,
+//                               UNBOUNDED, CURRENT, ROW, RANK, DENSE_RANK,
+//                               ROW_NUMBER, LAG, LEAD)
 // ============================================================================
 
 #include <string>
@@ -25,6 +28,22 @@ enum class TokenType {
 
     // 집계 함수 키워드
     SUM, AVG, COUNT, MIN, MAX, VWAP,
+
+    // 윈도우 함수 키워드
+    OVER,           // OVER
+    PARTITION,      // PARTITION
+    ROWS,           // ROWS
+    RANGE,          // RANGE
+    PRECEDING,      // PRECEDING
+    FOLLOWING,      // FOLLOWING
+    UNBOUNDED,      // UNBOUNDED
+    CURRENT,        // CURRENT
+    ROW,            // ROW (CURRENT ROW)
+    RANK,           // RANK()
+    DENSE_RANK,     // DENSE_RANK()
+    ROW_NUMBER,     // ROW_NUMBER()
+    LAG,            // LAG()
+    LEAD,           // LEAD()
 
     // 비교 연산자
     GT,   // >

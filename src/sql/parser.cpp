@@ -2,12 +2,14 @@
 // APEX-DB: SQL Parser Implementation
 // ============================================================================
 // 재귀 하강 파서 — yacc/bison 없이 순수 C++ 구현
+// 윈도우 함수 지원: OVER (PARTITION BY ... ORDER BY ... ROWS N PRECEDING)
 // ============================================================================
 
 #include "apex/sql/parser.h"
 #include <stdexcept>
 #include <algorithm>
 #include <cstdlib>
+#include <climits>
 
 namespace apex::sql {
 
@@ -150,7 +152,7 @@ SelectStmt Parser::parse_select() {
 }
 
 // ============================================================================
-// SELECT 표현식 파싱 (집계 함수 또는 컬럼)
+// SELECT 표현식 파싱 (집계 함수, 윈도우 함수, 또는 컬럼)
 // ============================================================================
 SelectExpr Parser::parse_select_expr() {
     SelectExpr expr;
@@ -181,19 +183,55 @@ SelectExpr Parser::parse_select_expr() {
         expect(TokenType::RPAREN, ")");
     };
 
+    // ── 윈도우 함수 파싱 헬퍼 ──
+    // func_name(arg [, offset]) OVER (...)
+    auto parse_window_func = [&](WindowFunc wf, bool has_col, bool has_offset) {
+        expr.window_func = wf;
+        expect(TokenType::LPAREN, "(");
+        if (has_col) {
+            // col 인자
+            std::string alias, col;
+            parse_qualified_name(alias, col);
+            expr.table_alias = alias;
+            expr.column = col;
+            if (has_offset && check(TokenType::COMMA)) {
+                advance();
+                expr.window_offset = parse_integer_literal();
+            }
+        }
+        expect(TokenType::RPAREN, ")");
+        // OVER (...)
+        expect(TokenType::OVER, "OVER");
+        expect(TokenType::LPAREN, "(");
+        expr.window_spec = parse_window_spec();
+        expect(TokenType::RPAREN, ")");
+    };
+
     switch (current().type) {
+        // 일반 집계 함수
         case TokenType::SUM:   advance(); parse_agg(AggFunc::SUM);   break;
         case TokenType::AVG:   advance(); parse_agg(AggFunc::AVG);   break;
         case TokenType::COUNT: advance(); parse_agg(AggFunc::COUNT); break;
         case TokenType::MIN:   advance(); parse_agg(AggFunc::MIN);   break;
         case TokenType::MAX:   advance(); parse_agg(AggFunc::MAX);   break;
         case TokenType::VWAP:  advance(); parse_agg(AggFunc::VWAP);  break;
+
+        // 윈도우 함수 (OVER 절 필수)
+        case TokenType::ROW_NUMBER:  advance(); parse_window_func(WindowFunc::ROW_NUMBER, false, false); break;
+        case TokenType::RANK:        advance(); parse_window_func(WindowFunc::RANK, false, false);       break;
+        case TokenType::DENSE_RANK:  advance(); parse_window_func(WindowFunc::DENSE_RANK, false, false); break;
+        case TokenType::LAG:         advance(); parse_window_func(WindowFunc::LAG, true, true);          break;
+        case TokenType::LEAD:        advance(); parse_window_func(WindowFunc::LEAD, true, true);         break;
+
         case TokenType::STAR:
             advance();
             expr.is_star = true;
             break;
+
         default: {
             // 일반 컬럼: [alias.]col
+            // SUM/AVG/MIN/MAX + OVER → 윈도우 SUM/AVG/MIN/MAX
+            // (이미 위에서 처리됨; 여기서는 테이블 컬럼 이름으로 처리)
             std::string alias, col;
             parse_qualified_name(alias, col);
             expr.table_alias = alias;
@@ -202,7 +240,29 @@ SelectExpr Parser::parse_select_expr() {
             } else {
                 expr.column = col;
             }
+            // OVER 절이 있으면 → 윈도우 함수 (SUM, AVG, MIN, MAX)
+            // 위에서 이미 case로 잡혔으므로 여기선 불필요
             break;
+        }
+    }
+
+    // OVER 체크: 일반 집계 함수 뒤에 OVER가 붙으면 윈도우 함수로 변환
+    // (SUM(...) OVER (...) 형태)
+    if (expr.agg != AggFunc::NONE && check(TokenType::OVER)) {
+        // 집계 함수를 윈도우 함수로 변환
+        switch (expr.agg) {
+            case AggFunc::SUM: expr.window_func = WindowFunc::SUM; break;
+            case AggFunc::AVG: expr.window_func = WindowFunc::AVG; break;
+            case AggFunc::MIN: expr.window_func = WindowFunc::MIN; break;
+            case AggFunc::MAX: expr.window_func = WindowFunc::MAX; break;
+            default: break; // COUNT, VWAP 등은 윈도우 변환 미지원
+        }
+        if (expr.window_func != WindowFunc::NONE) {
+            expr.agg = AggFunc::NONE; // 집계에서 윈도우로 전환
+            advance(); // OVER 소비
+            expect(TokenType::LPAREN, "(");
+            expr.window_spec = parse_window_spec();
+            expect(TokenType::RPAREN, ")");
         }
     }
 
@@ -217,6 +277,113 @@ SelectExpr Parser::parse_select_expr() {
     }
 
     return expr;
+}
+
+// ============================================================================
+// OVER (...) 내부 파싱
+// PARTITION BY col [, col ...] ORDER BY col [ASC|DESC]
+// ROWS [UNBOUNDED] N PRECEDING [AND M FOLLOWING]
+// ============================================================================
+WindowSpec Parser::parse_window_spec() {
+    WindowSpec ws;
+
+    // PARTITION BY
+    if (check(TokenType::PARTITION)) {
+        advance();
+        expect(TokenType::BY, "BY");
+        std::string alias, col;
+        parse_qualified_name(alias, col);
+        ws.partition_by_aliases.push_back(alias);
+        ws.partition_by_cols.push_back(col);
+        while (check(TokenType::COMMA)) {
+            advance();
+            parse_qualified_name(alias, col);
+            ws.partition_by_aliases.push_back(alias);
+            ws.partition_by_cols.push_back(col);
+        }
+    }
+
+    // ORDER BY
+    if (check(TokenType::ORDER)) {
+        advance();
+        expect(TokenType::BY, "BY");
+        std::string alias, col;
+        parse_qualified_name(alias, col);
+        ws.order_by_aliases.push_back(alias);
+        ws.order_by_cols.push_back(col);
+        bool asc = true;
+        if (check(TokenType::DESC)) { advance(); asc = false; }
+        else { match(TokenType::ASC); }
+        ws.order_by_asc.push_back(asc);
+
+        while (check(TokenType::COMMA)) {
+            advance();
+            parse_qualified_name(alias, col);
+            ws.order_by_aliases.push_back(alias);
+            ws.order_by_cols.push_back(col);
+            asc = true;
+            if (check(TokenType::DESC)) { advance(); asc = false; }
+            else { match(TokenType::ASC); }
+            ws.order_by_asc.push_back(asc);
+        }
+    }
+
+    // ROWS / RANGE 프레임
+    if (check(TokenType::ROWS) || check(TokenType::RANGE)) {
+        advance(); // ROWS or RANGE 소비
+        ws.has_frame = true;
+
+        // BETWEEN ... AND ... 형식 또는 단순 N PRECEDING
+        if (check(TokenType::BETWEEN)) {
+            advance(); // BETWEEN
+            // start frame
+            if (check(TokenType::UNBOUNDED)) {
+                advance();
+                expect(TokenType::PRECEDING, "PRECEDING");
+                ws.preceding = INT64_MAX;
+            } else if (check(TokenType::CURRENT)) {
+                advance();
+                expect(TokenType::ROW, "ROW");
+                ws.preceding = 0;
+            } else {
+                ws.preceding = parse_integer_literal();
+                expect(TokenType::PRECEDING, "PRECEDING");
+            }
+            expect(TokenType::AND, "AND");
+            // end frame
+            if (check(TokenType::UNBOUNDED)) {
+                advance();
+                expect(TokenType::FOLLOWING, "FOLLOWING");
+                ws.following = INT64_MAX;
+            } else if (check(TokenType::CURRENT)) {
+                advance();
+                expect(TokenType::ROW, "ROW");
+                ws.following = 0;
+            } else {
+                ws.following = parse_integer_literal();
+                expect(TokenType::FOLLOWING, "FOLLOWING");
+            }
+        } else {
+            // 단순 형식: N PRECEDING 또는 UNBOUNDED PRECEDING
+            if (check(TokenType::UNBOUNDED)) {
+                advance();
+                expect(TokenType::PRECEDING, "PRECEDING");
+                ws.preceding = INT64_MAX;
+                ws.following = 0;
+            } else if (check(TokenType::CURRENT)) {
+                advance();
+                expect(TokenType::ROW, "ROW");
+                ws.preceding = 0;
+                ws.following = 0;
+            } else {
+                ws.preceding = parse_integer_literal();
+                expect(TokenType::PRECEDING, "PRECEDING");
+                ws.following = 0;
+            }
+        }
+    }
+
+    return ws;
 }
 
 // ============================================================================

@@ -11,6 +11,7 @@
 //   [GROUP BY col [, col ...]]
 //   [ORDER BY col [ASC|DESC] [, ...]]
 //   [LIMIT n]
+//   윈도우 함수: func() OVER (PARTITION BY ... ORDER BY ... ROWS N PRECEDING)
 // ============================================================================
 
 #include "apex/storage/column_store.h"  // ColumnType
@@ -36,6 +37,43 @@ enum class AggFunc {
 };
 
 // ============================================================================
+// WindowFunc: 윈도우 함수 종류
+// ============================================================================
+enum class WindowFunc {
+    NONE,
+    ROW_NUMBER,
+    RANK,
+    DENSE_RANK,
+    SUM,
+    AVG,
+    MIN,
+    MAX,
+    LAG,
+    LEAD,
+};
+
+// ============================================================================
+// WindowSpec: OVER (...) 절 내용
+// ============================================================================
+struct WindowSpec {
+    // PARTITION BY col [, col ...]
+    std::vector<std::string> partition_by_aliases;
+    std::vector<std::string> partition_by_cols;
+
+    // ORDER BY col [ASC|DESC]
+    std::vector<std::string> order_by_aliases;
+    std::vector<std::string> order_by_cols;
+    std::vector<bool>        order_by_asc;
+
+    // ROWS BETWEEN N PRECEDING AND M FOLLOWING
+    // ROWS N PRECEDING  → preceding=N, following=0
+    // ROWS UNBOUNDED PRECEDING → preceding=INT64_MAX, following=0
+    bool    has_frame   = false;
+    int64_t preceding   = INT64_MAX;  // UNBOUNDED = INT64_MAX
+    int64_t following   = 0;          // CURRENT ROW = 0
+};
+
+// ============================================================================
 // SelectExpr: SELECT 목록의 단일 항목
 // ============================================================================
 struct SelectExpr {
@@ -45,6 +83,12 @@ struct SelectExpr {
     std::string agg_arg2;      // VWAP(price, volume)의 두 번째 인자
     std::string alias;         // AS alias
     bool        is_star = false; // SELECT *
+
+    // 윈도우 함수 (OVER 절이 있으면 window_func != NONE)
+    WindowFunc  window_func    = WindowFunc::NONE;
+    int64_t     window_offset  = 1;     // LAG/LEAD offset
+    int64_t     window_default = 0;     // LAG/LEAD default value
+    std::optional<WindowSpec> window_spec;  // OVER (...)
 };
 
 // ============================================================================

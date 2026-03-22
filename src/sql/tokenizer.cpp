@@ -13,40 +13,55 @@ namespace apex::sql {
 // 키워드 매핑 테이블
 // ============================================================================
 TokenType Tokenizer::keyword_type(const std::string& upper) {
-    if (upper == "SELECT")   return TokenType::SELECT;
-    if (upper == "FROM")     return TokenType::FROM;
-    if (upper == "WHERE")    return TokenType::WHERE;
-    if (upper == "JOIN")     return TokenType::JOIN;
-    if (upper == "ASOF")     return TokenType::ASOF;
-    if (upper == "ON")       return TokenType::ON;
-    if (upper == "AND")      return TokenType::AND;
-    if (upper == "OR")       return TokenType::OR;
-    if (upper == "NOT")      return TokenType::NOT;
-    if (upper == "GROUP")    return TokenType::GROUP;
-    if (upper == "BY")       return TokenType::BY;
-    if (upper == "ORDER")    return TokenType::ORDER;
-    if (upper == "LIMIT")    return TokenType::LIMIT;
-    if (upper == "BETWEEN")  return TokenType::BETWEEN;
-    if (upper == "HAVING")   return TokenType::HAVING;
-    if (upper == "AS")       return TokenType::AS;
-    if (upper == "DISTINCT") return TokenType::DISTINCT;
-    if (upper == "INNER")    return TokenType::INNER;
-    if (upper == "LEFT")     return TokenType::LEFT;
-    if (upper == "RIGHT")    return TokenType::RIGHT;
-    if (upper == "OUTER")    return TokenType::OUTER;
-    if (upper == "CROSS")    return TokenType::CROSS;
-    if (upper == "ASC")      return TokenType::ASC;
-    if (upper == "DESC")     return TokenType::DESC;
-    if (upper == "NULLS")    return TokenType::NULLS;
-    if (upper == "FIRST")    return TokenType::FIRST;
-    if (upper == "LAST")     return TokenType::LAST;
+    if (upper == "SELECT")      return TokenType::SELECT;
+    if (upper == "FROM")        return TokenType::FROM;
+    if (upper == "WHERE")       return TokenType::WHERE;
+    if (upper == "JOIN")        return TokenType::JOIN;
+    if (upper == "ASOF")        return TokenType::ASOF;
+    if (upper == "ON")          return TokenType::ON;
+    if (upper == "AND")         return TokenType::AND;
+    if (upper == "OR")          return TokenType::OR;
+    if (upper == "NOT")         return TokenType::NOT;
+    if (upper == "GROUP")       return TokenType::GROUP;
+    if (upper == "BY")          return TokenType::BY;
+    if (upper == "ORDER")       return TokenType::ORDER;
+    if (upper == "LIMIT")       return TokenType::LIMIT;
+    if (upper == "BETWEEN")     return TokenType::BETWEEN;
+    if (upper == "HAVING")      return TokenType::HAVING;
+    if (upper == "AS")          return TokenType::AS;
+    if (upper == "DISTINCT")    return TokenType::DISTINCT;
+    if (upper == "INNER")       return TokenType::INNER;
+    if (upper == "LEFT")        return TokenType::LEFT;
+    if (upper == "RIGHT")       return TokenType::RIGHT;
+    if (upper == "OUTER")       return TokenType::OUTER;
+    if (upper == "CROSS")       return TokenType::CROSS;
+    if (upper == "ASC")         return TokenType::ASC;
+    if (upper == "DESC")        return TokenType::DESC;
+    if (upper == "NULLS")       return TokenType::NULLS;
+    if (upper == "FIRST")       return TokenType::FIRST;
+    if (upper == "LAST")        return TokenType::LAST;
     // 집계 함수
-    if (upper == "SUM")      return TokenType::SUM;
-    if (upper == "AVG")      return TokenType::AVG;
-    if (upper == "COUNT")    return TokenType::COUNT;
-    if (upper == "MIN")      return TokenType::MIN;
-    if (upper == "MAX")      return TokenType::MAX;
-    if (upper == "VWAP")     return TokenType::VWAP;
+    if (upper == "SUM")         return TokenType::SUM;
+    if (upper == "AVG")         return TokenType::AVG;
+    if (upper == "COUNT")       return TokenType::COUNT;
+    if (upper == "MIN")         return TokenType::MIN;
+    if (upper == "MAX")         return TokenType::MAX;
+    if (upper == "VWAP")        return TokenType::VWAP;
+    // 윈도우 함수 키워드
+    if (upper == "OVER")        return TokenType::OVER;
+    if (upper == "PARTITION")   return TokenType::PARTITION;
+    if (upper == "ROWS")        return TokenType::ROWS;
+    if (upper == "RANGE")       return TokenType::RANGE;
+    if (upper == "PRECEDING")   return TokenType::PRECEDING;
+    if (upper == "FOLLOWING")   return TokenType::FOLLOWING;
+    if (upper == "UNBOUNDED")   return TokenType::UNBOUNDED;
+    if (upper == "CURRENT")     return TokenType::CURRENT;
+    if (upper == "ROW")         return TokenType::ROW;
+    if (upper == "RANK")        return TokenType::RANK;
+    if (upper == "DENSE_RANK")  return TokenType::DENSE_RANK;
+    if (upper == "ROW_NUMBER")  return TokenType::ROW_NUMBER;
+    if (upper == "LAG")         return TokenType::LAG;
+    if (upper == "LEAD")        return TokenType::LEAD;
     // 일반 식별자
     return TokenType::IDENT;
 }
@@ -104,6 +119,7 @@ Token Tokenizer::read_string() {
 
 // ============================================================================
 // 식별자 / 키워드 파싱
+// DENSE_RANK, ROW_NUMBER 같은 underscore 포함 식별자 지원
 // ============================================================================
 Token Tokenizer::read_ident_or_keyword() {
     std::string ident;
@@ -164,7 +180,7 @@ std::vector<Token> Tokenizer::tokenize(const std::string& sql) {
             continue;
         }
 
-        // 식별자 또는 키워드 (backtick 지원: `col name`)
+        // 식별자 또는 키워드 (underscore 포함: DENSE_RANK, ROW_NUMBER 등)
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             tokens.push_back(read_ident_or_keyword());
             continue;

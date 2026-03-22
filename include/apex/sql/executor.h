@@ -85,6 +85,17 @@ private:
         const std::vector<apex::storage::Partition*>& left_partitions,
         const std::vector<apex::storage::Partition*>& right_partitions);
 
+    // Hash JOIN 실행 (equi join)
+    QueryResultSet exec_hash_join(
+        const SelectStmt& stmt,
+        const std::vector<apex::storage::Partition*>& left_partitions,
+        const std::vector<apex::storage::Partition*>& right_partitions);
+
+    // 윈도우 함수 적용 (결과에 새 컬럼 추가)
+    void apply_window_functions(
+        const SelectStmt& stmt,
+        QueryResultSet& result);
+
     // 파티션 목록 조회 (테이블명 기준)
     std::vector<apex::storage::Partition*> find_partitions(const std::string& table_name);
 
@@ -99,3 +110,4 @@ private:
 };
 
 } // namespace apex::sql
+

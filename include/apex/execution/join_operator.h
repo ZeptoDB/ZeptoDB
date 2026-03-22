@@ -78,7 +78,15 @@ private:
 };
 
 // ============================================================================
-// HashJoinOperator: Hash JOIN — 스텁 (구현 예정)
+// HashJoinOperator: Hash JOIN — Build/Probe 해시 조인
+// ============================================================================
+// 알고리즘:
+//   1. Build phase: 오른쪽 테이블 스캔 → hash_map[key] = [row_indices...]
+//   2. Probe phase: 왼쪽 테이블 스캔 → 해시맵 조회 → 매칭된 모든 쌍 반환
+//
+// 복잡도: O(n+m) 평균 (해시 충돌 없을 때)
+// N:M 조인, 1:1, 1:N 모두 지원
+// left_time / right_time 파라미터는 향후 확장용 (현재 미사용)
 // ============================================================================
 class HashJoinOperator : public JoinOperator {
 public:
@@ -87,11 +95,7 @@ public:
         const ColumnVector& right_key,
         const ColumnVector* left_time  = nullptr,
         const ColumnVector* right_time = nullptr
-    ) override {
-        (void)left_key; (void)right_key;
-        (void)left_time; (void)right_time;
-        throw std::runtime_error("HashJoinOperator: not yet implemented");
-    }
+    ) override;
 };
 
 } // namespace apex::execution

@@ -10,6 +10,7 @@
 #include "apex/sql/parser.h"
 #include "apex/sql/executor.h"
 #include "apex/execution/join_operator.h"
+#include "apex/execution/window_function.h"
 #include "apex/core/pipeline.h"
 #include "apex/storage/arena_allocator.h"
 #include "apex/storage/column_store.h"
@@ -247,6 +248,107 @@ void verify_parse_budget() {
 // ============================================================================
 // 메인
 // ============================================================================
+
+// ============================================================================
+// 5. Hash Join 벤치마크
+// ============================================================================
+void bench_hash_join() {
+    printf("\n=== Hash Join Benchmarks ===\n");
+
+    for (size_t N : {1000, 10000, 100000, 1000000}) {
+        ArenaAllocator arena_l(ArenaConfig{
+            .total_size = static_cast<size_t>(N * 8 * 2),
+            .use_hugepages = false, .numa_node = -1});
+        ArenaAllocator arena_r(ArenaConfig{
+            .total_size = static_cast<size_t>(N * 8 * 2),
+            .use_hugepages = false, .numa_node = -1});
+
+        ColumnVector lk("k", ColumnType::INT64, arena_l);
+        ColumnVector rk("k", ColumnType::INT64, arena_r);
+
+        for (size_t i = 0; i < N; ++i) {
+            lk.append<int64_t>(static_cast<int64_t>(i % (N / 10 + 1)));
+        }
+        for (size_t i = 0; i < N; ++i) {
+            rk.append<int64_t>(static_cast<int64_t>(i % (N / 10 + 1)));
+        }
+
+        char name[64];
+        snprintf(name, sizeof(name), "hash_join_N=%zu", N);
+
+        size_t iters = std::max(1ul, 1000000 / N);
+        bench(name, iters, [&]() {
+            HashJoinOperator hj;
+            auto r = hj.execute(lk, rk);
+            (void)r;
+        });
+    }
+}
+
+// ============================================================================
+// 6. Window SUM 벤치마크
+// ============================================================================
+void bench_window_sum() {
+    printf("\n=== Window SUM Benchmarks ===\n");
+
+    for (size_t N : {1000, 10000, 100000, 1000000}) {
+        std::vector<int64_t> input(N, 100);
+        std::vector<int64_t> output(N, 0);
+        WindowFrame frame;
+        frame.preceding = 19; // ROWS 20 PRECEDING
+        frame.following = 0;
+
+        char name[64];
+        snprintf(name, sizeof(name), "window_sum_N=%zu", N);
+
+        size_t iters = std::max(1ul, 10000000 / N);
+        bench(name, iters, [&]() {
+            WindowSum wf;
+            wf.compute(input.data(), N, output.data(), frame);
+        });
+    }
+}
+
+// ============================================================================
+// 7. Rolling AVG 비교: window function vs manual loop
+// ============================================================================
+void bench_rolling_avg_compare() {
+    printf("\n=== Rolling AVG: Window Function vs Manual Loop ===\n");
+
+    const size_t N = 100000;
+    const int64_t W = 20; // 20-period
+    std::vector<int64_t> input(N);
+    std::vector<int64_t> output(N, 0);
+    for (size_t i = 0; i < N; ++i) input[i] = static_cast<int64_t>(i % 1000);
+
+    // Window function (O(n))
+    WindowFrame frame;
+    frame.preceding = W - 1;
+    frame.following = 0;
+    bench("rolling_avg_window_O(n)", 100, [&]() {
+        WindowAvg wf;
+        wf.compute(input.data(), N, output.data(), frame);
+    });
+
+    // Manual loop (O(n*W))
+    std::fill(output.begin(), output.end(), 0);
+    bench("rolling_avg_manual_O(n*W)", 100, [&]() {
+        for (size_t i = 0; i < N; ++i) {
+            int64_t sum = 0;
+            int64_t cnt = 0;
+            int64_t start = std::max<int64_t>(0, static_cast<int64_t>(i) - (W - 1));
+            for (int64_t j = start; j <= static_cast<int64_t>(i); ++j) {
+                sum += input[j];
+                cnt++;
+            }
+            output[i] = sum / cnt;
+        }
+    });
+}
+
+// ============================================================================
+// 메인
+// ============================================================================
 int main() {
     printf("APEX-DB SQL Benchmark Suite\n");
     printf("============================\n");
@@ -255,6 +357,9 @@ int main() {
     bench_sql_execute();
     bench_asof_join();
     verify_parse_budget();
+    bench_hash_join();
+    bench_window_sum();
+    bench_rolling_avg_compare();
 
     return 0;
 }

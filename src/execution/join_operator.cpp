@@ -123,4 +123,55 @@ void AsofJoinOperator::asof_match_symbol(
     }
 }
 
+// ============================================================================
+// HashJoinOperator::execute
+//
+// 알고리즘:
+//   Build phase: 오른쪽 테이블을 스캔하여 hash_map[key] = {row0, row1, ...} 구축
+//   Probe phase: 왼쪽 테이블을 스캔하여 해시맵에서 매칭 조회
+//
+// 복잡도: O(n + m) 평균
+// N:M 조인: 한 키에 여러 오른쪽 행이 있으면 카테시안 곱 생성
+// ============================================================================
+JoinResult HashJoinOperator::execute(
+    const ColumnVector& left_key,
+    const ColumnVector& right_key,
+    const ColumnVector* /*left_time*/,
+    const ColumnVector* /*right_time*/)
+{
+    const size_t ln = left_key.size();
+    const size_t rn = right_key.size();
+
+    const int64_t* lk = static_cast<const int64_t*>(left_key.raw_data());
+    const int64_t* rk = static_cast<const int64_t*>(right_key.raw_data());
+
+    JoinResult result;
+    // 최소한 min(ln, rn) 만큼은 예약
+    result.left_indices.reserve(std::min(ln, rn));
+    result.right_indices.reserve(std::min(ln, rn));
+
+    // ── Build phase: key → [right_row_index, ...] ──
+    std::unordered_map<int64_t, std::vector<int64_t>> hash_map;
+    hash_map.reserve(rn * 2); // 충돌 최소화를 위해 2배 예약
+
+    for (size_t ri = 0; ri < rn; ++ri) {
+        hash_map[rk[ri]].push_back(static_cast<int64_t>(ri));
+    }
+
+    // ── Probe phase: 왼쪽 테이블 스캔 → 해시맵 조회 ──
+    for (size_t li = 0; li < ln; ++li) {
+        auto it = hash_map.find(lk[li]);
+        if (it == hash_map.end()) continue;
+
+        // 매칭된 오른쪽 행 전부 (1:N, N:M 지원)
+        for (int64_t ri : it->second) {
+            result.left_indices.push_back(static_cast<int64_t>(li));
+            result.right_indices.push_back(ri);
+            ++result.match_count;
+        }
+    }
+
+    return result;
+}
+
 } // namespace apex::execution
