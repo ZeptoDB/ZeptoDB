@@ -2,80 +2,102 @@
 // ============================================================================
 // APEX-DB: HTTP API Server
 // ============================================================================
-// cpp-httplib 기반 경량 HTTP 서버
-// ClickHouse 호환 포트 8123 — Grafana/클라이언트 연동 가능
+// cpp-httplib based lightweight HTTP/HTTPS server.
+// ClickHouse compatible port 8123 — works with Grafana/CH clients.
 //
 // Endpoints:
-//   POST /        — SQL 쿼리 실행 (body: SQL 문자열)
-//   GET  /ping    — 헬스체크 (ClickHouse 호환)
+//   POST /        — Execute SQL query (body: SQL string)
+//   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe
 //   GET  /ready   — Kubernetes readiness probe
-//   GET  /stats   — 파이프라인 통계
-//   GET  /metrics — Prometheus 메트릭 (OpenMetrics 형식)
+//   GET  /stats   — Pipeline statistics
+//   GET  /metrics — Prometheus metrics (OpenMetrics format)
+//
+// Security:
+//   TLS/HTTPS     — Enabled via TlsConfig (cert + key PEM paths)
+//   Authentication — API Key (Bearer) or JWT/SSO (OIDC)
+//   Authorization  — RBAC: admin/writer/reader/analyst/metrics roles
 // ============================================================================
 
 #include "apex/sql/executor.h"
+#include "apex/auth/auth_manager.h"
+#include "apex/auth/query_tracker.h"
 #include <cstdint>
 #include <string>
 #include <memory>
 #include <thread>
 #include <atomic>
 
-// httplib 포워드 선언 (include를 cpp에서만 함 — 컴파일 속도)
+// Forward declaration — httplib is included only in the .cpp (compile speed)
 namespace httplib { class Server; }
 
 namespace apex::server {
 
 // ============================================================================
-// HttpServer: HTTP API 서버
+// HttpServer
 // ============================================================================
 class HttpServer {
 public:
+    /// Construct without authentication (development / trusted network mode).
     explicit HttpServer(apex::sql::QueryExecutor& executor,
                         uint16_t port = 8123);
+
+    /// Construct with TLS and/or authentication.
+    explicit HttpServer(apex::sql::QueryExecutor& executor,
+                        uint16_t port,
+                        apex::auth::TlsConfig tls,
+                        std::shared_ptr<apex::auth::AuthManager> auth = nullptr);
+
     ~HttpServer();
 
-    // Non-copyable
     HttpServer(const HttpServer&) = delete;
     HttpServer& operator=(const HttpServer&) = delete;
 
-    /// 블로킹 실행 (메인 스레드 사용)
+    /// Start blocking (uses calling thread).
     void start();
 
-    /// 백그라운드 스레드로 실행
+    /// Start on a background thread.
     void start_async();
 
-    /// 서버 중지
+    /// Stop the server.
     void stop();
 
-    /// 현재 포트
-    uint16_t port() const { return port_; }
+    uint16_t port()    const { return port_; }
+    bool     running() const { return running_.load(); }
 
-    /// 실행 중 여부
-    bool running() const { return running_.load(); }
-
-    /// Readiness 상태 설정 (초기화 완료 후 true로)
+    /// Mark the server as ready (called after pipeline initialization).
     void set_ready(bool ready) { ready_.store(ready); }
 
-private:
-    // 라우트 등록
-    void setup_routes();
+    /// Set query execution timeout (0 = disabled).
+    void set_query_timeout_ms(uint32_t ms) { query_timeout_ms_ = ms; }
 
-    // 응답 JSON 빌더
+private:
+    void setup_routes();
+    void setup_auth_middleware();
+    void setup_admin_routes();
+
+    // Execute a query with optional timeout and QueryTracker registration.
+    // subject is the identity string (remote_addr when auth is off).
+    apex::sql::QueryResultSet run_query_with_tracking(
+        const std::string& sql, const std::string& subject);
+
     static std::string build_json_response(
         const apex::sql::QueryResultSet& result);
-
     static std::string build_error_json(const std::string& msg);
     static std::string build_stats_json(
         const apex::core::PipelineStats& stats);
     std::string build_prometheus_metrics() const;
 
-    apex::sql::QueryExecutor& executor_;
-    uint16_t                  port_;
-    std::unique_ptr<httplib::Server> svr_;
-    std::thread               thread_;
-    std::atomic<bool>         running_{false};
-    std::atomic<bool>         ready_{false};  // Kubernetes readiness
+    apex::sql::QueryExecutor&                executor_;
+    uint16_t                                 port_;
+    apex::auth::TlsConfig                    tls_;
+    std::shared_ptr<apex::auth::AuthManager> auth_;
+    std::unique_ptr<httplib::Server>         svr_;
+    std::thread                              thread_;
+    std::atomic<bool>                        running_{false};
+    std::atomic<bool>                        ready_{false};
+    uint32_t                                 query_timeout_ms_{0};
+    apex::auth::QueryTracker                 query_tracker_;
 };
 
 } // namespace apex::server

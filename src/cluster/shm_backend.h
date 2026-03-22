@@ -110,8 +110,8 @@ public:
             throw std::runtime_error(std::string("mmap failed: ") + strerror(errno));
         }
 
-        // 초기 데이터 복사 (로컬 → shm)
-        std::memcpy(shm_ptr, addr, size);
+        // Copy initial data if provided; nullptr means allocate empty region
+        if (addr) std::memcpy(shm_ptr, addr, size);
 
         // 메타데이터 저장
         RegionMeta meta;
