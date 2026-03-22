@@ -11,6 +11,7 @@
 #include "apex/core/pipeline.h"
 #include "apex/execution/query_scheduler.h"
 #include "apex/execution/worker_pool.h"
+#include "apex/auth/cancellation_token.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,8 +57,12 @@ public:
     QueryExecutor(apex::core::ApexPipeline& pipeline,
                   std::unique_ptr<apex::execution::QueryScheduler> scheduler);
 
-    /// SQL 문자열 실행 → QueryResultSet 반환
+    /// SQL string execution → QueryResultSet
     QueryResultSet execute(const std::string& sql);
+
+    /// Execute with cancellation token (set token->cancel() from another thread to abort)
+    QueryResultSet execute(const std::string& sql,
+                           apex::auth::CancellationToken* token);
 
     /// 병렬 실행 활성화 (LocalQueryScheduler 재생성, num_threads 지정)
     void enable_parallel(size_t num_threads = 0,
@@ -164,6 +169,10 @@ private:
 
     // ORDER BY + LIMIT 적용 (top-N partial sort)
     void apply_order_by(QueryResultSet& result, const SelectStmt& stmt);
+
+    // HAVING 절 필터: 집계 결과 행을 조건에 맞게 걸러냄
+    QueryResultSet apply_having_filter(QueryResultSet result,
+                                       const WhereClause& having) const;
 
     // ── 병렬 집계 경로 ──────────────────────────────────────────────────────
 

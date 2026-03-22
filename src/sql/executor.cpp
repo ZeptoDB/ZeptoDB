@@ -17,11 +17,36 @@
 #include <chrono>
 #include <climits>
 #include <cstring>
+#include <functional>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <stdexcept>
 
 namespace apex::sql {
+
+// Thread-local cancellation token — set before execute(), cleared after.
+// Checked at partition scan boundaries without changing any inner function signatures.
+static thread_local apex::auth::CancellationToken* tl_cancel_token = nullptr;
+
+// Helper: returns true if the current query should be aborted
+static inline bool is_cancelled() {
+    return tl_cancel_token && tl_cancel_token->is_cancelled();
+}
+
+// ============================================================================
+// VectorHash: composite GROUP BY key hashing
+// ============================================================================
+struct VectorHash {
+    size_t operator()(const std::vector<int64_t>& v) const noexcept {
+        size_t seed = v.size();
+        for (int64_t x : v) {
+            seed ^= static_cast<size_t>(x) + 0x9e3779b9u
+                  + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
 
 using namespace apex::core;
 using namespace apex::storage;
@@ -80,7 +105,7 @@ const PipelineStats& QueryExecutor::stats() const {
 }
 
 // ============================================================================
-// 메인 실행 진입점
+// Main execution entry points
 // ============================================================================
 QueryResultSet QueryExecutor::execute(const std::string& sql) {
     double t0 = now_us();
@@ -98,17 +123,89 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
     }
 }
 
+QueryResultSet QueryExecutor::execute(const std::string& sql,
+                                       apex::auth::CancellationToken* token)
+{
+    tl_cancel_token = token;
+    auto result = execute(sql);
+    tl_cancel_token = nullptr;
+    return result;
+}
+
 // ============================================================================
 // SELECT 실행 디스패처
 // ============================================================================
 QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
+    // Set operations: UNION [ALL] / INTERSECT / EXCEPT
+    if (stmt.set_op != SelectStmt::SetOp::NONE && stmt.rhs) {
+        // Strip set_op from left side before executing
+        SelectStmt left_stmt = stmt;
+        left_stmt.set_op = SelectStmt::SetOp::NONE;
+        left_stmt.rhs    = nullptr;
+
+        QueryResultSet left  = exec_select(left_stmt);
+        QueryResultSet right = exec_select(*stmt.rhs);
+
+        if (!left.ok())  return left;
+        if (!right.ok()) return right;
+
+        QueryResultSet result;
+        result.column_names = left.column_names;
+        result.column_types = left.column_types;
+
+        if (stmt.set_op == SelectStmt::SetOp::UNION_ALL) {
+            result.rows = left.rows;
+            result.rows.insert(result.rows.end(), right.rows.begin(), right.rows.end());
+        } else if (stmt.set_op == SelectStmt::SetOp::UNION_DISTINCT) {
+            // Deduplicate rows from both sides
+            std::set<std::vector<int64_t>> seen;
+            for (auto& row : left.rows)
+                if (seen.insert(row).second) result.rows.push_back(row);
+            for (auto& row : right.rows)
+                if (seen.insert(row).second) result.rows.push_back(row);
+        } else if (stmt.set_op == SelectStmt::SetOp::INTERSECT) {
+            std::set<std::vector<int64_t>> right_set(right.rows.begin(), right.rows.end());
+            for (auto& row : left.rows) {
+                if (right_set.count(row))
+                    result.rows.push_back(row);
+            }
+        } else if (stmt.set_op == SelectStmt::SetOp::EXCEPT) {
+            std::set<std::vector<int64_t>> right_set(right.rows.begin(), right.rows.end());
+            for (auto& row : left.rows) {
+                if (!right_set.count(row))
+                    result.rows.push_back(row);
+            }
+        }
+        result.rows_scanned = left.rows_scanned + right.rows_scanned;
+        return result;
+    }
+
+    // Extract time range hint from WHERE for partition-level pruning.
+    // This runs before any exec function so partitions outside the range are
+    // never passed downstream — O(partitions) key comparison, no data access.
+    int64_t ts_lo_filter = INT64_MIN, ts_hi_filter = INT64_MAX;
+    bool has_ts_range = extract_time_range(stmt, ts_lo_filter, ts_hi_filter);
+
     // WHERE symbol = N 조건 추출 (파티션 레벨 필터링)
     int64_t sym_filter = -1;
     if (has_where_symbol(stmt, sym_filter, stmt.from_alias)) {
         // symbol 기반 파티션 필터링
         auto& pm = pipeline_.partition_manager();
-        auto left_parts = pm.get_partitions_for_symbol(
+        auto sym_parts = pm.get_partitions_for_symbol(
             static_cast<apex::SymbolId>(sym_filter));
+
+        // Further narrow by time range if present (avoids passing entire symbol
+        // history to exec functions when a tight timestamp window is queried).
+        std::vector<Partition*> left_parts;
+        if (has_ts_range) {
+            left_parts.reserve(sym_parts.size());
+            for (auto* p : sym_parts) {
+                if (p->overlaps_time_range(ts_lo_filter, ts_hi_filter))
+                    left_parts.push_back(p);
+            }
+        } else {
+            left_parts = std::move(sym_parts);
+        }
 
         // ASOF JOIN
         if (stmt.join.has_value() && stmt.join->type == JoinClause::Type::ASOF) {
@@ -148,8 +245,14 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
         return result;
     }
 
-    // 심볼 필터 없음 → 전체 파티션
-    auto left_parts = find_partitions(stmt.from_table);
+    // 심볼 필터 없음 → 전체 파티션 (타임스탬프 범위 있으면 파티션 수준 사전 필터링)
+    std::vector<Partition*> left_parts;
+    if (has_ts_range) {
+        left_parts = pipeline_.partition_manager()
+            .get_partitions_for_time_range(ts_lo_filter, ts_hi_filter);
+    } else {
+        left_parts = find_partitions(stmt.from_table);
+    }
 
     // ASOF JOIN
     if (stmt.join.has_value() && stmt.join->type == JoinClause::Type::ASOF) {
@@ -302,6 +405,93 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
             }
             return result;
         }
+        case Expr::Kind::NOT: {
+            // NOT expr: complement of the inner result set
+            auto inner = eval_expr(expr->left, part, num_rows, default_alias);
+            std::vector<uint32_t> all(num_rows);
+            for (size_t i = 0; i < num_rows; ++i) all[i] = static_cast<uint32_t>(i);
+            std::vector<uint32_t> result;
+            result.reserve(num_rows - inner.size());
+            std::set_difference(all.begin(), all.end(),
+                                inner.begin(), inner.end(),
+                                std::back_inserter(result));
+            return result;
+        }
+        case Expr::Kind::IN: {
+            const int64_t* data = get_col_data(part, expr->column);
+            if (!data) return {};
+            const auto& vals = expr->in_values;
+            std::vector<uint32_t> result;
+            result.reserve(num_rows / 4);
+            for (size_t i = 0; i < num_rows; ++i) {
+                for (int64_t v : vals) {
+                    if (data[i] == v) {
+                        result.push_back(static_cast<uint32_t>(i));
+                        break;
+                    }
+                }
+            }
+            return result;
+        }
+        case Expr::Kind::IS_NULL: {
+            // NULL is represented by INT64_MIN sentinel in APEX-DB
+            const int64_t* data = get_col_data(part, expr->column);
+            std::vector<uint32_t> result;
+            if (!data) {
+                // Column absent → treat all rows as NULL
+                if (!expr->negated) {
+                    result.resize(num_rows);
+                    for (size_t i = 0; i < num_rows; ++i)
+                        result[i] = static_cast<uint32_t>(i);
+                }
+                return result;
+            }
+            result.reserve(num_rows / 8);
+            for (size_t i = 0; i < num_rows; ++i) {
+                bool is_null = (data[i] == INT64_MIN);
+                if (expr->negated ? !is_null : is_null)
+                    result.push_back(static_cast<uint32_t>(i));
+            }
+            return result;
+        }
+        case Expr::Kind::LIKE: {
+            // Simple glob matching: '%' = any substring, '_' = any single char.
+            // Column value is converted to its decimal string representation.
+            const auto& pat = expr->like_pattern;
+            auto like_match = [&](const std::string& s) -> bool {
+                // dp[i][j]: s[0..i-1] matches pat[0..j-1]
+                size_t m = s.size(), n = pat.size();
+                std::vector<std::vector<bool>> dp(m+1, std::vector<bool>(n+1, false));
+                dp[0][0] = true;
+                for (size_t j = 1; j <= n; ++j)
+                    dp[0][j] = dp[0][j-1] && pat[j-1] == '%';
+                for (size_t i = 1; i <= m; ++i)
+                    for (size_t j = 1; j <= n; ++j) {
+                        if (pat[j-1] == '%')
+                            dp[i][j] = dp[i-1][j] || dp[i][j-1];
+                        else if (pat[j-1] == '_' || pat[j-1] == s[i-1])
+                            dp[i][j] = dp[i-1][j-1];
+                    }
+                return dp[m][n];
+            };
+            // Get column data — symbol column is special
+            std::vector<uint32_t> result;
+            result.reserve(num_rows / 4);
+            for (size_t i = 0; i < num_rows; ++i) {
+                int64_t v;
+                if (expr->column == "symbol") {
+                    v = static_cast<int64_t>(part.key().symbol_id);
+                } else {
+                    const int64_t* data = get_col_data(part, expr->column);
+                    v = data ? data[i] : 0;
+                }
+                std::string s = std::to_string(v);
+                bool matched = like_match(s);
+                if (expr->negated ? !matched : matched)
+                    result.push_back(static_cast<uint32_t>(i));
+            }
+            return result;
+        }
     }
     return {};
 }
@@ -378,6 +568,272 @@ bool QueryExecutor::extract_time_range(
         return false;
     };
     return find_ts(stmt.where->expr);
+}
+
+// ============================================================================
+// ============================================================================
+// Static helpers: single-row evaluation
+// ============================================================================
+
+// Retrieve int64 column pointer from partition (file-scope helper)
+static inline const int64_t* col_ptr(const Partition& part,
+                                     const std::string& col_name)
+{
+    const ColumnVector* cv = part.get_column(col_name);
+    return cv ? static_cast<const int64_t*>(cv->raw_data()) : nullptr;
+}
+
+// date_trunc_bucket: return nanosecond bucket size for a unit string
+static int64_t date_trunc_bucket(const std::string& unit) {
+    if (unit == "ns")   return 1LL;
+    if (unit == "us")   return 1'000LL;
+    if (unit == "ms")   return 1'000'000LL;
+    if (unit == "s")    return 1'000'000'000LL;
+    if (unit == "min")  return 60'000'000'000LL;
+    if (unit == "hour") return 3'600'000'000'000LL;
+    if (unit == "day")  return 86'400'000'000'000LL;
+    if (unit == "week") return 604'800'000'000'000LL;
+    return 1LL; // unknown unit: no truncation
+}
+
+// eval_arith: evaluate an ArithExpr for a single row
+static int64_t eval_arith(const ArithExpr& node,
+                          const Partition& part, uint32_t idx)
+{
+    switch (node.kind) {
+        case ArithExpr::Kind::LITERAL:
+            return node.literal;
+        case ArithExpr::Kind::COLUMN: {
+            if (node.column == "symbol")
+                return static_cast<int64_t>(part.key().symbol_id);
+            const int64_t* d = col_ptr(part, node.column);
+            return d ? d[idx] : 0;
+        }
+        case ArithExpr::Kind::BINARY: {
+            int64_t lv = eval_arith(*node.left,  part, idx);
+            int64_t rv = eval_arith(*node.right, part, idx);
+            switch (node.arith_op) {
+                case ArithOp::ADD: return lv + rv;
+                case ArithOp::SUB: return lv - rv;
+                case ArithOp::MUL: return lv * rv;
+                case ArithOp::DIV: return rv != 0 ? lv / rv : 0;
+            }
+        }
+        case ArithExpr::Kind::FUNC: {
+            if (node.func_name == "now") {
+                return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+            }
+            int64_t arg = node.func_arg ? eval_arith(*node.func_arg, part, idx) : 0;
+            if (node.func_name == "date_trunc") {
+                int64_t bucket = date_trunc_bucket(node.func_unit);
+                return (arg / bucket) * bucket;
+            }
+            if (node.func_name == "epoch_s")  return arg / 1'000'000'000LL;
+            if (node.func_name == "epoch_ms") return arg / 1'000'000LL;
+            return arg;
+        }
+    }
+    return 0;
+}
+
+// eval_expr_single: evaluate an Expr condition for one row (used by CASE WHEN)
+static bool eval_expr_single(const std::shared_ptr<Expr>& expr,
+                              const Partition& part, uint32_t idx)
+{
+    if (!expr) return true;
+    switch (expr->kind) {
+        case Expr::Kind::AND:
+            return eval_expr_single(expr->left, part, idx)
+                && eval_expr_single(expr->right, part, idx);
+        case Expr::Kind::OR:
+            return eval_expr_single(expr->left, part, idx)
+                || eval_expr_single(expr->right, part, idx);
+        case Expr::Kind::NOT:
+            return !eval_expr_single(expr->left, part, idx);
+        case Expr::Kind::COMPARE: {
+            const int64_t* d = col_ptr(part, expr->column);
+            if (!d) return false;
+            int64_t v   = d[idx];
+            int64_t cmp = expr->is_float
+                ? static_cast<int64_t>(expr->value_f) : expr->value;
+            switch (expr->op) {
+                case CompareOp::EQ: return v == cmp;
+                case CompareOp::NE: return v != cmp;
+                case CompareOp::GT: return v >  cmp;
+                case CompareOp::LT: return v <  cmp;
+                case CompareOp::GE: return v >= cmp;
+                case CompareOp::LE: return v <= cmp;
+            }
+            return false;
+        }
+        case Expr::Kind::BETWEEN: {
+            const int64_t* d = col_ptr(part, expr->column);
+            return d && d[idx] >= expr->lo && d[idx] <= expr->hi;
+        }
+        case Expr::Kind::IN: {
+            const int64_t* d = col_ptr(part, expr->column);
+            if (!d) return false;
+            for (int64_t v : expr->in_values)
+                if (d[idx] == v) return true;
+            return false;
+        }
+        case Expr::Kind::IS_NULL: {
+            const int64_t* d = col_ptr(part, expr->column);
+            bool is_null = (!d || d[idx] == INT64_MIN);
+            return expr->negated ? !is_null : is_null;
+        }
+        case Expr::Kind::LIKE: {
+            int64_t v = (expr->column == "symbol")
+                ? static_cast<int64_t>(part.key().symbol_id)
+                : (col_ptr(part, expr->column) ? col_ptr(part, expr->column)[idx] : 0);
+            const std::string& pat = expr->like_pattern;
+            std::string s = std::to_string(v);
+            size_t m = s.size(), n = pat.size();
+            std::vector<std::vector<bool>> dp(m+1, std::vector<bool>(n+1, false));
+            dp[0][0] = true;
+            for (size_t j = 1; j <= n; ++j)
+                dp[0][j] = dp[0][j-1] && pat[j-1] == '%';
+            for (size_t i = 1; i <= m; ++i)
+                for (size_t j = 1; j <= n; ++j) {
+                    if (pat[j-1] == '%')         dp[i][j] = dp[i-1][j] || dp[i][j-1];
+                    else if (pat[j-1] == '_' || pat[j-1] == s[i-1]) dp[i][j] = dp[i-1][j-1];
+                }
+            bool matched = dp[m][n];
+            return expr->negated ? !matched : matched;
+        }
+    }
+    return true;
+}
+
+// eval_case_when: evaluate CASE WHEN expression for one row
+static int64_t eval_case_when(const CaseWhenExpr& cwe,
+                              const Partition& part, uint32_t idx)
+{
+    for (const auto& branch : cwe.branches) {
+        if (eval_expr_single(branch.when_cond, part, idx)) {
+            return branch.then_val ? eval_arith(*branch.then_val, part, idx) : 0;
+        }
+    }
+    return cwe.else_val ? eval_arith(*cwe.else_val, part, idx) : 0;
+}
+
+// apply_having_filter: 집계 결과 행을 HAVING 조건으로 필터링
+// ============================================================================
+QueryResultSet QueryExecutor::apply_having_filter(
+    QueryResultSet result,
+    const WhereClause& having) const
+{
+    if (result.rows.empty() || !having.expr) return result;
+
+    const auto& col_names = result.column_names;
+
+    // Evaluate one HAVING condition against a result row
+    std::function<bool(const std::shared_ptr<Expr>&,
+                       const std::vector<int64_t>&)> eval_row;
+    eval_row = [&](const std::shared_ptr<Expr>& expr,
+                   const std::vector<int64_t>& row) -> bool {
+        if (!expr) return true;
+        switch (expr->kind) {
+            case Expr::Kind::AND:
+                return eval_row(expr->left, row) && eval_row(expr->right, row);
+            case Expr::Kind::OR:
+                return eval_row(expr->left, row) || eval_row(expr->right, row);
+            case Expr::Kind::NOT:
+                return !eval_row(expr->left, row);
+            case Expr::Kind::COMPARE: {
+                // Match by column alias or name
+                int col_idx = -1;
+                for (size_t i = 0; i < col_names.size(); ++i) {
+                    if (col_names[i] == expr->column) {
+                        col_idx = static_cast<int>(i);
+                        break;
+                    }
+                }
+                if (col_idx < 0 || col_idx >= static_cast<int>(row.size()))
+                    return false;
+                int64_t v   = row[col_idx];
+                int64_t cmp = expr->is_float
+                    ? static_cast<int64_t>(expr->value_f)
+                    : expr->value;
+                switch (expr->op) {
+                    case CompareOp::EQ: return v == cmp;
+                    case CompareOp::NE: return v != cmp;
+                    case CompareOp::GT: return v >  cmp;
+                    case CompareOp::LT: return v <  cmp;
+                    case CompareOp::GE: return v >= cmp;
+                    case CompareOp::LE: return v <= cmp;
+                }
+                return false;
+            }
+            case Expr::Kind::BETWEEN: {
+                int col_idx = -1;
+                for (size_t i = 0; i < col_names.size(); ++i) {
+                    if (col_names[i] == expr->column) { col_idx = static_cast<int>(i); break; }
+                }
+                if (col_idx < 0 || col_idx >= static_cast<int>(row.size()))
+                    return false;
+                int64_t v = row[col_idx];
+                return v >= expr->lo && v <= expr->hi;
+            }
+            case Expr::Kind::IN: {
+                int col_idx = -1;
+                for (size_t i = 0; i < col_names.size(); ++i) {
+                    if (col_names[i] == expr->column) { col_idx = static_cast<int>(i); break; }
+                }
+                if (col_idx < 0) return false;
+                int64_t v = row[col_idx];
+                for (int64_t iv : expr->in_values)
+                    if (v == iv) return true;
+                return false;
+            }
+            case Expr::Kind::IS_NULL: {
+                int col_idx = -1;
+                for (size_t i = 0; i < col_names.size(); ++i) {
+                    if (col_names[i] == expr->column) { col_idx = static_cast<int>(i); break; }
+                }
+                if (col_idx < 0) return !expr->negated; // unknown column → treat as NULL
+                bool is_null = (row[col_idx] == INT64_MIN);
+                return expr->negated ? !is_null : is_null;
+            }
+            case Expr::Kind::LIKE: {
+                // LIKE in HAVING: match column value's string repr against pattern
+                int col_idx = -1;
+                for (size_t i = 0; i < col_names.size(); ++i) {
+                    if (col_names[i] == expr->column) { col_idx = static_cast<int>(i); break; }
+                }
+                if (col_idx < 0) return expr->negated;
+                std::string s = std::to_string(row[col_idx]);
+                const std::string& pat = expr->like_pattern;
+                size_t m = s.size(), n = pat.size();
+                std::vector<std::vector<bool>> dp(m+1, std::vector<bool>(n+1, false));
+                dp[0][0] = true;
+                for (size_t j = 1; j <= n; ++j)
+                    dp[0][j] = dp[0][j-1] && pat[j-1] == '%';
+                for (size_t i = 1; i <= m; ++i)
+                    for (size_t j = 1; j <= n; ++j) {
+                        if (pat[j-1] == '%')         dp[i][j] = dp[i-1][j] || dp[i][j-1];
+                        else if (pat[j-1] == '_' || pat[j-1] == s[i-1]) dp[i][j] = dp[i-1][j-1];
+                    }
+                bool matched = dp[m][n];
+                return expr->negated ? !matched : matched;
+            }
+        }
+        return true;
+    };
+
+    QueryResultSet filtered;
+    filtered.column_names    = result.column_names;
+    filtered.column_types    = result.column_types;
+    filtered.execution_time_us = result.execution_time_us;
+    filtered.rows_scanned    = result.rows_scanned;
+    filtered.rows.reserve(result.rows.size());
+
+    for (auto& row : result.rows) {
+        if (eval_row(having.expr, row))
+            filtered.rows.push_back(std::move(row));
+    }
+    return filtered;
 }
 
 // ============================================================================
@@ -473,6 +929,7 @@ QueryResultSet QueryExecutor::exec_simple_select(
     bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
 
     for (auto* part : partitions) {
+        if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
         size_t n = part->num_rows();
 
         std::vector<uint32_t> sel_indices;
@@ -503,9 +960,19 @@ QueryResultSet QueryExecutor::exec_simple_select(
                 }
             } else {
                 for (const auto& sel : stmt.columns) {
-                    if (sel.window_func != WindowFunc::NONE) continue; // 나중에 추가
-                    const int64_t* d = get_col_data(*part, sel.column);
-                    row.push_back(d ? d[idx] : 0);
+                    if (sel.window_func != WindowFunc::NONE) continue;
+                    int64_t val;
+                    if (sel.case_when) {
+                        val = eval_case_when(*sel.case_when, *part, idx);
+                    } else if (sel.arith_expr) {
+                        val = eval_arith(*sel.arith_expr, *part, idx);
+                    } else if (sel.column == "symbol") {
+                        val = static_cast<int64_t>(part->key().symbol_id);
+                    } else {
+                        const int64_t* d = get_col_data(*part, sel.column);
+                        val = d ? d[idx] : 0;
+                    }
+                    row.push_back(val);
                 }
             }
             result.rows.push_back(std::move(row));
@@ -570,6 +1037,7 @@ QueryResultSet QueryExecutor::exec_agg(
     bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
 
     for (auto* part : partitions) {
+        if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
         size_t n = part->num_rows();
 
         std::vector<uint32_t> sel_indices;
@@ -585,57 +1053,47 @@ QueryResultSet QueryExecutor::exec_agg(
 
         for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
             const auto& col = stmt.columns[ci];
-            const int64_t* data = get_col_data(*part, col.column);
+            const int64_t* data = col.arith_expr
+                ? nullptr : get_col_data(*part, col.column);
+            // For arithmetic expressions, compute value per row; otherwise use raw data
+            auto agg_val = [&](uint32_t row_idx) -> int64_t {
+                if (col.arith_expr) return eval_arith(*col.arith_expr, *part, row_idx);
+                return data ? data[row_idx] : 0;
+            };
 
             switch (col.agg) {
                 case AggFunc::COUNT:
                     cnt[ci] += static_cast<int64_t>(sel_indices.size());
                     break;
                 case AggFunc::SUM:
-                    if (data) {
-                        for (auto idx : sel_indices) i_accum[ci] += data[idx];
-                    }
+                    for (auto idx : sel_indices) i_accum[ci] += agg_val(idx);
                     break;
                 case AggFunc::AVG:
-                    if (data) {
-                        for (auto idx : sel_indices) {
-                            d_accum[ci] += static_cast<double>(data[idx]);
+                    for (auto idx : sel_indices) {
+                            d_accum[ci] += static_cast<double>(agg_val(idx));
                             cnt[ci]++;
-                        }
                     }
                     break;
                 case AggFunc::MIN:
-                    if (data) {
-                        for (auto idx : sel_indices)
-                            minv[ci] = std::min(minv[ci], data[idx]);
-                    }
+                    for (auto idx : sel_indices)
+                        minv[ci] = std::min(minv[ci], agg_val(idx));
                     break;
                 case AggFunc::MAX:
-                    if (data) {
-                        for (auto idx : sel_indices)
-                            maxv[ci] = std::max(maxv[ci], data[idx]);
-                    }
+                    for (auto idx : sel_indices)
+                        maxv[ci] = std::max(maxv[ci], agg_val(idx));
                     break;
                 case AggFunc::FIRST:
-                    if (data) {
-                        for (auto idx : sel_indices) {
-                            if (!has_first[ci]) {
-                                first_val[ci] = data[idx];
-                                has_first[ci] = true;
-                            }
-                            last_val[ci] = data[idx];
-                        }
+                    for (auto idx : sel_indices) {
+                        int64_t v = agg_val(idx);
+                        if (!has_first[ci]) { first_val[ci] = v; has_first[ci] = true; }
+                        last_val[ci] = v;
                     }
                     break;
                 case AggFunc::LAST:
-                    if (data) {
-                        for (auto idx : sel_indices) {
-                            if (!has_first[ci]) {
-                                first_val[ci] = data[idx];
-                                has_first[ci] = true;
-                            }
-                            last_val[ci] = data[idx];
-                        }
+                    for (auto idx : sel_indices) {
+                        int64_t v = agg_val(idx);
+                        if (!has_first[ci]) { first_val[ci] = v; has_first[ci] = true; }
+                        last_val[ci] = v;
                     }
                     break;
                 case AggFunc::XBAR:
@@ -738,7 +1196,7 @@ QueryResultSet QueryExecutor::exec_group_agg(
     const std::string& group_col = gb.columns[0];
     // xbar 버킷 크기 (0이면 일반 컬럼, >0이면 xbar 플로어)
     int64_t group_xbar_bucket = gb.xbar_buckets.empty() ? 0 : gb.xbar_buckets[0];
-    bool is_symbol_group = (group_col == "symbol" && group_xbar_bucket == 0);
+    bool is_symbol_group = (gb.columns.size() == 1 && group_col == "symbol" && group_xbar_bucket == 0);
 
     struct GroupState {
         int64_t  sum     = 0;
@@ -771,6 +1229,7 @@ QueryResultSet QueryExecutor::exec_group_agg(
         groups.reserve(partitions.size()); // 대부분 파티션 수 ≈ symbol 수
 
         for (auto* part : partitions) {
+            if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
             size_t n = part->num_rows();
             // symbol group key: 파티션 키에서 O(1)로 추출
             int64_t symbol_gkey = static_cast<int64_t>(part->key().symbol_id);
@@ -793,37 +1252,31 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
                     const auto& col = stmt.columns[ci];
                     auto& gs = states[ci];
-                    if (col.agg == AggFunc::NONE && col.agg != AggFunc::XBAR) {
-                        if (col.agg == AggFunc::NONE) continue;
-                    }
                     if (col.agg == AggFunc::NONE) continue;
-                    const int64_t* data = get_col_data(*part, col.column);
+                    const int64_t* data = col.arith_expr
+                        ? nullptr : get_col_data(*part, col.column);
+                    auto agg_v = [&]() -> int64_t {
+                        if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
+                        return data ? data[idx] : 0;
+                    };
                     switch (col.agg) {
                         case AggFunc::COUNT: gs.count++; break;
-                        case AggFunc::SUM:
-                            if (data) gs.sum += data[idx]; break;
-                        case AggFunc::AVG:
-                            if (data) { gs.avg_sum += data[idx]; gs.count++; } break;
-                        case AggFunc::MIN:
-                            if (data) gs.minv = std::min(gs.minv, data[idx]); break;
-                        case AggFunc::MAX:
-                            if (data) gs.maxv = std::max(gs.maxv, data[idx]); break;
-                        case AggFunc::FIRST:
-                            if (data && !gs.has_first) {
-                                gs.first_val = data[idx];
-                                gs.has_first = true;
-                            }
-                            gs.last_val = data ? data[idx] : 0; // LAST도 업데이트
+                        case AggFunc::SUM:   gs.sum += agg_v(); break;
+                        case AggFunc::AVG:   gs.avg_sum += agg_v(); gs.count++; break;
+                        case AggFunc::MIN:   gs.minv = std::min(gs.minv, agg_v()); break;
+                        case AggFunc::MAX:   gs.maxv = std::max(gs.maxv, agg_v()); break;
+                        case AggFunc::FIRST: {
+                            int64_t v = agg_v();
+                            if (!gs.has_first) { gs.first_val = v; gs.has_first = true; }
+                            gs.last_val = v;
                             break;
-                        case AggFunc::LAST:
-                            if (data) {
-                                if (!gs.has_first) {
-                                    gs.first_val = data[idx];
-                                    gs.has_first = true;
-                                }
-                                gs.last_val = data[idx]; // 항상 마지막 값
-                            }
+                        }
+                        case AggFunc::LAST: {
+                            int64_t v = agg_v();
+                            if (!gs.has_first) { gs.first_val = v; gs.has_first = true; }
+                            gs.last_val = v;
                             break;
+                        }
                         case AggFunc::XBAR:
                             // XBAR는 GROUP BY 키 계산에 쓰임, SELECT에서도 쓸 수 있음
                             // SELECT xbar(timestamp, bucket) → 해당 버킷 플로어 값
@@ -893,6 +1346,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
 
         result.rows_scanned = rows_scanned;
 
+        // HAVING 필터 (is_symbol_group 경로에도 적용)
+        if (stmt.having.has_value())
+            result = apply_having_filter(std::move(result), stmt.having.value());
+
         // ORDER BY + LIMIT
         apply_order_by(result, stmt);
         if (!stmt.order_by.has_value() &&
@@ -903,13 +1360,36 @@ QueryResultSet QueryExecutor::exec_group_agg(
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 일반 경로 2: GROUP BY 기타 컬럼 (hash-based aggregation)
-    // pre-allocated unordered_map으로 O(n) 집계
+    // General path: supports multi-column GROUP BY and arith_expr in aggs.
+    // Composite key: std::vector<int64_t> with VectorHash.
     // ─────────────────────────────────────────────────────────────────────
-    std::unordered_map<int64_t, std::vector<GroupState>> groups;
-    groups.reserve(1024); // 일반적인 cardinality 예상 pre-allocation
+    std::unordered_map<std::vector<int64_t>, std::vector<GroupState>, VectorHash> groups;
+    groups.reserve(1024);
+
+    // Helper: build composite group key for one row
+    auto make_group_key = [&](const Partition& part, uint32_t idx)
+        -> std::vector<int64_t>
+    {
+        std::vector<int64_t> key;
+        key.reserve(gb.columns.size());
+        for (size_t gi = 0; gi < gb.columns.size(); ++gi) {
+            const std::string& gcol   = gb.columns[gi];
+            int64_t            bucket = gb.xbar_buckets[gi];
+            int64_t            kv;
+            if (gcol == "symbol") {
+                kv = static_cast<int64_t>(part.key().symbol_id);
+            } else {
+                const int64_t* gdata = get_col_data(part, gcol);
+                kv = gdata ? gdata[idx] : 0;
+            }
+            if (bucket > 0) kv = (kv / bucket) * bucket;
+            key.push_back(kv);
+        }
+        return key;
+    };
 
     for (auto* part : partitions) {
+        if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
         size_t n = part->num_rows();
 
         std::vector<uint32_t> sel_indices;
@@ -923,15 +1403,8 @@ QueryResultSet QueryExecutor::exec_group_agg(
             sel_indices = eval_where(stmt, *part, n);
         }
 
-        const int64_t* gdata = get_col_data(*part, group_col);
-        if (!gdata) continue;
-
         for (auto idx : sel_indices) {
-            // xbar가 있으면 group key = (gdata[idx] / bucket) * bucket
-            int64_t gkey = gdata[idx];
-            if (group_xbar_bucket > 0) {
-                gkey = (gkey / group_xbar_bucket) * group_xbar_bucket;
-            }
+            auto gkey  = make_group_key(*part, idx);
             auto& states = groups[gkey];
             if (states.empty()) states.resize(stmt.columns.size());
 
@@ -939,34 +1412,35 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 const auto& col = stmt.columns[ci];
                 auto& gs = states[ci];
                 if (col.agg == AggFunc::NONE) continue;
-                const int64_t* data = get_col_data(*part, col.column);
+                const int64_t* data = col.arith_expr
+                    ? nullptr : get_col_data(*part, col.column);
+                auto agg_v = [&]() -> int64_t {
+                    if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
+                    return data ? data[idx] : 0;
+                };
                 switch (col.agg) {
                     case AggFunc::COUNT: gs.count++; break;
-                    case AggFunc::SUM:
-                        if (data) gs.sum += data[idx]; break;
-                    case AggFunc::AVG:
-                        if (data) { gs.avg_sum += data[idx]; gs.count++; } break;
-                    case AggFunc::MIN:
-                        if (data) gs.minv = std::min(gs.minv, data[idx]); break;
-                    case AggFunc::MAX:
-                        if (data) gs.maxv = std::max(gs.maxv, data[idx]); break;
-                    case AggFunc::FIRST:
-                        if (data && !gs.has_first) {
-                            gs.first_val = data[idx];
-                            gs.has_first = true;
-                        }
-                        if (data) gs.last_val = data[idx];
+                    case AggFunc::SUM:   gs.sum += agg_v(); break;
+                    case AggFunc::AVG:   gs.avg_sum += agg_v(); gs.count++; break;
+                    case AggFunc::MIN:   gs.minv = std::min(gs.minv, agg_v()); break;
+                    case AggFunc::MAX:   gs.maxv = std::max(gs.maxv, agg_v()); break;
+                    case AggFunc::FIRST: {
+                        int64_t v = agg_v();
+                        if (!gs.has_first) { gs.first_val = v; gs.has_first = true; }
+                        gs.last_val = v;
                         break;
-                    case AggFunc::LAST:
-                        if (data) {
-                            if (!gs.has_first) { gs.first_val = data[idx]; gs.has_first = true; }
-                            gs.last_val = data[idx];
-                        }
+                    }
+                    case AggFunc::LAST: {
+                        int64_t v = agg_v();
+                        if (!gs.has_first) { gs.first_val = v; gs.has_first = true; }
+                        gs.last_val = v;
                         break;
+                    }
                     case AggFunc::XBAR:
-                        if (data && !gs.has_first) {
+                        if (!gs.has_first) {
+                            int64_t v = data ? data[idx] : 0;
                             int64_t b = col.xbar_bucket;
-                            gs.first_val = b > 0 ? (data[idx] / b) * b : data[idx];
+                            gs.first_val = b > 0 ? (v / b) * b : v;
                             gs.has_first = true;
                         }
                         break;
@@ -985,21 +1459,26 @@ QueryResultSet QueryExecutor::exec_group_agg(
         }
     }
 
-    result.column_names.push_back(group_col);
-    result.column_types.push_back(ColumnType::INT64);
+    // Output column names: all GROUP BY columns first, then aggregates
+    for (const auto& gcol : gb.columns)  {
+        result.column_names.push_back(gcol);
+        result.column_types.push_back(ColumnType::INT64);
+    }
     for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
         const auto& col = stmt.columns[ci];
         if (col.agg == AggFunc::NONE) continue;
         std::string name = col.alias.empty()
-            ? (col.column.empty() ? "*" : col.column)
+            ? (col.arith_expr ? "expr" : (col.column.empty() ? "*" : col.column))
             : col.alias;
         result.column_names.push_back(name);
         result.column_types.push_back(ColumnType::INT64);
     }
 
-    for (auto& [gkey, states] : groups) {
+    for (auto& [gkey_vec, states] : groups) {
         std::vector<int64_t> row;
-        row.push_back(gkey);
+        // All group key columns
+        for (int64_t k : gkey_vec) row.push_back(k);
+        // Aggregate columns
         for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
             const auto& col = stmt.columns[ci];
             if (col.agg == AggFunc::NONE) continue;
@@ -1024,13 +1503,17 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 case AggFunc::FIRST: row.push_back(gs.first_val); break;
                 case AggFunc::LAST:  row.push_back(gs.last_val);  break;
                 case AggFunc::XBAR:  row.push_back(gs.first_val); break;
-                case AggFunc::NONE: break;
+                case AggFunc::NONE:  break;
             }
         }
         result.rows.push_back(std::move(row));
     }
 
     result.rows_scanned = rows_scanned;
+
+    // HAVING 필터 (집계 결과에 적용)
+    if (stmt.having.has_value())
+        result = apply_having_filter(std::move(result), stmt.having.value());
 
     // ORDER BY + LIMIT
     apply_order_by(result, stmt);
@@ -1678,43 +2161,49 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
 
                 for (size_t ci = 0; ci < ncols; ++ci) {
                     const auto& col = stmt.columns[ci];
-                    const int64_t* data = get_col_data(*part, col.column);
+                    const int64_t* data = col.arith_expr
+                        ? nullptr : get_col_data(*part, col.column);
+                    auto agg_val = [&](uint32_t row_idx) -> int64_t {
+                        if (col.arith_expr) return eval_arith(*col.arith_expr, *part, row_idx);
+                        return data ? data[row_idx] : 0;
+                    };
 
                     switch (col.agg) {
                         case AggFunc::COUNT:
                             pa.cnt[ci] += static_cast<int64_t>(sel_indices.size());
                             break;
                         case AggFunc::SUM:
-                            if (data) for (auto idx : sel_indices) pa.sum[ci] += data[idx];
+                            for (auto idx : sel_indices) pa.sum[ci] += agg_val(idx);
                             break;
                         case AggFunc::AVG:
-                            if (data) for (auto idx : sel_indices) {
-                                pa.d_sum[ci] += static_cast<double>(data[idx]);
+                            for (auto idx : sel_indices) {
+                                pa.d_sum[ci] += static_cast<double>(agg_val(idx));
                                 pa.cnt[ci]++;
                             }
                             break;
                         case AggFunc::MIN:
-                            if (data) for (auto idx : sel_indices)
-                                pa.minv[ci] = std::min(pa.minv[ci], data[idx]);
+                            for (auto idx : sel_indices)
+                                pa.minv[ci] = std::min(pa.minv[ci], agg_val(idx));
                             break;
                         case AggFunc::MAX:
-                            if (data) for (auto idx : sel_indices)
-                                pa.maxv[ci] = std::max(pa.maxv[ci], data[idx]);
+                            for (auto idx : sel_indices)
+                                pa.maxv[ci] = std::max(pa.maxv[ci], agg_val(idx));
                             break;
                         case AggFunc::FIRST:
                         case AggFunc::LAST:
-                            if (data) for (auto idx : sel_indices) {
+                            for (auto idx : sel_indices) {
+                                int64_t v = agg_val(idx);
                                 if (!pa.has_first[ci]) {
-                                    pa.first_val[ci] = data[idx];
+                                    pa.first_val[ci] = v;
                                     pa.has_first[ci] = true;
                                 }
-                                pa.last_val[ci] = data[idx];
+                                pa.last_val[ci] = v;
                             }
                             break;
                         case AggFunc::XBAR:
-                            if (data && !sel_indices.empty() && !pa.has_first[ci]) {
+                            if (!sel_indices.empty() && !pa.has_first[ci]) {
+                                int64_t v = agg_val(sel_indices[0]);
                                 int64_t b = col.xbar_bucket;
-                                int64_t v = data[sel_indices[0]];
                                 pa.first_val[ci] = b > 0 ? (v / b) * b : v;
                                 pa.has_first[ci] = true;
                             }
@@ -1763,7 +2252,8 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
     for (size_t ci = 0; ci < ncols; ++ci) {
         const auto& col = stmt.columns[ci];
         std::string name = col.alias.empty()
-            ? (col.column.empty() ? "*" : col.column) : col.alias;
+            ? (col.arith_expr ? "expr" : (col.column.empty() ? "*" : col.column))
+            : col.alias;
         result.column_names.push_back(name);
         result.column_types.push_back(ColumnType::INT64);
 
@@ -1822,9 +2312,6 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
     }
 
     const auto& gb = stmt.group_by.value();
-    const std::string& group_col = gb.columns[0];
-    int64_t group_xbar_bucket = gb.xbar_buckets.empty() ? 0 : gb.xbar_buckets[0];
-    bool is_symbol_group = (group_col == "symbol" && group_xbar_bucket == 0);
 
     int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
     bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
@@ -1844,7 +2331,7 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
         bool     has_first = false;
     };
 
-    using GroupMap = std::unordered_map<int64_t, std::vector<GroupState>>;
+    using GroupMap = std::unordered_map<std::vector<int64_t>, std::vector<GroupState>, VectorHash>;
 
     struct PartialGroup {
         GroupMap map;
@@ -1876,20 +2363,22 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                     sel_indices = eval_where(stmt, *part, n);
                 }
 
-                // GROUP KEY 데이터
-                const int64_t* gdata = nullptr;
-                int64_t symbol_gkey = 0;
-                if (is_symbol_group) {
-                    symbol_gkey = static_cast<int64_t>(part->key().symbol_id);
-                } else {
-                    gdata = get_col_data(*part, group_col);
-                    if (!gdata) continue;
-                }
-
                 for (auto idx : sel_indices) {
-                    int64_t gkey = is_symbol_group ? symbol_gkey : gdata[idx];
-                    if (group_xbar_bucket > 0) {
-                        gkey = (gkey / group_xbar_bucket) * group_xbar_bucket;
+                    // Build composite group key
+                    std::vector<int64_t> gkey;
+                    gkey.reserve(gb.columns.size());
+                    for (size_t gi = 0; gi < gb.columns.size(); ++gi) {
+                        const std::string& gcol  = gb.columns[gi];
+                        int64_t            bucket = gb.xbar_buckets[gi];
+                        int64_t kv;
+                        if (gcol == "symbol") {
+                            kv = static_cast<int64_t>(part->key().symbol_id);
+                        } else {
+                            const int64_t* gdata = get_col_data(*part, gcol);
+                            kv = gdata ? gdata[idx] : 0;
+                        }
+                        if (bucket > 0) kv = (kv / bucket) * bucket;
+                        gkey.push_back(kv);
                     }
 
                     auto& states = pg.map[gkey];
@@ -1899,39 +2388,37 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                         const auto& col = stmt.columns[ci];
                         if (col.agg == AggFunc::NONE) continue;
                         auto& gs = states[ci];
-                        const int64_t* data = get_col_data(*part, col.column);
+                        const int64_t* data = col.arith_expr
+                            ? nullptr : get_col_data(*part, col.column);
+                        auto agg_v = [&]() -> int64_t {
+                            if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
+                            return data ? data[idx] : 0;
+                        };
 
                         switch (col.agg) {
                             case AggFunc::COUNT: gs.count++; break;
-                            case AggFunc::SUM:
-                                if (data) gs.sum += data[idx]; break;
-                            case AggFunc::AVG:
-                                if (data) { gs.avg_sum += data[idx]; gs.count++; } break;
-                            case AggFunc::MIN:
-                                if (data) gs.minv = std::min(gs.minv, data[idx]); break;
-                            case AggFunc::MAX:
-                                if (data) gs.maxv = std::max(gs.maxv, data[idx]); break;
+                            case AggFunc::SUM:   gs.sum += agg_v(); break;
+                            case AggFunc::AVG:   gs.avg_sum += agg_v(); gs.count++; break;
+                            case AggFunc::MIN:   gs.minv = std::min(gs.minv, agg_v()); break;
+                            case AggFunc::MAX:   gs.maxv = std::max(gs.maxv, agg_v()); break;
                             case AggFunc::FIRST:
-                            case AggFunc::LAST:
-                                if (data) {
-                                    if (!gs.has_first) {
-                                        gs.first_val = data[idx];
-                                        gs.has_first = true;
-                                    }
-                                    gs.last_val = data[idx];
-                                }
+                            case AggFunc::LAST: {
+                                int64_t v = agg_v();
+                                if (!gs.has_first) { gs.first_val = v; gs.has_first = true; }
+                                gs.last_val = v;
                                 break;
+                            }
                             case AggFunc::XBAR:
-                                if (data && !gs.has_first) {
+                                if (!gs.has_first) {
+                                    int64_t v = agg_v();
                                     int64_t b = col.xbar_bucket;
-                                    gs.first_val = b > 0
-                                        ? (data[idx] / b) * b : data[idx];
+                                    gs.first_val = b > 0 ? (v / b) * b : v;
                                     gs.has_first = true;
                                 }
                                 break;
                             case AggFunc::VWAP: {
                                 const int64_t* vd = get_col_data(*part, col.agg_arg2);
-                                if (data && vd) {
+                                if (!col.arith_expr && data && vd) {
                                     gs.vwap_pv += static_cast<double>(data[idx])
                                                 * static_cast<double>(vd[idx]);
                                     gs.vwap_v  += vd[idx];
@@ -1993,20 +2480,23 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
 
     // ── 결과 조립 ──
     QueryResultSet result;
-    result.column_names.push_back(group_col);
-    result.column_types.push_back(ColumnType::INT64);
+    for (const auto& gcol : gb.columns) {
+        result.column_names.push_back(gcol);
+        result.column_types.push_back(ColumnType::INT64);
+    }
     for (size_t ci = 0; ci < ncols; ++ci) {
         const auto& col = stmt.columns[ci];
         if (col.agg == AggFunc::NONE) continue;
         std::string name = col.alias.empty()
-            ? (col.column.empty() ? "*" : col.column) : col.alias;
+            ? (col.arith_expr ? "expr" : (col.column.empty() ? "*" : col.column))
+            : col.alias;
         result.column_names.push_back(name);
         result.column_types.push_back(ColumnType::INT64);
     }
 
-    for (auto& [gkey, states] : merged) {
+    for (auto& [gkey_vec, states] : merged) {
         std::vector<int64_t> row;
-        row.push_back(gkey);
+        for (int64_t k : gkey_vec) row.push_back(k);
         for (size_t ci = 0; ci < ncols; ++ci) {
             const auto& col = stmt.columns[ci];
             if (col.agg == AggFunc::NONE) continue;
@@ -2034,6 +2524,10 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
     }
 
     result.rows_scanned = rows_scanned;
+
+    // HAVING 필터 (병렬 집계 결과에 적용)
+    if (stmt.having.has_value())
+        result = apply_having_filter(std::move(result), stmt.having.value());
 
     apply_order_by(result, stmt);
     if (!stmt.order_by.has_value() &&
