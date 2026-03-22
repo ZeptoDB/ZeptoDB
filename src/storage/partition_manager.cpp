@@ -143,4 +143,21 @@ std::vector<Partition*> PartitionManager::get_partitions_for_symbol(SymbolId sym
     return result;
 }
 
+
+std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
+    int64_t lo, int64_t hi)
+{
+    constexpr int64_t NS_PER_HOUR = 3600LL * 1'000'000'000LL;
+    std::vector<Partition*> result;
+    for (auto& [key, partition] : partitions_) {
+        // Partition covers [hour_epoch, hour_epoch + NS_PER_HOUR).
+        // Overlaps [lo, hi] iff hour_epoch <= hi && hour_epoch + NS_PER_HOUR > lo.
+        if (key.hour_epoch <= hi && key.hour_epoch + NS_PER_HOUR > lo) {
+            result.push_back(partition.get());
+        }
+    }
+    return result;
+}
+
 } // namespace apex::storage
+

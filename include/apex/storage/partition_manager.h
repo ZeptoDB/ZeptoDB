@@ -149,6 +149,10 @@ public:
     /// 특정 Symbol의 파티션 목록 반환
     std::vector<Partition*> get_partitions_for_symbol(SymbolId symbol);
 
+    /// Return partitions whose hour_epoch window overlaps [lo, hi] (nanoseconds).
+    /// Uses partition key comparison only — O(partitions), no data access.
+    std::vector<Partition*> get_partitions_for_time_range(int64_t lo, int64_t hi);
+
     /// 전체 파티션 수
     [[nodiscard]] size_t partition_count() const { return partitions_.size(); }
 
