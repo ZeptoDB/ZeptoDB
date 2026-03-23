@@ -13,6 +13,7 @@
 // ============================================================================
 
 #include "apex/cluster/rpc_protocol.h"
+#include "apex/cluster/k8s_lease.h"
 #include "apex/ingestion/tick_plant.h"
 #include "apex/sql/executor.h"
 #include <atomic>
@@ -51,6 +52,11 @@ public:
     /// Active connection threads are detached and finish independently.
     void stop();
 
+    /// Set fencing token for write validation.
+    /// When set, TICK_INGEST and WAL_REPLICATE with epoch < last_seen are rejected.
+    /// epoch=0 in the header bypasses fencing (backward compatible).
+    void set_fencing_token(FencingToken* token) { fencing_token_ = token; }
+
     bool     is_running() const { return running_.load(); }
     uint16_t port()       const { return port_; }
 
@@ -66,6 +72,7 @@ private:
     SqlQueryCallback   sql_callback_;
     TickIngestCallback tick_callback_;
     WalReplayCallback  wal_callback_;
+    FencingToken*      fencing_token_ = nullptr;
 
     // Track active connection fds for clean shutdown
     std::mutex              conn_fds_mu_;
@@ -106,6 +113,10 @@ public:
     const std::string& host() const { return host_; }
     uint16_t           port() const { return port_; }
 
+    /// Set fencing epoch to include in write messages (TICK_INGEST, WAL_REPLICATE).
+    void set_epoch(uint64_t e) { epoch_ = e; }
+    uint64_t epoch() const { return epoch_; }
+
     /// Number of idle connections currently in the pool.
     size_t pool_idle_count() const;
 
@@ -121,6 +132,7 @@ private:
     uint16_t    port_;
     int         connect_timeout_ms_;
     size_t      max_pool_size_;
+    uint64_t    epoch_ = 0;
 
     mutable std::mutex pool_mu_;
     std::vector<int>   pool_;  // idle fds

@@ -10,6 +10,7 @@
 // Data transfer via TcpRpc (future: RDMA remote_read for zero-copy).
 // ============================================================================
 
+#include "apex/cluster/query_coordinator.h"
 #include "apex/cluster/tcp_rpc.h"
 #include "apex/cluster/transport.h"
 #include "apex/core/pipeline.h"
@@ -30,14 +31,13 @@ public:
     void add_data_node(NodeId id, const std::string& host, uint16_t port);
 
     /// Execute SQL that may span multiple data nodes.
-    /// Fetches required data from data nodes, executes locally.
+    /// Uses QueryCoordinator's merge logic (partial agg, GROUP BY merge, etc.)
     apex::sql::QueryResultSet execute(const std::string& sql);
 
-    /// Execute a query against a specific data node.
+    /// Execute a query against a specific data node (direct RPC, no merge).
     apex::sql::QueryResultSet execute_on(NodeId id, const std::string& sql);
 
     /// Fetch data from a data node and ingest into local pipeline for local JOIN.
-    /// Returns row count ingested.
     size_t fetch_and_ingest(NodeId source, const std::string& sql,
                             apex::core::ApexPipeline& local);
 
@@ -45,6 +45,7 @@ public:
 
 private:
     std::unordered_map<NodeId, std::unique_ptr<TcpRpcClient>> nodes_;
+    QueryCoordinator coordinator_;
 };
 
 } // namespace apex::cluster

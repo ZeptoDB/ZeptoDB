@@ -16,6 +16,7 @@
 #include "apex/cluster/transport.h"
 #include "apex/cluster/partition_router.h"
 #include "apex/cluster/health_monitor.h"
+#include "apex/cluster/query_coordinator.h"
 #include "apex/cluster/tcp_rpc.h"
 #include "apex/core/pipeline.h"
 #include "apex/ingestion/tick_plant.h"
@@ -229,6 +230,12 @@ public:
 
     PartitionRouter& router() { return router_; }
     const PartitionRouter& router() const { return router_; }
+
+    /// Share this node's PartitionRouter with a QueryCoordinator so both
+    /// use the same routing table.  Call before join_cluster().
+    void connect_coordinator(QueryCoordinator& coord) {
+        coord.set_shared_router(&router_, &router_mutex_);
+    }
 
     HealthMonitor& health() { return health_; }
     ApexPipeline& pipeline() { return local_pipeline_; }

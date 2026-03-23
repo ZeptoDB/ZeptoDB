@@ -82,9 +82,15 @@ void CoordinatorHA::monitor_loop() {
             role_.store(CoordinatorRole::ACTIVE);
             promotions_.fetch_add(1);
 
-            // Re-register all known nodes as remote (since we don't have
-            // local pipeline references for remote nodes)
-            // The caller's on_promotion callback should handle re-wiring.
+            // Re-register all known nodes as remote into the coordinator
+            // so it can immediately route queries after promotion.
+            {
+                std::lock_guard<std::mutex> lock(node_mu_);
+                for (const auto& addr : registered_nodes_) {
+                    coordinator_.add_remote_node(addr);
+                }
+            }
+
             if (promotion_cb_) promotion_cb_();
             break;  // stop monitoring — we are now active
         }

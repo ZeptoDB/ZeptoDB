@@ -44,6 +44,19 @@ public:
     QueryCoordinator& operator=(const QueryCoordinator&) = delete;
 
     // ----------------------------------------------------------------
+    // Shared router injection
+    // ----------------------------------------------------------------
+
+    /// Use an external PartitionRouter (owned by caller, e.g. ClusterNode).
+    /// Must be called before add_remote_node / add_local_node.
+    /// The caller's router_mutex must protect the shared router externally
+    /// when ClusterNode and QueryCoordinator are used together.
+    void set_shared_router(PartitionRouter* shared, std::shared_mutex* shared_mu) {
+        external_router_ = shared;
+        external_router_mu_ = shared_mu;
+    }
+
+    // ----------------------------------------------------------------
     // Node registration
     // ----------------------------------------------------------------
 
@@ -76,6 +89,25 @@ public:
     apex::sql::QueryResultSet execute_sql_for_symbol(const std::string& sql,
                                                      SymbolId           symbol_id);
 
+    // ----------------------------------------------------------------
+    // Router access (internal or shared)
+    // ----------------------------------------------------------------
+
+    PartitionRouter&       router()       { return external_router_ ? *external_router_ : own_router_; }
+    const PartitionRouter& router() const { return external_router_ ? *external_router_ : own_router_; }
+
+    /// Lock the router for reading (uses external mutex if shared, else internal).
+    std::shared_lock<std::shared_mutex> router_read_lock() const {
+        return std::shared_lock<std::shared_mutex>(
+            external_router_mu_ ? *external_router_mu_ : router_mu_);
+    }
+
+    /// Lock the router for writing.
+    std::unique_lock<std::shared_mutex> router_write_lock() {
+        return std::unique_lock<std::shared_mutex>(
+            external_router_mu_ ? *external_router_mu_ : router_mu_);
+    }
+
 private:
     // ----------------------------------------------------------------
     // Internal
@@ -97,7 +129,12 @@ private:
 
     mutable std::shared_mutex                        mutex_;
     std::vector<std::shared_ptr<NodeEndpoint>>       endpoints_;
-    PartitionRouter                                  router_;
+
+    // Router: either own (standalone) or external (shared with ClusterNode)
+    PartitionRouter                                  own_router_;
+    mutable std::shared_mutex                        router_mu_;
+    PartitionRouter*                                 external_router_ = nullptr;
+    std::shared_mutex*                               external_router_mu_ = nullptr;
 };
 
 } // namespace apex::cluster

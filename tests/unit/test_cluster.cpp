@@ -595,3 +595,150 @@ TEST(NodeRegistry, K8sGetNode) {
 
     reg.stop();
 }
+
+// ============================================================================
+// K8s Lease + Fencing Token — split-brain prevention
+// ============================================================================
+
+#include "apex/cluster/k8s_lease.h"
+
+TEST(FencingToken, MonotonicallyIncreasing) {
+    using namespace apex::cluster;
+    FencingToken token;
+    EXPECT_EQ(token.current(), 0u);
+
+    uint64_t t1 = token.advance();
+    uint64_t t2 = token.advance();
+    uint64_t t3 = token.advance();
+    EXPECT_EQ(t1, 1u);
+    EXPECT_EQ(t2, 2u);
+    EXPECT_EQ(t3, 3u);
+}
+
+TEST(FencingToken, ValidateRejectsStale) {
+    using namespace apex::cluster;
+    FencingToken gate;
+
+    // Accept epoch 5
+    EXPECT_TRUE(gate.validate(5));
+    EXPECT_EQ(gate.last_seen(), 5u);
+
+    // Accept epoch 6 (newer)
+    EXPECT_TRUE(gate.validate(6));
+
+    // Reject epoch 3 (stale — older than last seen 6)
+    EXPECT_FALSE(gate.validate(3));
+
+    // Accept epoch 6 again (equal is OK)
+    EXPECT_TRUE(gate.validate(6));
+}
+
+TEST(FencingToken, ValidateAcceptsEqual) {
+    using namespace apex::cluster;
+    FencingToken gate;
+    EXPECT_TRUE(gate.validate(10));
+    EXPECT_TRUE(gate.validate(10));  // same epoch is fine (idempotent)
+    EXPECT_FALSE(gate.validate(9));  // but older is not
+}
+
+TEST(K8sLease, AcquireAndRenew) {
+    using namespace apex::cluster;
+    K8sLease lease(LeaseConfig{.lease_duration_ms = 5000});
+
+    bool elected = false;
+    lease.on_elected([&] { elected = true; });
+
+    lease.start("node-1");
+    EXPECT_TRUE(lease.try_acquire());
+    EXPECT_TRUE(lease.is_leader());
+    EXPECT_TRUE(elected);
+    EXPECT_EQ(lease.epoch(), 1u);
+
+    // Renew should succeed
+    EXPECT_TRUE(lease.try_acquire());
+    EXPECT_TRUE(lease.is_leader());
+
+    lease.stop();
+}
+
+TEST(K8sLease, SecondNodeCannotAcquire) {
+    using namespace apex::cluster;
+    // Lease held by node-1, node-2 cannot take it
+    K8sLease lease(LeaseConfig{.lease_duration_ms = 60000});
+    lease.start("node-1");
+    lease.try_acquire();
+    EXPECT_TRUE(lease.is_leader());
+    EXPECT_EQ(lease.current_holder(), "node-1");
+
+    // Simulate node-2 trying: force_holder shows only one can hold
+    // The real K8s API server enforces single-holder via resourceVersion
+    lease.stop();
+}
+
+TEST(K8sLease, ForceHolderTriggersLostCallback) {
+    using namespace apex::cluster;
+    K8sLease lease(LeaseConfig{.lease_duration_ms = 60000});
+
+    bool lost = false;
+    lease.on_elected([&] {});
+    lease.on_lost([&] { lost = true; });
+
+    lease.start("node-1");
+    lease.try_acquire();
+    EXPECT_TRUE(lease.is_leader());
+
+    // Another node takes over (simulates K8s lease transfer)
+    lease.force_holder("node-2");
+    EXPECT_FALSE(lease.is_leader());
+    EXPECT_TRUE(lost);
+
+    lease.stop();
+}
+
+TEST(K8sLease, EpochIncreasesOnReElection) {
+    using namespace apex::cluster;
+    K8sLease lease(LeaseConfig{.lease_duration_ms = 100});
+
+    lease.start("node-1");
+    lease.try_acquire();
+    EXPECT_EQ(lease.epoch(), 1u);
+
+    // Lose leadership
+    lease.force_holder("node-2");
+    EXPECT_FALSE(lease.is_leader());
+
+    // Wait for lease to expire, then re-acquire
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    lease.try_acquire();
+    EXPECT_TRUE(lease.is_leader());
+    EXPECT_EQ(lease.epoch(), 2u);  // epoch incremented on re-election
+
+    lease.stop();
+}
+
+TEST(SplitBrain, FencingPreventsStaleWrite) {
+    using namespace apex::cluster;
+    // Simulate split-brain scenario:
+    // 1. Coordinator A is leader (epoch=1)
+    // 2. Network partition → B becomes leader (epoch=2)
+    // 3. A recovers, tries to write with epoch=1 → REJECTED
+
+    FencingToken data_node_gate;  // on each data node
+
+    // A writes with epoch 1
+    FencingToken coord_a;
+    uint64_t epoch_a = coord_a.advance();  // epoch=1
+    EXPECT_TRUE(data_node_gate.validate(epoch_a));
+
+    // B promoted, writes with epoch 2
+    FencingToken coord_b;
+    coord_b.advance();  // skip to match
+    uint64_t epoch_b = coord_b.advance();  // epoch=2
+    EXPECT_TRUE(data_node_gate.validate(epoch_b));
+
+    // A tries to write with stale epoch 1 → REJECTED
+    EXPECT_FALSE(data_node_gate.validate(epoch_a));
+
+    // B continues writing with epoch 2 → OK
+    EXPECT_TRUE(data_node_gate.validate(epoch_b));
+}

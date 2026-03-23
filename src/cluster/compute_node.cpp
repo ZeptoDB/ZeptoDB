@@ -5,6 +5,7 @@ namespace apex::cluster {
 void ComputeNode::add_data_node(NodeId id, const std::string& host,
                                  uint16_t port) {
     nodes_[id] = std::make_unique<TcpRpcClient>(host, port);
+    coordinator_.add_remote_node({host, port, id});
 }
 
 apex::sql::QueryResultSet ComputeNode::execute_on(NodeId id,
@@ -19,26 +20,7 @@ apex::sql::QueryResultSet ComputeNode::execute_on(NodeId id,
 }
 
 apex::sql::QueryResultSet ComputeNode::execute(const std::string& sql) {
-    // Fan out to all data nodes, concat results
-    std::vector<apex::sql::QueryResultSet> results;
-    for (auto& [id, rpc] : nodes_)
-        results.push_back(rpc->execute_sql(sql));
-
-    // Simple concat merge
-    apex::sql::QueryResultSet merged;
-    for (auto& r : results) {
-        if (!r.ok()) {
-            if (merged.error.empty()) merged.error = r.error;
-            continue;
-        }
-        if (merged.column_names.empty()) {
-            merged.column_names = r.column_names;
-            merged.column_types = r.column_types;
-        }
-        merged.rows.insert(merged.rows.end(), r.rows.begin(), r.rows.end());
-        merged.rows_scanned += r.rows_scanned;
-    }
-    return merged;
+    return coordinator_.execute_sql(sql);
 }
 
 size_t ComputeNode::fetch_and_ingest(NodeId source, const std::string& sql,

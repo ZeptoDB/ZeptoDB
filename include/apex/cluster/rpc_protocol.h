@@ -4,11 +4,12 @@
 // ============================================================================
 // Binary layout (all little-endian):
 //
-//   RpcHeader (16 bytes):
+//   RpcHeader (24 bytes):
 //     magic:       uint32  = 0x41504558 ('APEX')
 //     type:        uint32  (SQL_QUERY=1, SQL_RESULT=2, PING=3, PONG=4)
 //     request_id:  uint32
 //     payload_len: uint32
+//     epoch:       uint64  (fencing token — 0 = no fencing)
 //
 //   SQL_QUERY payload:
 //     raw SQL string (payload_len bytes, no NUL)
@@ -46,7 +47,7 @@ enum class RpcType : uint32_t {
 };
 
 // ============================================================================
-// RpcHeader — fixed 16-byte wire header
+// RpcHeader — fixed 24-byte wire header
 // ============================================================================
 #pragma pack(push, 1)
 struct RpcHeader {
@@ -54,10 +55,11 @@ struct RpcHeader {
     uint32_t type        = 0;
     uint32_t request_id  = 0;
     uint32_t payload_len = 0;
+    uint64_t epoch       = 0;            // fencing token (0 = no fencing)
 };
 #pragma pack(pop)
 
-static_assert(sizeof(RpcHeader) == 16, "RpcHeader must be 16 bytes");
+static_assert(sizeof(RpcHeader) == 24, "RpcHeader must be 24 bytes");
 
 // ============================================================================
 // Write helpers (append to byte vector)

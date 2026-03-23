@@ -319,16 +319,98 @@ Client Query(VWAP, symbol=AAPL, range=24h)
   - Tier A: `WHERE symbol = N` → consistent-hash direct route to owning node
   - Tier B: scatter-gather to all nodes → partial aggregation merge
 - `TcpRpcServer` / `TcpRpcClient` — POSIX socket transport
-  - 16-byte `RpcHeader` (magic=0x41504558, type, request_id, payload_len)
+  - 24-byte `RpcHeader` (magic, type, request_id, payload_len, epoch)
   - Binary `QueryResultSet` wire format (error, column names/types, packed int64 rows)
-  - One TCP connection per request (simple, stateless)
+  - Connection pooling (acquire/release, MSG_PEEK liveness, max 4 idle)
 - `partial_agg.h` — merge strategies:
-  - `SCALAR_AGG`: SQL-AST-driven per-column merge (SUM/COUNT=add, MIN=min, MAX=max, AVG=error)
+  - `SCALAR_AGG`: SQL-AST-driven per-column merge (SUM/COUNT=add, MIN=min, MAX=max, AVG=SUM/COUNT rewrite)
+  - `MERGE_GROUP_BY`: re-aggregate same key buckets across nodes (xbar time bars)
   - `CONCAT`: plain rows or GROUP BY with symbol affinity (no key overlap)
   - Strategy detected from SQL AST (not column names — executor returns raw names)
 - 25 tests: RpcProtocol (5), PartialAgg (11), TcpRpc (4), QueryCoordinator (5)
-- Key design: `merge_scalar_with_sql_aggs()` uses `SelectExpr.agg` from parsed AST,
-  avoiding the unreliable column-name-based detection (`count(*) → "*"`)
+
+### Phase C-3.5: Cluster Integrity ✅ Completed (2026-03-23)
+
+**Problem:** Multiple components maintained independent state that could desync,
+and split-brain scenarios had incomplete protection.
+
+**Changes:**
+
+1. **Unified PartitionRouter** — `QueryCoordinator::set_shared_router()` accepts
+   an external `PartitionRouter*` + `shared_mutex*`. `ClusterNode::connect_coordinator()`
+   injects its router into the coordinator. Eliminates dual-router desync.
+   - Fallback: standalone QueryCoordinator uses its own internal router (backward compat)
+
+2. **FencingToken in RPC protocol** — `RpcHeader` extended from 16 → 24 bytes with
+   `uint64_t epoch` field. `TcpRpcServer::set_fencing_token()` enables write validation.
+   - `TICK_INGEST` / `WAL_REPLICATE` with `epoch < last_seen` → rejected (status=0)
+   - `epoch=0` → bypasses fencing (backward compatible with legacy clients)
+   - Split-brain defense: stale coordinator's writes are rejected after new coordinator
+     advances the epoch via `FencingToken::advance()`
+
+3. **CoordinatorHA auto re-registration** — on standby→active promotion, all nodes
+   in `registered_nodes_` are automatically replayed into the coordinator as remote
+   endpoints. No manual callback wiring needed for basic functionality.
+
+4. **ComputeNode merge logic** — `ComputeNode::execute()` now delegates to an internal
+   `QueryCoordinator` instead of naive concat. Correctly handles GROUP BY, scalar
+   aggregates, AVG rewrite, and ASOF JOIN routing.
+   - Bug fix: `SELECT *` was misclassified as `SCALAR_AGG` (treated `is_star` as aggregate)
+
+**Split-brain defense status:**
+
+| Scenario | Defense | Status |
+|----------|---------|--------|
+| Stale coordinator TICK_INGEST | RpcHeader.epoch + FencingToken.validate() | ✅ Tested |
+| Stale coordinator WAL_REPLICATE | Same | ✅ Tested |
+| K8s Lease takeover detection | K8sLease.force_holder() → on_lost callback | ✅ Tested |
+| FencingToken monotonic gate | epoch < last_seen → reject | ✅ Tested |
+| Legacy client (epoch=0) | Bypasses fencing (backward compat) | ⚠️ By design |
+| SQL_QUERY from stale coordinator | No fencing (reads are safe) | ⚠️ By design |
+
+**Tests added:** 9 new tests (SharedRouter ×2, FencingRpc ×2, CoordinatorHA ×1, SplitBrain ×4)
+
+**Related code:**
+- `include/apex/cluster/query_coordinator.h` — shared router API
+- `include/apex/cluster/rpc_protocol.h` — 24-byte RpcHeader
+- `include/apex/cluster/tcp_rpc.h` — fencing token + epoch on client/server
+- `include/apex/cluster/cluster_node.h` — `connect_coordinator()`
+- `src/cluster/coordinator_ha.cpp` — auto re-registration on promote
+
+### Phase C-3.6: Distributed Query Correctness ✅ Partial (2026-03-23)
+
+**Completed:**
+- VWAP distributed decomposition: `VWAP(p,v)` → `SUM(p*v), SUM(v)` rewrite → `SUM_PV/SUM_V` reconstruction
+- ORDER BY + LIMIT post-merge: coordinator sorts merged results and truncates after all merge strategies
+
+**Remaining query-level gaps:**
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| HAVING distributed | TODO | Apply after GROUP BY merge at coordinator |
+| DISTINCT distributed | TODO | Dedup at coordinator after concat |
+| Window functions distributed | TODO | Requires full dataset; fetch-and-compute |
+| FIRST/LAST distributed | TODO | Timestamp comparison across nodes |
+| COUNT(DISTINCT) distributed | TODO | HyperLogLog or exact dedup |
+| Subquery/CTE distributed | TODO | Cross-node CTE reference |
+| Multi-column ORDER BY | TODO | Extend sort to composite key |
+
+**Remaining infrastructure gaps:**
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| Cancel propagation | TODO | Coordinator timeout → cancel RPC to nodes |
+| Partial failure policy | TODO | Some nodes fail: partial result vs error |
+| In-flight query safety | TODO | Node add/remove during scatter → race |
+| Dual-write during migration | TODO | Data loss gap during partition move |
+| Distributed query timeout | TODO | Remote-side timeout enforcement |
+
+**Remaining precision gaps:**
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| AVG int64 truncation | TODO | Float AVG loses precision via integer division |
+| VWAP int64 overflow | TODO | SUM(price*volume) can overflow for large datasets |
 
 ### Phase C-4: Distributed Query
 - UCX scatter-gather (replace TCP with RDMA for production)

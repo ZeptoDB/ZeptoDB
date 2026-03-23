@@ -190,6 +190,18 @@ void TcpRpcServer::handle_connection(int cfd) {
         }
 
         if (type == RpcType::TICK_INGEST) {
+            // Fencing: reject stale-epoch writes
+            if (fencing_token_ && hdr.epoch != 0 &&
+                !fencing_token_->validate(hdr.epoch)) {
+                RpcHeader ack;
+                ack.type        = static_cast<uint32_t>(RpcType::TICK_ACK);
+                ack.request_id  = hdr.request_id;
+                ack.payload_len = 1;
+                uint8_t status  = 0u;  // rejected
+                if (!send_all(cfd, &ack, sizeof(ack)) || !send_all(cfd, &status, 1))
+                    break;
+                continue;
+            }
             bool ok = false;
             if (tick_callback_) {
                 apex::ingestion::TickMessage tick_msg{};
@@ -212,6 +224,18 @@ void TcpRpcServer::handle_connection(int cfd) {
         }
 
         if (type == RpcType::WAL_REPLICATE) {
+            // Fencing: reject stale-epoch writes
+            if (fencing_token_ && hdr.epoch != 0 &&
+                !fencing_token_->validate(hdr.epoch)) {
+                RpcHeader ack;
+                ack.type        = static_cast<uint32_t>(RpcType::WAL_ACK);
+                ack.request_id  = hdr.request_id;
+                ack.payload_len = 1;
+                uint8_t status  = 0u;  // rejected
+                if (!send_all(cfd, &ack, sizeof(ack)) || !send_all(cfd, &status, 1))
+                    break;
+                continue;
+            }
             size_t applied = 0;
             if (wal_callback_) {
                 std::vector<apex::ingestion::TickMessage> batch;
@@ -388,26 +412,32 @@ bool TcpRpcClient::ingest_tick(const apex::ingestion::TickMessage& msg) {
     if (fd < 0) return false;
 
     auto payload = serialize_tick(msg);
-    if (!send_message(fd, RpcType::TICK_INGEST, 1, payload)) {
+    RpcHeader hdr;
+    hdr.type        = static_cast<uint32_t>(RpcType::TICK_INGEST);
+    hdr.request_id  = 1;
+    hdr.payload_len = static_cast<uint32_t>(payload.size());
+    hdr.epoch       = epoch_;
+    if (!send_all(fd, &hdr, sizeof(hdr)) ||
+        (!payload.empty() && !send_all(fd, payload.data(), payload.size()))) {
         release(fd, false);
         return false;
     }
 
-    RpcHeader hdr{};
-    if (!recv_all(fd, &hdr, sizeof(hdr))) {
+    RpcHeader resp{};
+    if (!recv_all(fd, &resp, sizeof(resp))) {
         release(fd, false);
         return false;
     }
 
     uint8_t status = 0;
-    if (hdr.payload_len == 1) {
+    if (resp.payload_len == 1) {
         if (!recv_all(fd, &status, 1)) {
             release(fd, false);
             return false;
         }
     }
     release(fd, true);
-    return static_cast<RpcType>(hdr.type) == RpcType::TICK_ACK && status == 1u;
+    return static_cast<RpcType>(resp.type) == RpcType::TICK_ACK && status == 1u;
 }
 
 bool TcpRpcClient::replicate_wal(
@@ -418,25 +448,31 @@ bool TcpRpcClient::replicate_wal(
     if (fd < 0) return false;
 
     auto payload = serialize_wal_batch(batch);
-    if (!send_message(fd, RpcType::WAL_REPLICATE, 1, payload)) {
+    RpcHeader hdr;
+    hdr.type        = static_cast<uint32_t>(RpcType::WAL_REPLICATE);
+    hdr.request_id  = 1;
+    hdr.payload_len = static_cast<uint32_t>(payload.size());
+    hdr.epoch       = epoch_;
+    if (!send_all(fd, &hdr, sizeof(hdr)) ||
+        (!payload.empty() && !send_all(fd, payload.data(), payload.size()))) {
         release(fd, false);
         return false;
     }
 
-    RpcHeader hdr{};
-    if (!recv_all(fd, &hdr, sizeof(hdr))) {
+    RpcHeader resp{};
+    if (!recv_all(fd, &resp, sizeof(resp))) {
         release(fd, false);
         return false;
     }
     uint8_t status = 0;
-    if (hdr.payload_len == 1) {
+    if (resp.payload_len == 1) {
         if (!recv_all(fd, &status, 1)) {
             release(fd, false);
             return false;
         }
     }
     release(fd, true);
-    return static_cast<RpcType>(hdr.type) == RpcType::WAL_ACK && status == 1u;
+    return static_cast<RpcType>(resp.type) == RpcType::WAL_ACK && status == 1u;
 }
 
 bool TcpRpcClient::ping() {
