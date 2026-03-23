@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -35,6 +36,23 @@ public:
     // 물리 노드 1개당 가상 노드 수 (균등 분배를 위해 충분히 크게)
     static constexpr size_t VNODES_PER_NODE = 128;
 
+    PartitionRouter() = default;
+
+    // Copy constructor: copies ring and node_set; cache is not copied (rebuilt
+    // on demand) and each instance gets its own fresh mutex.
+    PartitionRouter(const PartitionRouter& other)
+        : ring_(other.ring_), node_set_(other.node_set_) {}
+
+    PartitionRouter& operator=(const PartitionRouter& other) {
+        if (this != &other) {
+            ring_      = other.ring_;
+            node_set_  = other.node_set_;
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            cache_.clear();
+        }
+        return *this;
+    }
+
     // ----------------------------------------------------------------
     // 노드 관리
     // ----------------------------------------------------------------
@@ -48,7 +66,8 @@ public:
             uint64_t h = vnode_hash(node, i);
             ring_[h]   = node;
         }
-        // 라우팅 캐시 무효화
+        // Invalidate routing cache under its own mutex
+        std::lock_guard<std::mutex> cache_lock(cache_mutex_);
         cache_.clear();
     }
 
@@ -61,6 +80,7 @@ public:
             uint64_t h = vnode_hash(node, i);
             ring_.erase(h);
         }
+        std::lock_guard<std::mutex> cache_lock(cache_mutex_);
         cache_.clear();
     }
 
@@ -77,25 +97,54 @@ public:
     // ----------------------------------------------------------------
 
     /// Symbol → 담당 NodeId 반환 (O(1) 캐시 or O(log n) 링 조회)
+    /// Thread-safe: cache reads/writes protected by cache_mutex_ (separate from
+    /// the ring, which must be protected by the caller's outer lock).
     NodeId route(SymbolId symbol) const {
         if (ring_.empty()) {
             throw std::runtime_error("PartitionRouter: no nodes in cluster");
         }
 
-        // 캐시 확인
-        auto cache_it = cache_.find(symbol);
-        if (cache_it != cache_.end()) {
-            return cache_it->second;
+        // Check cache first — brief exclusive lock (cache is separate from ring)
+        {
+            std::lock_guard<std::mutex> cache_lock(cache_mutex_);
+            auto cache_it = cache_.find(symbol);
+            if (cache_it != cache_.end()) {
+                return cache_it->second;
+            }
         }
 
         uint64_t h = symbol_hash(symbol);
         NodeId   n = find_node(h);
 
-        // 캐시 저장 (LRU 없이 단순 HashMap — 심볼 수 제한 있음)
-        if (cache_.size() < MAX_CACHE_SIZE) {
-            cache_[symbol] = n;
+        // Store result in cache
+        {
+            std::lock_guard<std::mutex> cache_lock(cache_mutex_);
+            if (cache_.size() < MAX_CACHE_SIZE) {
+                cache_[symbol] = n;
+            }
         }
         return n;
+    }
+
+    /// Symbol → replica NodeId (next distinct physical node on the ring).
+    /// Returns INVALID_NODE_ID if only 1 physical node exists.
+    NodeId route_replica(SymbolId symbol) const {
+        if (node_set_.size() < 2) return INVALID_NODE_ID;
+
+        uint64_t h = symbol_hash(symbol);
+        NodeId primary = find_node(h);
+
+        // Walk the ring from primary's position to find a different node
+        auto it = ring_.lower_bound(h);
+        if (it == ring_.end()) it = ring_.begin();
+
+        // Advance past all vnodes belonging to the primary
+        for (size_t steps = 0; steps < ring_.size(); ++steps) {
+            ++it;
+            if (it == ring_.end()) it = ring_.begin();
+            if (it->second != primary) return it->second;
+        }
+        return INVALID_NODE_ID;  // shouldn't happen with ≥2 nodes
     }
 
     // ----------------------------------------------------------------
@@ -250,7 +299,9 @@ private:
     // 물리 노드 집합
     std::set<NodeId>                    node_set_;
 
-    // 라우팅 캐시 (Symbol → NodeId)
+    // Routing cache — protected by its own mutex so that concurrent route()
+    // calls from multiple reader threads do not race on the unordered_map.
+    mutable std::mutex                           cache_mutex_;
     mutable std::unordered_map<SymbolId, NodeId> cache_;
 
     static constexpr size_t MAX_CACHE_SIZE = 65536;

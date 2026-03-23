@@ -323,7 +323,13 @@ TEST(ClusterNode, TwoNodeLocalCluster) {
     }
     EXPECT_TRUE(ok);
 
-    std::this_thread::sleep_for(50ms);
+    // Wait for the drain thread to process the tick (ticks_stored acquire-load
+    // ensures all prior writes — partition_index_ update + data append — are visible).
+    const auto& pstats = (owner == 1) ? node1->pipeline().stats()
+                                      : node2->pipeline().stats();
+    for (int i = 0; i < 5000 && pstats.ticks_stored.load(std::memory_order_acquire) < 1; ++i) {
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
 
     QueryResult result;
     if (owner == 1) {

@@ -16,8 +16,10 @@
 #include "apex/cluster/transport.h"
 #include "apex/cluster/partition_router.h"
 #include "apex/cluster/health_monitor.h"
+#include "apex/cluster/tcp_rpc.h"
 #include "apex/core/pipeline.h"
 #include "apex/ingestion/tick_plant.h"
+#include "apex/sql/executor.h"
 
 #include <atomic>
 #include <functional>
@@ -45,6 +47,7 @@ struct ClusterConfig {
     HealthConfig      health;            // heartbeat 설정
     PipelineConfig    pipeline;          // 로컬 파이프라인 설정
     bool              enable_remote_ingest = true;  // 원격 인제스트 활성화
+    uint16_t          rpc_port = 0;      // TCP RPC port (0 = self.port + 100)
 };
 
 // ============================================================================
@@ -86,12 +89,18 @@ public:
             }
         }
 
-        // 3. Seed 노드에 연결
+        // 3. Seed 노드에 연결 + RPC client 생성
         for (auto& seed : seeds) {
             try {
                 ConnectionId conn = transport_.connect(seed);
                 peer_connections_[seed.id] = conn;
                 peer_addresses_[seed.id]   = seed;
+
+                // Pre-create RPC client for remote tick ingest.
+                // Peer's RPC port convention: peer.port + 100
+                uint16_t peer_rpc_port = static_cast<uint16_t>(seed.port + 100);
+                peer_rpc_clients_[seed.id] = std::make_unique<TcpRpcClient>(
+                    seed.host, peer_rpc_port, 2000);
             } catch (...) {
                 // 연결 실패 시 무시 (나중에 재시도)
             }
@@ -106,12 +115,27 @@ public:
         // 5. 로컬 파이프라인 시작
         local_pipeline_.start();
 
+        // 6. TCP RPC 서버 시작 (원격 SQL 쿼리 + Tick ingest 수신)
+        uint16_t rport = (config_.rpc_port > 0)
+                       ? config_.rpc_port
+                       : static_cast<uint16_t>(config_.self.port + 100);
+        rpc_server_.start(
+            rport,
+            [this](const std::string& sql) { return execute_sql_local(sql); },
+            [this](const apex::ingestion::TickMessage& msg) {
+                return local_pipeline_.ingest_tick(msg);
+            });
+        rpc_port_ = rport;
+
         joined_.store(true);
     }
 
     /// 클러스터 이탈 (graceful shutdown)
     void leave_cluster() {
         if (!joined_.exchange(false)) return;
+
+        // TCP RPC 서버 중지
+        rpc_server_.stop();
 
         // Health Monitor에 이탈 알림
         health_.mark_leaving(config_.self.id);
@@ -125,6 +149,7 @@ public:
             transport_.disconnect(conn);
         }
         peer_connections_.clear();
+        peer_rpc_clients_.clear();
         transport_.shutdown();
     }
 
@@ -184,7 +209,18 @@ public:
 
     NodeId self_id() const { return config_.self.id; }
 
-    bool is_joined() const { return joined_.load(); }
+    bool     is_joined() const { return joined_.load(); }
+    uint16_t rpc_port()  const { return rpc_port_; }
+
+    // ----------------------------------------------------------------
+    // SQL 실행 (로컬 파이프라인)
+    // ----------------------------------------------------------------
+
+    /// Execute a SQL query against the local pipeline (in-process).
+    apex::sql::QueryResultSet execute_sql_local(const std::string& sql) {
+        apex::sql::QueryExecutor ex(local_pipeline_);
+        return ex.execute(sql);
+    }
 
     NodeId route(SymbolId symbol) const {
         std::shared_lock lock(router_mutex_);
@@ -231,24 +267,21 @@ private:
     // 내부 구현
     // ----------------------------------------------------------------
 
-    /// 원격 노드로 틱 전송 (간단한 직렬화)
+    /// 원격 노드로 틱 전송 — TCP RPC TICK_INGEST
     bool remote_ingest(NodeId target, const TickMessage& msg) {
-        auto conn_it = peer_connections_.find(target);
-        if (conn_it == peer_connections_.end()) return false;
+        auto it = peer_rpc_clients_.find(target);
+        if (it == peer_rpc_clients_.end()) {
+            // Peer not yet known (joined after us); try to create client lazily
+            auto addr_it = peer_addresses_.find(target);
+            if (addr_it == peer_addresses_.end()) return false;
 
-        // 원격 수신 버퍼에 RDMA write
-        // 실제로는 원격 노드의 ring buffer 주소를 알아야 함
-        // 여기서는 SharedMem 테스트에서 직접 처리
-        // 프로덕션에서는 gRPC 또는 RDMA one-sided를 통해 처리
-
-        // 현재는 peer의 ingest 함수 포인터가 없으므로,
-        // remote_region이 설정된 경우에만 처리
-        auto region_it = remote_ingest_regions_.find(target);
-        if (region_it == remote_ingest_regions_.end()) return false;
-
-        transport_.remote_write(&msg, region_it->second, 0, sizeof(msg));
-        transport_.fence();
-        return true;
+            uint16_t peer_rpc_port = static_cast<uint16_t>(addr_it->second.port + 100);
+            auto [ins, _] = peer_rpc_clients_.emplace(
+                target,
+                std::make_unique<TcpRpcClient>(addr_it->second.host, peer_rpc_port, 2000));
+            it = ins;
+        }
+        return it->second->ingest_tick(msg);
     }
 
     /// 원격 VWAP 쿼리 (stub — 실제는 gRPC)
@@ -283,15 +316,20 @@ private:
     PartitionRouter                            router_;
     HealthMonitor                              health_;
     ApexPipeline                               local_pipeline_;
+    TcpRpcServer                               rpc_server_;
+    uint16_t                                   rpc_port_ = 0;
 
     std::atomic<bool>                          joined_{false};
 
     // 피어 연결 정보
-    std::unordered_map<NodeId, ConnectionId>   peer_connections_;
-    std::unordered_map<NodeId, NodeAddress>    peer_addresses_;
+    std::unordered_map<NodeId, ConnectionId>              peer_connections_;
+    std::unordered_map<NodeId, NodeAddress>               peer_addresses_;
 
-    // 원격 ingest용 RDMA 영역 (target NodeId → RemoteRegion)
-    std::unordered_map<NodeId, RemoteRegion>   remote_ingest_regions_;
+    // TCP RPC clients for remote tick ingest (pre-created per seed in join_cluster)
+    std::unordered_map<NodeId, std::unique_ptr<TcpRpcClient>> peer_rpc_clients_;
+
+    // 원격 ingest용 RDMA 영역 (target NodeId → RemoteRegion, future UCX path)
+    std::unordered_map<NodeId, RemoteRegion>              remote_ingest_regions_;
 };
 
 // ----------------------------------------------------------------
