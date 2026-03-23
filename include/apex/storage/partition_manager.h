@@ -11,7 +11,9 @@
 #include "apex/storage/arena_allocator.h"
 #include "apex/storage/column_store.h"
 
+#include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -85,6 +87,33 @@ public:
     }
 
     // =========================================================================
+    // Attribute hints — s# (sorted column) binary-search index
+    // =========================================================================
+    // Mark a column as sorted (s# attribute). The column must already be
+    // monotonically non-decreasing when this is called (append-only guarantee).
+    void set_sorted(const std::string& col) { sorted_columns_.insert(col); }
+
+    // Check if a column has the s# (sorted) attribute.
+    bool is_sorted(const std::string& col) const {
+        return sorted_columns_.count(col) > 0;
+    }
+
+    // O(log n) range scan on a sorted column.
+    // Returns [begin_idx, end_idx) of rows where col value is in [lo, hi].
+    std::pair<size_t, size_t> sorted_range(const std::string& col,
+                                           int64_t lo, int64_t hi) const {
+        const ColumnVector* cv = get_column(col);
+        if (!cv || cv->size() == 0) return {0, 0};
+        auto span = const_cast<ColumnVector*>(cv)->as_span<int64_t>();
+        auto begin = std::lower_bound(span.begin(), span.end(), lo);
+        auto end   = std::upper_bound(span.begin(), span.end(), hi);
+        return {
+            static_cast<size_t>(begin - span.begin()),
+            static_cast<size_t>(end   - span.begin())
+        };
+    }
+
+    // =========================================================================
     // 타임스탬프 범위 인덱스 (이진 탐색)
     // =========================================================================
     // 데이터는 append-only이므로 timestamp 컬럼은 항상 오름차순 정렬됨.
@@ -124,6 +153,7 @@ private:
     State                                     state_ = State::ACTIVE;
     std::unique_ptr<ArenaAllocator>           arena_;
     std::vector<std::unique_ptr<ColumnVector>> columns_;
+    std::unordered_set<std::string>           sorted_columns_;
 };
 
 // ============================================================================
