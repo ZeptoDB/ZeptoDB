@@ -491,7 +491,12 @@
   - QueryCoordinator: ASOF/WINDOW JOIN detection → Tier A-2 (symbol-filter routing) or scatter-concat
   - Symbol-filtered JOINs route to single node; no-filter JOINs scatter to all
   - 3 tests: cross-node routing, scatter-gather aggregates
-- [ ] **AVG distributed merge** — Decompose AVG into SUM/COUNT for partial aggregation
+- [x] **AVG distributed merge** ✅ Completed (2026-03-23) — Decompose AVG into SUM/COUNT for partial aggregation
+  - `merge_scalar_results`: AVG averages per-node averages (name-based path)
+  - `merge_scalar_with_sql_aggs`: same fix for AST-based path
+  - `merge_group_by_results`: AVG with per-group count tracking
+  - QueryCoordinator `build_avg_rewrite`: AVG→SUM+COUNT SQL rewrite (already existed)
+  - 4 new tests: scalar name-based, scalar AST-based, GROUP BY, 3-node
   - Currently returns error on cross-node AVG queries
   - **Business value:** Complete distributed SQL support
 - [ ] **Tier C cold query offload** — Route historical queries to DuckDB/Parquet engine
