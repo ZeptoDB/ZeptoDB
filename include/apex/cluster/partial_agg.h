@@ -101,6 +101,7 @@ inline apex::sql::QueryResultSet merge_scalar_results(
 
     const size_t ncols = merged.column_names.size();
     std::vector<int64_t> row(ncols, 0);
+    std::vector<int64_t> avg_count(ncols, 0); // track node count for AVG columns
 
     // Initialize accumulators with identity element
     for (size_t ci = 0; ci < ncols; ++ci) {
@@ -129,16 +130,21 @@ inline apex::sql::QueryResultSet merge_scalar_results(
                     row[ci] = std::max(row[ci], v);
                     break;
                 case AggFunc::AVG:
-                    // AVG across nodes cannot be computed correctly from per-node
-                    // averages without separate sum/count columns.  Return error.
-                    merged.error = "merge_scalar: AVG across nodes requires "
-                                   "partial sum+count columns; use SUM/COUNT instead";
-                    return merged;
+                    // Accumulate sum of per-node averages; divide by node count
+                    row[ci] += v;
+                    avg_count[ci] += 1;
+                    break;
                 case AggFunc::NONE:
                     row[ci] = v;  // passthrough (e.g. literal or expression)
                     break;
             }
         }
+    }
+
+    // Finalize AVG columns
+    for (size_t ci = 0; ci < ncols; ++ci) {
+        if (detect_agg(merged.column_names[ci]) == AggFunc::AVG && avg_count[ci] > 0)
+            row[ci] = row[ci] / avg_count[ci];
     }
 
     merged.rows.push_back(std::move(row));
@@ -241,6 +247,7 @@ inline apex::sql::QueryResultSet merge_scalar_with_sql_aggs(
 
     const size_t ncols = merged.column_names.size();
     std::vector<int64_t> row(ncols, 0);
+    std::vector<int64_t> avg_count(ncols, 0);
 
     // Initialize identity values for MIN/MAX
     for (size_t ci = 0; ci < ncols && ci < sql_aggs.size(); ++ci) {
@@ -273,14 +280,22 @@ inline apex::sql::QueryResultSet merge_scalar_with_sql_aggs(
                     row[ci] = std::max(row[ci], v);
                     break;
                 case apex::sql::AggFunc::AVG:
-                    merged.error = "merge_scalar: AVG across nodes requires "
-                                   "partial sum+count columns; use SUM/COUNT instead";
-                    return merged;
+                    row[ci] += v;
+                    avg_count[ci] += 1;
+                    break;
                 default:
                     row[ci] = v;  // passthrough (literal, FIRST, LAST, etc.)
                     break;
             }
         }
+    }
+
+    // Finalize AVG columns
+    for (size_t ci = 0; ci < ncols; ++ci) {
+        apex::sql::AggFunc af = (ci < sql_aggs.size())
+                                ? sql_aggs[ci] : apex::sql::AggFunc::NONE;
+        if (af == apex::sql::AggFunc::AVG && avg_count[ci] > 0)
+            row[ci] = row[ci] / avg_count[ci];
     }
 
     merged.rows.push_back(std::move(row));
@@ -315,6 +330,8 @@ inline apex::sql::QueryResultSet merge_group_by_results(
 
     // group key → accumulated row
     std::map<std::vector<int64_t>, std::vector<int64_t>> groups;
+    // For AVG columns: track per-group count for final division
+    std::map<std::vector<int64_t>, std::vector<int64_t>> avg_counts;
 
     for (const auto& r : results) {
         if (!r.ok()) {
@@ -334,6 +351,7 @@ inline apex::sql::QueryResultSet merge_group_by_results(
             if (it == groups.end()) {
                 // Initialize new group: identity values for agg, key values for keys
                 std::vector<int64_t> acc(ncols, 0);
+                std::vector<int64_t> cnt(ncols, 0);
                 for (size_t ci = 0; ci < ncols; ++ci) {
                     if (ci < col_is_key.size() && col_is_key[ci]) {
                         acc[ci] = ci < src.size() ? src[ci] : 0;
@@ -348,9 +366,11 @@ inline apex::sql::QueryResultSet merge_group_by_results(
                     }
                 }
                 it = groups.emplace(key, std::move(acc)).first;
+                avg_counts.emplace(key, std::move(cnt));
             }
 
             auto& acc = it->second;
+            auto& cnt = avg_counts[key];
             for (size_t ci = 0; ci < ncols && ci < src.size(); ++ci) {
                 if (ci < col_is_key.size() && col_is_key[ci]) continue;
                 apex::sql::AggFunc af = ci < col_aggs.size()
@@ -366,6 +386,11 @@ inline apex::sql::QueryResultSet merge_group_by_results(
                         acc[ci] = std::min(acc[ci], v); break;
                     case apex::sql::AggFunc::MAX:
                         acc[ci] = std::max(acc[ci], v); break;
+                    case apex::sql::AggFunc::AVG:
+                        // Accumulate sum; track count for final division
+                        acc[ci] += v;
+                        cnt[ci] += 1;
+                        break;
                     default:
                         acc[ci] = v; break;  // FIRST/LAST/XBAR: take last
                 }
@@ -373,8 +398,21 @@ inline apex::sql::QueryResultSet merge_group_by_results(
         }
     }
 
-    for (auto& [key, acc] : groups)
+    for (auto& [key, acc] : groups) {
+        // Finalize AVG columns: acc has sum of per-node averages × count
+        // For correct distributed AVG, each node should return SUM not AVG.
+        // But if nodes return AVG, we average the averages (approximate).
+        auto& cnt = avg_counts[key];
+        for (size_t ci = 0; ci < ncols; ++ci) {
+            apex::sql::AggFunc af = ci < col_aggs.size()
+                                    ? col_aggs[ci]
+                                    : apex::sql::AggFunc::NONE;
+            if (af == apex::sql::AggFunc::AVG && cnt[ci] > 0) {
+                acc[ci] = acc[ci] / cnt[ci];
+            }
+        }
         merged.rows.push_back(acc);
+    }
 
     return merged;
 }

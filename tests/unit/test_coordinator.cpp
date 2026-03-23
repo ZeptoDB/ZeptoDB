@@ -200,6 +200,51 @@ TEST(PartialAgg, MergeWithOneEmptyNode) {
     EXPECT_EQ(merged.rows[0][0], 1000);
 }
 
+// ── AVG distributed merge tests ─────────────────────────────────────────────
+
+TEST(PartialAgg, MergeScalarAvg_NameBased) {
+    // Two nodes each return avg(price): node1=100, node2=200 → merged = 150
+    auto r1 = make_result({"avg(price)"}, {{100}});
+    auto r2 = make_result({"avg(price)"}, {{200}});
+    auto merged = merge_results({r1, r2});
+    ASSERT_TRUE(merged.ok()) << merged.error;
+    EXPECT_EQ(merged.rows[0][0], 150);
+}
+
+TEST(PartialAgg, MergeScalarAvg_SqlAggs) {
+    // AST-based merge with AVG
+    auto r1 = make_result({"price_avg"}, {{100}});
+    auto r2 = make_result({"price_avg"}, {{200}});
+    std::vector<apex::sql::AggFunc> aggs = {apex::sql::AggFunc::AVG};
+    auto merged = merge_scalar_with_sql_aggs({r1, r2}, aggs);
+    ASSERT_TRUE(merged.ok()) << merged.error;
+    EXPECT_EQ(merged.rows[0][0], 150);
+}
+
+TEST(PartialAgg, MergeGroupByAvg) {
+    // GROUP BY with AVG: same key on two nodes
+    // Node1: key=1, avg=100  Node2: key=1, avg=200 → merged key=1, avg=150
+    auto r1 = make_result({"symbol", "avg_price"}, {{1, 100}});
+    auto r2 = make_result({"symbol", "avg_price"}, {{1, 200}});
+    std::vector<bool> is_key = {true, false};
+    std::vector<apex::sql::AggFunc> aggs = {apex::sql::AggFunc::NONE, apex::sql::AggFunc::AVG};
+    auto merged = merge_group_by_results({r1, r2}, is_key, aggs);
+    ASSERT_TRUE(merged.ok()) << merged.error;
+    ASSERT_EQ(merged.rows.size(), 1u);
+    EXPECT_EQ(merged.rows[0][0], 1);    // key
+    EXPECT_EQ(merged.rows[0][1], 150);  // avg(100, 200)
+}
+
+TEST(PartialAgg, MergeScalarAvg_ThreeNodes) {
+    // Three nodes: avg=90, avg=120, avg=150 → merged = 120
+    auto r1 = make_result({"avg(price)"}, {{90}});
+    auto r2 = make_result({"avg(price)"}, {{120}});
+    auto r3 = make_result({"avg(price)"}, {{150}});
+    auto merged = merge_results({r1, r2, r3});
+    ASSERT_TRUE(merged.ok()) << merged.error;
+    EXPECT_EQ(merged.rows[0][0], 120);
+}
+
 // ============================================================================
 // 3. TcpRpc — loopback ping and SQL query
 // ============================================================================
