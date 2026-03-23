@@ -97,14 +97,22 @@ public:
     // ----------------------------------------------------------------
 
     /// Symbol → 담당 NodeId 반환 (O(1) 캐시 or O(log n) 링 조회)
+    /// Pinned symbols bypass the hash ring and return the pinned node directly.
     /// Thread-safe: cache reads/writes protected by cache_mutex_ (separate from
     /// the ring, which must be protected by the caller's outer lock).
     NodeId route(SymbolId symbol) const {
+        // Check pin table first (hot symbol override)
+        {
+            std::lock_guard<std::mutex> cache_lock(cache_mutex_);
+            auto pin_it = pinned_.find(symbol);
+            if (pin_it != pinned_.end()) return pin_it->second;
+        }
+
         if (ring_.empty()) {
             throw std::runtime_error("PartitionRouter: no nodes in cluster");
         }
 
-        // Check cache first — brief exclusive lock (cache is separate from ring)
+        // Check cache
         {
             std::lock_guard<std::mutex> cache_lock(cache_mutex_);
             auto cache_it = cache_.find(symbol);
@@ -124,6 +132,36 @@ public:
             }
         }
         return n;
+    }
+
+    // ----------------------------------------------------------------
+    // Hot symbol pinning
+    // ----------------------------------------------------------------
+
+    /// Pin a hot symbol to a dedicated node (bypasses hash ring)
+    void pin_symbol(SymbolId symbol, NodeId node) {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        pinned_[symbol] = node;
+        cache_.erase(symbol);  // invalidate cache for this symbol
+    }
+
+    /// Unpin a symbol (returns to hash ring routing)
+    void unpin_symbol(SymbolId symbol) {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        pinned_.erase(symbol);
+        cache_.erase(symbol);
+    }
+
+    /// Get all pinned symbols
+    std::unordered_map<SymbolId, NodeId> pinned_symbols() const {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        return pinned_;
+    }
+
+    /// Number of pinned symbols
+    size_t pinned_count() const {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        return pinned_.size();
     }
 
     /// Symbol → replica NodeId (next distinct physical node on the ring).
@@ -303,6 +341,8 @@ private:
     // calls from multiple reader threads do not race on the unordered_map.
     mutable std::mutex                           cache_mutex_;
     mutable std::unordered_map<SymbolId, NodeId> cache_;
+    // Hot symbol pin table — symbols pinned to dedicated nodes bypass hash ring
+    mutable std::unordered_map<SymbolId, NodeId> pinned_;
 
     static constexpr size_t MAX_CACHE_SIZE = 65536;
 };
