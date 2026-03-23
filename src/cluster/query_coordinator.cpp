@@ -30,7 +30,8 @@ void QueryCoordinator::add_remote_node(NodeAddress addr) {
     ep->pipeline = nullptr;
     ep->is_local = false;
     endpoints_.push_back(std::move(ep));
-    router_.add_node(addr.id);
+    auto rlock = router_write_lock();
+    router().add_node(addr.id);
 }
 
 void QueryCoordinator::add_local_node(NodeAddress addr,
@@ -45,7 +46,8 @@ void QueryCoordinator::add_local_node(NodeAddress addr,
     ep->pipeline = &pipeline;
     ep->is_local = true;
     endpoints_.push_back(std::move(ep));
-    router_.add_node(addr.id);
+    auto rlock = router_write_lock();
+    router().add_node(addr.id);
 }
 
 void QueryCoordinator::remove_node(NodeId id) {
@@ -56,7 +58,8 @@ void QueryCoordinator::remove_node(NodeId id) {
                            return ep->addr.id == id;
                        }),
         endpoints_.end());
-    router_.remove_node(id);
+    auto rlock = router_write_lock();
+    router().remove_node(id);
 }
 
 void QueryCoordinator::connect_health_monitor(HealthMonitor& hm) {
@@ -118,28 +121,29 @@ std::vector<apex::sql::QueryResultSet> QueryCoordinator::scatter(
 //  so result-based detection is unreliable.  Parse the SQL instead.)
 // ============================================================================
 
-// Per-AVG-column bookkeeping for the SQL rewrite path.
+// Per-AVG/VWAP-column bookkeeping for the SQL rewrite path.
+// AVG(x)          → SUM(x), COUNT(x)       → reconstruct: SUM/COUNT
+// VWAP(price,vol) → SUM(price*vol), SUM(vol) → reconstruct: SUM_PV/SUM_V
 struct AvgColInfo {
     size_t orig_idx;  // position in the original (final) SELECT list
     size_t sum_idx;   // position in the REWRITTEN scatter result (SUM column)
-    size_t cnt_idx;   // position in the REWRITTEN scatter result (COUNT column)
+    size_t cnt_idx;   // position in the REWRITTEN scatter result (COUNT or SUM(vol) column)
+    bool   is_vwap = false;  // true: SUM_PV/SUM_V, false: SUM/COUNT
 };
 
 struct MergePlan {
     MergeStrategy                    strategy;
-    // SCALAR_AGG: one entry per REWRITTEN column (SUM/COUNT replace each AVG)
-    // MERGE_GROUP_BY: one entry per original column
     std::vector<apex::sql::AggFunc>  col_aggs;
-    // MERGE_GROUP_BY: true for GROUP BY key columns
     std::vector<bool>                col_is_key;
-    // Non-empty when the original SQL contains AVG — scatter uses this instead
     std::string                      rewritten_sql;
-    // Empty when no AVG
     std::vector<AvgColInfo>          avg_cols;
-    // Final output column names (used for AVG reconstruction)
     std::vector<std::string>         orig_col_names;
-    // orig_to_rewritten[i] = index in rewritten result, -1 for AVG cols
     std::vector<int>                 orig_to_rewritten;
+    // HAVING: stored from original SQL, applied after merge
+    bool                             has_having = false;
+    std::string                      having_col;   // column name to filter on
+    apex::sql::CompareOp             having_op = apex::sql::CompareOp::EQ;
+    int64_t                          having_val = 0;
 };
 
 // ============================================================================
@@ -206,6 +210,27 @@ static std::string extract_from_suffix(const std::string& sql) {
     return pos == std::string::npos ? "" : sql.substr(pos);
 }
 
+// Remove HAVING clause from SQL string (case-insensitive).
+// Returns the SQL without HAVING so nodes don't pre-filter partial results.
+static std::string strip_having(const std::string& sql) {
+    std::string lo;
+    lo.reserve(sql.size());
+    for (char c : sql)
+        lo += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto pos = lo.find(" having ");
+    if (pos == std::string::npos) return sql;
+    // Find end of HAVING clause: next ORDER BY, LIMIT, UNION, or end of string
+    size_t end = std::string::npos;
+    for (const char* kw : {" order ", " limit ", " union ", " intersect ", " except "}) {
+        auto p = lo.find(kw, pos + 8);
+        if (p != std::string::npos && (end == std::string::npos || p < end))
+            end = p;
+    }
+    if (end == std::string::npos)
+        return sql.substr(0, pos);
+    return sql.substr(0, pos) + sql.substr(end);
+}
+
 // Build plan.rewritten_sql and related fields when the query contains AVG.
 // AVG(expr) → SUM(expr), COUNT(expr) in the scatter query; reconstruct after merge.
 static void build_avg_rewrite(const apex::sql::SelectStmt& stmt,
@@ -231,7 +256,18 @@ static void build_avg_rewrite(const apex::sql::SelectStmt& stmt,
             rewritten_aggs.push_back(apex::sql::AggFunc::SUM);
             rewritten_exprs.push_back("count(" + inner + ")");
             rewritten_aggs.push_back(apex::sql::AggFunc::COUNT);
-            plan.avg_cols.push_back({i, rewritten_idx, rewritten_idx + 1});
+            plan.avg_cols.push_back({i, rewritten_idx, rewritten_idx + 1, false});
+            plan.orig_to_rewritten.push_back(-1);
+            rewritten_idx += 2;
+        } else if (col.agg == apex::sql::AggFunc::VWAP) {
+            // VWAP(price, vol) → SUM(price * vol), SUM(vol)
+            std::string price_col = col.column;
+            std::string vol_col   = col.agg_arg2;
+            rewritten_exprs.push_back("sum(" + price_col + " * " + vol_col + ")");
+            rewritten_aggs.push_back(apex::sql::AggFunc::SUM);
+            rewritten_exprs.push_back("sum(" + vol_col + ")");
+            rewritten_aggs.push_back(apex::sql::AggFunc::SUM);
+            plan.avg_cols.push_back({i, rewritten_idx, rewritten_idx + 1, true});
             plan.orig_to_rewritten.push_back(-1);
             rewritten_idx += 2;
         } else {
@@ -331,6 +367,18 @@ static MergePlan merge_plan_from_sql(const std::string& sql) {
                 plan.col_is_key.push_back(false);
                 plan.col_aggs.push_back(col.agg);
             }
+
+            // Extract HAVING for post-merge filtering
+            if (stmt.having && stmt.having->expr) {
+                const auto& h = stmt.having->expr;
+                if (h->kind == apex::sql::Expr::Kind::COMPARE) {
+                    plan.has_having = true;
+                    plan.having_col = h->column;
+                    plan.having_op  = h->op;
+                    plan.having_val = h->value;
+                }
+            }
+
             return plan;
         }
 
@@ -339,10 +387,11 @@ static MergePlan merge_plan_from_sql(const std::string& sql) {
             bool all_agg = true;
             bool has_avg = false;
             for (const auto& col : stmt.columns) {
-                if (col.agg == apex::sql::AggFunc::NONE && !col.is_star) {
+                if (col.agg == apex::sql::AggFunc::NONE) {
                     all_agg = false; break;
                 }
                 if (col.agg == apex::sql::AggFunc::AVG) has_avg = true;
+                if (col.agg == apex::sql::AggFunc::VWAP) has_avg = true;
             }
 
             if (all_agg) {
@@ -409,7 +458,8 @@ apex::sql::QueryResultSet QueryCoordinator::execute_sql_for_symbol(
             err.error = "QueryCoordinator: no nodes registered";
             return err;
         }
-        NodeId owner = router_.route(symbol_id);
+        auto rlock = router_read_lock();
+        NodeId owner = router().route(symbol_id);
         for (auto& ep : endpoints_) {
             if (ep->addr.id == owner) { target = ep; break; }
         }
@@ -474,23 +524,196 @@ apex::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sql) 
         } catch (...) {}
     }
 
-    // Tier B: scatter-gather
-    auto plan               = merge_plan_from_sql(sql);
-    const std::string& scatter_sql = plan.rewritten_sql.empty() ? sql
-                                                                 : plan.rewritten_sql;
-    auto node_results = scatter(scatter_sql);
+    // Window function / FIRST / LAST detection: fetch all base data, compute locally.
+    // FIRST/LAST need global timestamp ordering which partial merge can't provide.
+    {
+        try {
+            apex::sql::Parser wparser;
+            auto wstmt = wparser.parse(sql);
+            bool needs_full_data = false;
+            for (const auto& col : wstmt.columns) {
+                if (col.window_spec) { needs_full_data = true; break; }
+                if (col.agg == apex::sql::AggFunc::FIRST ||
+                    col.agg == apex::sql::AggFunc::LAST) {
+                    needs_full_data = true; break;
+                }
+                if (col.agg == apex::sql::AggFunc::COUNT && col.agg_distinct) {
+                    needs_full_data = true; break;
+                }
+            }
+            // CTE or FROM subquery: must execute on full dataset
+            if (!wstmt.cte_defs.empty() || wstmt.from_subquery)
+                needs_full_data = true;
+            if (needs_full_data) {
+                // Build base data query: SELECT * FROM trades [WHERE ...]
+                // For CTE/subquery, from_table may be a CTE name, so use "trades"
+                std::string real_table = wstmt.from_table;
+                if (!wstmt.cte_defs.empty() || wstmt.from_subquery)
+                    real_table = "trades";
+                std::string base_q = "SELECT * FROM " + real_table;
+                if (wstmt.where) {
+                    // Re-extract WHERE from original SQL
+                    std::string lo;
+                    for (char c : sql)
+                        lo += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    auto wpos = lo.find(" where ");
+                    if (wpos != std::string::npos) {
+                        // Find end of WHERE: GROUP BY, ORDER BY, LIMIT, or end
+                        size_t wend = std::string::npos;
+                        for (const char* kw : {" group ", " order ", " limit ",
+                                               " having ", " union "}) {
+                            auto p = lo.find(kw, wpos + 7);
+                            if (p != std::string::npos &&
+                                (wend == std::string::npos || p < wend))
+                                wend = p;
+                        }
+                        if (wend == std::string::npos)
+                            base_q += sql.substr(wpos);
+                        else
+                            base_q += sql.substr(wpos, wend - wpos);
+                    }
+                }
 
+                // Scatter base query, concat all rows
+                auto base_results = scatter(base_q);
+                auto base_merged = merge_concat_results(base_results);
+                if (!base_merged.ok()) return base_merged;
+
+                // Ingest into a temporary local pipeline
+                apex::core::PipelineConfig tcfg;
+                tcfg.storage_mode = apex::core::StorageMode::PURE_IN_MEMORY;
+                apex::core::ApexPipeline tmp(tcfg);
+                tmp.start();
+
+                // Map columns: find symbol/price/volume/timestamp indices
+                int ci_sym = -1, ci_price = -1, ci_vol = -1, ci_ts = -1;
+                for (size_t i = 0; i < base_merged.column_names.size(); ++i) {
+                    const auto& n = base_merged.column_names[i];
+                    if (n == "symbol")    ci_sym   = static_cast<int>(i);
+                    if (n == "price")     ci_price = static_cast<int>(i);
+                    if (n == "volume")    ci_vol   = static_cast<int>(i);
+                    if (n == "timestamp") ci_ts    = static_cast<int>(i);
+                }
+                // Sort by timestamp for correct FIRST/LAST ordering
+                if (ci_ts >= 0) {
+                    std::sort(base_merged.rows.begin(), base_merged.rows.end(),
+                        [ci_ts](const std::vector<int64_t>& a,
+                                const std::vector<int64_t>& b) {
+                            return a[ci_ts] < b[ci_ts];
+                        });
+                }
+                for (auto& row : base_merged.rows) {
+                    apex::ingestion::TickMessage msg{};
+                    if (ci_sym >= 0)   msg.symbol_id = static_cast<uint32_t>(row[ci_sym]);
+                    if (ci_price >= 0) msg.price     = row[ci_price];
+                    if (ci_vol >= 0)   msg.volume    = row[ci_vol];
+                    if (ci_ts >= 0)    msg.recv_ts   = row[ci_ts];
+                    tmp.store_tick_direct(msg);
+                }
+
+                // Execute original SQL on the complete local dataset
+                apex::sql::QueryExecutor local_ex(tmp);
+                auto result = local_ex.execute(sql);
+                tmp.stop();
+                return result;
+            }
+        } catch (...) {}
+    }
+
+    // Tier B: scatter-gather
+    auto plan = merge_plan_from_sql(sql);
+    // Strip HAVING from scatter SQL so nodes don't pre-filter partial results
+    std::string base_sql = plan.rewritten_sql.empty() ? sql : plan.rewritten_sql;
+    if (plan.has_having) base_sql = strip_having(base_sql);
+    auto node_results = scatter(base_sql);
+
+    apex::sql::QueryResultSet merged;
     if (plan.strategy == MergeStrategy::MERGE_GROUP_BY) {
-        return merge_group_by_results(node_results, plan.col_is_key, plan.col_aggs);
-    }
-    if (plan.strategy == MergeStrategy::SCALAR_AGG && !plan.col_aggs.empty()) {
-        auto merged = merge_scalar_with_sql_aggs(node_results, plan.col_aggs);
+        merged = merge_group_by_results(node_results, plan.col_is_key, plan.col_aggs);
+    } else if (plan.strategy == MergeStrategy::SCALAR_AGG && !plan.col_aggs.empty()) {
+        merged = merge_scalar_with_sql_aggs(node_results, plan.col_aggs);
         if (!plan.avg_cols.empty()) {
-            return reconstruct_avg_result(merged, plan);
+            merged = reconstruct_avg_result(merged, plan);
         }
-        return merged;
+    } else {
+        merged = merge_concat_results(node_results);
     }
-    return merge_concat_results(node_results);
+
+    // Post-merge HAVING filter (must come before ORDER BY/LIMIT)
+    if (plan.has_having && merged.ok() && !merged.rows.empty()) {
+        int hcol = -1;
+        for (size_t i = 0; i < merged.column_names.size(); ++i) {
+            if (merged.column_names[i] == plan.having_col) { hcol = static_cast<int>(i); break; }
+        }
+        if (hcol >= 0) {
+            auto& rows = merged.rows;
+            rows.erase(std::remove_if(rows.begin(), rows.end(),
+                [hcol, &plan](const std::vector<int64_t>& r) {
+                    int64_t v = r[hcol];
+                    switch (plan.having_op) {
+                        case apex::sql::CompareOp::GT:  return !(v > plan.having_val);
+                        case apex::sql::CompareOp::GE:  return !(v >= plan.having_val);
+                        case apex::sql::CompareOp::LT:  return !(v < plan.having_val);
+                        case apex::sql::CompareOp::LE:  return !(v <= plan.having_val);
+                        case apex::sql::CompareOp::EQ:  return !(v == plan.having_val);
+                        case apex::sql::CompareOp::NE:  return !(v != plan.having_val);
+                    }
+                    return false;
+                }), rows.end());
+        }
+    }
+
+    // Post-merge DISTINCT + ORDER BY + LIMIT (parsed from original SQL)
+    if (merged.ok() && merged.rows.size() > 1) {
+        try {
+            apex::sql::Parser post_parser;
+            auto post_stmt = post_parser.parse(sql);
+
+            // DISTINCT: remove duplicate rows
+            if (post_stmt.distinct) {
+                std::set<std::vector<int64_t>> seen;
+                auto& rows = merged.rows;
+                rows.erase(std::remove_if(rows.begin(), rows.end(),
+                    [&seen](const std::vector<int64_t>& r) {
+                        return !seen.insert(r).second;
+                    }), rows.end());
+            }
+
+            if (post_stmt.order_by && !post_stmt.order_by->items.empty()) {
+                // Resolve all ORDER BY columns to indices
+                struct SortKey { int col; bool asc; };
+                std::vector<SortKey> keys;
+                for (const auto& ob : post_stmt.order_by->items) {
+                    for (size_t i = 0; i < merged.column_names.size(); ++i) {
+                        if (merged.column_names[i] == ob.column) {
+                            keys.push_back({static_cast<int>(i), ob.asc});
+                            break;
+                        }
+                    }
+                }
+                if (!keys.empty()) {
+                    std::sort(merged.rows.begin(), merged.rows.end(),
+                        [&keys](const std::vector<int64_t>& a,
+                                const std::vector<int64_t>& b) {
+                            for (const auto& k : keys) {
+                                if (a[k.col] != b[k.col])
+                                    return k.asc ? a[k.col] < b[k.col]
+                                                 : a[k.col] > b[k.col];
+                            }
+                            return false;
+                        });
+                }
+            }
+
+            if (post_stmt.limit && *post_stmt.limit >= 0) {
+                size_t lim = static_cast<size_t>(*post_stmt.limit);
+                if (merged.rows.size() > lim)
+                    merged.rows.resize(lim);
+            }
+        } catch (...) {}
+    }
+
+    return merged;
 }
 
 } // namespace apex::cluster

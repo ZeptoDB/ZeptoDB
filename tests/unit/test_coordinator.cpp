@@ -1679,3 +1679,984 @@ TEST(ParquetReader, IngestNonexistentFile_ReturnsZero) {
     size_t count = reader.ingest_file("/tmp/nonexistent_apex_test.parquet", *pipeline);
     EXPECT_EQ(count, 0u);
 }
+
+// ============================================================================
+// 20. Shared PartitionRouter — ClusterNode + QueryCoordinator use same router
+// ============================================================================
+
+TEST(SharedRouter, CoordinatorUsesClusterNodeRouter) {
+    // ClusterNode's router and QueryCoordinator should share the same instance
+    // so that add/remove on one is visible to the other.
+    PartitionRouter router;
+    std::shared_mutex router_mu;
+
+    router.add_node(1);
+    router.add_node(2);
+
+    QueryCoordinator coord;
+    coord.set_shared_router(&router, &router_mu);
+
+    // Coordinator's router() should return the shared instance
+    EXPECT_EQ(&coord.router(), &router);
+    EXPECT_EQ(coord.router().node_count(), 2u);
+
+    // Adding a node to the shared router is visible via coordinator
+    router.add_node(3);
+    EXPECT_EQ(coord.router().node_count(), 3u);
+
+    // Removing via coordinator's router affects the shared instance
+    coord.router().remove_node(2);
+    EXPECT_EQ(router.node_count(), 2u);
+}
+
+TEST(SharedRouter, CoordinatorFallsBackToOwnRouter) {
+    // Without set_shared_router, coordinator uses its own internal router
+    QueryCoordinator coord;
+    // add_local_node adds to the internal router
+    auto pipeline = make_pipeline();
+    NodeAddress addr{"127.0.0.1", 19900, 10};
+    coord.add_local_node(addr, *pipeline);
+    EXPECT_EQ(coord.router().node_count(), 1u);
+}
+
+// ============================================================================
+// 21. FencingToken in RPC — stale epoch writes rejected
+// ============================================================================
+
+TEST(FencingRpc, StaleEpochTickRejected) {
+    // Server with fencing token at epoch 5
+    FencingToken token(0);
+    for (int i = 0; i < 5; ++i) token.advance();  // epoch = 5
+    // Validate epoch 5 so last_seen = 5
+    ASSERT_TRUE(token.validate(5));
+
+    auto pipeline = make_pipeline();
+    pipeline->start();
+
+    TcpRpcServer server;
+    server.set_fencing_token(&token);
+    server.start(19870,
+        [&](const std::string& sql) { return apex::sql::QueryResultSet{}; },
+        [&](const apex::ingestion::TickMessage& msg) {
+            return pipeline->ingest_tick(msg);
+        });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Client with current epoch (5) — should succeed
+    TcpRpcClient good_client("127.0.0.1", 19870);
+    good_client.set_epoch(5);
+    apex::ingestion::TickMessage tick{};
+    tick.symbol_id = 999;
+    tick.price = 100;
+    tick.volume = 10;
+    tick.recv_ts = 1000000000LL;
+    EXPECT_TRUE(good_client.ingest_tick(tick));
+
+    // Client with stale epoch (3) — should be rejected
+    TcpRpcClient stale_client("127.0.0.1", 19870);
+    stale_client.set_epoch(3);
+    EXPECT_FALSE(stale_client.ingest_tick(tick));
+
+    // Client with epoch 0 — bypasses fencing (backward compat)
+    TcpRpcClient legacy_client("127.0.0.1", 19870);
+    EXPECT_TRUE(legacy_client.ingest_tick(tick));
+
+    server.stop();
+    pipeline->stop();
+}
+
+TEST(FencingRpc, StaleEpochWalRejected) {
+    FencingToken token(0);
+    for (int i = 0; i < 3; ++i) token.advance();  // epoch = 3
+    ASSERT_TRUE(token.validate(3));
+
+    auto pipeline = make_pipeline();
+    pipeline->start();
+
+    TcpRpcServer server;
+    server.set_fencing_token(&token);
+    server.start(19945,
+        [&](const std::string& sql) { return apex::sql::QueryResultSet{}; },
+        [&](const apex::ingestion::TickMessage& msg) {
+            return pipeline->ingest_tick(msg);
+        },
+        [&](const std::vector<apex::ingestion::TickMessage>& batch) -> size_t {
+            size_t c = 0;
+            for (auto& m : batch) c += pipeline->ingest_tick(m) ? 1 : 0;
+            return c;
+        });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    apex::ingestion::TickMessage tick{};
+    tick.symbol_id = 888;
+    tick.price = 200;
+    tick.volume = 5;
+    tick.recv_ts = 2000000000LL;
+
+    // Stale epoch 1 — rejected
+    TcpRpcClient stale("127.0.0.1", 19945);
+    stale.set_epoch(1);
+    EXPECT_FALSE(stale.replicate_wal({tick}));
+
+    // Current epoch 3 — accepted
+    TcpRpcClient good("127.0.0.1", 19945);
+    good.set_epoch(3);
+    EXPECT_TRUE(good.replicate_wal({tick}));
+
+    server.stop();
+    pipeline->stop();
+}
+
+// ============================================================================
+// 22. CoordinatorHA auto re-registration on promotion
+// ============================================================================
+
+TEST(CoordinatorHA, PromotionReRegistersNodes) {
+    // Data node with RPC server
+    auto pipeline = make_pipeline();
+    pipeline->start();
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 850;
+        msg.price     = 20000LL;
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        pipeline->ingest_tick(msg);
+    }
+    pipeline->drain_sync(100);
+
+    TcpRpcServer data_rpc;
+    data_rpc.start(19875, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*pipeline);
+        return ex.execute(sql);
+    });
+
+    // Active coordinator RPC (standby pings this)
+    TcpRpcServer active_rpc;
+    active_rpc.start(19876, [](const std::string&) {
+        return apex::sql::QueryResultSet{};
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    // Standby — registers data node as remote only
+    CoordinatorHAConfig cfg;
+    cfg.ping_interval_ms  = 50;
+    cfg.failover_after_ms = 200;
+    CoordinatorHA standby(cfg);
+    standby.init(CoordinatorRole::STANDBY, "127.0.0.1", 19876);
+    standby.add_remote_node({"127.0.0.1", 19875, 50});
+
+    // Before promotion, standby's coordinator should have the node
+    // (add_remote_node registers immediately)
+    EXPECT_EQ(standby.coordinator().node_count(), 1u);
+
+    standby.start();
+
+    // Kill active
+    active_rpc.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    ASSERT_TRUE(standby.is_active());
+
+    // After promotion, coordinator should still have the node
+    // (auto re-registration ensures it)
+    EXPECT_GE(standby.coordinator().node_count(), 1u);
+
+    // Verify the promoted standby can actually route queries to the data node
+    auto result = standby.execute_sql(
+        "SELECT count(*) FROM trades WHERE symbol = 850");
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.rows[0][0], 3);
+
+    standby.stop();
+    data_rpc.stop();
+    pipeline->stop();
+}
+
+// ============================================================================
+// 23. Split-Brain Simulation — full scenario test
+// ============================================================================
+// Scenario:
+//   1. Coordinator A (active, epoch=1) writes to Data Node → accepted
+//   2. Network partition: A isolated
+//   3. Coordinator B promoted → epoch=2, writes to Data Node → accepted
+//   4. A recovers, tries write with stale epoch=1 → REJECTED
+//   5. A with epoch=0 (legacy/no fencing) → BYPASSES fencing
+//
+// This validates the end-to-end fencing token flow:
+//   K8sLease → FencingToken → TcpRpcClient.set_epoch → RpcHeader.epoch
+//   → TcpRpcServer.set_fencing_token → validate() → accept/reject
+// ============================================================================
+
+TEST(SplitBrain, StaleCoordinatorWriteRejected) {
+    using namespace std::chrono_literals;
+
+    // --- Data Node setup ---
+    auto data_pipeline = make_pipeline();
+    data_pipeline->start();
+
+    FencingToken data_node_token;  // data node's fencing gate
+
+    TcpRpcServer data_rpc;
+    data_rpc.set_fencing_token(&data_node_token);
+    data_rpc.start(19880,
+        [&](const std::string& sql) {
+            apex::sql::QueryExecutor ex(*data_pipeline);
+            return ex.execute(sql);
+        },
+        [&](const apex::ingestion::TickMessage& msg) {
+            return data_pipeline->ingest_tick(msg);
+        });
+    std::this_thread::sleep_for(30ms);
+
+    // --- Phase 1: Coordinator A is active (epoch=1) ---
+    FencingToken coord_a_token(0);
+    coord_a_token.advance();  // epoch = 1
+    ASSERT_EQ(coord_a_token.current(), 1u);
+
+    TcpRpcClient client_a("127.0.0.1", 19880);
+    client_a.set_epoch(coord_a_token.current());
+
+    apex::ingestion::TickMessage tick{};
+    tick.symbol_id = 7777;
+    tick.price     = 50000LL;
+    tick.volume    = 100;
+    tick.recv_ts   = 1'000'000'000LL;
+
+    // A writes with epoch=1 → first write, data_node_token.last_seen becomes 1
+    EXPECT_TRUE(client_a.ingest_tick(tick));
+
+    // Wait for server-side pipeline to drain the tick
+    std::this_thread::sleep_for(50ms);
+    data_pipeline->drain_sync(100);
+    {
+        apex::sql::QueryExecutor ex(*data_pipeline);
+        auto r = ex.execute("SELECT count(*) FROM trades WHERE symbol = 7777");
+        ASSERT_TRUE(r.ok());
+        EXPECT_EQ(r.rows[0][0], 1);
+    }
+
+    // --- Phase 2: Network partition — A is isolated ---
+    // (simulated: A still has a client but will use stale epoch later)
+
+    // --- Phase 3: Coordinator B promoted (epoch=2) ---
+    FencingToken coord_b_token(0);
+    coord_b_token.advance();  // epoch = 1
+    coord_b_token.advance();  // epoch = 2
+    ASSERT_EQ(coord_b_token.current(), 2u);
+
+    TcpRpcClient client_b("127.0.0.1", 19880);
+    client_b.set_epoch(coord_b_token.current());
+
+    tick.price  = 60000LL;
+    tick.recv_ts = 2'000'000'000LL;
+
+    // B writes with epoch=2 → accepted, data_node_token.last_seen becomes 2
+    EXPECT_TRUE(client_b.ingest_tick(tick));
+
+    std::this_thread::sleep_for(50ms);
+    data_pipeline->drain_sync(100);
+    {
+        apex::sql::QueryExecutor ex(*data_pipeline);
+        auto r = ex.execute("SELECT count(*) FROM trades WHERE symbol = 7777");
+        ASSERT_TRUE(r.ok());
+        EXPECT_EQ(r.rows[0][0], 2);  // both writes accepted so far
+    }
+
+    // --- Phase 4: A recovers, tries write with stale epoch=1 ---
+    // data_node_token.last_seen is now 2, so epoch=1 should be REJECTED
+    tick.price  = 99999LL;
+    tick.recv_ts = 3'000'000'000LL;
+
+    EXPECT_FALSE(client_a.ingest_tick(tick))
+        << "Stale coordinator A (epoch=1) should be rejected after B (epoch=2)";
+
+    // Verify no new data from stale coordinator
+    std::this_thread::sleep_for(50ms);
+    data_pipeline->drain_sync(100);
+    {
+        apex::sql::QueryExecutor ex(*data_pipeline);
+        auto r = ex.execute("SELECT count(*) FROM trades WHERE symbol = 7777");
+        ASSERT_TRUE(r.ok());
+        EXPECT_EQ(r.rows[0][0], 2)  // still 2, stale write rejected
+            << "Data corruption: stale coordinator's write was accepted!";
+    }
+
+    // --- Phase 5: Legacy client (epoch=0) bypasses fencing ---
+    TcpRpcClient legacy_client("127.0.0.1", 19880);
+    // epoch=0 by default — no fencing
+    tick.price  = 70000LL;
+    tick.recv_ts = 4'000'000'000LL;
+    EXPECT_TRUE(legacy_client.ingest_tick(tick))
+        << "Legacy client (epoch=0) should bypass fencing for backward compat";
+
+    data_rpc.stop();
+    data_pipeline->stop();
+}
+
+TEST(SplitBrain, StaleWalReplicationRejected) {
+    using namespace std::chrono_literals;
+
+    auto data_pipeline = make_pipeline();
+    data_pipeline->start();
+
+    FencingToken data_node_token;
+
+    TcpRpcServer data_rpc;
+    data_rpc.set_fencing_token(&data_node_token);
+    data_rpc.start(19881,
+        [&](const std::string& sql) {
+            apex::sql::QueryExecutor ex(*data_pipeline);
+            return ex.execute(sql);
+        },
+        [&](const apex::ingestion::TickMessage& msg) {
+            return data_pipeline->ingest_tick(msg);
+        },
+        [&](const std::vector<apex::ingestion::TickMessage>& batch) -> size_t {
+            size_t c = 0;
+            for (auto& m : batch) c += data_pipeline->ingest_tick(m) ? 1 : 0;
+            return c;
+        });
+    std::this_thread::sleep_for(30ms);
+
+    apex::ingestion::TickMessage tick{};
+    tick.symbol_id = 8888;
+    tick.price     = 10000LL;
+    tick.volume    = 50;
+    tick.recv_ts   = 1'000'000'000LL;
+
+    // New coordinator (epoch=3) writes WAL batch
+    TcpRpcClient new_coord("127.0.0.1", 19881);
+    new_coord.set_epoch(3);
+    EXPECT_TRUE(new_coord.replicate_wal({tick, tick, tick}));
+
+    // Old coordinator (epoch=1) tries WAL replication → rejected
+    TcpRpcClient old_coord("127.0.0.1", 19881);
+    old_coord.set_epoch(1);
+    EXPECT_FALSE(old_coord.replicate_wal({tick}))
+        << "Stale WAL replication (epoch=1) should be rejected after epoch=3";
+
+    data_rpc.stop();
+    data_pipeline->stop();
+}
+
+TEST(SplitBrain, K8sLeasePreventsDualLeader) {
+    // Simulate K8s Lease: only one holder at a time
+    LeaseConfig cfg;
+    cfg.lease_duration_ms = 500;
+    cfg.renew_interval_ms = 100;
+    cfg.retry_interval_ms = 50;
+
+    K8sLease lease(cfg);
+    lease.start("node-A");
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // A should be leader
+    ASSERT_TRUE(lease.is_leader());
+    EXPECT_EQ(lease.epoch(), 1u);
+
+    // Simulate: another node steals the lease (network partition recovery)
+    lease.force_holder("node-B");
+
+    // A should have lost leadership
+    EXPECT_FALSE(lease.is_leader());
+
+    // A tries to re-acquire — should fail (B holds it)
+    EXPECT_FALSE(lease.try_acquire());
+
+    // Fencing token: A's epoch is 1, but if B promoted it would be 2
+    // Any writes from A with epoch=1 would be rejected by data nodes
+    // that have seen epoch=2 from B
+    FencingToken gate;
+    gate.validate(2);  // B's epoch
+    EXPECT_FALSE(gate.validate(1))  // A's stale epoch
+        << "Stale epoch should be rejected by fencing gate";
+
+    lease.stop();
+}
+
+// ============================================================================
+// 24. Distributed VWAP — decompose into SUM(price*volume)/SUM(volume)
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedVwap) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 30, price=100, volume=10 × 3 ticks
+    // Node 1 local VWAP = (100*10 + 100*10 + 100*10) / (10+10+10) = 3000/30 = 100
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 30;
+        msg.price     = 100;
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p1->ingest_tick(msg);
+    }
+    // Node 2: symbol 40, price=200, volume=20 × 2 ticks
+    // Node 2 local VWAP = (200*20 + 200*20) / (20+20) = 8000/40 = 200
+    for (int i = 0; i < 2; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 40;
+        msg.price     = 200;
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p2->ingest_tick(msg);
+    }
+    p1->drain_sync(100);
+    p2->drain_sync(100);
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19890, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19891, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19890, 30});
+    coord.add_remote_node({"127.0.0.1", 19891, 40});
+
+    // Distributed VWAP across all symbols:
+    // Total SUM(price*volume) = 3*100*10 + 2*200*20 = 3000 + 8000 = 11000
+    // Total SUM(volume) = 30 + 40 = 70
+    // Correct VWAP = 11000 / 70 = 157 (integer division)
+    //
+    // Wrong (naive avg of per-node VWAPs): (100 + 200) / 2 = 150
+    auto result = coord.execute_sql(
+        "SELECT vwap(price, volume) FROM trades");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 157)  // 11000 / 70 = 157
+        << "Distributed VWAP should decompose into SUM(p*v)/SUM(v), not avg of local VWAPs";
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 25. Distributed ORDER BY + LIMIT
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_OrderByLimit) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 50, prices 100, 300, 500
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 50;
+        msg.price     = static_cast<int64_t>((i + 1) * 200 - 100);  // 100, 300, 500
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p1->ingest_tick(msg);
+    }
+    // Node 2: symbol 60, prices 200, 400
+    for (int i = 0; i < 2; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 60;
+        msg.price     = static_cast<int64_t>((i + 1) * 200);  // 200, 400
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p2->ingest_tick(msg);
+    }
+    p1->drain_sync(100);
+    p2->drain_sync(100);
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19892, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19893, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19892, 50});
+    coord.add_remote_node({"127.0.0.1", 19893, 60});
+
+    // ORDER BY price DESC LIMIT 3 → should get 500, 400, 300
+    auto result = coord.execute_sql(
+        "SELECT price FROM trades ORDER BY price DESC LIMIT 3");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 3u);
+    EXPECT_EQ(result.rows[0][0], 500);
+    EXPECT_EQ(result.rows[1][0], 400);
+    EXPECT_EQ(result.rows[2][0], 300);
+
+    // ORDER BY price ASC LIMIT 2 → should get 100, 200
+    auto result2 = coord.execute_sql(
+        "SELECT price FROM trades ORDER BY price ASC LIMIT 2");
+    ASSERT_TRUE(result2.ok()) << result2.error;
+    ASSERT_EQ(result2.rows.size(), 2u);
+    EXPECT_EQ(result2.rows[0][0], 100);
+    EXPECT_EQ(result2.rows[1][0], 200);
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 26. Distributed HAVING — filter after GROUP BY merge
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedHaving) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 70, 3 ticks at price 100, 200, 300
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 70;
+        msg.price     = static_cast<int64_t>((i + 1) * 100);
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p1->ingest_tick(msg);
+    }
+    // Node 2: symbol 80, 4 ticks at price 100, 100, 100, 100
+    for (int i = 0; i < 4; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 80;
+        msg.price     = 100;
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p2->ingest_tick(msg);
+    }
+    p1->drain_sync(100);
+    p2->drain_sync(100);
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19894, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19895, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19894, 70});
+    coord.add_remote_node({"127.0.0.1", 19895, 80});
+
+    // GROUP BY price: price=100 appears on both nodes (3 has 1 tick, 4 has 4 ticks)
+    // Node 1: price=100 count=1, price=200 count=1, price=300 count=1
+    // Node 2: price=100 count=4
+    // Merged: price=100 count=5, price=200 count=1, price=300 count=1
+    // HAVING cnt > 3 → only price=100 (count=5) passes
+    auto result = coord.execute_sql(
+        "SELECT price, count(*) AS cnt FROM trades GROUP BY price HAVING cnt > 3");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u)
+        << "HAVING should be applied after merge, not per-node";
+    EXPECT_EQ(result.rows[0][0], 100);  // price=100
+    EXPECT_EQ(result.rows[0][1], 5);    // merged count
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 27. Distributed DISTINCT — dedup after merge
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedDistinct) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: prices 100, 200, 300
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 90;
+        msg.price     = static_cast<int64_t>((i + 1) * 100);
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p1->ingest_tick(msg);
+    }
+    // Node 2: prices 200, 300, 400 — overlaps with node 1
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 91;
+        msg.price     = static_cast<int64_t>((i + 2) * 100);
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        p2->ingest_tick(msg);
+    }
+    p1->drain_sync(100);
+    p2->drain_sync(100);
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19896, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19897, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19896, 90});
+    coord.add_remote_node({"127.0.0.1", 19897, 91});
+
+    // Without DISTINCT: 6 rows (3+3)
+    // With DISTINCT on price: 100, 200, 300, 400 = 4 unique prices
+    // Node 1 DISTINCT: {100, 200, 300}
+    // Node 2 DISTINCT: {200, 300, 400}
+    // Naive concat: {100, 200, 300, 200, 300, 400} = 6 rows (WRONG)
+    // Correct: dedup at coordinator → 4 rows
+    auto result = coord.execute_sql(
+        "SELECT DISTINCT price FROM trades");
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.rows.size(), 4u)
+        << "DISTINCT should dedup across nodes, not just per-node";
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 28. Distributed Window Functions — fetch-and-compute
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedWindowFunction) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 100, prices 1000, 2000, 3000 at ts 1,2,3
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 100;
+        msg.price     = static_cast<int64_t>((i + 1) * 1000);
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i + 1) * 1'000'000'000LL;
+        p1->ingest_tick(msg);
+    }
+    // Node 2: symbol 110, prices 4000, 5000 at ts 4,5
+    for (int i = 0; i < 2; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 110;
+        msg.price     = static_cast<int64_t>((i + 4) * 1000);
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i + 4) * 1'000'000'000LL;
+        p2->ingest_tick(msg);
+    }
+    p1->drain_sync(100);
+    p2->drain_sync(100);
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19898, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19899, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19898, 100});
+    coord.add_remote_node({"127.0.0.1", 19899, 110});
+
+    // LAG(price, 1) over full dataset ordered by timestamp:
+    // All 5 rows from both nodes, sorted by timestamp:
+    // ts=1: price=1000, lag=NULL
+    // ts=2: price=2000, lag=1000
+    // ts=3: price=3000, lag=2000
+    // ts=4: price=4000, lag=3000  ← crosses node boundary!
+    // ts=5: price=5000, lag=4000
+    auto result = coord.execute_sql(
+        "SELECT price, LAG(price, 1) OVER (ORDER BY timestamp) FROM trades");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 5u);
+
+    // Find the row with price=4000 — its LAG should be 3000 (cross-node)
+    bool found_cross_node = false;
+    for (auto& row : result.rows) {
+        if (row[0] == 4000) {
+            EXPECT_EQ(row[1], 3000)
+                << "LAG at node boundary should see data from other node";
+            found_cross_node = true;
+        }
+    }
+    EXPECT_TRUE(found_cross_node);
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 29. Distributed FIRST/LAST — fetch-and-compute for correct ordering
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedFirstLast) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 120, ts=3,4,5 prices=300,400,500
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 120;
+        msg.price     = static_cast<int64_t>((i + 3) * 100);
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i + 3) * 1'000'000'000LL;
+        p1->store_tick_direct(msg);
+    }
+    // Node 2: symbol 130, ts=1,2 prices=100,200 (earlier timestamps!)
+    for (int i = 0; i < 2; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 130;
+        msg.price     = static_cast<int64_t>((i + 1) * 100);
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i + 1) * 1'000'000'000LL;
+        p2->store_tick_direct(msg);
+    }
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19850, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19851, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19850, 120});
+    coord.add_remote_node({"127.0.0.1", 19851, 130});
+
+    // Global FIRST(price) = 100 (ts=1, on node 2)
+    // Global LAST(price) = 500 (ts=5, on node 1)
+    // Without fix: FIRST might return 300 (node 1's first), LAST might return 200 (node 2's last)
+    auto result = coord.execute_sql(
+        "SELECT first(price), last(price) FROM trades");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 100)
+        << "FIRST should be from earliest timestamp across all nodes";
+    EXPECT_EQ(result.rows[0][1], 500)
+        << "LAST should be from latest timestamp across all nodes";
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 30. Distributed COUNT(DISTINCT) — exact dedup via fetch-and-compute
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedCountDistinct) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 140, prices 100, 200, 300
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 140;
+        msg.price     = static_cast<int64_t>((i + 1) * 100);
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i + 1) * 1'000'000'000LL;
+        p1->store_tick_direct(msg);
+    }
+    // Node 2: symbol 150, prices 200, 300, 400 — overlaps with node 1
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 150;
+        msg.price     = static_cast<int64_t>((i + 2) * 100);
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i + 4) * 1'000'000'000LL;
+        p2->store_tick_direct(msg);
+    }
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19852, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19853, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19852, 140});
+    coord.add_remote_node({"127.0.0.1", 19853, 150});
+
+    // Unique prices: 100, 200, 300, 400 = 4
+    // Node 1 COUNT(DISTINCT price) = 3 (100,200,300)
+    // Node 2 COUNT(DISTINCT price) = 3 (200,300,400)
+    // Naive sum: 6 (WRONG)
+    // Correct: 4
+    auto result = coord.execute_sql(
+        "SELECT count(DISTINCT price) FROM trades");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 4)
+        << "COUNT(DISTINCT) should dedup across nodes";
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 31. Distributed CTE — fetch-and-compute for cross-node CTE
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_DistributedCTE) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 160, prices 100, 200
+    for (int i = 0; i < 2; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 160;
+        msg.price     = static_cast<int64_t>((i + 1) * 100);
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i + 1) * 1'000'000'000LL;
+        p1->store_tick_direct(msg);
+    }
+    // Node 2: symbol 170, prices 300, 400, 500
+    for (int i = 0; i < 3; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 170;
+        msg.price     = static_cast<int64_t>((i + 3) * 100);
+        msg.volume    = 20;
+        msg.recv_ts   = static_cast<int64_t>(i + 3) * 1'000'000'000LL;
+        p2->store_tick_direct(msg);
+    }
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19854, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19855, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19854, 160});
+    coord.add_remote_node({"127.0.0.1", 19855, 170});
+
+    // CTE: WITH t AS (SELECT price FROM trades WHERE price > 150)
+    //       SELECT count(*) FROM t
+    // Prices > 150: 200 (node1), 300, 400, 500 (node2) = 4
+    // Without distributed CTE fix, each node runs CTE independently:
+    //   node1: CTE sees only {100,200} → count=1
+    //   node2: CTE sees only {300,400,500} → count=3
+    //   merged via SCALAR_AGG: 1+3=4 (happens to be correct for COUNT)
+    //
+    // But for ORDER BY + LIMIT inside CTE, per-node execution would be wrong.
+    // Test with a more revealing query:
+    // WITH t AS (SELECT price FROM trades ORDER BY price DESC LIMIT 3)
+    // SELECT count(*) FROM t
+    // Correct: top 3 prices globally = {500, 400, 300} → count=3
+    // Per-node: node1 top 3 = {200, 100}, node2 top 3 = {500, 400, 300}
+    //   merged count = 2 + 3 = 5 (WRONG)
+    auto result = coord.execute_sql(
+        "WITH t AS (SELECT price FROM trades ORDER BY price DESC LIMIT 3) "
+        "SELECT count(*) FROM t");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 3)
+        << "CTE with ORDER BY + LIMIT should operate on full dataset";
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// 32. Distributed Multi-column ORDER BY
+// ============================================================================
+
+TEST(QueryCoordinator, TwoNodeRemote_MultiColumnOrderBy) {
+    using namespace std::chrono_literals;
+
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+
+    // Node 1: symbol 180
+    //   price=100 vol=30, price=200 vol=10
+    {
+        apex::ingestion::TickMessage m{};
+        m.symbol_id = 180; m.price = 100; m.volume = 30;
+        m.recv_ts = 1'000'000'000LL;
+        p1->store_tick_direct(m);
+        m.price = 200; m.volume = 10;
+        m.recv_ts = 2'000'000'000LL;
+        p1->store_tick_direct(m);
+    }
+    // Node 2: symbol 190
+    //   price=100 vol=20, price=100 vol=10
+    {
+        apex::ingestion::TickMessage m{};
+        m.symbol_id = 190; m.price = 100; m.volume = 20;
+        m.recv_ts = 3'000'000'000LL;
+        p2->store_tick_direct(m);
+        m.volume = 10;
+        m.recv_ts = 4'000'000'000LL;
+        p2->store_tick_direct(m);
+    }
+
+    TcpRpcServer srv1, srv2;
+    srv1.start(19856, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p1);
+        return ex.execute(sql);
+    });
+    srv2.start(19857, [&](const std::string& sql) {
+        apex::sql::QueryExecutor ex(*p2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", 19856, 180});
+    coord.add_remote_node({"127.0.0.1", 19857, 190});
+
+    // ORDER BY price ASC, volume DESC
+    // All rows: (100,30), (200,10), (100,20), (100,10)
+    // Sorted: price ASC first, then volume DESC for ties:
+    //   (100,30), (100,20), (100,10), (200,10)
+    auto result = coord.execute_sql(
+        "SELECT price, volume FROM trades ORDER BY price ASC, volume DESC");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 4u);
+    EXPECT_EQ(result.rows[0][0], 100); EXPECT_EQ(result.rows[0][1], 30);
+    EXPECT_EQ(result.rows[1][0], 100); EXPECT_EQ(result.rows[1][1], 20);
+    EXPECT_EQ(result.rows[2][0], 100); EXPECT_EQ(result.rows[2][1], 10);
+    EXPECT_EQ(result.rows[3][0], 200); EXPECT_EQ(result.rows[3][1], 10);
+
+    srv1.stop();
+    srv2.stop();
+}
