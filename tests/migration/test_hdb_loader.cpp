@@ -3,6 +3,7 @@
 // ============================================================================
 #include "apex/migration/hdb_loader.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 

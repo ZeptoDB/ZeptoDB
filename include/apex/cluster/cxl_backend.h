@@ -106,7 +106,11 @@ private:
     static void nanospin(uint32_t ns) {
         auto start = std::chrono::steady_clock::now();
         while (std::chrono::steady_clock::now() - start < std::chrono::nanoseconds(ns)) {
+#if defined(__x86_64__) || defined(_M_X64)
             __builtin_ia32_pause();
+#elif defined(__aarch64__)
+            __asm__ volatile("yield");
+#endif
         }
     }
 

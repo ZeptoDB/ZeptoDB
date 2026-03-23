@@ -312,10 +312,14 @@ if(APEX_USE_HIGHWAY)
     target_link_libraries(apex_execution PUBLIC PkgConfig::HWY)
 endif()
 if(APEX_USE_JIT)
-    # LLVM-19 shared lib + GCC 11의 libstdc++ 경로 명시 (clang 기본 경로 우선순위 문제 해결)
+    # LLVM-19 shared lib + GCC libstdc++ 경로 (아키텍처 자동 감지)
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
+        OUTPUT_VARIABLE STDCXX_PATH OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
     target_link_libraries(apex_execution PUBLIC
         /usr/lib64/llvm19/lib/libLLVM-19.so
-        /usr/lib/gcc/x86_64-amazon-linux/11/libstdc++.so
+        ${STDCXX_PATH}
     )
 endif()
 
