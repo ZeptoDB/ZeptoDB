@@ -99,21 +99,23 @@ void ApexPipeline::start() {
         flush_manager_->start();
     }
 
-    drain_thread_ = std::thread([this]() { drain_loop(); });
-    APEX_INFO("ApexPipeline 시작 완료");
+    size_t n_drain = std::max<size_t>(1, config_.drain_threads);
+    for (size_t i = 0; i < n_drain; ++i)
+        drain_threads_.emplace_back([this]() { drain_loop(); });
+    APEX_INFO("ApexPipeline 시작 완료 (drain_threads={})", n_drain);
 }
 
 void ApexPipeline::stop() {
     running_.store(false, std::memory_order_release);
 
-    // FlushManager 먼저 중지
     if (flush_manager_) {
         flush_manager_->stop();
     }
 
-    if (drain_thread_.joinable()) {
-        drain_thread_.join();
+    for (auto& t : drain_threads_) {
+        if (t.joinable()) t.join();
     }
+    drain_threads_.clear();
 
     // 남은 큐 아이템 동기 플러시
     const size_t remaining = drain_sync();
@@ -125,11 +127,13 @@ void ApexPipeline::stop() {
 // ============================================================================
 bool ApexPipeline::ingest_tick(TickMessage msg) {
     const int64_t t0 = pipeline_now_ns();
-    const bool ok = tick_plant_.ingest(std::move(msg));
+    const bool ok = tick_plant_.ingest(msg);
     if (ok) {
         stats_.ticks_ingested.fetch_add(1, std::memory_order_relaxed);
     } else {
-        stats_.ticks_dropped.fetch_add(1, std::memory_order_relaxed);
+        // Queue full — direct-to-storage bypass (slower but no data loss)
+        store_tick(msg);
+        stats_.ticks_ingested.fetch_add(1, std::memory_order_relaxed);
     }
     stats_.last_ingest_latency_ns.store(
         pipeline_now_ns() - t0, std::memory_order_relaxed);

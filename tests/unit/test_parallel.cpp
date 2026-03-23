@@ -7,6 +7,7 @@
 #include "apex/execution/query_scheduler.h"
 #include "apex/execution/local_scheduler.h"
 #include "apex/execution/distributed_scheduler.h"
+#include "apex/cluster/tcp_rpc.h"
 #include "apex/sql/executor.h"
 #include "apex/core/pipeline.h"
 #include "apex/storage/column_store.h"
@@ -543,13 +544,217 @@ TEST(QuerySchedulerDI, LocalSchedulerScatterGather) {
 }
 
 TEST(QuerySchedulerDI, DistributedSchedulerStub) {
-    // DistributedQueryScheduler 는 스텁: scatter/gather 호출 시 예외 발생
+    // DistributedQueryScheduler: no endpoints → empty scatter
     apex::execution::DistributedQueryScheduler dist;
     EXPECT_EQ(dist.scheduler_type(), "distributed");
     EXPECT_EQ(dist.worker_count(), 0u);
 
-    EXPECT_THROW(
-        dist.scatter({}),
-        std::runtime_error
-    );
+    auto results = dist.scatter({});
+    EXPECT_TRUE(results.empty());
+}
+
+// ============================================================================
+// CHUNKED mode — single large partition split across threads
+// ============================================================================
+
+TEST(ChunkedMode, SelectMode_SingleLargePartition) {
+    // 1 partition, 500K rows, 4 threads → CHUNKED
+    auto mode = ParallelScanExecutor::select_mode(1, 500'000, 4, 100'000);
+    EXPECT_EQ(mode, ParallelMode::CHUNKED);
+}
+
+TEST(ChunkedMode, SelectMode_ManyPartitions) {
+    // 8 partitions, 500K rows, 4 threads → PARTITION
+    auto mode = ParallelScanExecutor::select_mode(8, 500'000, 4, 100'000);
+    EXPECT_EQ(mode, ParallelMode::PARTITION);
+}
+
+TEST(ChunkedMode, SelectMode_SmallData) {
+    // 1 partition, 1K rows → SERIAL
+    auto mode = ParallelScanExecutor::select_mode(1, 1'000, 4, 100'000);
+    EXPECT_EQ(mode, ParallelMode::SERIAL);
+}
+
+TEST(ChunkedMode, MakeRowChunks_EvenSplit) {
+    auto chunks = ParallelScanExecutor::make_row_chunks(1000, 4);
+    ASSERT_EQ(chunks.size(), 4u);
+    EXPECT_EQ(chunks[0].first, 0u);
+    EXPECT_EQ(chunks[0].second, 250u);
+    EXPECT_EQ(chunks[3].first, 750u);
+    EXPECT_EQ(chunks[3].second, 1000u);
+}
+
+TEST(ChunkedMode, MakeRowChunks_UnevenSplit) {
+    auto chunks = ParallelScanExecutor::make_row_chunks(10, 3);
+    ASSERT_EQ(chunks.size(), 3u);
+    // 10/3 = 3 remainder 1 → first chunk gets extra
+    size_t total = 0;
+    for (auto& [b, e] : chunks) total += e - b;
+    EXPECT_EQ(total, 10u);
+}
+
+TEST(ChunkedMode, AggParallel_SinglePartition) {
+    // Single partition with enough rows to trigger CHUNKED in agg
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ApexPipeline pipeline(cfg);
+
+    for (int i = 0; i < 1000; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 50;
+        msg.price     = static_cast<int64_t>(i) * 1'000'000LL;
+        msg.volume    = 1;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        pipeline.ingest_tick(msg);
+    }
+    pipeline.drain_sync(1100);
+
+    // Enable parallel with low threshold to force parallel path
+    QueryExecutor ex(pipeline);
+    ex.enable_parallel(4, 100);  // low threshold to force parallel path
+
+    auto result = ex.execute("SELECT sum(volume), count(*) FROM trades WHERE symbol = 50");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 1000);  // sum(volume)
+    EXPECT_EQ(result.rows[0][1], 1000);  // count(*)
+}
+
+// ============================================================================
+// exec_simple_select_parallel — parallel SELECT without aggregation
+// ============================================================================
+
+TEST(ParallelSelect, MultiPartition_ConcatResults) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ApexPipeline pipeline(cfg);
+
+    // Create 4 partitions (4 symbols)
+    for (int sym = 1; sym <= 4; ++sym) {
+        for (int i = 0; i < 10; ++i) {
+            apex::ingestion::TickMessage msg{};
+            msg.symbol_id = static_cast<uint32_t>(sym);
+            msg.price     = sym * 1'000'000LL;
+            msg.volume    = 100;
+            msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+            pipeline.ingest_tick(msg);
+        }
+    }
+    pipeline.drain_sync(50);
+
+    QueryExecutor ex(pipeline);
+    ex.enable_parallel(4, 10);  // low threshold to force parallel
+
+    auto result = ex.execute("SELECT * FROM trades");
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.rows.size(), 40u);  // 4 * 10
+}
+
+TEST(ParallelSelect, WithLimit) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ApexPipeline pipeline(cfg);
+
+    for (int sym = 1; sym <= 3; ++sym) {
+        for (int i = 0; i < 20; ++i) {
+            apex::ingestion::TickMessage msg{};
+            msg.symbol_id = static_cast<uint32_t>(sym);
+            msg.price     = 10000000LL;
+            msg.volume    = 1;
+            msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+            pipeline.ingest_tick(msg);
+        }
+    }
+    pipeline.drain_sync(70);
+
+    QueryExecutor ex(pipeline);
+    ex.enable_parallel(4, 10);
+
+    auto result = ex.execute("SELECT * FROM trades LIMIT 5");
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_LE(result.rows.size(), 5u);
+}
+
+// ============================================================================
+// ResourceIsolation — CPU pinning
+// ============================================================================
+
+#include "apex/execution/resource_isolation.h"
+
+TEST(ResourceIsolation, NumCpus) {
+    int n = apex::execution::ResourceIsolation::num_cpus();
+    EXPECT_GT(n, 0);
+}
+
+TEST(ResourceIsolation, PinToCore_ValidCore) {
+    // Pin to core 0 — should succeed on any system
+    bool ok = apex::execution::ResourceIsolation::pin_to_core(0);
+    EXPECT_TRUE(ok);
+}
+
+TEST(ResourceIsolation, PinToCores_EmptySet) {
+    apex::execution::CpuSet empty;
+    bool ok = apex::execution::ResourceIsolation::pin_to_cores(empty);
+    EXPECT_FALSE(ok);
+}
+
+TEST(ResourceIsolation, CpuSetRange) {
+    auto cs = apex::execution::CpuSet::range(0, 3);
+    EXPECT_EQ(cs.size(), 4u);
+    EXPECT_EQ(cs.cores[0], 0);
+    EXPECT_EQ(cs.cores[3], 3);
+}
+
+TEST(ResourceIsolation, IsolationConfig_PinRealtime) {
+    int ncpus = apex::execution::ResourceIsolation::num_cpus();
+    if (ncpus < 2) GTEST_SKIP() << "Need at least 2 CPUs";
+
+    apex::execution::IsolationConfig icfg;
+    icfg.realtime_cores = apex::execution::CpuSet::single(0);
+    icfg.analytics_cores = apex::execution::CpuSet::single(1);
+
+    apex::execution::ResourceIsolation iso(icfg);
+    EXPECT_TRUE(iso.pin_realtime());
+    EXPECT_TRUE(iso.pin_analytics());
+}
+
+// ============================================================================
+// DistributedQueryScheduler — with actual RPC
+// ============================================================================
+
+TEST(DistributedScheduler, ScatterGather_WithRpcServer) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ApexPipeline pipeline(cfg);
+
+    for (int i = 0; i < 5; ++i) {
+        apex::ingestion::TickMessage msg{};
+        msg.symbol_id = 99;
+        msg.price     = 10000000LL;
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        pipeline.ingest_tick(msg);
+    }
+    pipeline.drain_sync(10);
+
+    apex::cluster::TcpRpcServer srv;
+    srv.start(19940, [&](const std::string& sql) {
+        QueryExecutor ex(pipeline);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    DistributedQueryScheduler dist({"127.0.0.1:19940"});
+    EXPECT_EQ(dist.worker_count(), 1u);
+
+    QueryFragment frag;
+    frag.table_name = "trades";
+    auto results = dist.scatter({frag});
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].count[0], 5);  // count(*) = 5
+
+    auto merged = dist.gather(std::move(results));
+    EXPECT_EQ(merged.count[0], 5);
+
+    srv.stop();
 }

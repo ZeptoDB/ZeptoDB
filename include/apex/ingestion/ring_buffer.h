@@ -66,19 +66,25 @@ public:
     /// 소비자: 데이터 dequeue (non-blocking)
     /// @return 데이터 또는 nullopt
     std::optional<T> try_pop() {
-        size_t pos = read_pos_.fetch_add(1, std::memory_order_relaxed);
+        size_t pos = read_pos_.load(std::memory_order_relaxed);
         size_t idx = pos & (Capacity - 1);
         auto& slot = slots_[idx];
 
+        // Check slot state BEFORE advancing read_pos_.
+        // The original fetch_add-first design advances read_pos_ even on an empty
+        // queue, which causes the consumer to permanently skip slots that are
+        // written later (producer writes to slot N, but read_pos_ is already > N).
         SlotState expected = SlotState::READY;
         if (!slot.state.compare_exchange_strong(
                 expected, SlotState::READING,
                 std::memory_order_acquire, std::memory_order_relaxed))
         {
-            // 아직 데이터가 안 들어옴
+            // Slot not ready (empty queue or another consumer already claimed it).
             return std::nullopt;
         }
 
+        // Slot claimed — now advance read_pos_ and read the data.
+        read_pos_.fetch_add(1, std::memory_order_relaxed);
         T item = slot.data;
         slot.state.store(SlotState::EMPTY, std::memory_order_release);
         return item;

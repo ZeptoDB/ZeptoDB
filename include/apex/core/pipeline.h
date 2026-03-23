@@ -102,6 +102,9 @@ struct PipelineConfig {
     // 드레인 스레드 sleep (마이크로초)
     uint32_t drain_sleep_us = 10;
 
+    // 드레인 스레드 수 (1 = 기존 단일 스레드, >1 = 멀티 드레인)
+    size_t drain_threads = 1;
+
     // -------------------------
     // HDB / Tiered Storage 설정
     // -------------------------
@@ -228,7 +231,7 @@ private:
     std::unique_ptr<HDBReader>    hdb_reader_;
     std::unique_ptr<FlushManager> flush_manager_;
 
-    std::thread       drain_thread_;
+    std::vector<std::thread> drain_threads_;
     std::atomic<bool> running_{false};
 };
 
