@@ -494,3 +494,104 @@ TEST(PartitionRouter, PinnedSymbolsList) {
     EXPECT_EQ(pinned[100], 1u);
     EXPECT_EQ(pinned[200], 2u);
 }
+
+// ============================================================================
+// NodeRegistry — pluggable node membership
+// ============================================================================
+
+#include "apex/cluster/node_registry.h"
+
+TEST(NodeRegistry, GossipBasicLifecycle) {
+    using namespace apex::cluster;
+    GossipNodeRegistry reg(HealthConfig{.heartbeat_interval_ms = 100,
+                                         .suspect_timeout_ms = 300,
+                                         .dead_timeout_ms = 1000,
+                                         .heartbeat_port = 19900});
+    NodeAddress self{"127.0.0.1", 19900, 1};
+    reg.start(self);
+    EXPECT_TRUE(reg.is_running());
+    EXPECT_EQ(reg.node_count(), 1u);
+
+    auto nodes = reg.active_nodes();
+    EXPECT_EQ(nodes.size(), 1u);
+    EXPECT_EQ(nodes[0].address.id, 1u);
+
+    reg.stop();
+    EXPECT_FALSE(reg.is_running());
+}
+
+TEST(NodeRegistry, K8sRegisterDeregister) {
+    using namespace apex::cluster;
+    K8sNodeRegistry reg(K8sConfig{.poll_interval_ms = 50});
+    NodeAddress self{"10.0.0.1", 8123, 1};
+    reg.start(self);
+    EXPECT_TRUE(reg.is_running());
+    EXPECT_EQ(reg.active_nodes().size(), 1u);
+
+    // Register two more nodes (simulating K8s endpoint discovery)
+    reg.register_node({"10.0.0.2", 8123, 2});
+    reg.register_node({"10.0.0.3", 8123, 3});
+    EXPECT_EQ(reg.active_nodes().size(), 3u);
+    EXPECT_EQ(reg.node_count(), 3u);
+
+    // Deregister one
+    reg.deregister_node(2);
+    EXPECT_EQ(reg.active_nodes().size(), 2u);
+
+    reg.stop();
+}
+
+TEST(NodeRegistry, K8sChangeCallback) {
+    using namespace apex::cluster;
+    K8sNodeRegistry reg(K8sConfig{.poll_interval_ms = 50});
+    NodeAddress self{"10.0.0.1", 8123, 1};
+
+    std::vector<std::pair<NodeId, NodeEvent>> events;
+    reg.on_change([&](NodeId id, NodeEvent ev) {
+        events.push_back({id, ev});
+    });
+
+    reg.start(self);
+    reg.register_node({"10.0.0.2", 8123, 2});
+    reg.deregister_node(2);
+
+    // Should have: JOINED(2), LEFT(2)
+    EXPECT_GE(events.size(), 2u);
+    bool found_join = false, found_left = false;
+    for (auto& [id, ev] : events) {
+        if (id == 2 && ev == NodeEvent::JOINED) found_join = true;
+        if (id == 2 && ev == NodeEvent::LEFT)   found_left = true;
+    }
+    EXPECT_TRUE(found_join);
+    EXPECT_TRUE(found_left);
+
+    reg.stop();
+}
+
+TEST(NodeRegistry, FactoryCreatesCorrectType) {
+    using namespace apex::cluster;
+    auto gossip = make_node_registry(RegistryMode::GOSSIP);
+    auto k8s    = make_node_registry(RegistryMode::K8S);
+    EXPECT_NE(gossip, nullptr);
+    EXPECT_NE(k8s, nullptr);
+    // Verify they're different types via dynamic_cast
+    EXPECT_NE(dynamic_cast<GossipNodeRegistry*>(gossip.get()), nullptr);
+    EXPECT_NE(dynamic_cast<K8sNodeRegistry*>(k8s.get()), nullptr);
+}
+
+TEST(NodeRegistry, K8sGetNode) {
+    using namespace apex::cluster;
+    K8sNodeRegistry reg;
+    NodeAddress self{"10.0.0.1", 8123, 1};
+    reg.start(self);
+
+    auto info = reg.get_node(1);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->address.id, 1u);
+    EXPECT_EQ(info->state, NodeState::ACTIVE);
+
+    auto missing = reg.get_node(999);
+    EXPECT_FALSE(missing.has_value());
+
+    reg.stop();
+}
