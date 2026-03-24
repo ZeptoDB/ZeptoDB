@@ -8,7 +8,7 @@
 
 ## Background
 
-APEX-DB keeps all hot data in memory (RDB). Before this work:
+ZeptoDB keeps all hot data in memory (RDB). Before this work:
 - A process crash lost everything since the last EOD HDB flush.
 - `FlushManager` only flushed SEALED partitions on memory pressure — ACTIVE partitions (current hour) had no disk representation at all.
 - Restart required re-ingestion from the upstream feed, which is often impossible for historical intra-day data.
@@ -22,7 +22,7 @@ This gap was flagged as the highest product-readiness risk in BACKLOG.
 ### 1. `HDBWriter::snapshot_partition()` — snapshot any partition regardless of state
 
 ```cpp
-// include/apex/storage/hdb_writer.h
+// include/zeptodb/storage/hdb_writer.h
 size_t snapshot_partition(const Partition& partition,
                           const std::string& snapshot_dir);
 ```
@@ -49,7 +49,7 @@ std::string snapshot_path        = "";
 
 `snapshot_now()` is a public synchronous trigger for tests and manual operations.
 
-### 3. `ApexPipeline::start()` — recovery from snapshot on restart
+### 3. `ZeptoPipeline::start()` — recovery from snapshot on restart
 
 New `PipelineConfig` fields:
 ```cpp
@@ -75,7 +75,7 @@ Normal operation:
            └─ do_snapshot()  [new: ALL partitions → snapshot_path]
 
 Restart:
-  ApexPipeline::start()
+  ZeptoPipeline::start()
     ├─ [if enable_recovery] HDBReader(recovery_snapshot_path)
     │     └─ for each symbol/hour → read columns → store_tick() × N_rows
     ├─ flush_manager->start()
@@ -88,11 +88,11 @@ Restart:
 
 | File | Change |
 |------|--------|
-| `include/apex/storage/hdb_writer.h` | Added `snapshot_partition()` declaration |
+| `include/zeptodb/storage/hdb_writer.h` | Added `snapshot_partition()` declaration |
 | `src/storage/hdb_writer.cpp` | Implemented `snapshot_partition()` |
-| `include/apex/storage/flush_manager.h` | Added `enable_auto_snapshot`, `snapshot_interval_ms`, `snapshot_path` to `FlushConfig`; `snapshot_now()`, `do_snapshot()` declarations; `last_snapshot_ns_` atomic |
+| `include/zeptodb/storage/flush_manager.h` | Added `enable_auto_snapshot`, `snapshot_interval_ms`, `snapshot_path` to `FlushConfig`; `snapshot_now()`, `do_snapshot()` declarations; `last_snapshot_ns_` atomic |
 | `src/storage/flush_manager.cpp` | Implemented `do_snapshot()`, `snapshot_now()`; added timer check in `flush_loop()` |
-| `include/apex/core/pipeline.h` | Added `enable_recovery`, `recovery_snapshot_path` to `PipelineConfig` |
+| `include/zeptodb/core/pipeline.h` | Added `enable_recovery`, `recovery_snapshot_path` to `PipelineConfig` |
 | `src/core/pipeline.cpp` | Recovery logic in `start()`; added `<filesystem>` include |
 | `tests/unit/test_hdb.cpp` | Added `AutoSnapshot_CreatesFiles`, `Recovery_ReloadsData` tests |
 | `docs/design/layer1_storage_memory.md` | Added Section 7: Data Durability |

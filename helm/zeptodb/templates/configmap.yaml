@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "zeptodb.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+data:
+  zeptodb.conf: |
+    port: {{ .Values.config.port }}
+    worker_threads: {{ .Values.config.workerThreads }}
+    analytics_mode: {{ .Values.config.analyticsMode }}
+    cloud_native: {{ .Values.config.cloudNative }}
+    data_dir: {{ .Values.config.dataDir }}
+    hdb_compression: {{ .Values.config.hdbCompression }}
+    query_cache_size: {{ .Values.config.queryCacheSize }}
+    parallel_threshold: {{ .Values.config.parallelThreshold }}

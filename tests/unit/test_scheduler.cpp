@@ -1,15 +1,15 @@
 // ============================================================================
-// APEX-DB Scheduler Tests
+// ZeptoDB Scheduler Tests
 // Tests kdb+ .z.ts equivalent: interval, daily-at, once-at
 // ============================================================================
 #include <gtest/gtest.h>
-#include "apex/scheduler/scheduler.h"
+#include "zeptodb/scheduler/scheduler.h"
 
 #include <atomic>
 #include <chrono>
 #include <thread>
 
-using namespace apex::scheduler;
+using namespace zeptodb::scheduler;
 using namespace std::chrono_literals;
 
 // ============================================================================

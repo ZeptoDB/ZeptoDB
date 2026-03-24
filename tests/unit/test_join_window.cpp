@@ -1,13 +1,13 @@
 // ============================================================================
-// APEX-DB: Hash Join + Window Function 테스트
+// ZeptoDB: Hash Join + Window Function 테스트
 // ============================================================================
 
-#include "apex/execution/join_operator.h"
-#include "apex/execution/window_function.h"
-#include "apex/sql/tokenizer.h"
-#include "apex/sql/parser.h"
-#include "apex/storage/column_store.h"
-#include "apex/storage/arena_allocator.h"
+#include "zeptodb/execution/join_operator.h"
+#include "zeptodb/execution/window_function.h"
+#include "zeptodb/sql/tokenizer.h"
+#include "zeptodb/sql/parser.h"
+#include "zeptodb/storage/column_store.h"
+#include "zeptodb/storage/arena_allocator.h"
 
 #include <gtest/gtest.h>
 #include <vector>
@@ -15,9 +15,9 @@
 #include <cstdint>
 #include <climits>
 
-using namespace apex::execution;
-using namespace apex::sql;
-using namespace apex::storage;
+using namespace zeptodb::execution;
+using namespace zeptodb::sql;
+using namespace zeptodb::storage;
 
 // ============================================================================
 // Part 1: HashJoinOperator 테스트

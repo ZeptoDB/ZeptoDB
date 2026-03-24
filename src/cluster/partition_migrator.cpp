@@ -1,7 +1,7 @@
-#include "apex/cluster/partition_migrator.h"
-#include "apex/cluster/rpc_protocol.h"
+#include "zeptodb/cluster/partition_migrator.h"
+#include "zeptodb/cluster/rpc_protocol.h"
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 void PartitionMigrator::add_node(NodeId id, const std::string& host,
                                   uint16_t port) {
@@ -41,10 +41,10 @@ bool PartitionMigrator::migrate_symbol(SymbolId symbol, NodeId from,
         if (result.column_names[i] == "timestamp") col_ts     = static_cast<int>(i);
     }
 
-    std::vector<apex::ingestion::TickMessage> batch;
+    std::vector<zeptodb::ingestion::TickMessage> batch;
     batch.reserve(result.rows.size());
     for (auto& row : result.rows) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = static_cast<uint32_t>(symbol);
         if (col_price >= 0)  msg.price   = row[col_price];
         if (col_volume >= 0) msg.volume  = row[col_volume];
@@ -68,13 +68,21 @@ size_t PartitionMigrator::execute_plan(
     PartitionRouter& router)
 {
     size_t success = 0;
+
+    // P0-5: Begin dual-write for all symbols being migrated
+    for (auto& move : plan.moves)
+        router.begin_migration(move.symbol, move.from, move.to);
+
     for (auto& move : plan.moves) {
         if (migrate_symbol(move.symbol, move.from, move.to))
             ++success;
     }
-    // Apply routing changes after all moves complete
-    // (caller is responsible for add_node/remove_node on the router)
+
+    // End dual-write after all moves complete
+    for (auto& move : plan.moves)
+        router.end_migration(move.symbol);
+
     return success;
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

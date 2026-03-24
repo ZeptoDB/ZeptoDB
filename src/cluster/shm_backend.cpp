@@ -5,13 +5,13 @@
 // 이 파일은 명시적 인스턴스화 및 빌드 시스템 통합을 위해 존재
 // ============================================================================
 
-#include "apex/cluster/transport.h"
+#include "zeptodb/cluster/transport.h"
 #include "shm_backend.h"
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 // SharedMemBackend는 헤더에서 완전히 구현됨 (CRTP 템플릿)
 // 명시적 인스턴스화 (링크 타임 최적화)
 template class TransportBackend<SharedMemBackend>;
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

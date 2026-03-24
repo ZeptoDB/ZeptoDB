@@ -1,6 +1,6 @@
-# APEX-DB Deployment Guides
+# ZeptoDB Deployment Guides
 
-Guides for deploying APEX-DB in production environments.
+Guides for deploying ZeptoDB in production environments.
 
 ---
 
@@ -28,6 +28,12 @@ Guides for deploying APEX-DB in production environments.
 - Monitoring configuration
 - Troubleshooting
 
+### 4. [Rolling Upgrade Guide](../ops/rolling_upgrade.md)
+**Zero-Downtime Upgrade Procedures**
+- Standard / Config-only / Canary / Cluster-mode upgrades
+- Rollback procedures
+- Pre-upgrade checklist
+
 ---
 
 ## Quick Start
@@ -36,7 +42,7 @@ Guides for deploying APEX-DB in production environments.
 
 ```bash
 # 1. Run tuning script
-cd apex-db
+cd zeptodb
 sudo ./scripts/tune_bare_metal.sh
 
 # 2. Build
@@ -47,21 +53,24 @@ ninja -j$(nproc)
 # 3. Run (NUMA-aware)
 sudo numactl --cpunodebind=0 --membind=0 \
     taskset -c 0-3 \
-    ./apex_server --port 8123 --hugepages
+    ./zepto_server --port 8123 --hugepages
 ```
 
 ### Cloud (Quant/Analytics)
 
 ```bash
 # 1. Build Docker image
-docker build -t apex-db:latest .
+docker build -t zeptodb:latest .
 
-# 2. Deploy to Kubernetes
-kubectl apply -f k8s/deployment.yaml
+# 2. Deploy via Helm (recommended)
+helm install zeptodb ./helm/zeptodb -n zeptodb --create-namespace
 
 # 3. Verify
-kubectl get pods -n apex-db
-kubectl get svc -n apex-db
+kubectl get pods -n zeptodb
+curl -s http://<LB>:8123/health
+
+# Upgrade
+helm upgrade zeptodb ./helm/zeptodb -n zeptodb --set image.tag=1.1.0 --wait
 ```
 
 ---
@@ -81,6 +90,6 @@ kubectl get svc -n apex-db
 
 ## Support
 
-- **Enterprise support**: enterprise@apex-db.io
-- **Community**: https://discord.gg/apex-db
-- **Documentation**: https://docs.apex-db.io
+- **Enterprise support**: enterprise@zeptodb.io
+- **Community**: https://discord.gg/zeptodb
+- **Documentation**: https://docs.zeptodb.io

@@ -1,5 +1,5 @@
 # ============================================================================
-# APEX-DB 모니터링 스택 (Prometheus + Grafana + Node Exporter)
+# ZeptoDB 모니터링 스택 (Prometheus + Grafana + Node Exporter)
 # ============================================================================
 # 실행: docker-compose up -d
 # Grafana: http://localhost:3000 (admin/admin)
@@ -18,7 +18,7 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./apex-db-alerts.yml:/etc/prometheus/apex-db-alerts.yml
+      - ./zeptodb-alerts.yml:/etc/prometheus/zeptodb-alerts.yml
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -40,7 +40,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/apex-db.json
+      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/zeptodb.json
     networks:
       - monitoring
     depends_on:

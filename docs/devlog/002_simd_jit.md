@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-21
 **Phase:** B (SIMD + JIT)
-**Author:** APEX-DB Dev Team
+**Author:** ZeptoDB Dev Team
 
 ---
 
@@ -50,7 +50,7 @@ CMP_OP  := '>' | '>=' | '<' | '<=' | '==' | '!='
 **Design decisions:**
 - No external parser libraries (Flex/Bison, etc.) — overkill for simple expressions
 - Using `LLJIT` (OrcJIT v2): more modern and thread-safe than `ExecutionEngine`
-- Unique function name per compile() (`apex_filter_0`, `apex_filter_1`, ...)
+- Unique function name per compile() (`zepto_filter_0`, `zepto_filter_1`, ...)
 - No optimization passes applied (can add via `PassBuilder` later)
 - Return type: `bool (*)(int64_t price, int64_t volume)` function pointer — no virtual call needed
 

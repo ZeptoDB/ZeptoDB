@@ -2,7 +2,7 @@
 
 *Last updated: 2026-03-22 (SQL Phase 2/3 — arithmetic, CASE WHEN, multi-GROUP BY, date/time functions, LIKE, UNION/INTERSECT/EXCEPT)*
 
-This document covers the client interface layer of APEX-DB: HTTP API, Python
+This document covers the client interface layer of ZeptoDB: HTTP API, Python
 DSL/ecosystem, C++ direct API, SQL support, and the migration toolkit.
 
 ---
@@ -33,9 +33,9 @@ curl -X POST http://localhost:8123/ \
 **Original design:** nanobind → **Actual implementation:** pybind11 (stability first)
 
 ```python
-import apex
+import zeptodb
 
-db = apex.Pipeline()
+db = zeptodb.Pipeline()
 db.start()
 db.ingest(symbol=1, price=15000, volume=100)
 db.drain()
@@ -49,12 +49,12 @@ prices  = db.get_column(symbol=1, name="price")   # numpy, 522ns, no copy
 volumes = db.get_column(symbol=1, name="volume")
 
 # Lazy DSL (Polars style)
-from apex_py.dsl import DataFrame
+from zepto_py.dsl import DataFrame
 df = DataFrame(db, symbol=1)
 result = df[df['price'] > 15000]['volume'].sum().collect()
 ```
 
-**Polars vs APEX-DB comparison (100K rows):**
+**Polars vs ZeptoDB comparison (100K rows):**
 | | APEX | Polars | Ratio |
 |---|---|---|---|
 | VWAP | 56.9μs | 228.7μs | **4x** |
@@ -64,7 +64,7 @@ result = df[df['price'] > 15000]['volume'].sum().collect()
 ### 1-C. C++ Direct API
 
 ```cpp
-ApexPipeline pipeline;
+ZeptoPipeline pipeline;
 pipeline.start();
 
 // C++ direct — lowest latency
@@ -76,17 +76,17 @@ auto col = pipeline.partition_manager()
 
 ---
 
-## 2. Python Ecosystem — apex_py Package ✅ (Completed 2026-03-22)
+## 2. Python Ecosystem — zepto_py Package ✅ (Completed 2026-03-22)
 
-The `apex_py` package provides seamless data exchange between APEX-DB and the
+The `zepto_py` package provides seamless data exchange between ZeptoDB and the
 scientific Python stack. It closes the Research-to-Production gap: analysts
-prototype in Jupyter notebooks and ingest data into APEX-DB for production-scale
+prototype in Jupyter notebooks and ingest data into ZeptoDB for production-scale
 real-time queries without any serialization overhead.
 
 ### Package structure
 
 ```
-apex_py/
+zepto_py/
 ├── __init__.py       — Public API surface
 ├── connection.py     — HTTP client (ApexConnection, QueryResult)
 ├── dataframe.py      — Vectorized ingest/export converters
@@ -98,28 +98,28 @@ apex_py/
 ### Ingest paths (fastest → most flexible)
 
 ```python
-import apex_py as apex
+import zepto_py as apex
 
 # 1. from_arrow() — Arrow buffer direct (vectorized ingest_batch)
 import pyarrow as pa
 tbl = pa.table({"sym": [1,2], "price": [150.0, 200.0], "volume": [100, 200]})
-apex.from_arrow(tbl, pipeline)
+zeptodb.from_arrow(tbl, pipeline)
 
 # 2. from_polars_arrow() — Polars Arrow buffer → ingest_batch (zero-copy)
 import polars as pl
 df_pl = pl.DataFrame({"sym": [1], "price": [150.0], "volume": [100]})
-apex.from_polars_arrow(df_pl, pipeline)
+zeptodb.from_polars_arrow(df_pl, pipeline)
 
 # 3. from_polars() — .to_numpy() zero-copy → ingest_batch
-apex.from_polars(df_pl, pipeline, batch_size=100_000)
+zeptodb.from_polars(df_pl, pipeline, batch_size=100_000)
 
 # 4. from_pandas() — numpy vectorized extraction → ingest_batch
 import pandas as pd
 df_pd = pd.DataFrame({"sym": [1], "price": [150.0], "volume": [100]})
-apex.from_pandas(df_pd, pipeline, price_scale=100)  # store cents
+zeptodb.from_pandas(df_pd, pipeline, price_scale=100)  # store cents
 
 # 5. StreamingSession — batch ingest with progress + error handling
-sess = apex.StreamingSession(pipeline, batch_size=50_000, on_error="skip")
+sess = zeptodb.StreamingSession(pipeline, batch_size=50_000, on_error="skip")
 sess.ingest_pandas(df_pd, show_progress=True)
 sess.ingest_polars(df_pl, use_arrow=True)
 sess.ingest_iter(tick_generator())   # memory-efficient generator
@@ -133,7 +133,7 @@ All ingest functions are **vectorized** — no Python-level row iteration:
 ### Export paths (zero-copy)
 
 ```python
-from apex_py import ArrowSession
+from zepto_py import ArrowSession
 
 sess = ArrowSession(pipeline)
 
@@ -146,7 +146,7 @@ df_pl  = sess.to_polars_zero_copy(symbol=1)               # Polars via Arrow
 ### HTTP client (query → DataFrame)
 
 ```python
-db = apex.connect("localhost", 8123)
+db = zeptodb.connect("localhost", 8123)
 df  = db.query_pandas("SELECT sym, avg(price) FROM trades GROUP BY sym")
 df  = db.query_polars("SELECT * FROM trades WHERE sym=1 LIMIT 1000")
 arr = db.query_numpy("SELECT price FROM trades WHERE sym=1")
@@ -167,13 +167,13 @@ sess.ingest_arrow_columnar(
 
 ### Interoperability matrix
 
-| APEX-DB → | pandas | polars | numpy | Arrow | DuckDB |
+| ZeptoDB → | pandas | polars | numpy | Arrow | DuckDB |
 |-----------|--------|--------|-------|-------|--------|
 | HTTP query | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — |
 | Pipeline export | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` |
 | Zero-copy | numpy view | via Arrow | direct | yes | Arrow register |
 
-| → APEX-DB | pandas | polars | Arrow | generator |
+| → ZeptoDB | pandas | polars | Arrow | generator |
 |-----------|--------|--------|-------|-----------|
 | Vectorized | `from_pandas()` | `from_polars()` | `from_arrow()` | `ingest_iter()` |
 | Streaming | `StreamingSession` | `StreamingSession` | `ArrowSession` | `ingest_iter()` |
@@ -193,9 +193,9 @@ def _arrow_col_to_int64(col: pa.Array) -> np.ndarray:
     ...
 ```
 
-### Type mapping: APEX-DB ↔ Arrow
+### Type mapping: ZeptoDB ↔ Arrow
 
-| APEX-DB Type | Arrow Type |
+| ZeptoDB Type | Arrow Type |
 |---|---|
 | BOOLEAN | pa.bool_() |
 | TINYINT / SMALLINT / INTEGER / BIGINT | pa.int8/16/32/64() |
@@ -215,25 +215,25 @@ tests/python/
 └── test_streaming.py          41  — StreamingSession: pandas/polars/iter/stats/perf
 ```
 
-### Python Packaging — `pip install apex-db` ✅ (2026-03-23)
+### Python Packaging — `pip install zeptodb` ✅ (2026-03-23)
 
-**Distribution name:** `apex-db` · **Import name:** `apex_py` · **Version:** 0.1.0
+**Distribution name:** `zeptodb` · **Import name:** `zepto_py` · **Version:** 0.1.0
 
 ```
 # Build from source
 pip install build twine
-python -m build          # produces dist/apex_db-0.1.0-py3-none-any.whl
-                         #         and dist/apex_db-0.1.0.tar.gz
+python -m build          # produces dist/zeptodb-0.1.0-py3-none-any.whl
+                         #         and dist/zeptodb-0.1.0.tar.gz
 twine check dist/*       # → PASSED
 
 # Install locally
-pip install dist/apex_db-0.1.0-py3-none-any.whl
+pip install dist/zeptodb-0.1.0-py3-none-any.whl
 
 # Install with optional extras
-pip install "apex-db[all]"      # numpy, pandas, polars, pyarrow, duckdb
-pip install "apex-db[pandas]"   # numpy + pandas only
-pip install "apex-db[polars]"   # polars only
-pip install "apex-db[duckdb]"   # duckdb only
+pip install "zeptodb[all]"      # numpy, pandas, polars, pyarrow, duckdb
+pip install "zeptodb[pandas]"   # numpy + pandas only
+pip install "zeptodb[polars]"   # polars only
+pip install "zeptodb[duckdb]"   # duckdb only
 ```
 
 **pyproject.toml key settings:**
@@ -241,12 +241,12 @@ pip install "apex-db[duckdb]"   # duckdb only
 | Field | Value |
 |-------|-------|
 | `build-backend` | `setuptools.build_meta` (PEP 517/518) |
-| `name` | `apex-db` |
+| `name` | `zeptodb` |
 | `license` | `Apache-2.0` (SPDX string) |
 | `requires-python` | `>=3.9` |
 | `dependencies` | `[]` — zero mandatory deps |
 
-The wheel is a **pure-Python** `py3-none-any` wheel. When the C++ extension (`apex_core.so`) is available (built separately via CMake), it is imported automatically at runtime — the Python wheel ships only the client/integration layer.
+The wheel is a **pure-Python** `py3-none-any` wheel. When the C++ extension (`zepto_core.so`) is available (built separately via CMake), it is imported automatically at runtime — the Python wheel ships only the client/integration layer.
 
 To publish to PyPI: `twine upload dist/*` (requires a PyPI account and `~/.pypirc` token).
 
@@ -475,7 +475,7 @@ auto result = executor.execute(ast);
 
 **Status:** ✅ Implemented (2026-03-23)
 
-kdb+ has `.z.po` (port open) and `.z.pc` (port close) callbacks for session lifecycle management. APEX-DB provides an equivalent through `HttpServer`.
+kdb+ has `.z.po` (port open) and `.z.pc` (port close) callbacks for session lifecycle management. ZeptoDB provides an equivalent through `HttpServer`.
 
 ### API
 
@@ -483,12 +483,12 @@ kdb+ has `.z.po` (port open) and `.z.pc` (port close) callbacks for session life
 HttpServer server(executor, 8123);
 
 // .z.po equivalent — fires on first request from a new remote address
-server.set_on_connect([](const apex::server::ConnectionInfo& info) {
+server.set_on_connect([](const zeptodb::server::ConnectionInfo& info) {
     printf("Connect: %s at %lld\n", info.remote_addr.c_str(), info.connected_at_ns);
 });
 
 // .z.pc equivalent — fires on Connection:close or eviction
-server.set_on_disconnect([](const apex::server::ConnectionInfo& info) {
+server.set_on_disconnect([](const zeptodb::server::ConnectionInfo& info) {
     printf("Disconnect: %s queries=%llu\n",
            info.remote_addr.c_str(), info.query_count);
 });
@@ -522,7 +522,7 @@ Requires admin permission.
 - httplib `set_logger` fires after every HTTP response — used to track session state
 - `Connection: close` request header triggers `on_disconnect` (HTTP/1.1 semantics)
 - Session key: `remote_addr` (IP:port); `evict_idle_sessions` fires `on_disconnect` for each removed session
-- Files: `include/apex/server/http_server.h`, `src/server/http_server.cpp`
+- Files: `include/zeptodb/server/http_server.h`, `src/server/http_server.cpp`
 
 ---
 
@@ -530,12 +530,12 @@ Requires admin permission.
 
 **Status:** ✅ Implemented (2026-03-23)
 
-kdb+ supports `\t expr` to time a single expression without toggling the global timer. apex-cli now supports the same one-shot syntax.
+kdb+ supports `\t expr` to time a single expression without toggling the global timer. zepto-cli now supports the same one-shot syntax.
 
 ### Usage
 
 ```
-apex> \t SELECT sum(volume) FROM trades WHERE symbol = 1
+zepto> \t SELECT sum(volume) FROM trades WHERE symbol = 1
 +-------------+
 | sum(volume) |
 +-------------+
@@ -544,13 +544,13 @@ apex> \t SELECT sum(volume) FROM trades WHERE symbol = 1
 1 row in set
 Time: 0.42 ms
 
-apex> \t                ← toggle ON/OFF (existing, unchanged)
+zepto> \t                ← toggle ON/OFF (existing, unchanged)
 Timing ON
 ```
 
 - `\t <sql>` — runs one query with timing; global toggle state is not changed
 - `\t` alone — toggles timing ON/OFF
-- File: `tools/apex-cli.cpp`, `BuiltinCommands::handle()`
+- File: `tools/zepto-cli.cpp`, `BuiltinCommands::handle()`
 
 ---
 
@@ -559,14 +559,14 @@ Timing ON
 - [x] HTTP API + ClickHouse compatibility ✅
 - [x] pybind11 zero-copy Python binding ✅
 - [x] Migration Toolkit (kdb+/ClickHouse/DuckDB/TimescaleDB) ✅
-- [x] **Python Ecosystem** (`apex_py` full package — vectorized ingest_batch) ✅
+- [x] **Python Ecosystem** (`zepto_py` full package — vectorized ingest_batch) ✅
 - [x] **SQL Phase 1** — IN, IS NULL, NOT, HAVING ✅
 - [x] **SQL Phase 2** — SELECT arithmetic, CASE WHEN, multi-column GROUP BY ✅
 - [x] **SQL Phase 3** — DATE_TRUNC/NOW/EPOCH_S/EPOCH_MS, LIKE/NOT LIKE, UNION/INTERSECT/EXCEPT ✅
 - [x] **SQL Subquery / CTE** — WITH clause, FROM (subquery) ✅
 - [x] **Connection hooks** — `.z.po/.z.pc` equivalent, session tracking ✅ (2026-03-23)
 - [x] **`\t <sql>` one-shot timer** — interactive query timing ✅ (2026-03-23)
-- [x] **`pip install apex-db` Python wheel** — PEP 517/518 packaging, `twine check` PASSED ✅ (2026-03-23)
+- [x] **`pip install zeptodb` Python wheel** — PEP 517/518 packaging, `twine check` PASSED ✅ (2026-03-23)
 - [ ] SQL Window RANGE mode (currently ROWS only)
 - [ ] Python DSL → LLVM JIT direct compilation
 - [ ] Arrow Flight server (stream results as Arrow over network)

@@ -1,10 +1,10 @@
-# APEX-DB High-Level Architecture
+# ZeptoDB High-Level Architecture
 
-*Last updated: 2026-03-22 (Python Ecosystem — apex_py package completed)*
+*Last updated: 2026-03-22 (Python Ecosystem — zepto_py package completed)*
 
 ## Overview
 
-APEX-DB is an ultra-low latency in-memory time-series database targeting
+ZeptoDB is an ultra-low latency in-memory time-series database targeting
 HFT, quantitative research, and real-time analytics. It replaces kdb+ at
 95% feature parity while offering standard SQL, Python zero-copy, and
 open-source licensing.
@@ -16,14 +16,14 @@ open-source licensing.
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Layer 6: Migration Toolkit                              │
-│  apex-migrate CLI                                        │
+│  zepto-migrate CLI                                        │
 │  kdb+ (q→SQL, HDB loader) · ClickHouse (DDL, queries)   │
 │  DuckDB (Parquet export) · TimescaleDB (hypertable DDL)  │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 5: Client Interface                               │
 │  HTTP API (port 8123, ClickHouse-compatible)             │
 │  Python DSL (pybind11, zero-copy numpy/Arrow)            │
-│  Python Ecosystem (apex_py):                             │
+│  Python Ecosystem (zepto_py):                             │
 │    from_pandas/polars/arrow — vectorized ingest_batch    │
 │    ArrowSession — zero-copy Arrow/DuckDB/Polars export   │
 │    StreamingSession — batch ingest + progress callbacks  │
@@ -125,14 +125,14 @@ Same query planner, swappable transport layer.
 
 ## Migration Toolkit
 
-Customers can migrate from existing systems using `apex-migrate`:
+Customers can migrate from existing systems using `zepto-migrate`:
 
 ```
-apex-migrate query       # kdb+ q → APEX SQL transpiler
-apex-migrate hdb         # kdb+ HDB splayed tables → APEX columnar
-apex-migrate clickhouse  # Generate ClickHouse DDL + query translations
-apex-migrate duckdb      # Export APEX data to Parquet (DuckDB compatible)
-apex-migrate timescaledb # Generate TimescaleDB hypertable + continuous aggregates
+zepto-migrate query       # kdb+ q → APEX SQL transpiler
+zepto-migrate hdb         # kdb+ HDB splayed tables → APEX columnar
+zepto-migrate clickhouse  # Generate ClickHouse DDL + query translations
+zepto-migrate duckdb      # Export APEX data to Parquet (DuckDB compatible)
+zepto-migrate timescaledb # Generate TimescaleDB hypertable + continuous aggregates
 ```
 
 **Conversion coverage:**
@@ -166,7 +166,7 @@ apex-migrate timescaledb # Generate TimescaleDB hypertable + continuous aggregat
 | Parquet HDB | ✅ | SNAPPY/ZSTD/LZ4_RAW, direct DuckDB/Polars queries |
 | S3 HDB Flush | ✅ | Async upload, MinIO compatible, cloud data lake |
 | Production Ops | ✅ | Monitoring, backup, k8s |
-| Python Ecosystem | ✅ | apex_py: from_pandas/polars/arrow, ArrowSession, StreamingSession (208 tests) |
+| Python Ecosystem | ✅ | zepto_py: from_pandas/polars/arrow, ArrowSession, StreamingSession (208 tests) |
 | Distributed Query | 🚧 | VWAP decomposition, ORDER BY/LIMIT done; HAVING/DISTINCT/window pending |
 | Cluster Integrity | ✅ | Unified router, fencing token, split-brain defense |
 | Snowflake/Delta Lake | 📋 | Backlog |

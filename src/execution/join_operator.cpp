@@ -1,13 +1,13 @@
 // ============================================================================
-// APEX-DB: JOIN Operator Implementation
+// ZeptoDB: JOIN Operator Implementation
 // ============================================================================
 // ASOF JOIN: 이진 탐색 + 두 포인터 병합 알고리즘
 // Hash JOIN: INNER / LEFT (NULL 센티넬 INT64_MIN 사용)
 // Window JOIN: 이진 탐색 기반 시간 윈도우 집계 O(n log m)
 // ============================================================================
 
-#include "apex/execution/join_operator.h"
-#include "apex/storage/column_store.h"
+#include "zeptodb/execution/join_operator.h"
+#include "zeptodb/storage/column_store.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -16,7 +16,7 @@
 #include <climits>
 #include <cmath>
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
 // ============================================================================
 // AsofJoinOperator::execute
@@ -345,4 +345,4 @@ int64_t WindowJoinOperator::aggregate_window(
     return 0;
 }
 
-} // namespace apex::execution
+} // namespace zeptodb::execution

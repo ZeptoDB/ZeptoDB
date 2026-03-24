@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: Secrets Provider Implementation
+// ZeptoDB: Secrets Provider Implementation
 // ============================================================================
-#include "apex/auth/secrets_provider.h"
+#include "zeptodb/auth/secrets_provider.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -14,7 +14,7 @@
 #endif
 #include "third_party/httplib.h"
 
-namespace apex::auth {
+namespace zeptodb::auth {
 
 // ============================================================================
 // EnvSecretsProvider
@@ -259,4 +259,4 @@ SecretsProviderFactory::create_with_aws(
     return composite;
 }
 
-} // namespace apex::auth
+} // namespace zeptodb::auth

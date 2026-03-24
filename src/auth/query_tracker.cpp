@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: QueryTracker Implementation
+// ZeptoDB: QueryTracker Implementation
 // ============================================================================
-#include "apex/auth/query_tracker.h"
+#include "zeptodb/auth/query_tracker.h"
 
 #include <openssl/rand.h>
 #include <chrono>
@@ -9,7 +9,7 @@
 #include <mutex>
 #include <shared_mutex>
 
-namespace apex::auth {
+namespace zeptodb::auth {
 
 // ============================================================================
 // register_query
@@ -95,4 +95,4 @@ int64_t QueryTracker::now_ns() {
         system_clock::now().time_since_epoch()).count();
 }
 
-} // namespace apex::auth
+} // namespace zeptodb::auth

@@ -1,50 +1,50 @@
 // ============================================================================
-// APEX-DB: DuckDB Interoperability Implementation
+// ZeptoDB: DuckDB Interoperability Implementation
 // ============================================================================
-#include "apex/migration/duckdb_interop.h"
+#include "zeptodb/migration/duckdb_interop.h"
 #include <sstream>
 #include <fstream>
 #include <algorithm>
 #include <filesystem>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 // ============================================================================
 // Type Mapper
 // ============================================================================
 
-std::string APEXToDuckDBTypeMapper::apex_to_duckdb(const std::string& apex_type) {
+std::string ZeptoToDuckDBTypeMapper::zepto_to_duckdb(const std::string& zepto_type) {
     // DuckDB is mostly ANSI SQL compatible
-    if (apex_type == "BOOLEAN")   return "BOOLEAN";
-    if (apex_type == "TINYINT")   return "TINYINT";
-    if (apex_type == "SMALLINT")  return "SMALLINT";
-    if (apex_type == "INTEGER")   return "INTEGER";
-    if (apex_type == "BIGINT")    return "BIGINT";
-    if (apex_type == "REAL")      return "FLOAT";
-    if (apex_type == "DOUBLE")    return "DOUBLE";
-    if (apex_type == "VARCHAR")   return "VARCHAR";
-    if (apex_type == "TEXT")      return "VARCHAR";
-    if (apex_type == "DATE")      return "DATE";
-    if (apex_type == "TIMESTAMP") return "TIMESTAMP";
-    if (apex_type == "TIME")      return "TIME";
+    if (zepto_type == "BOOLEAN")   return "BOOLEAN";
+    if (zepto_type == "TINYINT")   return "TINYINT";
+    if (zepto_type == "SMALLINT")  return "SMALLINT";
+    if (zepto_type == "INTEGER")   return "INTEGER";
+    if (zepto_type == "BIGINT")    return "BIGINT";
+    if (zepto_type == "REAL")      return "FLOAT";
+    if (zepto_type == "DOUBLE")    return "DOUBLE";
+    if (zepto_type == "VARCHAR")   return "VARCHAR";
+    if (zepto_type == "TEXT")      return "VARCHAR";
+    if (zepto_type == "DATE")      return "DATE";
+    if (zepto_type == "TIMESTAMP") return "TIMESTAMP";
+    if (zepto_type == "TIME")      return "TIME";
     return "VARCHAR";
 }
 
-std::string APEXToDuckDBTypeMapper::apex_to_parquet(const std::string& apex_type) {
-    if (apex_type == "BOOLEAN")   return "BOOLEAN";
-    if (apex_type == "TINYINT")   return "INT32";
-    if (apex_type == "SMALLINT")  return "INT32";
-    if (apex_type == "INTEGER")   return "INT32";
-    if (apex_type == "BIGINT")    return "INT64";
-    if (apex_type == "REAL")      return "FLOAT";
-    if (apex_type == "DOUBLE")    return "DOUBLE";
-    if (apex_type == "VARCHAR")   return "BYTE_ARRAY";
-    if (apex_type == "DATE")      return "INT32";   // days since epoch
-    if (apex_type == "TIMESTAMP") return "INT64";   // nanoseconds since epoch
+std::string ZeptoToDuckDBTypeMapper::zepto_to_parquet(const std::string& zepto_type) {
+    if (zepto_type == "BOOLEAN")   return "BOOLEAN";
+    if (zepto_type == "TINYINT")   return "INT32";
+    if (zepto_type == "SMALLINT")  return "INT32";
+    if (zepto_type == "INTEGER")   return "INT32";
+    if (zepto_type == "BIGINT")    return "INT64";
+    if (zepto_type == "REAL")      return "FLOAT";
+    if (zepto_type == "DOUBLE")    return "DOUBLE";
+    if (zepto_type == "VARCHAR")   return "BYTE_ARRAY";
+    if (zepto_type == "DATE")      return "INT32";   // days since epoch
+    if (zepto_type == "TIMESTAMP") return "INT64";   // nanoseconds since epoch
     return "BYTE_ARRAY";
 }
 
-std::string APEXToDuckDBTypeMapper::ktype_to_duckdb(int8_t kdb_type) {
+std::string ZeptoToDuckDBTypeMapper::ktype_to_duckdb(int8_t kdb_type) {
     switch (kdb_type) {
         case 1:  return "BOOLEAN";
         case 4:  return "UTINYINT";
@@ -62,7 +62,7 @@ std::string APEXToDuckDBTypeMapper::ktype_to_duckdb(int8_t kdb_type) {
     }
 }
 
-std::string APEXToDuckDBTypeMapper::ktype_to_parquet_physical(int8_t kdb_type) {
+std::string ZeptoToDuckDBTypeMapper::ktype_to_parquet_physical(int8_t kdb_type) {
     switch (kdb_type) {
         case 1:  return "BOOLEAN";
         case 4:  return "INT32";
@@ -80,7 +80,7 @@ std::string APEXToDuckDBTypeMapper::ktype_to_parquet_physical(int8_t kdb_type) {
     }
 }
 
-std::string APEXToDuckDBTypeMapper::ktype_to_parquet_logical(int8_t kdb_type) {
+std::string ZeptoToDuckDBTypeMapper::ktype_to_parquet_logical(int8_t kdb_type) {
     switch (kdb_type) {
         case 7:  return "INT(64, true)";
         case 11: return "STRING";
@@ -142,8 +142,8 @@ std::string ParquetSchema::to_arrow_schema() const {
 // DuckDB Query Adapter
 // ============================================================================
 
-std::string DuckDBQueryAdapter::adapt(const std::string& apex_sql) {
-    std::string result = apex_sql;
+std::string DuckDBQueryAdapter::adapt(const std::string& zepto_sql) {
+    std::string result = zepto_sql;
     result = rewrite_window_functions(result);
     return result;
 }
@@ -299,7 +299,7 @@ std::string ParquetExporter::generate_hdb_to_parquet_script(
     std::ostringstream ss;
 
     ss << "#!/usr/bin/env python3\n";
-    ss << "# Convert kdb+ HDB to Parquet via APEX-DB\n\n";
+    ss << "# Convert kdb+ HDB to Parquet via ZeptoDB\n\n";
     ss << "import subprocess\nimport os\n\n";
 
     ss << "hdb_path = '" << hdb_path << "'\n";
@@ -308,13 +308,13 @@ std::string ParquetExporter::generate_hdb_to_parquet_script(
 
     if (tables.empty()) {
         ss << "# Migrate all tables\n";
-        ss << "subprocess.run(['apex-migrate', 'hdb',\n";
+        ss << "subprocess.run(['zepto-migrate', 'hdb',\n";
         ss << "                '--hdb-dir', hdb_path,\n";
         ss << "                '--output', output_dir])\n";
     } else {
         for (const auto& table : tables) {
             ss << "# Migrate table: " << table << "\n";
-            ss << "subprocess.run(['apex-migrate', 'hdb',\n";
+            ss << "subprocess.run(['zepto-migrate', 'hdb',\n";
             ss << "                '--hdb-dir', hdb_path,\n";
             ss << "                '--output', output_dir,\n";
             ss << "                '--table', '" << table << "'])\n\n";
@@ -345,7 +345,7 @@ bool DuckDBIntegrator::export_to_parquet(const std::string& table_name,
     std::ofstream out(script_path);
     if (!out) return false;
 
-    out << "-- APEX-DB to DuckDB/Parquet export\n";
+    out << "-- ZeptoDB to DuckDB/Parquet export\n";
     out << "-- Run with: duckdb < " << script_path << "\n\n";
     out << script;
 
@@ -355,8 +355,8 @@ bool DuckDBIntegrator::export_to_parquet(const std::string& table_name,
 std::string DuckDBIntegrator::generate_setup_script(const std::string& parquet_dir) {
     std::ostringstream ss;
 
-    ss << "-- DuckDB setup for APEX-DB data\n";
-    ss << "-- Run: duckdb apex_analytics.duckdb < setup.sql\n\n";
+    ss << "-- DuckDB setup for ZeptoDB data\n";
+    ss << "-- Run: duckdb zepto_analytics.duckdb < setup.sql\n\n";
 
     if (config_.threads > 0) {
         ss << "SET threads = " << config_.threads << ";\n";
@@ -389,7 +389,7 @@ std::string DuckDBIntegrator::generate_analytics_examples(
 {
     std::ostringstream ss;
 
-    ss << "-- APEX-DB Analytics Examples (DuckDB)\n\n";
+    ss << "-- ZeptoDB Analytics Examples (DuckDB)\n\n";
 
     ss << "-- 1. VWAP by symbol (1-minute bars)\n";
     ss << "SELECT\n";
@@ -454,7 +454,7 @@ std::string DuckDBIntegrator::generate_jupyter_template(
     ss << "    \"\\n\",\n";
     ss << "    \"conn = duckdb.connect()\\n\",\n";
     ss << "    \"\\n\",\n";
-    ss << "    \"# Load APEX-DB Parquet data\\n\",\n";
+    ss << "    \"# Load ZeptoDB Parquet data\\n\",\n";
     ss << "    \"conn.execute(\\\"\\\"\\\"\\n\",\n";
     ss << "    \"    CREATE VIEW trades AS\\n\",\n";
     ss << "    \"    SELECT * FROM read_parquet('" << parquet_dir << "/trades/**/*.parquet',\\n\",\n";
@@ -484,4 +484,4 @@ std::string DuckDBIntegrator::generate_jupyter_template(
     return ss.str();
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration

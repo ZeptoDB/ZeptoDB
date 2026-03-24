@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB: End-to-End Benchmark Framework
+// ZeptoDB: End-to-End Benchmark Framework
 // ============================================================================
 // 측정 항목:
 //   1. 인제스션 처리량 (ticks/sec, 다양한 배치 크기)
@@ -8,8 +8,8 @@
 //   4. 멀티스레드 동시 성능
 // ============================================================================
 
-#include "apex/core/pipeline.h"
-#include "apex/common/logger.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/common/logger.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,9 +21,9 @@
 #include <thread>
 #include <vector>
 
-using namespace apex;
-using namespace apex::core;
-using namespace apex::ingestion;
+using namespace zeptodb;
+using namespace zeptodb::core;
+using namespace zeptodb::ingestion;
 
 // ============================================================================
 // 타이머 유틸리티
@@ -107,7 +107,7 @@ static void bench_ingestion_throughput() {
         cfg.arena_size_per_partition = 128ULL * 1024 * 1024; // 128MB
         cfg.drain_batch_size = 1024;
 
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
         // drain 없이 순수 ingest 처리량 측정 (TickPlant queue 기준)
         // queue 용량은 65536이므로 그 이상은 flush 필요
 
@@ -160,7 +160,7 @@ static void bench_query_latency() {
         PipelineConfig cfg;
         cfg.arena_size_per_partition = arena_mb;
 
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
 
         // 데이터 로드
         const int64_t base_ts = 1'700'000'000'000'000'000LL; // 2023-11-14 기준
@@ -254,7 +254,7 @@ static void bench_e2e_latency() {
     cfg.drain_batch_size = 64;
     cfg.drain_sleep_us = 1;
 
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
     pipeline.start(); // 백그라운드 드레인 시작
 
     // 워밍업
@@ -316,7 +316,7 @@ static void bench_concurrent() {
         cfg.arena_size_per_partition = 512ULL * 1024 * 1024; // 512MB per partition
         cfg.drain_batch_size = 1024;
 
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
         pipeline.start();
 
         std::atomic<uint64_t> total_ingested{0};
@@ -371,7 +371,7 @@ static void bench_large_vwap() {
     // 10M rows * 8 bytes * 4 cols * doubling_waste = ~1.2GB
     cfg.arena_size_per_partition = 1536ULL * 1024 * 1024; // 1.5GB
 
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     printf("  데이터 로드 중 (%zuM ticks)...\n", TARGET_ROWS / 1'000'000);
     const int64_t base_ts = 1'700'000'000'000'000'000LL;
@@ -419,10 +419,10 @@ static void bench_large_vwap() {
 // main
 // ============================================================================
 int main(int argc, char* argv[]) {
-    apex::Logger::init("apex-bench", spdlog::level::warn); // 벤치 중 로그 최소화
+    zeptodb::Logger::init("apex-bench", spdlog::level::warn); // 벤치 중 로그 최소화
 
     printf("============================================================\n");
-    printf("  APEX-DB Benchmark Suite\n");
+    printf("  ZeptoDB Benchmark Suite\n");
     printf("  컴파일: C++20 / clang-19 / -O3 -march=native\n");
     printf("============================================================\n");
 

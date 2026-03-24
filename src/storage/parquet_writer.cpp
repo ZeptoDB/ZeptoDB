@@ -2,12 +2,12 @@
 // Layer 1: HDB Parquet Writer — 구현
 // ============================================================================
 
-#include "apex/storage/parquet_writer.h"
+#include "zeptodb/storage/parquet_writer.h"
 
 #include <filesystem>
 #include <fstream>
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 namespace fs = std::filesystem;
 
@@ -17,12 +17,12 @@ namespace fs = std::filesystem;
 ParquetWriter::ParquetWriter(ParquetWriterConfig config)
     : config_(std::move(config))
 {
-#if APEX_PARQUET_AVAILABLE
-    APEX_INFO("ParquetWriter 초기화: compression={}, row_group_size={}",
+#if ZEPTO_PARQUET_AVAILABLE
+    ZEPTO_INFO("ParquetWriter 초기화: compression={}, row_group_size={}",
               static_cast<int>(config_.compression), config_.row_group_size);
 #else
-    APEX_WARN("ParquetWriter: libarrow/libparquet 없음 — Parquet 저장 비활성화");
-    APEX_WARN("  설치: sudo dnf install -y arrow-devel parquet-devel");
+    ZEPTO_WARN("ParquetWriter: libarrow/libparquet 없음 — Parquet 저장 비활성화");
+    ZEPTO_WARN("  설치: sudo dnf install -y arrow-devel parquet-devel");
 #endif
 }
 
@@ -35,17 +35,17 @@ std::string ParquetWriter::flush_to_file(const Partition& partition,
     const auto& key = partition.key();
 
     if (partition.num_rows() == 0) {
-        APEX_DEBUG("ParquetWriter: 빈 파티션 스킵 (symbol={}, hour={})",
+        ZEPTO_DEBUG("ParquetWriter: 빈 파티션 스킵 (symbol={}, hour={})",
                    key.symbol_id, key.hour_epoch);
         return "";
     }
 
-#if APEX_PARQUET_AVAILABLE
+#if ZEPTO_PARQUET_AVAILABLE
     // 출력 디렉토리 생성
     std::error_code ec;
     fs::create_directories(output_dir, ec);
     if (ec) {
-        APEX_WARN("ParquetWriter: 디렉토리 생성 실패: {} ({})", output_dir, ec.message());
+        ZEPTO_WARN("ParquetWriter: 디렉토리 생성 실패: {} ({})", output_dir, ec.message());
         return "";
     }
 
@@ -55,7 +55,7 @@ std::string ParquetWriter::flush_to_file(const Partition& partition,
     // Arrow Table 빌드
     auto table = to_arrow_table(partition);
     if (!table) {
-        APEX_WARN("ParquetWriter: Arrow Table 변환 실패 (symbol={}, hour={})",
+        ZEPTO_WARN("ParquetWriter: Arrow Table 변환 실패 (symbol={}, hour={})",
                   key.symbol_id, key.hour_epoch);
         return "";
     }
@@ -63,7 +63,7 @@ std::string ParquetWriter::flush_to_file(const Partition& partition,
     // 파일 출력 스트림
     auto result = arrow::io::FileOutputStream::Open(filepath);
     if (!result.ok()) {
-        APEX_WARN("ParquetWriter: 파일 열기 실패: {} ({})",
+        ZEPTO_WARN("ParquetWriter: 파일 열기 실패: {} ({})",
                   filepath, result.status().message());
         return "";
     }
@@ -74,7 +74,7 @@ std::string ParquetWriter::flush_to_file(const Partition& partition,
     auto status = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
                                              outfile, config_.row_group_size, props);
     if (!status.ok()) {
-        APEX_WARN("ParquetWriter: 쓰기 실패: {} ({})", filepath, status.message());
+        ZEPTO_WARN("ParquetWriter: 쓰기 실패: {} ({})", filepath, status.message());
         return "";
     }
 
@@ -83,17 +83,17 @@ std::string ParquetWriter::flush_to_file(const Partition& partition,
     files_written_.fetch_add(1, std::memory_order_relaxed);
     bytes_written_.fetch_add(file_size, std::memory_order_relaxed);
 
-    APEX_INFO("Parquet 저장 완료: {} (rows={}, size={}B)",
+    ZEPTO_INFO("Parquet 저장 완료: {} (rows={}, size={}B)",
               filepath, partition.num_rows(), file_size);
     return filepath;
 
 #else
-    APEX_WARN("ParquetWriter: libarrow 없음 — Parquet 저장 불가");
+    ZEPTO_WARN("ParquetWriter: libarrow 없음 — Parquet 저장 불가");
     return "";
 #endif
 }
 
-#if APEX_PARQUET_AVAILABLE
+#if ZEPTO_PARQUET_AVAILABLE
 
 // ============================================================================
 // flush_to_buffer: Partition → Arrow Buffer (S3 직접 업로드용)
@@ -114,7 +114,7 @@ std::shared_ptr<arrow::Buffer> ParquetWriter::flush_to_buffer(const Partition& p
     auto status = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
                                              buf_stream, config_.row_group_size, props);
     if (!status.ok()) {
-        APEX_WARN("ParquetWriter::flush_to_buffer 실패: {}", status.message());
+        ZEPTO_WARN("ParquetWriter::flush_to_buffer 실패: {}", status.message());
         return nullptr;
     }
 
@@ -278,6 +278,6 @@ std::shared_ptr<parquet::WriterProperties> ParquetWriter::make_writer_props() co
     return builder.build();
 }
 
-#endif // APEX_PARQUET_AVAILABLE
+#endif // ZEPTO_PARQUET_AVAILABLE
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

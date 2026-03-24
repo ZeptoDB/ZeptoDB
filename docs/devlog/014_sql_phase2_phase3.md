@@ -7,7 +7,7 @@
 ## Overview
 
 This devlog covers three rounds of SQL parser and executor enhancements that together bring
-APEX-DB's SQL subset to practical parity with ClickHouse for time-series analytical workloads.
+ZeptoDB's SQL subset to practical parity with ClickHouse for time-series analytical workloads.
 
 | Phase | Features | Tests added |
 |-------|----------|-------------|
@@ -271,10 +271,10 @@ New tests added in `tests/unit/test_sql.cpp` (Parts 7–8):
 
 | File | Change |
 |------|--------|
-| `include/apex/sql/tokenizer.h` | Added DATE_TRUNC, NOW, EPOCH_S, EPOCH_MS, LIKE, UNION, ALL, INTERSECT, EXCEPT tokens |
+| `include/zeptodb/sql/tokenizer.h` | Added DATE_TRUNC, NOW, EPOCH_S, EPOCH_MS, LIKE, UNION, ALL, INTERSECT, EXCEPT tokens |
 | `src/sql/tokenizer.cpp` | Keyword mappings for all new tokens |
-| `include/apex/sql/ast.h` | `ArithExpr::Kind::FUNC` + func fields; `Expr::Kind::LIKE` + `like_pattern`; `SelectStmt::SetOp` + `rhs` |
-| `include/apex/sql/parser.h` | `parse_string_literal()` declaration |
+| `include/zeptodb/sql/ast.h` | `ArithExpr::Kind::FUNC` + func fields; `Expr::Kind::LIKE` + `like_pattern`; `SelectStmt::SetOp` + `rhs` |
+| `include/zeptodb/sql/parser.h` | `parse_string_literal()` declaration |
 | `src/sql/parser.cpp` | Phase 2/3 parsing: arith FUNC, LIKE, set operations, string literal |
 | `src/sql/executor.cpp` | `date_trunc_bucket()`, `eval_arith FUNC`, `eval_expr LIKE`, `apply_having_filter LIKE`, `exec_select set ops`, parallel path sync |
 | `tests/unit/test_sql.cpp` | 53 new tests across Parts 7–8 |

@@ -2,12 +2,12 @@
 // Test: MPMC Ring Buffer (Layer 2)
 // ============================================================================
 
-#include "apex/ingestion/ring_buffer.h"
+#include "zeptodb/ingestion/ring_buffer.h"
 #include <gtest/gtest.h>
 #include <thread>
 #include <atomic>
 
-using namespace apex::ingestion;
+using namespace zeptodb::ingestion;
 
 TEST(MPMCRingBuffer, BasicPushPop) {
     MPMCRingBuffer<int64_t, 1024> rb;

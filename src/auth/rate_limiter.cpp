@@ -1,13 +1,13 @@
 // ============================================================================
-// APEX-DB: Rate Limiter Implementation
+// ZeptoDB: Rate Limiter Implementation
 // ============================================================================
-#include "apex/auth/rate_limiter.h"
+#include "zeptodb/auth/rate_limiter.h"
 
 #include <chrono>
 #include <algorithm>
 #include <vector>
 
-namespace apex::auth {
+namespace zeptodb::auth {
 
 static constexpr double NS_PER_SEC = 1e9;
 
@@ -142,4 +142,4 @@ int64_t RateLimiter::now_ns() {
         steady_clock::now().time_since_epoch()).count();
 }
 
-} // namespace apex::auth
+} // namespace zeptodb::auth

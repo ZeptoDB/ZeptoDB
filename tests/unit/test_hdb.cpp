@@ -10,18 +10,18 @@
 
 #include <spdlog/spdlog.h>
 
-#include "apex/storage/hdb_writer.h"
-#include "apex/storage/hdb_reader.h"
-#include "apex/storage/flush_manager.h"
-#include "apex/storage/partition_manager.h"
-#include "apex/core/pipeline.h"
-#include "apex/common/logger.h"
+#include "zeptodb/storage/hdb_writer.h"
+#include "zeptodb/storage/hdb_reader.h"
+#include "zeptodb/storage/flush_manager.h"
+#include "zeptodb/storage/partition_manager.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/common/logger.h"
 
 namespace fs = std::filesystem;
 
-using namespace apex;
-using namespace apex::storage;
-using namespace apex::core;
+using namespace zeptodb;
+using namespace zeptodb::storage;
+using namespace zeptodb::core;
 
 // ============================================================================
 // 테스트 픽스처: 임시 디렉토리 자동 정리
@@ -30,12 +30,12 @@ class HDBTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // 전역 로거 초기화 (이미 있으면 스킵)
-        if (!spdlog::get("apex_test")) {
-            Logger::init("apex_test", spdlog::level::warn);
+        if (!spdlog::get("zepto_test")) {
+            Logger::init("zepto_test", spdlog::level::warn);
         }
 
         // 임시 디렉토리 생성
-        temp_dir_ = fs::temp_directory_path() / ("apex_hdb_test_" +
+        temp_dir_ = fs::temp_directory_path() / ("zepto_hdb_test_" +
                     std::to_string(std::chrono::steady_clock::now()
                         .time_since_epoch().count()));
         fs::create_directories(temp_dir_);
@@ -381,7 +381,7 @@ TEST_F(HDBTest, TieredQuery_RdbAndHdb) {
         .hdb_base_path = temp_dir_,
         .flush_config  = FlushConfig{.enable_compression = false},
     };
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     // 현재 시간 파티션에 RDB 데이터 삽입
     const int64_t  rdb_hour  = 3 * ns_hour;
@@ -456,7 +456,7 @@ TEST_F(HDBTest, AutoSnapshot_CreatesFiles) {
     cfg.flush_config.snapshot_path         = snap_dir.string();
     cfg.flush_config.auto_seal_age_hours   = 999;     // keep partitions ACTIVE
 
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     const int64_t base_ts = 1'700'000'000LL * 1'000'000'000LL;
     for (int i = 0; i < 100; ++i) {
@@ -498,7 +498,7 @@ TEST_F(HDBTest, Recovery_ReloadsData) {
         cfg.flush_config.snapshot_path       = snap_dir.string();
         cfg.flush_config.auto_seal_age_hours = 999;
 
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
 
         const int64_t base_ts = 1'700'000'000LL * 1'000'000'000LL;
         const size_t N = 50;
@@ -524,7 +524,7 @@ TEST_F(HDBTest, Recovery_ReloadsData) {
         cfg.enable_recovery           = true;
         cfg.recovery_snapshot_path    = snap_dir.string();
 
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
         pipeline.start();  // triggers recovery
 
         EXPECT_EQ(pipeline.total_stored_rows(), 50u)

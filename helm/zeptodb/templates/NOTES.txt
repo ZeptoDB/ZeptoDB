@@ -1,0 +1,19 @@
+ZeptoDB has been deployed!
+
+1. Get the service URL:
+{{- if eq .Values.service.type "LoadBalancer" }}
+   export SERVICE_IP=$(kubectl get svc {{ include "zeptodb.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+   echo "http://$SERVICE_IP:{{ .Values.service.port }}"
+{{- else }}
+   kubectl port-forward svc/{{ include "zeptodb.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+   echo "http://localhost:{{ .Values.service.port }}"
+{{- end }}
+
+2. Run a test query:
+   curl -X POST http://$SERVICE_IP:{{ .Values.service.port }}/ -d 'SELECT 1'
+
+3. Check health:
+   curl http://$SERVICE_IP:{{ .Values.service.port }}/health
+
+4. Rolling upgrade:
+   helm upgrade {{ .Release.Name }} ./helm/zeptodb --set image.tag=NEW_VERSION

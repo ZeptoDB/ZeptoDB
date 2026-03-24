@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/../../build"
-DATA_NODE="${BUILD_DIR}/apex_data_node"
+DATA_NODE="${BUILD_DIR}/zepto_data_node"
 PASS=0
 FAIL=0
 
@@ -21,7 +21,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ ! -x "$DATA_NODE" ]]; then
-    echo "ERROR: apex_data_node not found. Run 'ninja' first."
+    echo "ERROR: zepto_data_node not found. Run 'ninja' first."
     exit 1
 fi
 
@@ -160,7 +160,7 @@ fi
 
 # Test 5: Cross-node query via C++ test binary
 echo -n "Test 5: Cross-node scatter-gather... "
-RESULT=$("${BUILD_DIR}/tests/apex_tests" --gtest_filter='DistributedSelect.*' 2>&1 | tail -1)
+RESULT=$("${BUILD_DIR}/tests/zepto_tests" --gtest_filter='DistributedSelect.*' 2>&1 | tail -1)
 if echo "$RESULT" | grep -q "PASSED"; then
     echo "PASS"
     ((PASS++))

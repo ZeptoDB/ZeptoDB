@@ -1,6 +1,6 @@
 # kdb+ / KDB-X & ClickHouse Benchmark Reference
 
-> Collected benchmark data for kdb+ and competing databases for comparison with APEX-DB.
+> Collected benchmark data for kdb+ and competing databases for comparison with ZeptoDB.
 > Last updated: 2026-03-22
 
 ---
@@ -71,11 +71,11 @@
 
 ---
 
-## 2. kdb+ vs APEX-DB Direct Comparison
+## 2. kdb+ vs ZeptoDB Direct Comparison
 
 ### Ingestion Comparison
 
-| Metric | kdb+ tickerplant | APEX-DB | Notes |
+| Metric | kdb+ tickerplant | ZeptoDB | Notes |
 |---|---|---|---|
 | Single-row throughput | ~30K/sec (CPU 100%) | 4.97M/sec | **165x advantage** (kdb+ has q interpreter overhead) |
 | Batch 100 rows | ~500K/sec (CPU 32%) | 5.52M/sec | **11x advantage** |
@@ -86,7 +86,7 @@
 
 ### Query Comparison (In-Memory OLAP)
 
-| Operation | kdb+ (estimated) | APEX-DB Scalar | APEX-DB SIMD | Gap |
+| Operation | kdb+ (estimated) | ZeptoDB Scalar | ZeptoDB SIMD | Gap |
 |---|---|---|---|---|
 | VWAP 1M rows | ~200–500μs | 649μs | 532μs | ⚠️ 1.1–2.5x behind |
 | sum 1M rows | ~50–150μs | 267μs | 264μs | ⚠️ ~2x behind |
@@ -94,9 +94,9 @@
 
 **Root cause analysis:**
 1. **kdb+ q is natively column-vector-oriented** — 30+ years of interpreter optimization
-2. **APEX-DB filter upgraded to bitmask** — 11x speedup over SelectionVector, now in kdb+ range
-3. **APEX-DB sum is memory-bandwidth bound** — auto-vectorized, limited headroom
-4. **APEX-DB partition overhead** — index lookup vs. single-partition direct scan
+2. **ZeptoDB filter upgraded to bitmask** — 11x speedup over SelectionVector, now in kdb+ range
+3. **ZeptoDB sum is memory-bandwidth bound** — auto-vectorized, limited headroom
+4. **ZeptoDB partition overhead** — index lookup vs. single-partition direct scan
 
 ---
 
@@ -109,8 +109,8 @@
 ClickHouse specializes in **disk-based OLAP**. Direct comparison with in-memory real-time HFT is not appropriate, but for reference:
 
 **ClickHouse characteristics:**
-- Vectorized execution engine (similar architecture to APEX-DB Layer 3)
-- MergeTree storage (inspiration for APEX-DB DMMT)
+- Vectorized execution engine (similar architecture to ZeptoDB Layer 3)
+- MergeTree storage (inspiration for ZeptoDB DMMT)
 - Disk-based → 10–1000x slower query latency vs. in-memory
 - TSBS benchmark: **161x slower geometric mean vs. kdb+**
 
@@ -122,11 +122,11 @@ ClickHouse specializes in **disk-based OLAP**. Direct comparison with in-memory 
 **ClickHouse weaknesses:**
 - Real-time μs latency queries (our target)
 - Per-tick streaming ingestion
-- In-memory performance (kdb+, APEX-DB domain)
+- In-memory performance (kdb+, ZeptoDB domain)
 
-### APEX-DB vs ClickHouse Positioning
+### ZeptoDB vs ClickHouse Positioning
 
-| Dimension | ClickHouse | APEX-DB |
+| Dimension | ClickHouse | ZeptoDB |
 |---|---|---|
 | Target | General OLAP | HFT real-time |
 | Storage | Disk-based | In-memory (CXL roadmap) |
@@ -137,11 +137,11 @@ ClickHouse specializes in **disk-based OLAP**. Direct comparison with in-memory 
 
 ---
 
-## 4. Conclusions and APEX-DB Target Metrics
+## 4. Conclusions and ZeptoDB Target Metrics
 
 ### Final Targets (Post Phase B Optimization)
 
-| Metric | kdb+ (latest estimate) | APEX-DB Target | Strategy |
+| Metric | kdb+ (latest estimate) | ZeptoDB Target | Strategy |
 |---|---|---|---|
 | Ingestion | ~5M/sec | **10M+/sec** | RDMA direct write, sharded drain |
 | VWAP 1M | ~200–500μs | **<200μs** | SIMD fused pipeline |

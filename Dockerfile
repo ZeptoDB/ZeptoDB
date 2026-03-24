@@ -1,4 +1,4 @@
-# APEX-DB Cloud-Native Dockerfile
+# ZeptoDB Cloud-Native Dockerfile
 # Multi-stage build for minimal image size
 
 # ============================================================================
@@ -6,8 +6,8 @@
 # ============================================================================
 FROM clang:19 AS builder
 
-LABEL maintainer="APEX-DB Team <contact@apex-db.io>"
-LABEL description="APEX-DB Builder Stage"
+LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
+LABEL description="ZeptoDB Builder Stage"
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -46,15 +46,15 @@ RUN mkdir -p build && cd build && \
         -DAPEX_USE_IO_URING=ON \
         -DBUILD_TESTS=OFF && \
     ninja -j$(nproc) && \
-    strip apex_server *.so
+    strip zepto_server *.so
 
 # ============================================================================
 # Stage 2: Runtime
 # ============================================================================
 FROM ubuntu:22.04
 
-LABEL maintainer="APEX-DB Team <contact@apex-db.io>"
-LABEL description="APEX-DB Analytics Edition - Cloud Native"
+LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
+LABEL description="ZeptoDB Analytics Edition - Cloud Native"
 LABEL version="1.0.0"
 
 # Install runtime dependencies only
@@ -69,17 +69,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create non-root user for security
 RUN useradd -r -u 1000 -m -s /bin/bash apex && \
-    mkdir -p /opt/apex-db/data /opt/apex-db/config && \
-    chown -R apex:apex /opt/apex-db
+    mkdir -p /opt/zeptodb/data /opt/zeptodb/config && \
+    chown -R apex:apex /opt/zeptodb
 
-WORKDIR /opt/apex-db
+WORKDIR /opt/zeptodb
 
 # Copy binaries from builder
-COPY --from=builder /build/build/apex_server .
+COPY --from=builder /build/build/zepto_server .
 COPY --from=builder /build/build/*.so* .
 
 # Set ownership
-RUN chown -R apex:apex /opt/apex-db
+RUN chown -R apex:apex /opt/zeptodb
 
 # Switch to non-root user
 USER apex
@@ -97,7 +97,7 @@ ENV APEX_WORKER_THREADS=8 \
     APEX_PORT=8123
 
 # Entrypoint
-ENTRYPOINT ["./apex_server"]
+ENTRYPOINT ["./zepto_server"]
 
 # Default command (can be overridden)
 CMD ["--port", "8123", "--cloud-native"]

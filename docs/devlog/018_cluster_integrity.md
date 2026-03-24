@@ -95,14 +95,14 @@ Four simulation tests validate the end-to-end fencing flow:
 
 | File | Change |
 |------|--------|
-| `include/apex/cluster/query_coordinator.h` | `set_shared_router()`, `router()`, lock helpers |
+| `include/zeptodb/cluster/query_coordinator.h` | `set_shared_router()`, `router()`, lock helpers |
 | `src/cluster/query_coordinator.cpp` | Use `router()` + lock methods; fix `SELECT *` SCALAR_AGG bug |
-| `include/apex/cluster/cluster_node.h` | `connect_coordinator()` method |
-| `include/apex/cluster/rpc_protocol.h` | RpcHeader 16→24 bytes, epoch field |
-| `include/apex/cluster/tcp_rpc.h` | `set_fencing_token()`, `set_epoch()` |
+| `include/zeptodb/cluster/cluster_node.h` | `connect_coordinator()` method |
+| `include/zeptodb/cluster/rpc_protocol.h` | RpcHeader 16→24 bytes, epoch field |
+| `include/zeptodb/cluster/tcp_rpc.h` | `set_fencing_token()`, `set_epoch()` |
 | `src/cluster/tcp_rpc.cpp` | Epoch validation in TICK_INGEST/WAL_REPLICATE handlers |
 | `src/cluster/coordinator_ha.cpp` | Auto re-register nodes on promotion |
-| `include/apex/cluster/compute_node.h` | Internal QueryCoordinator member |
+| `include/zeptodb/cluster/compute_node.h` | Internal QueryCoordinator member |
 | `src/cluster/compute_node.cpp` | Delegate execute() to coordinator |
 | `tests/unit/test_coordinator.cpp` | 9 new tests |
 

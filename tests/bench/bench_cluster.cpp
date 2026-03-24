@@ -16,15 +16,15 @@
 #include <thread>
 #include <vector>
 
-#include "apex/cluster/transport.h"
-#include "apex/cluster/partition_router.h"
-#include "apex/cluster/health_monitor.h"
-#include "apex/cluster/cluster_node.h"
+#include "zeptodb/cluster/transport.h"
+#include "zeptodb/cluster/partition_router.h"
+#include "zeptodb/cluster/health_monitor.h"
+#include "zeptodb/cluster/cluster_node.h"
 #include "shm_backend.h"
 
-using namespace apex;
-using namespace apex::cluster;
-using namespace apex::core;
+using namespace zeptodb;
+using namespace zeptodb::cluster;
+using namespace zeptodb::core;
 using namespace std::chrono;
 
 // ============================================================================
@@ -176,12 +176,12 @@ BenchResult bench_routing_throughput() {
     constexpr int ITERS = 10000000;  // 10M
 
     // 캐시 워밍
-    for (apex::SymbolId s = 0; s < 1000; ++s) router.route(s);
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) router.route(s);
 
     volatile NodeId sink = 0;  // 최적화 방지
     auto t0 = high_resolution_clock::now();
     for (int i = 0; i < ITERS; ++i) {
-        sink = router.route(static_cast<apex::SymbolId>(i % 10000));
+        sink = router.route(static_cast<zeptodb::SymbolId>(i % 10000));
     }
     auto t1 = high_resolution_clock::now();
     (void)sink;
@@ -201,7 +201,7 @@ BenchResult bench_routing_uncached() {
     auto t0 = high_resolution_clock::now();
     for (int i = 0; i < ITERS; ++i) {
         // 캐시 초과하는 심볼 ID 사용
-        sink = router.route(static_cast<apex::SymbolId>(100000 + i));
+        sink = router.route(static_cast<zeptodb::SymbolId>(100000 + i));
     }
     auto t1 = high_resolution_clock::now();
     (void)sink;
@@ -265,8 +265,8 @@ BenchResult bench_routing_decision() {
     constexpr int ITERS = 5000000;
 
     // 라우팅 결정 오버헤드 단독 측정
-    std::vector<apex::SymbolId> symbols(1000);
-    for (size_t i = 0; i < symbols.size(); ++i) symbols[i] = static_cast<apex::SymbolId>(i);
+    std::vector<zeptodb::SymbolId> symbols(1000);
+    for (size_t i = 0; i < symbols.size(); ++i) symbols[i] = static_cast<zeptodb::SymbolId>(i);
 
     volatile NodeId sink = 0;
     auto t0 = high_resolution_clock::now();
@@ -287,7 +287,7 @@ BenchResult bench_routing_decision() {
 int main() {
     std::cout << "\n";
     std::cout << "╔══════════════════════════════════════════════════════╗\n";
-    std::cout << "║      APEX-DB Phase C Cluster Benchmark               ║\n";
+    std::cout << "║      ZeptoDB Phase C Cluster Benchmark               ║\n";
     std::cout << "╚══════════════════════════════════════════════════════╝\n\n";
 
     std::vector<BenchResult> results;

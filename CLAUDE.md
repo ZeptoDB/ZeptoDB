@@ -1,4 +1,4 @@
-# APEX-DB Claude Code Configuration
+# ZeptoDB Claude Code Configuration
 
 ## 🌐 Language Policy
 **ALL documentation, comments, commit messages, and written content must be in English.**
@@ -8,7 +8,7 @@
 - Korean translations are stored separately with `_ko` suffix (e.g., `README_ko.md`)
 - This rule applies to all future contributions
 
-> This file defines the rules and workflow that Claude Code must follow when working on the APEX-DB project.
+> This file defines the rules and workflow that Claude Code must follow when working on the ZeptoDB project.
 
 ---
 
@@ -30,11 +30,11 @@ Core documents covering project architecture and design decisions.
 | `architecture_design.md` | Overall architecture, core engine design | Entire project |
 | `initial_doc.md` | Project vision, goals, strategy | - |
 | `system_requirements.md` | Functional/non-functional requirements | Entire project |
-| `layer1_storage_memory.md` | Storage & Memory design | `include/apex/storage/`, `src/storage/` |
-| `layer2_ingestion_network.md` | Ingestion & Network design | `include/apex/ingestion/`, `src/ingestion/` |
-| `layer3_execution_engine.md` | Execution Engine design | `include/apex/execution/`, `src/execution/` |
-| `layer4_transpiler_client.md` | SQL + Python client | `include/apex/sql/`, `include/apex/transpiler/`, `src/sql/`, `src/transpiler/` |
-| `phase_c_distributed.md` | Distributed cluster design | `include/apex/cluster/`, `src/cluster/` |
+| `layer1_storage_memory.md` | Storage & Memory design | `include/zeptodb/storage/`, `src/storage/` |
+| `layer2_ingestion_network.md` | Ingestion & Network design | `include/zeptodb/ingestion/`, `src/ingestion/` |
+| `layer3_execution_engine.md` | Execution Engine design | `include/zeptodb/execution/`, `src/execution/` |
+| `layer4_transpiler_client.md` | SQL + Python client | `include/zeptodb/sql/`, `include/zeptodb/transpiler/`, `src/sql/`, `src/transpiler/` |
+| `phase_c_distributed.md` | Distributed cluster design | `include/zeptodb/cluster/`, `src/cluster/` |
 | `feature_performance_analysis.md` | Performance analysis and optimization strategy | Entire project |
 | `kdb_replacement_analysis.md` | kdb+ replacement analysis | - |
 | `high_level_architecture.md` | High-level architecture diagram | Entire project |
@@ -308,7 +308,7 @@ Claude:
 - [ ] **Function size** - Functions not too large (<50 lines)
 - [ ] **Duplication removed** - DRY principle
 
-#### 5. APEX-DB Specific Checks
+#### 5. ZeptoDB Specific Checks
 - [ ] **Zero-copy** - Zero-copy guaranteed in Python bindings
 - [ ] **Column-oriented** - Data structures suitable for column store
 - [ ] **LLVM JIT compatible** - JIT compilable
@@ -340,7 +340,7 @@ Claude:
 **Run:**
 ```bash
 cd build && ninja -j$(nproc)
-./tests/apex_tests
+./tests/zepto_tests
 ```
 
 **Writing rules:**
@@ -379,7 +379,7 @@ python3 -m pytest ../tests/test_python.py -v
 # tests/test_python.py
 def test_zero_copy_view():
     # Given
-    db = apex.Database()
+    db = zeptodb.Database()
     db.insert([1, 2, 3])
 
     # When

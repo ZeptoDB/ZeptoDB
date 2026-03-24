@@ -12,7 +12,7 @@ tests/python/test_fast_ingest.py — Python 에코시스템 통합 테스트
   8. schema mapping — sym_col/price_col/vol_col 오버라이드
 
 실행:
-    cd ~/apex-db
+    cd ~/zeptodb
     python3 -m pytest tests/python/test_fast_ingest.py -v
 """
 import sys
@@ -42,23 +42,23 @@ try:
 except ImportError:
     HAS_PYARROW = False
 
-from apex_py.dataframe import (
+from zepto_py.dataframe import (
     from_pandas,
     from_polars,
     from_arrow,
     from_polars_arrow,
     _require_cols,
 )
-from apex_py.arrow import ArrowSession
+from zepto_py.arrow import ArrowSession
 
 
 # ============================================================================
-# Mock Pipeline — simulates apex.Pipeline() without the C++ build
+# Mock Pipeline — simulates zeptodb.Pipeline() without the C++ build
 # ============================================================================
 
 class MockPipeline:
     """
-    In-memory mock of apex.Pipeline().
+    In-memory mock of zeptodb.Pipeline().
 
     Records every ingest_batch() call so tests can verify values.
     """
@@ -478,7 +478,7 @@ class TestArrowSessionVectorized:
         })
         sess.ingest_arrow(tbl)
         conn = sess.to_duckdb(symbol=1)
-        result = conn.execute("SELECT COUNT(*) FROM apex_data").fetchone()
+        result = conn.execute("SELECT COUNT(*) FROM zepto_data").fetchone()
         assert result[0] >= 0
 
 

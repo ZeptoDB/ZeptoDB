@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: ClickHouse Migration Toolkit Implementation
+// ZeptoDB: ClickHouse Migration Toolkit Implementation
 // ============================================================================
-#include "apex/migration/clickhouse_migrator.h"
+#include "zeptodb/migration/clickhouse_migrator.h"
 #include <sstream>
 #include <fstream>
 #include <iostream>
@@ -9,7 +9,7 @@
 #include <chrono>
 #include <filesystem>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 // ============================================================================
 // CHColumn DDL
@@ -164,29 +164,29 @@ std::string CHTableSchema::to_create_ddl() const {
 // Type Mapper
 // ============================================================================
 
-CHType APEXToClickHouseTypeMapper::map_apex_type(const std::string& apex_type) {
-    if (apex_type == "BOOLEAN") return CHType::UInt8;
-    if (apex_type == "TINYINT") return CHType::Int8;
-    if (apex_type == "SMALLINT") return CHType::Int16;
-    if (apex_type == "INTEGER" || apex_type == "INT") return CHType::Int32;
-    if (apex_type == "BIGINT") return CHType::Int64;
-    if (apex_type == "REAL" || apex_type == "FLOAT") return CHType::Float32;
-    if (apex_type == "DOUBLE") return CHType::Float64;
-    if (apex_type == "VARCHAR" || apex_type == "TEXT") return CHType::String;
-    if (apex_type == "CHAR") return CHType::FixedString;
-    if (apex_type == "DATE") return CHType::Date32;
-    if (apex_type == "TIMESTAMP") return CHType::DateTime64;
-    if (apex_type == "TIME") return CHType::Int64;
+CHType ZeptoToClickHouseTypeMapper::map_zepto_type(const std::string& zepto_type) {
+    if (zepto_type == "BOOLEAN") return CHType::UInt8;
+    if (zepto_type == "TINYINT") return CHType::Int8;
+    if (zepto_type == "SMALLINT") return CHType::Int16;
+    if (zepto_type == "INTEGER" || zepto_type == "INT") return CHType::Int32;
+    if (zepto_type == "BIGINT") return CHType::Int64;
+    if (zepto_type == "REAL" || zepto_type == "FLOAT") return CHType::Float32;
+    if (zepto_type == "DOUBLE") return CHType::Float64;
+    if (zepto_type == "VARCHAR" || zepto_type == "TEXT") return CHType::String;
+    if (zepto_type == "CHAR") return CHType::FixedString;
+    if (zepto_type == "DATE") return CHType::Date32;
+    if (zepto_type == "TIMESTAMP") return CHType::DateTime64;
+    if (zepto_type == "TIME") return CHType::Int64;
     return CHType::String;
 }
 
-std::string APEXToClickHouseTypeMapper::apex_type_to_ch_string(
-    const std::string& apex_type,
+std::string ZeptoToClickHouseTypeMapper::zepto_type_to_ch_string(
+    const std::string& zepto_type,
     bool nullable,
     bool low_cardinality)
 {
     CHColumn col;
-    col.type = map_apex_type(apex_type);
+    col.type = map_zepto_type(zepto_type);
     col.nullable = nullable;
     col.low_cardinality = low_cardinality;
     if (col.type == CHType::DateTime64) col.precision = 9;  // nanoseconds
@@ -198,7 +198,7 @@ std::string APEXToClickHouseTypeMapper::apex_type_to_ch_string(
     return ddl;
 }
 
-CHType APEXToClickHouseTypeMapper::map_ktype(int8_t kdb_type) {
+CHType ZeptoToClickHouseTypeMapper::map_ktype(int8_t kdb_type) {
     switch (kdb_type) {
         case 1:  return CHType::UInt8;    // bool
         case 4:  return CHType::UInt8;    // byte
@@ -216,7 +216,7 @@ CHType APEXToClickHouseTypeMapper::map_ktype(int8_t kdb_type) {
     }
 }
 
-std::string APEXToClickHouseTypeMapper::ktype_to_ch_string(int8_t kdb_type) {
+std::string ZeptoToClickHouseTypeMapper::ktype_to_ch_string(int8_t kdb_type) {
     switch (kdb_type) {
         case 1:  return "UInt8";
         case 4:  return "UInt8";
@@ -335,7 +335,7 @@ CHTableSchema ClickHouseSchemaGenerator::from_kdb_schema(
     for (const auto& [col_name, ktype] : kdb_columns) {
         CHColumn col;
         col.name = col_name;
-        col.type = APEXToClickHouseTypeMapper::map_ktype(ktype);
+        col.type = ZeptoToClickHouseTypeMapper::map_ktype(ktype);
 
         // Apply codecs based on column name heuristics
         if (col_name == "timestamp" || col_name == "time") {
@@ -414,12 +414,12 @@ void ClickHouseQueryTranslator::init_function_map() {
     function_map_["VWAP("] = "sumProduct(";
 }
 
-std::string ClickHouseQueryTranslator::translate(const std::string& apex_sql) {
+std::string ClickHouseQueryTranslator::translate(const std::string& zepto_sql) {
     if (function_map_.empty()) {
         init_function_map();
     }
 
-    std::string result = apex_sql;
+    std::string result = zepto_sql;
     result = rewrite_time_functions(result);
     result = rewrite_aggregations(result);
     return result;
@@ -620,7 +620,7 @@ bool ClickHouseMigrator::run() {
     }
 
     if (config_.migrate_data && success) {
-        std::string export_dir = "/tmp/apex_ch_export";
+        std::string export_dir = "/tmp/zepto_ch_export";
         std::cout << "[2/3] Exporting data to " << export_dir << "...\n";
         success &= step_export_data(export_dir);
 
@@ -652,14 +652,14 @@ bool ClickHouseMigrator::step_create_schema() {
     std::string ddl_quotes = quotes_schema.to_create_ddl();
 
     // Write to files
-    std::ofstream trades_ddl("/tmp/apex_ch_trades.sql");
+    std::ofstream trades_ddl("/tmp/zepto_ch_trades.sql");
     trades_ddl << "CREATE DATABASE IF NOT EXISTS " << config_.clickhouse_db << ";\n\n";
     trades_ddl << ddl_trades << "\n";
 
-    std::ofstream quotes_ddl("/tmp/apex_ch_quotes.sql");
+    std::ofstream quotes_ddl("/tmp/zepto_ch_quotes.sql");
     quotes_ddl << ddl_quotes << "\n";
 
-    std::cout << "  Schema DDL written to /tmp/apex_ch_*.sql\n";
+    std::cout << "  Schema DDL written to /tmp/zepto_ch_*.sql\n";
     return true;
 }
 
@@ -720,4 +720,4 @@ std::string ClickHouseMigrator::generate_report() const {
     return ss.str();
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration

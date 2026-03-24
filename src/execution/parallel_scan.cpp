@@ -1,21 +1,21 @@
 // ============================================================================
-// APEX-DB: ParallelScanExecutor Implementation
+// ZeptoDB: ParallelScanExecutor Implementation
 // ============================================================================
 
-#include "apex/execution/parallel_scan.h"
+#include "zeptodb/execution/parallel_scan.h"
 #include <algorithm>
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
-std::vector<std::vector<apex::storage::Partition*>>
+std::vector<std::vector<zeptodb::storage::Partition*>>
 ParallelScanExecutor::make_partition_chunks(
-    const std::vector<apex::storage::Partition*>& parts,
+    const std::vector<zeptodb::storage::Partition*>& parts,
     size_t num_chunks)
 {
     if (parts.empty() || num_chunks == 0) return {};
     num_chunks = std::min(num_chunks, parts.size());
 
-    std::vector<std::vector<apex::storage::Partition*>> chunks(num_chunks);
+    std::vector<std::vector<zeptodb::storage::Partition*>> chunks(num_chunks);
     size_t chunk_size = (parts.size() + num_chunks - 1) / num_chunks;
 
     for (size_t i = 0; i < parts.size(); ++i) {
@@ -62,4 +62,4 @@ ParallelMode ParallelScanExecutor::select_mode(
     return ParallelMode::CHUNKED;
 }
 
-} // namespace apex::execution
+} // namespace zeptodb::execution

@@ -8,14 +8,14 @@
 //   - ucp_mem_map: 메모리 등록
 //   - ucp_worker_fence: 메모리 순서 보장
 //
-// 컴파일 조건: APEX_HAS_UCX 매크로 (CMake에서 UCX 발견 시 정의)
+// 컴파일 조건: ZEPTO_HAS_UCX 매크로 (CMake에서 UCX 발견 시 정의)
 // UCX 없으면 stub 구현으로 컴파일 (빌드 실패 방지)
 // ============================================================================
 
-#include "apex/cluster/transport.h"
+#include "zeptodb/cluster/transport.h"
 #include <stdexcept>
 
-#ifdef APEX_HAS_UCX
+#ifdef ZEPTO_HAS_UCX
 #include <ucp/api/ucp.h>
 #include <unordered_map>
 #include <vector>
@@ -24,9 +24,9 @@
 #include <atomic>
 #endif
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
-#ifdef APEX_HAS_UCX
+#ifdef ZEPTO_HAS_UCX
 
 // ============================================================================
 // UCX 연결 정보
@@ -339,7 +339,7 @@ private:
     uint32_t     next_rkey_    = 1;
 };
 
-#else // APEX_HAS_UCX 없을 때 — stub 구현
+#else // ZEPTO_HAS_UCX 없을 때 — stub 구현
 
 // ============================================================================
 // UCXBackend Stub: UCX 없을 때 컴파일 에러 방지
@@ -359,9 +359,9 @@ public:
     void do_fence() {}
 };
 
-#endif // APEX_HAS_UCX
+#endif // ZEPTO_HAS_UCX
 
 // 기본 프로덕션 트랜스포트 타입 별칭
 using UcxTransport = TransportBackend<UCXBackend>;
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

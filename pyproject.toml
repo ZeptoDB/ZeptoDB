@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "apex-db"
+name = "zeptodb"
 version = "0.1.0"
-description = "Python client and DataFrame integration for APEX-DB — ultra-low latency columnar time-series database"
+description = "Python client and DataFrame integration for ZeptoDB — ultra-low latency columnar time-series database"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
-authors = [{ name = "APEX-DB Contributors" }]
+authors = [{ name = "ZeptoDB Contributors" }]
 keywords = ["database", "timeseries", "columnar", "HFT", "finance", "analytics"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -61,12 +61,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage   = "https://github.com/openclaw/apex-db"
-Repository = "https://github.com/openclaw/apex-db"
+Homepage   = "https://github.com/openclaw/zeptodb"
+Repository = "https://github.com/openclaw/zeptodb"
 
 [tool.setuptools.packages.find]
 where   = ["."]
-include = ["apex_py*"]
+include = ["zepto_py*"]
 
 # ============================================================================
 # pytest
@@ -84,7 +84,7 @@ addopts = "-v --tb=short"
 # ============================================================================
 
 [tool.coverage.run]
-source  = ["apex_py"]
+source  = ["zepto_py"]
 omit    = ["tests/*", "*/site-packages/*"]
 
 [tool.coverage.report]

@@ -2,10 +2,10 @@
 // Layer 1: Partition Manager Implementation
 // ============================================================================
 
-#include "apex/storage/partition_manager.h"
+#include "zeptodb/storage/partition_manager.h"
 #include <algorithm>
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 // ============================================================================
 // Partition
@@ -14,7 +14,7 @@ Partition::Partition(PartitionKey key, std::unique_ptr<ArenaAllocator> arena)
     : key_(key)
     , arena_(std::move(arena))
 {
-    APEX_DEBUG("Partition created: symbol={}, hour={}",
+    ZEPTO_DEBUG("Partition created: symbol={}, hour={}",
                key_.symbol_id, key_.hour_epoch);
 }
 
@@ -46,7 +46,7 @@ size_t Partition::num_rows() const {
 
 void Partition::seal() {
     state_ = State::SEALED;
-    APEX_INFO("Partition sealed: symbol={}, hour={}, rows={}",
+    ZEPTO_INFO("Partition sealed: symbol={}, hour={}, rows={}",
               key_.symbol_id, key_.hour_epoch, num_rows());
 }
 
@@ -91,7 +91,7 @@ Partition& PartitionManager::get_or_create(SymbolId symbol, Timestamp ts) {
     auto& ref = *partition;
     partitions_.emplace(key, std::move(partition));
 
-    APEX_INFO("New partition: symbol={}, hour={} (total partitions={})",
+    ZEPTO_INFO("New partition: symbol={}, hour={} (total partitions={})",
               symbol, key.hour_epoch, partitions_.size());
     return ref;
 }
@@ -173,5 +173,5 @@ size_t PartitionManager::evict_older_than(int64_t cutoff_ns) {
     return count;
 }
 
-} // namespace apex::storage
+} // namespace zeptodb::storage
 

@@ -1,6 +1,6 @@
-#include "apex/cluster/compute_node.h"
+#include "zeptodb/cluster/compute_node.h"
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 void ComputeNode::add_data_node(NodeId id, const std::string& host,
                                  uint16_t port) {
@@ -8,23 +8,23 @@ void ComputeNode::add_data_node(NodeId id, const std::string& host,
     coordinator_.add_remote_node({host, port, id});
 }
 
-apex::sql::QueryResultSet ComputeNode::execute_on(NodeId id,
+zeptodb::sql::QueryResultSet ComputeNode::execute_on(NodeId id,
                                                     const std::string& sql) {
     auto it = nodes_.find(id);
     if (it == nodes_.end()) {
-        apex::sql::QueryResultSet err;
+        zeptodb::sql::QueryResultSet err;
         err.error = "ComputeNode: unknown data node " + std::to_string(id);
         return err;
     }
     return it->second->execute_sql(sql);
 }
 
-apex::sql::QueryResultSet ComputeNode::execute(const std::string& sql) {
+zeptodb::sql::QueryResultSet ComputeNode::execute(const std::string& sql) {
     return coordinator_.execute_sql(sql);
 }
 
 size_t ComputeNode::fetch_and_ingest(NodeId source, const std::string& sql,
-                                      apex::core::ApexPipeline& local) {
+                                      zeptodb::core::ZeptoPipeline& local) {
     auto result = execute_on(source, sql);
     if (!result.ok() || result.rows.empty()) return 0;
 
@@ -39,7 +39,7 @@ size_t ComputeNode::fetch_and_ingest(NodeId source, const std::string& sql,
 
     size_t count = 0;
     for (auto& row : result.rows) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         if (col_sym >= 0)   msg.symbol_id = static_cast<uint32_t>(row[col_sym]);
         if (col_price >= 0) msg.price     = row[col_price];
         if (col_vol >= 0)   msg.volume    = row[col_vol];
@@ -50,4 +50,4 @@ size_t ComputeNode::fetch_and_ingest(NodeId source, const std::string& sql,
     return count;
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

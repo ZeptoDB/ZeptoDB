@@ -16,17 +16,17 @@
 #include <string>
 #include <vector>
 
-#include "apex/storage/hdb_writer.h"
-#include "apex/storage/hdb_reader.h"
-#include "apex/storage/flush_manager.h"
-#include "apex/storage/partition_manager.h"
-#include "apex/core/pipeline.h"
-#include "apex/common/logger.h"
+#include "zeptodb/storage/hdb_writer.h"
+#include "zeptodb/storage/hdb_reader.h"
+#include "zeptodb/storage/flush_manager.h"
+#include "zeptodb/storage/partition_manager.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/common/logger.h"
 
 namespace fs = std::filesystem;
-using namespace apex;
-using namespace apex::storage;
-using namespace apex::core;
+using namespace zeptodb;
+using namespace zeptodb::storage;
+using namespace zeptodb::core;
 using clock_t_ = std::chrono::high_resolution_clock;
 
 // ============================================================================
@@ -231,7 +231,7 @@ static void bench_query_latency(const std::string& base_dir) {
         PipelineConfig cfg;
         cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
         cfg.arena_size_per_partition = 64ULL * 1024 * 1024;
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
 
         for (size_t i = 0; i < n_rows; ++i) {
             TickMessage msg{};
@@ -272,7 +272,7 @@ static void bench_query_latency(const std::string& base_dir) {
         cfg.storage_mode = StorageMode::TIERED;
         cfg.hdb_base_path = bench_dir;
         cfg.arena_size_per_partition = 4ULL * 1024 * 1024;
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
 
         // HDB COUNT 쿼리 지연
         std::vector<double> latencies;
@@ -292,7 +292,7 @@ static void bench_query_latency(const std::string& base_dir) {
         PipelineConfig cfg;
         cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
         cfg.arena_size_per_partition = 64ULL * 1024 * 1024;
-        ApexPipeline pipeline(cfg);
+        ZeptoPipeline pipeline(cfg);
 
         const SymbolId sym2 = 20;
         for (size_t i = 0; i < n_rows; ++i) {
@@ -323,13 +323,13 @@ static void bench_query_latency(const std::string& base_dir) {
 int main() {
     Logger::init("bench_hdb", spdlog::level::warn);
 
-    const std::string temp_dir = "/tmp/apex_hdb_bench_" +
+    const std::string temp_dir = "/tmp/zepto_hdb_bench_" +
         std::to_string(std::chrono::steady_clock::now()
             .time_since_epoch().count());
     fs::create_directories(temp_dir);
 
     std::cout << "==============================================\n";
-    std::cout << "  APEX-DB HDB Benchmarks\n";
+    std::cout << "  ZeptoDB HDB Benchmarks\n";
     std::cout << "  LZ4 Available: " << (HDBWriter::lz4_available() ? "YES" : "NO") << "\n";
     std::cout << "==============================================\n";
 

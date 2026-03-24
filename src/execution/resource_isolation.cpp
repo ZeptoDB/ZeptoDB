@@ -1,4 +1,4 @@
-#include "apex/execution/resource_isolation.h"
+#include "zeptodb/execution/resource_isolation.h"
 
 #ifdef __linux__
 #include <pthread.h>
@@ -6,7 +6,7 @@
 #endif
 #include <thread>
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
 bool ResourceIsolation::pin_realtime() {
     return pin_to_cores(config_.realtime_cores);
@@ -41,4 +41,4 @@ int ResourceIsolation::num_cpus() {
     return static_cast<int>(std::thread::hardware_concurrency());
 }
 
-} // namespace apex::execution
+} // namespace zeptodb::execution

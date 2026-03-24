@@ -1,37 +1,37 @@
 // ============================================================================
-// APEX-DB: ClickHouse Migration Tests
+// ZeptoDB: ClickHouse Migration Tests
 // ============================================================================
-#include "apex/migration/clickhouse_migrator.h"
+#include "zeptodb/migration/clickhouse_migrator.h"
 #include <gtest/gtest.h>
 #include <string>
 
-using namespace apex::migration;
+using namespace zeptodb::migration;
 
 // ============================================================================
 // Type Mapper Tests
 // ============================================================================
 
 TEST(ClickHouseTypeMapperTest, APEXTypes) {
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_apex_type("BIGINT"),    CHType::Int64);
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_apex_type("DOUBLE"),    CHType::Float64);
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_apex_type("VARCHAR"),   CHType::String);
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_apex_type("TIMESTAMP"), CHType::DateTime64);
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_apex_type("DATE"),      CHType::Date32);
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_zepto_type("BIGINT"),    CHType::Int64);
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_zepto_type("DOUBLE"),    CHType::Float64);
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_zepto_type("VARCHAR"),   CHType::String);
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_zepto_type("TIMESTAMP"), CHType::DateTime64);
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_zepto_type("DATE"),      CHType::Date32);
 }
 
 TEST(ClickHouseTypeMapperTest, KDBTypes) {
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_ktype(7),  CHType::Int64);    // long
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_ktype(9),  CHType::Float64);  // float
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_ktype(11), CHType::LowCardinality); // sym
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_ktype(12), CHType::DateTime64); // timestamp
-    EXPECT_EQ(APEXToClickHouseTypeMapper::map_ktype(14), CHType::Date32);   // date
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_ktype(7),  CHType::Int64);    // long
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_ktype(9),  CHType::Float64);  // float
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_ktype(11), CHType::LowCardinality); // sym
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_ktype(12), CHType::DateTime64); // timestamp
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::map_ktype(14), CHType::Date32);   // date
 }
 
 TEST(ClickHouseTypeMapperTest, KDBTypeStrings) {
-    EXPECT_EQ(APEXToClickHouseTypeMapper::ktype_to_ch_string(7),  "Int64");
-    EXPECT_EQ(APEXToClickHouseTypeMapper::ktype_to_ch_string(9),  "Float64");
-    EXPECT_EQ(APEXToClickHouseTypeMapper::ktype_to_ch_string(11), "LowCardinality(String)");
-    EXPECT_EQ(APEXToClickHouseTypeMapper::ktype_to_ch_string(12), "DateTime64(9, 'UTC')");
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::ktype_to_ch_string(7),  "Int64");
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::ktype_to_ch_string(9),  "Float64");
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::ktype_to_ch_string(11), "LowCardinality(String)");
+    EXPECT_EQ(ZeptoToClickHouseTypeMapper::ktype_to_ch_string(12), "DateTime64(9, 'UTC')");
 }
 
 // ============================================================================
@@ -181,8 +181,8 @@ TEST(ClickHouseDDLTest, WithDatabase) {
 TEST(ClickHouseQueryTranslatorTest, XbarToInterval) {
     ClickHouseQueryTranslator translator;
 
-    std::string apex_sql = "SELECT xbar(timestamp, 300), sym FROM trades";
-    std::string ch_sql = translator.translate(apex_sql);
+    std::string zepto_sql = "SELECT xbar(timestamp, 300), sym FROM trades";
+    std::string ch_sql = translator.translate(zepto_sql);
 
     EXPECT_NE(ch_sql.find("toStartOfInterval"), std::string::npos);
     EXPECT_NE(ch_sql.find("300"), std::string::npos);
@@ -208,8 +208,8 @@ TEST(ClickHouseQueryTranslatorTest, AsofJoin) {
 TEST(ClickHouseQueryTranslatorTest, FirstLastRewrite) {
     ClickHouseQueryTranslator translator;
 
-    std::string apex_sql = "SELECT FIRST(price), LAST(price) FROM trades";
-    std::string ch_sql = translator.translate(apex_sql);
+    std::string zepto_sql = "SELECT FIRST(price), LAST(price) FROM trades";
+    std::string ch_sql = translator.translate(zepto_sql);
 
     EXPECT_NE(ch_sql.find("argMin"), std::string::npos);
     EXPECT_NE(ch_sql.find("argMax"), std::string::npos);

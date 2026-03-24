@@ -1,0 +1,16 @@
+#!/bin/bash
+# Pre-push hook: warn if source changed without docs.
+# Install: cp scripts/hooks/pre-push .git/hooks/pre-push
+
+CHANGED=$(git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only HEAD~1)
+
+if echo "$CHANGED" | grep -qE '^(src/|include/)'; then
+  if ! echo "$CHANGED" | grep -qE '^(docs/|BACKLOG\.md|README\.md)'; then
+    echo ""
+    echo "⚠️  WARNING: Source files changed but no docs updated."
+    echo "   Consider updating BACKLOG.md or docs/ before pushing."
+    echo "   (This is a warning — push will proceed)"
+    echo ""
+  fi
+fi
+exit 0

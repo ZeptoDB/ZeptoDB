@@ -12,7 +12,7 @@ Layer 2 (Ingestion), and Layer 3 (Execution).
 
 ## Implementation
 
-### Part 1: ApexPipeline (src/core/pipeline.cpp)
+### Part 1: ZeptoPipeline (src/core/pipeline.cpp)
 
 Architecture:
 ```
@@ -44,7 +44,7 @@ Measurements:
 
 ### Part 3: CMake Integration
 
-- Added `apex_core` library (apex_storage + apex_ingestion + apex_execution combined)
+- Added `zepto_core` library (zepto_storage + zepto_ingestion + zepto_execution combined)
 - Added `bench_pipeline` executable
 - `-O3 -march=native` optimization flags
 

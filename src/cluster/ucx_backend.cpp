@@ -4,11 +4,11 @@
 #include "ucx_backend.h"
 #include <stdexcept>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
-#ifdef APEX_HAS_UCX
+#ifdef ZEPTO_HAS_UCX
 // 명시적 인스턴스화
 template class TransportBackend<UCXBackend>;
 #endif
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

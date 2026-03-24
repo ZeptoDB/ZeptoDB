@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: ApiKeyStore Implementation
+// ZeptoDB: ApiKeyStore Implementation
 // ============================================================================
-#include "apex/auth/api_key_store.h"
+#include "zeptodb/auth/api_key_store.h"
 
 #include <openssl/sha.h>
 #include <openssl/rand.h>
@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace apex::auth {
+namespace zeptodb::auth {
 
 // ============================================================================
 // File format (one key per line, lines starting with '#' are comments):
@@ -23,14 +23,14 @@ namespace apex::auth {
 // Fields:
 //   id            — short key id, e.g. "ak_7f3k"
 //   name          — human label (no pipe characters)
-//   key_hash      — sha256 hex of full "apex_<hex>" key
+//   key_hash      — sha256 hex of full "zepto_<hex>" key
 //   role          — role string (admin/writer/reader/analyst/metrics)
 //   symbols       — comma-separated symbol whitelist, empty = unrestricted
 //   enabled       — "1" or "0"
 //   created_at_ns — nanoseconds since Unix epoch
 // ============================================================================
 
-static constexpr const char* FILE_HEADER = "# apex-db-keys-v1\n";
+static constexpr const char* FILE_HEADER = "# zeptodb-keys-v1\n";
 static constexpr const char  SEP = '|';
 
 // ============================================================================
@@ -207,7 +207,7 @@ std::string ApiKeyStore::sha256_hex(const std::string& input) {
 }
 
 // ============================================================================
-// generate_key — returns "apex_<64-char hex>"
+// generate_key — returns "zepto_<64-char hex>"
 // ============================================================================
 std::string ApiKeyStore::generate_key() {
     unsigned char buf[32];
@@ -215,7 +215,7 @@ std::string ApiKeyStore::generate_key() {
         throw std::runtime_error("ApiKeyStore: RAND_bytes failed");
 
     static const char hex[] = "0123456789abcdef";
-    std::string result = "apex_";
+    std::string result = "zepto_";
     result.reserve(5 + 64);
     for (int i = 0; i < 32; ++i) {
         result += hex[(buf[i] >> 4) & 0xF];
@@ -249,4 +249,4 @@ int64_t ApiKeyStore::now_ns() {
         system_clock::now().time_since_epoch()).count();
 }
 
-} // namespace apex::auth
+} // namespace zeptodb::auth

@@ -1,14 +1,14 @@
 // ============================================================================
-// APEX-DB: Multicast UDP Receiver Implementation
+// ZeptoDB: Multicast UDP Receiver Implementation
 // ============================================================================
-#include "apex/feeds/multicast_receiver.h"
+#include "zeptodb/feeds/multicast_receiver.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
 
-namespace apex::feeds {
+namespace zeptodb::feeds {
 
 MulticastReceiver::MulticastReceiver(const std::string& group_ip,
                                      uint16_t port,
@@ -134,4 +134,4 @@ void MulticastReceiver::recv_loop() {
     }
 }
 
-} // namespace apex::feeds
+} // namespace zeptodb::feeds

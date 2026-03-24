@@ -1,0 +1,21 @@
+# k8s/bench-loadgen.yaml — Load generator pod for multi-node benchmark
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bench-loadgen
+  namespace: zeptodb
+  labels:
+    app: bench-loadgen
+spec:
+  nodeSelector:
+    role: loadgen
+  containers:
+    - name: loadgen
+      # Replace with your ECR repo
+      image: "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/zeptodb:bench"
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "3"
+          memory: "8Gi"
+  restartPolicy: Never

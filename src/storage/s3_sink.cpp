@@ -2,13 +2,13 @@
 // Layer 1: HDB S3 Sink — 구현
 // ============================================================================
 
-#include "apex/storage/s3_sink.h"
+#include "zeptodb/storage/s3_sink.h"
 
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
-#if APEX_S3_AVAILABLE
+#if ZEPTO_S3_AVAILABLE
     #include <aws/core/auth/AWSCredentialsProviderChain.h>
     #include <aws/s3/model/PutObjectRequest.h>
     #include <aws/s3/model/CreateMultipartUploadRequest.h>
@@ -16,7 +16,7 @@
     #include <aws/s3/model/CompleteMultipartUploadRequest.h>
 #endif
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 namespace fs = std::filesystem;
 
@@ -26,19 +26,19 @@ namespace fs = std::filesystem;
 S3Sink::S3Sink(S3SinkConfig config)
     : config_(std::move(config))
 {
-#if APEX_S3_AVAILABLE
+#if ZEPTO_S3_AVAILABLE
     init_aws_sdk();
-    APEX_INFO("S3Sink 초기화: bucket={}, prefix={}, region={}",
+    ZEPTO_INFO("S3Sink 초기화: bucket={}, prefix={}, region={}",
               config_.bucket, config_.prefix, config_.region);
 #else
-    APEX_WARN("S3Sink: aws-sdk-cpp 없음 — S3 업로드 비활성화");
-    APEX_WARN("  설치: sudo dnf install -y aws-sdk-cpp-s3");
+    ZEPTO_WARN("S3Sink: aws-sdk-cpp 없음 — S3 업로드 비활성화");
+    ZEPTO_WARN("  설치: sudo dnf install -y aws-sdk-cpp-s3");
 #endif
 }
 
 S3Sink::~S3Sink()
 {
-#if APEX_S3_AVAILABLE
+#if ZEPTO_S3_AVAILABLE
     shutdown_aws_sdk();
 #endif
 }
@@ -48,9 +48,9 @@ S3Sink::~S3Sink()
 // ============================================================================
 bool S3Sink::upload_file(const std::string& local_path, const std::string& s3_key)
 {
-#if APEX_S3_AVAILABLE
+#if ZEPTO_S3_AVAILABLE
     if (!client_) {
-        APEX_WARN("S3Sink::upload_file: 클라이언트 미초기화");
+        ZEPTO_WARN("S3Sink::upload_file: 클라이언트 미초기화");
         return false;
     }
 
@@ -64,7 +64,7 @@ bool S3Sink::upload_file(const std::string& local_path, const std::string& s3_ke
         std::ios_base::in | std::ios_base::binary);
 
     if (!input_stream->is_open()) {
-        APEX_WARN("S3Sink: 파일 열기 실패: {}", local_path);
+        ZEPTO_WARN("S3Sink: 파일 열기 실패: {}", local_path);
         uploads_failed_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -86,7 +86,7 @@ bool S3Sink::upload_file(const std::string& local_path, const std::string& s3_ke
 
     auto outcome = client_->PutObject(request);
     if (!outcome.IsSuccess()) {
-        APEX_WARN("S3Sink: 업로드 실패: s3://{}/{} ({})",
+        ZEPTO_WARN("S3Sink: 업로드 실패: s3://{}/{} ({})",
                   config_.bucket, full_key,
                   outcome.GetError().GetMessage().c_str());
         uploads_failed_.fetch_add(1, std::memory_order_relaxed);
@@ -96,14 +96,14 @@ bool S3Sink::upload_file(const std::string& local_path, const std::string& s3_ke
     uploads_succeeded_.fetch_add(1, std::memory_order_relaxed);
     bytes_uploaded_.fetch_add(file_size, std::memory_order_relaxed);
 
-    APEX_INFO("S3 업로드 완료: s3://{}/{} ({}B)",
+    ZEPTO_INFO("S3 업로드 완료: s3://{}/{} ({}B)",
               config_.bucket, full_key, file_size);
     return true;
 
 #else
     (void)local_path;
     (void)s3_key;
-    APEX_WARN("S3Sink: aws-sdk-cpp 없음");
+    ZEPTO_WARN("S3Sink: aws-sdk-cpp 없음");
     return false;
 #endif
 }
@@ -113,7 +113,7 @@ bool S3Sink::upload_file(const std::string& local_path, const std::string& s3_ke
 // ============================================================================
 bool S3Sink::upload_buffer(const char* data, size_t size, const std::string& s3_key)
 {
-#if APEX_S3_AVAILABLE
+#if ZEPTO_S3_AVAILABLE
     if (!client_ || !data || size == 0) return false;
 
     const std::string full_key = config_.prefix.empty()
@@ -133,7 +133,7 @@ bool S3Sink::upload_buffer(const char* data, size_t size, const std::string& s3_
 
     auto outcome = client_->PutObject(request);
     if (!outcome.IsSuccess()) {
-        APEX_WARN("S3Sink::upload_buffer 실패: s3://{}/{} ({})",
+        ZEPTO_WARN("S3Sink::upload_buffer 실패: s3://{}/{} ({})",
                   config_.bucket, full_key,
                   outcome.GetError().GetMessage().c_str());
         uploads_failed_.fetch_add(1, std::memory_order_relaxed);
@@ -143,7 +143,7 @@ bool S3Sink::upload_buffer(const char* data, size_t size, const std::string& s3_
     uploads_succeeded_.fetch_add(1, std::memory_order_relaxed);
     bytes_uploaded_.fetch_add(size, std::memory_order_relaxed);
 
-    APEX_INFO("S3 버퍼 업로드 완료: s3://{}/{} ({}B)",
+    ZEPTO_INFO("S3 버퍼 업로드 완료: s3://{}/{} ({}B)",
               config_.bucket, full_key, size);
     return true;
 
@@ -190,7 +190,7 @@ std::string S3Sink::make_s3_uri(const std::string& s3_key) const
 // ============================================================================
 // AWS SDK 초기화 / 종료
 // ============================================================================
-#if APEX_S3_AVAILABLE
+#if ZEPTO_S3_AVAILABLE
 void S3Sink::init_aws_sdk()
 {
     Aws::SDKOptions options;
@@ -225,4 +225,4 @@ void S3Sink::shutdown_aws_sdk()
 }
 #endif
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

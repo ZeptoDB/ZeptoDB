@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: FIX Feed Handler Implementation
+// ZeptoDB: FIX Feed Handler Implementation
 // ============================================================================
-#include "apex/feeds/fix_feed_handler.h"
+#include "zeptodb/feeds/fix_feed_handler.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -9,7 +9,7 @@
 #include <cstring>
 #include <chrono>
 
-namespace apex::feeds {
+namespace zeptodb::feeds {
 
 FIXFeedHandler::FIXFeedHandler(const FeedConfig& config, SymbolMapper* mapper)
     : config_(config)
@@ -268,4 +268,4 @@ void FIXFeedHandler::notify_error(const std::string& error) {
     }
 }
 
-} // namespace apex::feeds
+} // namespace zeptodb::feeds

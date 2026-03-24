@@ -1,10 +1,10 @@
 #!/bin/bash
 # ============================================================================
-# APEX-DB EOD (End-of-Day) 프로세스
+# ZeptoDB EOD (End-of-Day) 프로세스
 # ============================================================================
 # 용도: 장 마감 후 RDB → HDB 플러시, 백업, 정리
 # 실행: cron으로 장 마감 후 자동 실행
-# 예: 0 18 * * 1-5 /opt/apex-db/scripts/eod_process.sh
+# 예: 0 18 * * 1-5 /opt/zeptodb/scripts/eod_process.sh
 # ============================================================================
 
 set -euo pipefail
@@ -12,9 +12,9 @@ set -euo pipefail
 # ============================================================================
 # 설정
 # ============================================================================
-APEX_HOME="${APEX_HOME:-/opt/apex-db}"
-DATA_DIR="${APEX_DATA_DIR:-/data/apex-db}"
-LOG_FILE="${APEX_LOG_DIR:-/var/log/apex-db}/eod.log"
+APEX_HOME="${APEX_HOME:-/opt/zeptodb}"
+DATA_DIR="${APEX_DATA_DIR:-/data/zeptodb}"
+LOG_FILE="${ZEPTO_LOG_DIR:-/var/log/zeptodb}/eod.log"
 BACKUP_SCRIPT="${APEX_HOME}/scripts/backup.sh"
 
 # HTTP API
@@ -38,11 +38,11 @@ log_error() {
 log "Starting EOD process..."
 
 if ! curl -s "http://${APEX_HOST}:${APEX_PORT}/ready" | grep -q "ready"; then
-    log_error "APEX-DB is not ready"
+    log_error "ZeptoDB is not ready"
     exit 1
 fi
 
-log "APEX-DB is ready"
+log "ZeptoDB is ready"
 
 # ============================================================================
 # 1. RDB → HDB 플러시
@@ -106,7 +106,7 @@ DATA_USAGE=$(df -h "$DATA_DIR" | tail -1 | awk '{print $5}' | sed 's/%//')
 if [ "$DATA_USAGE" -gt 80 ]; then
     log_error "Disk usage is high: ${DATA_USAGE}%"
     # 알림 전송 (Slack, PagerDuty 등)
-    # curl -X POST https://hooks.slack.com/... -d "{\"text\":\"APEX-DB disk usage: ${DATA_USAGE}%\"}"
+    # curl -X POST https://hooks.slack.com/... -d "{\"text\":\"ZeptoDB disk usage: ${DATA_USAGE}%\"}"
 fi
 
 log "Disk usage: ${DATA_USAGE}%"
@@ -116,14 +116,14 @@ log "Disk usage: ${DATA_USAGE}%"
 # ============================================================================
 # 메모리 단편화 방지를 위해 주기적 재시작 (옵션)
 # RESTART_INTERVAL_DAYS=7
-# LAST_RESTART=$(systemctl show apex-db --property=ActiveEnterTimestamp | cut -d= -f2)
+# LAST_RESTART=$(systemctl show zeptodb --property=ActiveEnterTimestamp | cut -d= -f2)
 # DAYS_RUNNING=$(( ($(date +%s) - $(date -d "$LAST_RESTART" +%s)) / 86400 ))
 #
 # if [ $DAYS_RUNNING -ge $RESTART_INTERVAL_DAYS ]; then
-#     log "Restarting APEX-DB (${DAYS_RUNNING} days running)..."
-#     systemctl restart apex-db
+#     log "Restarting ZeptoDB (${DAYS_RUNNING} days running)..."
+#     systemctl restart zeptodb
 #     sleep 10
-#     log "APEX-DB restarted"
+#     log "ZeptoDB restarted"
 # fi
 
 # ============================================================================

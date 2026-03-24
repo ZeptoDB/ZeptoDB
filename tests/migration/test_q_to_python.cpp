@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: q to Python Transformation Tests
+// ZeptoDB: q to Python Transformation Tests
 // ============================================================================
-#include "apex/migration/q_to_python.h"
+#include "zeptodb/migration/q_to_python.h"
 #include <gtest/gtest.h>
 #include <string>
 
-using namespace apex::migration;
+using namespace zeptodb::migration;
 
 std::string q_to_py(const std::string& q_query) {
     QLexer lexer(q_query);
@@ -127,7 +127,7 @@ TEST(QToPythonTest, ScriptTransform) {
     QToPythonTransformer transformer;
     auto py = transformer.transform_script(q_script);
 
-    EXPECT_NE(py.find("import apex_py"), std::string::npos);
+    EXPECT_NE(py.find("import zepto_py"), std::string::npos);
     EXPECT_NE(py.find("t ="), std::string::npos);
     EXPECT_NE(py.find("v ="), std::string::npos);
     EXPECT_NE(py.find("filter("), std::string::npos);

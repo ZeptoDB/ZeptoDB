@@ -49,10 +49,10 @@ research environment reads and analyzes C++ data by aligning memory layouts
 100% (Apache Arrow style). Switch only memory pointer access rights without
 copying data values.
 
-**Actual implementation (`apex_py` package — completed 2026-03-22):**
+**Actual implementation (`zepto_py` package — completed 2026-03-22):**
 
 ```
-apex_py/
+zepto_py/
 ├── dataframe.py    — from_pandas(), from_polars(), from_arrow(), from_polars_arrow()
 │                     All paths use vectorized ingest_batch() — no Python row iteration
 ├── arrow.py        — ArrowSession: to_arrow(), to_duckdb(), to_polars_zero_copy()
@@ -69,7 +69,7 @@ Key implementation details:
   on numeric non-null series returns the Arrow buffer directly
 - `from_arrow()`: `batch.to_numpy(zero_copy_only=False)` — zero-copy for contiguous
   non-null arrays; fills nulls with 0 via `pc.if_else()` before extraction
-- `to_polars_zero_copy()`: `pl.from_arrow(table)` — both Polars and APEX-DB use
+- `to_polars_zero_copy()`: `pl.from_arrow(table)` — both Polars and ZeptoDB use
   Arrow internally; no data is copied
 - Test coverage: 208 tests across 5 test files, all passing
 
@@ -134,7 +134,7 @@ This architecture allows scripts written in Python — the language quant develo
 1. ✅ **Lock-Free MPMC Ring Buffer** (C++20, 5.52M ticks/sec)
 2. ✅ **Arena Allocator** — columnar Arrow-layout memory, no malloc in hot path
 3. ✅ **pybind11 Zero-copy Read API** — `get_column()` returns numpy view (522ns)
-4. ✅ **apex_py package** — full ecosystem: from_pandas/polars/arrow, ArrowSession,
+4. ✅ **zepto_py package** — full ecosystem: from_pandas/polars/arrow, ArrowSession,
    StreamingSession, ApexConnection (208 tests)
 5. ✅ **Security Layer** — TLS/SSL + API Key + JWT/SSO + RBAC + Audit (37 tests)
 

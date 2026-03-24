@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: NASDAQ ITCH Parser Unit Tests
+// ZeptoDB: NASDAQ ITCH Parser Unit Tests
 // ============================================================================
-#include "apex/feeds/nasdaq_itch.h"
+#include "zeptodb/feeds/nasdaq_itch.h"
 #include <gtest/gtest.h>
 #include <cstring>
 
-using namespace apex::feeds;
+using namespace zeptodb::feeds;
 
 // ============================================================================
 // Mock Symbol Mapper

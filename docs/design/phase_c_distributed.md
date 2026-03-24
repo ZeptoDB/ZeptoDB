@@ -100,7 +100,7 @@ struct FleetConfig {
     std::vector<std::string> instance_types = {"r7i.8xlarge", "r8g.8xlarge"};
 
     // Placement Group — same rack placement
-    std::string placement_group = "apex-cluster";
+    std::string placement_group = "zepto-cluster";
     PlacementStrategy strategy = PlacementStrategy::CLUSTER;
 
     // Warm Pool — pre-warmed standby instances
@@ -117,7 +117,7 @@ class FleetManager {
     // Graceful shutdown (migrate partitions → terminate)
     void drain_and_terminate(NodeId id);
 
-    // Maintain warm pool (booted, APEX-DB ready state)
+    // Maintain warm pool (booted, ZeptoDB ready state)
     void maintain_warm_pool();
 
     // Current cluster state
@@ -128,7 +128,7 @@ class FleetManager {
 ### 3-B. Metadata Store (DynamoDB)
 
 ```
-Table: apex-cluster-metadata
+Table: zepto-cluster-metadata
 
 PK: "partition#{symbol_id}#{hour_epoch}"
 SK: "assignment"
@@ -138,7 +138,7 @@ Attributes:
   - arena_usage_pct: 45.2
   - created_at: 1711065600
 
-Table: apex-cluster-nodes
+Table: zepto-cluster-nodes
 
 PK: "node#{node_id}"
 Attributes:
@@ -371,10 +371,10 @@ and split-brain scenarios had incomplete protection.
 **Tests added:** 9 new tests (SharedRouter ×2, FencingRpc ×2, CoordinatorHA ×1, SplitBrain ×4)
 
 **Related code:**
-- `include/apex/cluster/query_coordinator.h` — shared router API
-- `include/apex/cluster/rpc_protocol.h` — 24-byte RpcHeader
-- `include/apex/cluster/tcp_rpc.h` — fencing token + epoch on client/server
-- `include/apex/cluster/cluster_node.h` — `connect_coordinator()`
+- `include/zeptodb/cluster/query_coordinator.h` — shared router API
+- `include/zeptodb/cluster/rpc_protocol.h` — 24-byte RpcHeader
+- `include/zeptodb/cluster/tcp_rpc.h` — fencing token + epoch on client/server
+- `include/zeptodb/cluster/cluster_node.h` — `connect_coordinator()`
 - `src/cluster/coordinator_ha.cpp` — auto re-registration on promote
 
 ### Phase C-3.6: Distributed Query Correctness ✅ Partial (2026-03-23)

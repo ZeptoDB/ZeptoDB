@@ -1,8 +1,8 @@
-#include "apex/cluster/snapshot_coordinator.h"
+#include "zeptodb/cluster/snapshot_coordinator.h"
 #include <chrono>
 #include <future>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 void SnapshotCoordinator::add_node(NodeId id, const std::string& host,
                                     uint16_t port) {
@@ -44,4 +44,4 @@ SnapshotResult SnapshotCoordinator::take_snapshot() {
     return result;
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

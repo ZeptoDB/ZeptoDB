@@ -1,7 +1,7 @@
-#include "apex/cluster/wal_replicator.h"
+#include "zeptodb/cluster/wal_replicator.h"
 #include <chrono>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 void WalReplicator::add_replica(const std::string& host, uint16_t port) {
     replicas_.push_back(std::make_unique<TcpRpcClient>(host, port));
@@ -18,7 +18,7 @@ void WalReplicator::stop() {
     if (send_thread_.joinable()) send_thread_.join();
 
     // Flush remaining
-    std::vector<apex::ingestion::TickMessage> remaining;
+    std::vector<zeptodb::ingestion::TickMessage> remaining;
     {
         std::lock_guard<std::mutex> lock(mu_);
         remaining.swap(queue_);
@@ -26,7 +26,7 @@ void WalReplicator::stop() {
     if (!remaining.empty()) flush_batch(remaining);
 }
 
-bool WalReplicator::enqueue(const apex::ingestion::TickMessage& msg) {
+bool WalReplicator::enqueue(const zeptodb::ingestion::TickMessage& msg) {
     uint64_t epoch_before;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -52,7 +52,7 @@ bool WalReplicator::enqueue(const apex::ingestion::TickMessage& msg) {
 }
 
 void WalReplicator::send_loop() {
-    std::vector<apex::ingestion::TickMessage> batch;
+    std::vector<zeptodb::ingestion::TickMessage> batch;
     batch.reserve(config_.batch_size);
 
     while (running_.load()) {
@@ -74,7 +74,7 @@ void WalReplicator::send_loop() {
 }
 
 void WalReplicator::flush_batch(
-    std::vector<apex::ingestion::TickMessage>& batch)
+    std::vector<zeptodb::ingestion::TickMessage>& batch)
 {
     bool all_ok = true;
     for (auto& replica : replicas_) {
@@ -95,4 +95,4 @@ void WalReplicator::flush_batch(
     sync_cv_.notify_all();
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

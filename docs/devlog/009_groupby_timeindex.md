@@ -1,4 +1,4 @@
-# APEX-DB Devlog #009: GROUP BY Optimization + Timestamp Range Index
+# ZeptoDB Devlog #009: GROUP BY Optimization + Timestamp Range Index
 
 **Date:** 2026-03-22
 **Branch:** main
@@ -7,7 +7,7 @@
 
 ## Overview
 
-This work implements two key performance optimizations and additional SQL features for the APEX-DB SQL execution engine.
+This work implements two key performance optimizations and additional SQL features for the ZeptoDB SQL execution engine.
 
 1. **Timestamp range index**: `WHERE timestamp BETWEEN X AND Y` — binary search instead of full scan
 2. **GROUP BY optimization**: `GROUP BY symbol` — direct use of partition structure
@@ -208,8 +208,8 @@ Newly added tests:
 
 | File | Changes |
 |------|---------|
-| `include/apex/storage/partition_manager.h` | Added `timestamp_range()`, `overlaps_time_range()` |
-| `include/apex/sql/executor.h` | Declared `eval_where_ranged()`, `extract_time_range()`, `apply_order_by()` |
+| `include/zeptodb/storage/partition_manager.h` | Added `timestamp_range()`, `overlaps_time_range()` |
+| `include/zeptodb/sql/executor.h` | Declared `eval_where_ranged()`, `extract_time_range()`, `apply_order_by()` |
 | `src/sql/executor.cpp` | Implemented new functions, optimized exec_simple/agg/group_agg |
 | `src/cluster/ucx_backend.h` | Added `#include <stdexcept>` (compilation bug fix) |
 | `CMakeLists.txt` | Exclude jit_engine.cpp when `APEX_USE_JIT=OFF` |

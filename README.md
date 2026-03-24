@@ -1,6 +1,6 @@
 <div align="center">
 
-# APEX-DB
+# ZeptoDB
 
 ### Ultra-Low Latency In-Memory Database
 
@@ -9,7 +9,7 @@
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![LLVM 19](https://img.shields.io/badge/LLVM-19-orange)
 ![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)
-![Tests](https://img.shields.io/badge/tests-607%2B%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-766%2B%20passing-brightgreen)
 ![kdb+ replacement](https://img.shields.io/badge/kdb%2B%20replacement-95%25-success)
 
 </div>
@@ -18,8 +18,11 @@
 
 ## Overview
 
-APEX-DB is an ultra-low latency in-memory database designed for HFT, combining
+ZeptoDB is an ultra-low latency in-memory database designed for HFT, combining
 **kdb+ performance**, **ClickHouse versatility**, and the **Polars Python ecosystem**.
+
+Built for quants, ready for everything — from research notebooks to production
+trading to factory sensor floors. One database for the full lifecycle.
 
 ### kdb+ Replacement Rate (2026-03-22)
 
@@ -53,10 +56,12 @@ APEX-DB is an ultra-low latency in-memory database designed for HFT, combining
 | Python zero-copy | **522ns** (numpy view) |
 | HDB flush | **4.8 GB/s** |
 | Partition routing | **2ns** |
+| **g# index lookup** | **3.3μs** (274x vs full scan) |
+| **p# index lookup** | **3.4μs** (269x vs full scan) |
 
 ### vs kdb+ / ClickHouse
 
-| | kdb+ | ClickHouse | **APEX-DB** |
+| | kdb+ | ClickHouse | **ZeptoDB** |
 |---|---|---|---|
 | Ingestion | ~5M/sec | Batch-optimized | **5.52M/sec** |
 | filter 1M | ~100-300μs | ms range | **272μs** ✅ |
@@ -118,7 +123,7 @@ APEX-DB is an ultra-low latency in-memory database designed for HFT, combining
 
 ```bash
 # Start server
-./apex_server --port 8123
+./zepto_server --port 8123
 
 # Query via curl
 curl -X POST http://localhost:8123/ \
@@ -130,10 +135,10 @@ curl -X POST http://localhost:8123/ \
 ### Python DSL (zero-copy)
 
 ```python
-import apex
-from apex_py.dsl import DataFrame
+import zeptodb
+from zepto_py.dsl import DataFrame
 
-db = apex.Pipeline()
+db = zeptodb.Pipeline()
 db.start()
 
 # Ingest ticks
@@ -243,6 +248,41 @@ SELECT price FROM trades WHERE symbol = 2
 SELECT price FROM trades WHERE symbol = 1
 INTERSECT
 SELECT price FROM trades WHERE price > 15050
+
+-- INSERT (single row)
+INSERT INTO trades VALUES (1, 15000, 100, 1711234567000000000)
+
+-- INSERT (multi-row)
+INSERT INTO trades VALUES (1, 15050, 200, 1711234568000000000),
+                          (2, 16000, 300, 1711234569000000000)
+
+-- INSERT (column list — timestamp auto-generated)
+INSERT INTO trades (symbol, price, volume) VALUES (1, 15100, 150)
+
+-- UPDATE
+UPDATE trades SET price = 15200 WHERE symbol = 1 AND price > 15100
+
+-- DELETE
+DELETE FROM trades WHERE symbol = 1 AND price < 15000
+
+-- Storage tiering policy (Hot → Warm → Cold → Drop)
+ALTER TABLE trades SET STORAGE POLICY
+  HOT 1 HOURS WARM 24 HOURS COLD 30 DAYS DROP 365 DAYS
+
+-- Materialized View (incremental aggregation on ingest)
+CREATE MATERIALIZED VIEW ohlcv_5min AS
+  SELECT symbol, xbar(timestamp, 300000000000) AS bar,
+         first(price) AS open, max(price) AS high,
+         min(price) AS low, last(price) AS close,
+         sum(volume) AS vol
+  FROM trades
+  GROUP BY symbol, xbar(timestamp, 300000000000)
+
+-- Query the materialized view (reads pre-computed results, not raw ticks)
+SELECT * FROM ohlcv_5min WHERE symbol = 1
+
+-- Drop materialized view
+DROP MATERIALIZED VIEW ohlcv_5min
 ```
 
 ---
@@ -260,7 +300,7 @@ cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
 ninja -j$(nproc)
 
 # Tests
-./tests/apex_tests
+./tests/zepto_tests
 python3 -m pytest ../tests/test_python.py -v
 ```
 
@@ -269,8 +309,8 @@ python3 -m pytest ../tests/test_python.py -v
 ## Project Structure
 
 ```
-apex-db/
-├── include/apex/
+zeptodb/
+├── include/zeptodb/
 │   ├── storage/        # Arena, ColumnStore, PartitionManager, HDB, ParquetReader/Writer
 │   ├── ingestion/      # RingBuffer, TickPlant, WAL
 │   ├── execution/      # VectorizedEngine, JIT, JOIN, WindowFunctions, QueryScheduler
@@ -281,14 +321,14 @@ apex-db/
 │   │                   # AuditBuffer, CancellationToken, QueryTracker, SecretsProvider
 │   ├── feeds/          # FIX, NASDAQ ITCH, Binance feed handlers
 │   ├── migration/      # kdb+/ClickHouse/DuckDB/TimescaleDB migrators
-│   ├── core/           # ApexPipeline (E2E integration, multi-threaded drain)
+│   ├── core/           # ZeptoPipeline (E2E integration, multi-threaded drain)
 │   ├── cluster/        # Transport, PartitionRouter, HealthMonitor, QueryCoordinator
 │   │                   # WalReplicator, FailoverManager, CoordinatorHA
 │   │                   # SnapshotCoordinator, ComputeNode, PartitionMigrator
 │   └── transpiler/     # Python binding (pybind11)
 ├── src/                # Implementation
 ├── tests/
-│   ├── unit/           # Google Test (565+ tests)
+│   ├── unit/           # Google Test (619+ tests)
 │   ├── feeds/          # Feed handler tests (37 tests)
 │   ├── migration/      # Migration toolkit tests (70 tests)
 │   ├── python/         # Python ecosystem tests (208 tests)
@@ -297,10 +337,11 @@ apex-db/
 │   ├── tune_bare_metal.sh  # Bare-metal auto-tuning
 │   ├── backup.sh       # Backup automation
 │   └── install_service.sh  # systemd service installation
-├── k8s/                # Kubernetes deployment YAML
+├── k8s/                # Kubernetes deployment YAML (legacy)
+├── helm/zeptodb/       # Helm chart (production)
 ├── monitoring/         # Grafana dashboard + Prometheus alerts
 ├── tools/
-│   └── apex-migrate.cpp  # Migration CLI
+│   └── zepto-migrate.cpp  # Migration CLI
 └── docs/
     ├── design/         # Architecture + Layer design docs
     ├── business/       # Business strategy
@@ -309,27 +350,35 @@ apex-db/
     ├── feeds/          # Feed handler guides
     ├── requirements/   # PRD/SRS
     ├── bench/          # Benchmark results
-    └── devlog/         # Development log (000~013)
+    └── devlog/         # Development log (000~022)
 ```
 
 ---
 
 ## Target Markets
 
-| Domain | Use Cases | kdb+ Replacement Rate |
-|--------|-----------|----------------------|
-| HFT/Finance | Tick processing, ASOF JOIN, xbar, Window JOIN | **95%** |
-| Quant Research | Backtesting, EMA, Window functions, Python DSL | **90%** |
-| Risk/Compliance | Position calculation, LEFT JOIN, parallel GROUP BY | **95%** |
-| OLAP | ClickHouse replacement, SQL, HTTP API, Grafana | — |
-| IoT/Monitoring | Time-series aggregation, xbar, LZ4 compression | — |
-| ML Feature Store | Real-time feature serving, zero-copy numpy | — |
+### Full Lifecycle: Research → Production → Compliance
+
+| Phase | Use Cases | kdb+ Replacement |
+|-------|-----------|-----------------|
+| **Quant Research** | Backtesting, EMA, Python DSL, Jupyter zero-copy | **90%** |
+| **Production Trading** | Tick processing, ASOF JOIN, xbar, 5.52M ticks/sec | **95%** |
+| **Risk/Compliance** | Position calc, audit log, Grafana dashboards | **95%** |
+
+### Beyond Finance: Same Engine, New Industries
+
+| Domain | Why ZeptoDB | Key Feature |
+|--------|------------|-------------|
+| **Crypto/DeFi** | 24/7 multi-exchange, orderbook streaming | Kafka consumer, VWAP |
+| **IoT/Smart Factory** | 10KHz sensors, predictive maintenance | 5.52M events/sec, DELTA |
+| **Autonomous Vehicles** | Sensor fusion, driving log replay | ASOF JOIN, Parquet HDB |
+| **Observability** | High-cardinality metrics, log analytics | SQL + Grafana, TTL + S3 |
 
 ---
 
 ## Enterprise Security
 
-APEX-DB ships with a complete enterprise security layer — all contract-blocker requirements
+ZeptoDB ships with a complete enterprise security layer — all contract-blocker requirements
 are implemented and tested.
 
 | Feature | Details |
@@ -355,23 +404,23 @@ auth.rate_limit.requests_per_minute = 1000;
 
 TlsConfig tls;
 tls.enabled   = true;
-tls.cert_path = "/etc/apex/cert.pem";
-tls.key_path  = "/etc/apex/key.pem";
+tls.cert_path = "/etc/zeptodb/cert.pem";
+tls.key_path  = "/etc/zeptodb/key.pem";
 
 HttpServer server(executor, 8443, tls, std::make_shared<AuthManager>(auth));
 server.set_query_timeout_ms(30000);
 server.start_async();
 
 # Admin: create a key
-curl -X POST https://apex:8443/admin/keys \
+curl -X POST https://zepto:8443/admin/keys \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -d '{"name":"algo-service","role":"writer"}'
 
 # Admin: list running queries
-curl https://apex:8443/admin/queries -H "Authorization: Bearer $ADMIN_KEY"
+curl https://zepto:8443/admin/queries -H "Authorization: Bearer $ADMIN_KEY"
 
 # Admin: kill a query
-curl -X DELETE https://apex:8443/admin/queries/q_a1b2c3 \
+curl -X DELETE https://zepto:8443/admin/queries/q_a1b2c3 \
   -H "Authorization: Bearer $ADMIN_KEY"
 ```
 
@@ -382,6 +431,7 @@ curl -X DELETE https://apex:8443/admin/queries/q_a1b2c3 \
 ### Deployment Options
 - **Bare-metal (recommended)**: HFT latency consistency, `scripts/tune_bare_metal.sh` auto-tuning
 - **Cloud**: Docker + Kubernetes, AWS Graviton4 optimized
+- **Helm chart**: `helm install zeptodb ./helm/zeptodb` — PDB, HPA, rolling upgrades
 
 ### Monitoring
 - Prometheus `/metrics` (OpenMetrics format)
@@ -396,6 +446,9 @@ curl -X DELETE https://apex:8443/admin/queries/q_a1b2c3 \
 **Detailed guides:**
 - Deployment: `docs/deployment/PRODUCTION_DEPLOYMENT.md`
 - Operations: `docs/operations/PRODUCTION_OPERATIONS.md`
+- Kubernetes Ops: `docs/operations/KUBERNETES_OPERATIONS.md`
+- K8s Failure Scenarios: `docs/operations/KUBERNETES_FAILURE_SCENARIOS.md`
+- Rolling Upgrade: `docs/ops/rolling_upgrade.md`
 - Feed Handlers: `docs/feeds/FEED_HANDLER_GUIDE.md`
 
 ---
@@ -403,34 +456,13 @@ curl -X DELETE https://apex:8443/admin/queries/q_a1b2c3 \
 ## Development Phases
 
 ### Completed
-- [x] **Phase E** — E2E Pipeline MVP (5.52M ticks/sec)
-- [x] **Phase B** — SIMD + JIT (BitMask 11x, filter within kdb+ range)
-- [x] **Phase A** — HDB Tiered Storage (LZ4, 4.8GB/s flush)
-- [x] **Phase D** — Python Bridge (zero-copy, 4x vs Polars)
-- [x] **Phase C** — Distributed Cluster (UCX transport, 2ns routing)
-- [x] **SQL + HTTP** — Parser (1.5~4.5μs) + ClickHouse API (port 8123)
-- [x] **JOIN** — ASOF, Hash, LEFT, Window JOIN
-- [x] **Window functions** — EMA, DELTA, RATIO, SUM, AVG, LAG, LEAD, ROW_NUMBER, RANK
-- [x] **Financial functions** — xbar, FIRST, LAST, Window JOIN (93% kdb+ replacement)
-- [x] **Parallel query** — LocalQueryScheduler (scatter/gather, 3.48x@8T)
-- [x] **Feed Handlers** — FIX, NASDAQ ITCH (350ns parsing)
-- [x] **Production operations** — monitoring, backup, systemd service
-- [x] **Migration toolkit** — kdb+ HDB loader, q→SQL, ClickHouse DDL/query translation, DuckDB Parquet, TimescaleDB hypertable (70 tests)
-- [x] **Parquet HDB** — SNAPPY/ZSTD/LZ4_RAW, DuckDB/Polars/Spark direct query (Arrow C++ API)
-- [x] **S3 HDB Flush** — async upload, MinIO compatible, cloud data lake
-- [x] **Python Ecosystem** — apex_py: from_pandas/polars/arrow, ArrowSession, StreamingSession, ApexConnection (208 tests)
-- [x] **SQL Phase 1** — IN operator, IS NULL/NOT NULL, NOT, HAVING clause
-- [x] **SQL Phase 2** — SELECT arithmetic (`price * volume AS notional`), CASE WHEN, multi-column GROUP BY
-- [x] **SQL Phase 3** — Date/time functions (DATE_TRUNC/NOW/EPOCH_S/EPOCH_MS), LIKE/NOT LIKE, UNION ALL/DISTINCT/INTERSECT/EXCEPT
-- [x] **Time range index** — O(log n) binary search within partitions, O(1) partition skip
-- [x] **Enterprise Security** — TLS/HTTPS, API Key + JWT/OIDC, RBAC, Rate Limiting, Admin REST API, Query Timeout/Kill, Secrets Management (Vault/File/Env), Audit Log (SOC2/EMIR/MiFID II) — 69 tests
-- [x] **Cluster Integrity** — Unified PartitionRouter, FencingToken in RPC (24-byte header), split-brain defense, CoordinatorHA auto re-registration — 9 tests
-- [x] **Data Durability** — Intra-day auto-snapshot (`FlushConfig::enable_auto_snapshot`, 60s default) writes all partitions including ACTIVE to binary HDB; `PipelineConfig::enable_recovery` replays snapshot on restart — max data loss window ≤ 60 s
+See [`COMPLETED.md`](COMPLETED.md) for the full list of 35+ completed features with client compatibility matrix.
 
 ### In Progress
-- [ ] SQL subqueries / CTE (WITH clause)
-- [ ] ARM Graviton build verification
 - [ ] Distributed query scheduler (DistributedQueryScheduler + UCX)
+
+### Backlog
+See [`BACKLOG.md`](BACKLOG.md) for the full backlog.
 
 ## License
 

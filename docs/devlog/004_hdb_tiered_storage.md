@@ -131,7 +131,7 @@ VWAP is compute-intensive so even in-memory takes **~45us**.
 - **Memory-mapped:** accessed via mmap on demand
 - **Enumeration:** symbol strings interned as integer IDs (sym file)
 
-### APEX-DB Approach
+### ZeptoDB Approach
 - **Per-column binary:** same philosophy as kdb+
 - **Hour-level partitioning:** finer than kdb+ (day-level) — better suited for HFT data
 - **LZ4 compression:** not available by default in kdb+ (requires separate processing)
@@ -140,7 +140,7 @@ VWAP is compute-intensive so even in-memory takes **~45us**.
 
 ### Performance Comparison (estimated)
 
-| Item | kdb+ | APEX-DB | Notes |
+| Item | kdb+ | ZeptoDB | Notes |
 |------|------|---------|-------|
 | Flush | ~1-2 GB/sec | **~4.7 GB/sec** | Direct write() + custom format |
 | mmap read | Similar | Similar | Depends on OS page cache |
@@ -154,11 +154,11 @@ VWAP is compute-intensive so even in-memory takes **~45us**.
 ### New Files
 | File | Description |
 |------|-------------|
-| `include/apex/storage/hdb_writer.h` | HDB columnar binary Writer (header + LZ4) |
+| `include/zeptodb/storage/hdb_writer.h` | HDB columnar binary Writer (header + LZ4) |
 | `src/storage/hdb_writer.cpp` | HDB Writer implementation |
-| `include/apex/storage/hdb_reader.h` | HDB mmap Reader + MappedColumn RAII |
+| `include/zeptodb/storage/hdb_reader.h` | HDB mmap Reader + MappedColumn RAII |
 | `src/storage/hdb_reader.cpp` | HDB Reader implementation |
-| `include/apex/storage/flush_manager.h` | Background RDB->HDB flush manager |
+| `include/zeptodb/storage/flush_manager.h` | Background RDB->HDB flush manager |
 | `src/storage/flush_manager.cpp` | FlushManager implementation |
 | `tests/unit/test_hdb.cpp` | HDB unit tests (10 tests) |
 | `tests/bench/bench_hdb.cpp` | HDB benchmarks (flush/read/query) |
@@ -166,12 +166,12 @@ VWAP is compute-intensive so even in-memory takes **~45us**.
 ### Modified Files
 | File | Changes |
 |------|---------|
-| `include/apex/storage/partition_manager.h` | Added `get_sealed_partitions()`, `reclaim_arena()` |
+| `include/zeptodb/storage/partition_manager.h` | Added `get_sealed_partitions()`, `reclaim_arena()` |
 | `src/storage/partition_manager.cpp` | Added `get_sealed_partitions()` implementation |
-| `include/apex/core/pipeline.h` | `StorageMode` enum, HDB component integration |
+| `include/zeptodb/core/pipeline.h` | `StorageMode` enum, HDB component integration |
 | `src/core/pipeline.cpp` | Tiered query logic, HDB initialization |
 | `CMakeLists.txt` | LZ4 optional dependency, HDB source/bench additions |
-| `tests/CMakeLists.txt` | Added test_hdb.cpp + apex_core link |
+| `tests/CMakeLists.txt` | Added test_hdb.cpp + zepto_core link |
 
 ---
 

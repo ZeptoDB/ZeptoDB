@@ -1,5 +1,5 @@
 """
-Tests for APEX-DB polars integration.
+Tests for ZeptoDB polars integration.
 """
 import pytest
 import sys
@@ -20,8 +20,8 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-from apex_py.dataframe import query_to_polars
-from apex_py.connection import QueryResult
+from zepto_py.dataframe import query_to_polars
+from zepto_py.connection import QueryResult
 
 
 pytestmark = pytest.mark.skipif(not HAS_POLARS, reason="polars not installed")

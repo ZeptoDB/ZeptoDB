@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: AuthManager Implementation
+// ZeptoDB: AuthManager Implementation
 // ============================================================================
-#include "apex/auth/auth_manager.h"
+#include "zeptodb/auth/auth_manager.h"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <chrono>
 
-namespace apex::auth {
+namespace zeptodb::auth {
 
 namespace {
 
@@ -19,7 +19,7 @@ std::shared_ptr<spdlog::logger> get_audit_logger(const std::string& log_file) {
     static std::once_flag flag;
     std::call_once(flag, [&]() {
         if (!log_file.empty()) {
-            logger = spdlog::basic_logger_mt("apex_audit", log_file, true);
+            logger = spdlog::basic_logger_mt("zepto_audit", log_file, true);
         } else {
             logger = spdlog::default_logger();
         }
@@ -244,4 +244,4 @@ bool AuthManager::is_public_path(const std::string& path) const {
     return false;
 }
 
-} // namespace apex::auth
+} // namespace zeptodb::auth

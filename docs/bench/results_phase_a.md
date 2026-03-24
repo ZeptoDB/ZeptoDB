@@ -60,7 +60,7 @@ LZ4 compression ratio 0.31 → 69% disk savings, ~4x slower throughput
 
 ## kdb+ HDB Comparison
 
-| Item | kdb+ (splayed/partitioned) | APEX-DB HDB |
+| Item | kdb+ (splayed/partitioned) | ZeptoDB HDB |
 |---|---|---|
 | File format | Per-symbol column files (.d, .sym, etc.) | Per-column .bin + header |
 | Compression | Optional (`.z.zd` setting) | LZ4 (ratio 0.31) |

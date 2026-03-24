@@ -1,17 +1,17 @@
 // ============================================================================
-// APEX-DB: 병렬 쿼리 실행 엔진 테스트
+// ZeptoDB: 병렬 쿼리 실행 엔진 테스트
 // ============================================================================
 
-#include "apex/execution/worker_pool.h"
-#include "apex/execution/parallel_scan.h"
-#include "apex/execution/query_scheduler.h"
-#include "apex/execution/local_scheduler.h"
-#include "apex/execution/distributed_scheduler.h"
-#include "apex/cluster/tcp_rpc.h"
-#include "apex/sql/executor.h"
-#include "apex/core/pipeline.h"
-#include "apex/storage/column_store.h"
-#include "apex/storage/arena_allocator.h"
+#include "zeptodb/execution/worker_pool.h"
+#include "zeptodb/execution/parallel_scan.h"
+#include "zeptodb/execution/query_scheduler.h"
+#include "zeptodb/execution/local_scheduler.h"
+#include "zeptodb/execution/distributed_scheduler.h"
+#include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/storage/column_store.h"
+#include "zeptodb/storage/arena_allocator.h"
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -21,10 +21,10 @@
 #include <thread>
 #include <vector>
 
-using namespace apex::execution;
-using namespace apex::sql;
-using namespace apex::storage;
-using namespace apex::core;
+using namespace zeptodb::execution;
+using namespace zeptodb::sql;
+using namespace zeptodb::storage;
+using namespace zeptodb::core;
 
 // ============================================================================
 // Part 1: WorkerPool 기본 동작 테스트
@@ -192,12 +192,12 @@ protected:
     void SetUp() override {
         PipelineConfig cfg;
         cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-        pipeline = std::make_unique<ApexPipeline>(cfg);
+        pipeline = std::make_unique<ZeptoPipeline>(cfg);
         executor = std::make_unique<QueryExecutor>(*pipeline);
 
         // symbol=1: price 10000..10499, volume 100..599
         for (int i = 0; i < kRowsPerSymbol; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = 1;
             msg.recv_ts   = 1000LL + i;
             msg.price     = 10000 + i;
@@ -207,7 +207,7 @@ protected:
         }
         // symbol=2: price 20000..20499, volume 200..699
         for (int i = 0; i < kRowsPerSymbol; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = 2;
             msg.recv_ts   = 1000LL + i;
             msg.price     = 20000 + i;
@@ -231,7 +231,7 @@ protected:
         return r;
     }
 
-    std::unique_ptr<ApexPipeline>  pipeline;
+    std::unique_ptr<ZeptoPipeline>  pipeline;
     std::unique_ptr<QueryExecutor> executor;
 };
 
@@ -379,12 +379,12 @@ protected:
     void SetUp() override {
         PipelineConfig cfg;
         cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-        pipeline = std::make_unique<ApexPipeline>(cfg);
+        pipeline = std::make_unique<ZeptoPipeline>(cfg);
         executor = std::make_unique<QueryExecutor>(*pipeline);
 
         // 10행만 삽입 (기본 threshold 100K보다 훨씬 적음)
         for (int i = 0; i < 10; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = 1;
             msg.recv_ts   = 1000LL + i;
             msg.price     = 15000 + i * 10;
@@ -394,7 +394,7 @@ protected:
         pipeline->drain_sync(100);
     }
 
-    std::unique_ptr<ApexPipeline>  pipeline;
+    std::unique_ptr<ZeptoPipeline>  pipeline;
     std::unique_ptr<QueryExecutor> executor;
 };
 
@@ -426,20 +426,20 @@ TEST_F(SmallDataParallelTest, DisableParallelWorks) {
 // ============================================================================
 
 // Mock 스케줄러: scatter/gather 호출 여부를 기록
-class MockScheduler : public apex::execution::QueryScheduler {
+class MockScheduler : public zeptodb::execution::QueryScheduler {
 public:
     mutable int scatter_calls = 0;
     mutable int gather_calls  = 0;
 
-    std::vector<apex::execution::PartialAggResult> scatter(
-        const std::vector<apex::execution::QueryFragment>& /*fragments*/) override
+    std::vector<zeptodb::execution::PartialAggResult> scatter(
+        const std::vector<zeptodb::execution::QueryFragment>& /*fragments*/) override
     {
         ++scatter_calls;
         return {};
     }
 
-    apex::execution::PartialAggResult gather(
-        std::vector<apex::execution::PartialAggResult>&& /*partials*/) override
+    zeptodb::execution::PartialAggResult gather(
+        std::vector<zeptodb::execution::PartialAggResult>&& /*partials*/) override
     {
         ++gather_calls;
         return {};
@@ -452,7 +452,7 @@ public:
 TEST(QuerySchedulerDI, DefaultSchedulerIsLocal) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
     QueryExecutor ex(pipeline);
 
     EXPECT_EQ(ex.scheduler().scheduler_type(), "local");
@@ -462,7 +462,7 @@ TEST(QuerySchedulerDI, DefaultSchedulerIsLocal) {
 TEST(QuerySchedulerDI, CustomSchedulerInjection) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     auto mock = std::make_unique<MockScheduler>();
     QueryExecutor ex(pipeline, std::move(mock));
@@ -475,11 +475,11 @@ TEST(QuerySchedulerDI, CustomSchedulerSerialFallback) {
     // Mock 스케줄러 주입 → pool_raw_ = nullptr → 직렬 경로로 동작해야 함
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     // 데이터 삽입
     for (int i = 0; i < 50; ++i) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = 1;
         msg.recv_ts   = 1000LL + i;
         msg.price     = 10000 + i;
@@ -506,10 +506,10 @@ TEST(QuerySchedulerDI, LocalSchedulerScatterGather) {
     // LocalQueryScheduler 의 scatter/gather 직접 테스트
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     for (int i = 0; i < 100; ++i) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = 1;
         msg.recv_ts   = 1000LL + i;
         msg.price     = 10000 + i;
@@ -518,18 +518,18 @@ TEST(QuerySchedulerDI, LocalSchedulerScatterGather) {
     }
     pipeline.drain_sync(200);
 
-    apex::execution::LocalQueryScheduler sched(pipeline, 2);
+    zeptodb::execution::LocalQueryScheduler sched(pipeline, 2);
     EXPECT_EQ(sched.scheduler_type(), "local");
     EXPECT_GE(sched.worker_count(), 1u);
 
     // PartialAggResult resize / merge 테스트
-    apex::execution::PartialAggResult pa;
+    zeptodb::execution::PartialAggResult pa;
     pa.resize(2);
     EXPECT_EQ(pa.sum.size(), 2u);
     EXPECT_EQ(pa.min_val[0], INT64_MAX);
     EXPECT_EQ(pa.max_val[0], INT64_MIN);
 
-    apex::execution::PartialAggResult pb;
+    zeptodb::execution::PartialAggResult pb;
     pb.resize(2);
     pb.sum[0]   = 100;
     pb.count[1] = 5;
@@ -545,7 +545,7 @@ TEST(QuerySchedulerDI, LocalSchedulerScatterGather) {
 
 TEST(QuerySchedulerDI, DistributedSchedulerStub) {
     // DistributedQueryScheduler: no endpoints → empty scatter
-    apex::execution::DistributedQueryScheduler dist;
+    zeptodb::execution::DistributedQueryScheduler dist;
     EXPECT_EQ(dist.scheduler_type(), "distributed");
     EXPECT_EQ(dist.worker_count(), 0u);
 
@@ -597,10 +597,10 @@ TEST(ChunkedMode, AggParallel_SinglePartition) {
     // Single partition with enough rows to trigger CHUNKED in agg
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     for (int i = 0; i < 1000; ++i) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = 50;
         msg.price     = static_cast<int64_t>(i) * 1'000'000LL;
         msg.volume    = 1;
@@ -627,12 +627,12 @@ TEST(ChunkedMode, AggParallel_SinglePartition) {
 TEST(ParallelSelect, MultiPartition_ConcatResults) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     // Create 4 partitions (4 symbols)
     for (int sym = 1; sym <= 4; ++sym) {
         for (int i = 0; i < 10; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = static_cast<uint32_t>(sym);
             msg.price     = sym * 1'000'000LL;
             msg.volume    = 100;
@@ -653,11 +653,11 @@ TEST(ParallelSelect, MultiPartition_ConcatResults) {
 TEST(ParallelSelect, WithLimit) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     for (int sym = 1; sym <= 3; ++sym) {
         for (int i = 0; i < 20; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = static_cast<uint32_t>(sym);
             msg.price     = 10000000LL;
             msg.volume    = 1;
@@ -679,41 +679,41 @@ TEST(ParallelSelect, WithLimit) {
 // ResourceIsolation — CPU pinning
 // ============================================================================
 
-#include "apex/execution/resource_isolation.h"
+#include "zeptodb/execution/resource_isolation.h"
 
 TEST(ResourceIsolation, NumCpus) {
-    int n = apex::execution::ResourceIsolation::num_cpus();
+    int n = zeptodb::execution::ResourceIsolation::num_cpus();
     EXPECT_GT(n, 0);
 }
 
 TEST(ResourceIsolation, PinToCore_ValidCore) {
     // Pin to core 0 — should succeed on any system
-    bool ok = apex::execution::ResourceIsolation::pin_to_core(0);
+    bool ok = zeptodb::execution::ResourceIsolation::pin_to_core(0);
     EXPECT_TRUE(ok);
 }
 
 TEST(ResourceIsolation, PinToCores_EmptySet) {
-    apex::execution::CpuSet empty;
-    bool ok = apex::execution::ResourceIsolation::pin_to_cores(empty);
+    zeptodb::execution::CpuSet empty;
+    bool ok = zeptodb::execution::ResourceIsolation::pin_to_cores(empty);
     EXPECT_FALSE(ok);
 }
 
 TEST(ResourceIsolation, CpuSetRange) {
-    auto cs = apex::execution::CpuSet::range(0, 3);
+    auto cs = zeptodb::execution::CpuSet::range(0, 3);
     EXPECT_EQ(cs.size(), 4u);
     EXPECT_EQ(cs.cores[0], 0);
     EXPECT_EQ(cs.cores[3], 3);
 }
 
 TEST(ResourceIsolation, IsolationConfig_PinRealtime) {
-    int ncpus = apex::execution::ResourceIsolation::num_cpus();
+    int ncpus = zeptodb::execution::ResourceIsolation::num_cpus();
     if (ncpus < 2) GTEST_SKIP() << "Need at least 2 CPUs";
 
-    apex::execution::IsolationConfig icfg;
-    icfg.realtime_cores = apex::execution::CpuSet::single(0);
-    icfg.analytics_cores = apex::execution::CpuSet::single(1);
+    zeptodb::execution::IsolationConfig icfg;
+    icfg.realtime_cores = zeptodb::execution::CpuSet::single(0);
+    icfg.analytics_cores = zeptodb::execution::CpuSet::single(1);
 
-    apex::execution::ResourceIsolation iso(icfg);
+    zeptodb::execution::ResourceIsolation iso(icfg);
     EXPECT_TRUE(iso.pin_realtime());
     EXPECT_TRUE(iso.pin_analytics());
 }
@@ -725,10 +725,10 @@ TEST(ResourceIsolation, IsolationConfig_PinRealtime) {
 TEST(DistributedScheduler, ScatterGather_WithRpcServer) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
 
     for (int i = 0; i < 5; ++i) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = 99;
         msg.price     = 10000000LL;
         msg.volume    = 10;
@@ -737,7 +737,7 @@ TEST(DistributedScheduler, ScatterGather_WithRpcServer) {
     }
     pipeline.drain_sync(10);
 
-    apex::cluster::TcpRpcServer srv;
+    zeptodb::cluster::TcpRpcServer srv;
     srv.start(19940, [&](const std::string& sql) {
         QueryExecutor ex(pipeline);
         return ex.execute(sql);

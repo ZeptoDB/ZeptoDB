@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: kdb+ q Parser Implementation (Extended)
+// ZeptoDB: kdb+ q Parser Implementation (Extended)
 // ============================================================================
-#include "apex/migration/q_parser.h"
+#include "zeptodb/migration/q_parser.h"
 #include <stdexcept>
 #include <unordered_map>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 QParser::QParser(const std::vector<QToken>& tokens)
     : tokens_(tokens), pos_(0) {}
@@ -665,4 +665,4 @@ std::shared_ptr<QNode> QParser::parse_symbol_list() {
     return node;
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration

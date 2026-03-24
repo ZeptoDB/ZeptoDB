@@ -2,14 +2,14 @@
 // Test: CXL Backend + Transport 교체 검증
 // ============================================================================
 
-#include "apex/cluster/cxl_backend.h"
+#include "zeptodb/cluster/cxl_backend.h"
 #include "shm_backend.h"
-#include "apex/cluster/transport.h"
+#include "zeptodb/cluster/transport.h"
 #include <gtest/gtest.h>
 #include <vector>
 #include <numeric>
 
-using namespace apex::cluster;
+using namespace zeptodb::cluster;
 
 // ============================================================================
 // CXL Backend 기본 기능 테스트

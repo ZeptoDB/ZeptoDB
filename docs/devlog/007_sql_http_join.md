@@ -1,4 +1,4 @@
-# APEX-DB Phase 007: SQL Parser + HTTP API + JOIN Framework
+# ZeptoDB Phase 007: SQL Parser + HTTP API + JOIN Framework
 
 **Date:** 2026-03-22
 **Phase:** 007 — SQL/HTTP/JOIN
@@ -10,7 +10,7 @@
 After completing the core layers (E, B, A, D, C), we added the interface that actual clients can use. This phase implements:
 
 1. **SQL Parser** — recursive descent parser (no yacc/bison)
-2. **Query Executor** — AST -> ApexPipeline API translation
+2. **Query Executor** — AST -> ZeptoPipeline API translation
 3. **JOIN Framework** — ASOF JOIN (finance core) + HashJoin stub
 4. **HTTP API Server** — ClickHouse-compatible port 8123
 
@@ -69,7 +69,7 @@ All queries under 50us target achieved.
 
 ### APEX Schema Specifics
 
-APEX-DB partitions have no `symbol` column. `SymbolId` is encoded in `PartitionKey.symbol_id`.
+ZeptoDB partitions have no `symbol` column. `SymbolId` is encoded in `PartitionKey.symbol_id`.
 Therefore `WHERE symbol = N` conditions are handled as **partition-level filtering, not column-level evaluation**.
 
 ```cpp
@@ -231,17 +231,17 @@ SQL overhead = parsing (~2us) + AST interpretation + function pointer dispatch
 ## Architecture Layer Update
 
 ```
-Layer 6: HTTP API (apex_server)
+Layer 6: HTTP API (zepto_server)
     |
-Layer 5: SQL Parser + Executor (apex_sql)
+Layer 5: SQL Parser + Executor (zepto_sql)
     |
-Layer 4: Transpiler (Python DSL, apex_py)
+Layer 4: Transpiler (Python DSL, zepto_py)
     |
-Layer 3: Vectorized Engine (apex_execution)
+Layer 3: Vectorized Engine (zepto_execution)
     |
-Layer 2: Ingestion (apex_ingestion)
+Layer 2: Ingestion (zepto_ingestion)
     |
-Layer 1: Storage (apex_storage)
+Layer 1: Storage (zepto_storage)
 ```
 
 ---

@@ -1,6 +1,6 @@
-# APEX-DB System Requirements
+# ZeptoDB System Requirements
 
-*Version 2.3 — Last updated: 2026-03-22 (FR-8 Security: TLS + Auth + RBAC + SSO completed)*
+*Version 2.5 — Last updated: 2026-03-24 (Storage Tiering, Materialized View, Multi-Tenancy)*
 
 ---
 
@@ -21,6 +21,10 @@
 - FR-2.6: Window functions: SUM/AVG/MIN/MAX/ROW_NUMBER/RANK/DENSE_RANK/LAG/LEAD
 - FR-2.7: Financial functions: xbar, EMA, VWAP, DELTA, RATIO, FIRST, LAST
 - FR-2.8: Parallel query execution (scatter/gather, N threads)
+- FR-2.9: SQL DML — INSERT INTO (single/multi-row, column list), UPDATE SET WHERE, DELETE FROM WHERE
+- FR-2.10: SQL DDL — CREATE TABLE, DROP TABLE, ALTER TABLE (ADD/DROP COLUMN, SET TTL, SET ATTRIBUTE, SET STORAGE POLICY)
+- FR-2.11: SQL subqueries / CTE — WITH clause, FROM subquery, chained CTEs
+- FR-2.12: Materialized View — CREATE/DROP MATERIALIZED VIEW, incremental aggregation on ingest (SUM/COUNT/MIN/MAX/FIRST/LAST + xbar)
 
 ### FR-3: Storage
 - FR-3.1: Column-oriented in-memory store (typed arrays)
@@ -29,10 +33,11 @@
 - FR-3.4: Arena allocator — no malloc in hot path
 - FR-3.5: Parquet output (SNAPPY/ZSTD/LZ4_RAW) — Arrow C++ API, directly queryable from DuckDB/Polars/Spark
 - FR-3.6: S3 Sink — Parquet/Binary → S3 async upload, MinIO compatible, hive partitioning (`{symbol}/{hour}.parquet`)
+- FR-3.7: Storage tiering — Hot (memory) → Warm (SSD/LZ4) → Cold (S3/Parquet) → Drop, ALTER TABLE SET STORAGE POLICY
 
 ### FR-4: APIs
 - FR-4.1: HTTP API on port 8123 (ClickHouse wire protocol compatible)
-  - `POST /` — SQL query execution (JSON response)
+  - `POST /` — SQL query execution (JSON response) — SELECT, DDL, INSERT
   - `GET /ping` — ClickHouse-compatible health check
   - `GET /health` — Kubernetes liveness probe
   - `GET /ready` — Kubernetes readiness probe
@@ -40,7 +45,7 @@
   - `GET /metrics` — Prometheus OpenMetrics format
 - FR-4.2: Python binding (pybind11, zero-copy numpy/Arrow, < 1μs)
 - FR-4.3: C++ API (direct struct access, lowest latency)
-- FR-4.4: Python Ecosystem — `apex_py` package ✅
+- FR-4.4: Python Ecosystem — `zepto_py` package ✅
   - `from_pandas(df, pipeline)` — vectorized numpy batch ingest
   - `from_polars(df, pipeline)` — zero-copy Arrow buffer → ingest_batch
   - `from_polars_arrow(df, pipeline)` — polars.to_arrow() → ingest_batch
@@ -65,7 +70,7 @@
 - FR-6.4: ClickHouse query translator (xbar, ASOF JOIN, argMin/argMax)
 - FR-6.5: DuckDB/Parquet exporter (SNAPPY/ZSTD, hive partitioning)
 - FR-6.6: TimescaleDB hypertable DDL + continuous aggregates generator
-- FR-6.7: `apex-migrate` CLI (5 modes: query/hdb/clickhouse/duckdb/timescaledb)
+- FR-6.7: `zepto-migrate` CLI (5 modes: query/hdb/clickhouse/duckdb/timescaledb)
 
 ### FR-7: Production Operations
 - FR-7.1: Prometheus /metrics endpoint (OpenMetrics format)
@@ -77,9 +82,9 @@
 
 ### FR-8: Security & Access Control ✅ (2026-03-22)
 - FR-8.1: **TLS/HTTPS** — OpenSSL 3.2, cert/key PEM, port 8443; falls back to HTTP if not compiled in
-- FR-8.2: **API Key Authentication** — `apex_<256-bit>` format, SHA256-hashed store, CRUD lifecycle, file-persisted
+- FR-8.2: **API Key Authentication** — `zepto_<256-bit>` format, SHA256-hashed store, CRUD lifecycle, file-persisted
 - FR-8.3: **JWT/SSO Authentication** — HS256 (shared secret) + RS256 (PEM public key); OIDC-compatible
-  - Claims: `sub`, `exp`, `iss`, `aud`, `apex_role`, `apex_symbols`
+  - Claims: `sub`, `exp`, `iss`, `aud`, `zepto_role`, `zepto_symbols`
   - Supported IdPs: Okta, Azure AD, Google Workspace, Auth0 (any OIDC RS256 provider)
 - FR-8.4: **RBAC** — 5 roles: `admin`, `writer`, `reader`, `analyst`, `metrics`
   - Permission bitmask: READ / WRITE / ADMIN / METRICS
@@ -97,6 +102,7 @@
   - Incident response procedures (key compromise, JWT secret compromise)
   - Multi-tenant symbol isolation model
   - Security hardening checklist (network, key management, operational)
+- FR-8.8: **Multi-Tenancy** — TenantManager per-tenant resource quotas (concurrent queries, memory), table namespace isolation, usage tracking, AuthContext tenant_id binding
 
 ---
 
@@ -132,7 +138,7 @@
 ### NFR-4: Compatibility
 - SQL: ANSI SQL subset (SELECT/WHERE/GROUP BY/JOIN/OVER)
 - HTTP: ClickHouse wire protocol (port 8123)
-- Python: numpy/Arrow zero-copy; pandas/polars/duckdb interop via apex_py
+- Python: numpy/Arrow zero-copy; pandas/polars/duckdb interop via zepto_py
 - Monitoring: Prometheus + Grafana
 
 ### NFR-5: Build & Platform
@@ -147,11 +153,11 @@
 
 | Suite | Count | Coverage |
 |---|---|---|
-| Unit tests (core) | 383 | Storage, Execution, SQL, JOIN, Window, Parquet, S3, **Security/Auth (69): RBAC, ApiKey, JWT HS256/RS256, AuthManager, RateLimiter, CancellationToken, QueryTracker, SecretsProvider, AuditBuffer** |
-| Feed handler tests | 37 | FIX parser, ITCH parser, benchmarks |
-| Migration tests | 70 | q→SQL (20), HDB (15), ClickHouse (18), DuckDB (17), TimescaleDB (18) |
-| Python ecosystem tests | 208 | from_pandas/polars/arrow (47), ArrowSession (46), pandas (20), polars (16), StreamingSession (41), ingest_batch (47) |
-| **Total** | **698+** | — |
+| Unit tests (core) | 619 | Storage, Execution, SQL, JOIN, Window, Parquet, S3, Security/Auth, Cluster, Scheduler, Kafka, DDL, INSERT |
+| Feed handler tests | 21 | FIX parser, ITCH parser, benchmarks |
+| Migration tests | 126 | q→SQL, HDB, ClickHouse, DuckDB, TimescaleDB |
+| Python ecosystem tests | 208 | from_pandas/polars/arrow, ArrowSession, StreamingSession, ingest_batch |
+| **Total** | **974+** | — |
 
 > Python ecosystem suite includes ingest_batch tests (test_ingest_batch.py) which
 > overlap with test_arrow_integration.py for ArrowSession paths.

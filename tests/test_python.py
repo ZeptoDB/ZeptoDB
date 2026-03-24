@@ -2,7 +2,7 @@
 tests/test_python.py — Phase D Python 바인딩 테스트
 
 실행:
-    cd ~/apex-db
+    cd ~/zeptodb
     python3 -m pytest tests/test_python.py -v
 """
 
@@ -13,11 +13,11 @@ import time
 import pytest
 import numpy as np
 
-# build/ 디렉토리에서 apex.so, apex_py/ 를 찾는다
+# build/ 디렉토리에서 apex.so, zepto_py/ 를 찾는다
 BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "build")
 sys.path.insert(0, os.path.abspath(BUILD_DIR))
 
-import apex  # apex.so (pybind11 모듈)
+import zeptodb  # apex.so (pybind11 모듈)
 
 
 # ============================================================================
@@ -25,7 +25,7 @@ import apex  # apex.so (pybind11 모듈)
 # ============================================================================
 
 def make_pipeline():
-    db = apex.Pipeline()
+    db = zeptodb.Pipeline()
     db.start()
     return db
 
@@ -43,7 +43,7 @@ def ingest_n(db, symbol: int, n: int, base_price: int = 10000, base_vol: int = 1
 class TestBasicPipeline:
 
     def test_start_stop(self):
-        db = apex.Pipeline()
+        db = zeptodb.Pipeline()
         db.start()
         db.stop()
 
@@ -275,17 +275,17 @@ class TestLazyDSL:
         return db
 
     def test_dsl_import(self):
-        # apex_py/dsl.py 가 빌드 경로에 있어야 함
-        dsl_path = os.path.join(BUILD_DIR, "apex_py")
+        # zepto_py/dsl.py 가 빌드 경로에 있어야 함
+        dsl_path = os.path.join(BUILD_DIR, "zepto_py")
         sys.path.insert(0, dsl_path)
-        # apex_py 폴더 직접 import
+        # zepto_py 폴더 직접 import
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         assert DataFrame is not None
 
     def test_dsl_dataframe_creation(self):
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         db = self._setup_db(symbol=300)
         df = DataFrame(db, symbol=300)
         assert df.symbol == 300
@@ -293,7 +293,7 @@ class TestLazyDSL:
 
     def test_dsl_vwap_lazy(self):
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         db = self._setup_db(symbol=301, n=10)
         df = DataFrame(db, symbol=301)
         lazy_vwap = df.vwap()
@@ -306,7 +306,7 @@ class TestLazyDSL:
 
     def test_dsl_count_lazy(self):
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         N = 25
         db = self._setup_db(symbol=302, n=N)
         df = DataFrame(db, symbol=302)
@@ -318,7 +318,7 @@ class TestLazyDSL:
 
     def test_dsl_filter_sum(self):
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         N = 10
         db = self._setup_db(symbol=303, n=N, base_price=10000)
         df = DataFrame(db, symbol=303)
@@ -331,7 +331,7 @@ class TestLazyDSL:
 
     def test_dsl_column_access(self):
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         N = 5
         db = self._setup_db(symbol=304, n=N)
         df = DataFrame(db, symbol=304)
@@ -343,7 +343,7 @@ class TestLazyDSL:
     def test_dsl_lazy_value_property(self):
         """LazyResult.value 는 collect() 자동 호출"""
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         db = self._setup_db(symbol=305, n=5)
         df = DataFrame(db, symbol=305)
         lazy = df.count()
@@ -354,7 +354,7 @@ class TestLazyDSL:
     def test_dsl_cache(self):
         """collect() 두 번 호출해도 같은 결과 (캐싱)"""
         sys.path.insert(0, BUILD_DIR)
-        from apex_py.dsl import DataFrame
+        from zepto_py.dsl import DataFrame
         db = self._setup_db(symbol=306, n=8)
         df = DataFrame(db, symbol=306)
         lazy = df.count()

@@ -1,5 +1,5 @@
 """
-Tests for the vectorized ingest functions in apex_py.dataframe:
+Tests for the vectorized ingest functions in zepto_py.dataframe:
   from_pandas(), from_polars(), from_polars_arrow(), from_arrow()
 
 These functions use pipeline.ingest_batch(symbols, prices, volumes) instead of
@@ -35,7 +35,7 @@ try:
 except ImportError:
     HAS_PYARROW = False
 
-from apex_py.dataframe import (
+from zepto_py.dataframe import (
     from_pandas,
     from_polars,
     from_polars_arrow,

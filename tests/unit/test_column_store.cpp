@@ -2,10 +2,10 @@
 // Test: Column Store (Layer 1)
 // ============================================================================
 
-#include "apex/storage/column_store.h"
+#include "zeptodb/storage/column_store.h"
 #include <gtest/gtest.h>
 
-using namespace apex::storage;
+using namespace zeptodb::storage;
 
 class ColumnStoreTest : public ::testing::Test {
 protected:

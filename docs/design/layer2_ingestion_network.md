@@ -33,11 +33,11 @@ flowchart LR
 
 ## 5. Apache Kafka Consumer
 
-**Status:** Implemented (2026-03-23) — `include/apex/feeds/kafka_consumer.h`, `src/feeds/kafka_consumer.cpp`
+**Status:** Implemented (2026-03-23) — `include/zeptodb/feeds/kafka_consumer.h`, `src/feeds/kafka_consumer.cpp`
 
 ### Purpose
 
-Connects enterprise Kafka data pipelines to APEX-DB ingestion. Kafka is the dominant message bus in fintech, adtech, and e-commerce real-time systems. This integration allows any Kafka producer (market data feeds, event buses, IoT gateways) to stream ticks directly into APEX-DB without an intermediate adapter.
+Connects enterprise Kafka data pipelines to ZeptoDB ingestion. Kafka is the dominant message bus in fintech, adtech, and e-commerce real-time systems. This integration allows any Kafka producer (market data feeds, event buses, IoT gateways) to stream ticks directly into ZeptoDB without an intermediate adapter.
 
 ### Architecture
 
@@ -51,9 +51,9 @@ decode_json / decode_binary / decode_json_human
 ingest_decoded(TickMessage)
         ↓
   ┌─ router_ set?  ──→  PartitionRouter::route(symbol_id)
-  │                        ├─ local  → ApexPipeline::ingest_tick()
+  │                        ├─ local  → ZeptoPipeline::ingest_tick()
   │                        └─ remote → TcpRpcClient::ingest_tick()
-  └─ no router     ──→  ApexPipeline::ingest_tick()  (single-node)
+  └─ no router     ──→  ZeptoPipeline::ingest_tick()  (single-node)
 ```
 
 ### Wire Formats
@@ -85,9 +85,9 @@ Install dependency: `sudo dnf install -y librdkafka-devel`
 
 | Symbol | File |
 |--------|------|
-| `apex::feeds::KafkaConfig` | `include/apex/feeds/kafka_consumer.h` |
-| `apex::feeds::KafkaConsumer` | `include/apex/feeds/kafka_consumer.h` |
-| `apex::feeds::KafkaStats` | `include/apex/feeds/kafka_consumer.h` |
+| `zeptodb::feeds::KafkaConfig` | `include/zeptodb/feeds/kafka_consumer.h` |
+| `zeptodb::feeds::KafkaConsumer` | `include/zeptodb/feeds/kafka_consumer.h` |
+| `zeptodb::feeds::KafkaStats` | `include/zeptodb/feeds/kafka_consumer.h` |
 
 ### Prometheus Metrics Exposure
 
@@ -96,33 +96,33 @@ Install dependency: `sudo dnf install -y librdkafka-devel`
 ```cpp
 // 1. Format KafkaStats as Prometheus/OpenMetrics text
 std::string metrics_text =
-    apex::feeds::KafkaConsumer::format_prometheus("market-data", consumer.stats());
-// → apex_kafka_messages_consumed_total{consumer="market-data"} 1234
-//   apex_kafka_bytes_consumed_total{consumer="market-data"} 79016
-//   apex_kafka_decode_errors_total{consumer="market-data"} 0
-//   apex_kafka_route_local_total{consumer="market-data"} 1000
-//   apex_kafka_route_remote_total{consumer="market-data"} 234
-//   apex_kafka_ingest_failures_total{consumer="market-data"} 0
+    zeptodb::feeds::KafkaConsumer::format_prometheus("market-data", consumer.stats());
+// → zepto_kafka_messages_consumed_total{consumer="market-data"} 1234
+//   zepto_kafka_bytes_consumed_total{consumer="market-data"} 79016
+//   zepto_kafka_decode_errors_total{consumer="market-data"} 0
+//   zepto_kafka_route_local_total{consumer="market-data"} 1000
+//   zepto_kafka_route_remote_total{consumer="market-data"} 234
+//   zepto_kafka_ingest_failures_total{consumer="market-data"} 0
 
 // 2. Register with HttpServer to extend GET /metrics
 server.add_metrics_provider([&consumer]() {
-    return apex::feeds::KafkaConsumer::format_prometheus("market-data", consumer.stats());
+    return zeptodb::feeds::KafkaConsumer::format_prometheus("market-data", consumer.stats());
 });
 // Multiple consumers: call add_metrics_provider() once per consumer with distinct names.
 ```
 
-`HttpServer::add_metrics_provider()` is a generic extension point — it accepts any `std::function<std::string()>` and appends its output to the existing pipeline stats in `/metrics`. There is no compile-time dependency between `apex_server` and `apex_kafka`.
+`HttpServer::add_metrics_provider()` is a generic extension point — it accepts any `std::function<std::string()>` and appends its output to the existing pipeline stats in `/metrics`. There is no compile-time dependency between `zepto_server` and `zepto_kafka`.
 
 **Metric names and types:**
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `apex_kafka_messages_consumed_total` | counter | Messages successfully decoded and dispatched |
-| `apex_kafka_bytes_consumed_total` | counter | Total payload bytes received |
-| `apex_kafka_decode_errors_total` | counter | Messages that failed to decode |
-| `apex_kafka_route_local_total` | counter | Ticks sent to local pipeline |
-| `apex_kafka_route_remote_total` | counter | Ticks forwarded via RPC |
-| `apex_kafka_ingest_failures_total` | counter | Drops after all backpressure retries |
+| `zepto_kafka_messages_consumed_total` | counter | Messages successfully decoded and dispatched |
+| `zepto_kafka_bytes_consumed_total` | counter | Total payload bytes received |
+| `zepto_kafka_decode_errors_total` | counter | Messages that failed to decode |
+| `zepto_kafka_route_local_total` | counter | Ticks sent to local pipeline |
+| `zepto_kafka_route_remote_total` | counter | Ticks forwarded via RPC |
+| `zepto_kafka_ingest_failures_total` | counter | Drops after all backpressure retries |
 
 ### Tests
 

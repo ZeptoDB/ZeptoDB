@@ -63,7 +63,7 @@ StoreMaskBits → uint8_t mask_bytes
 
 ### Code Change Summary
 
-**`include/apex/execution/vectorized_engine.h`:**
+**`include/zeptodb/execution/vectorized_engine.h`:**
 - Added `BitMask` class (num_rows → num_words = ⌈n/64⌉)
 - Declared `filter_gt_i64_bitmask()`
 - Declared `sum_i64_masked()` (ctz-based sparse sum)

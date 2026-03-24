@@ -1,0 +1,170 @@
+replicaCount: 3
+
+image:
+  repository: your-registry/zeptodb
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: LoadBalancer
+  port: 8123
+  sessionAffinity: ClientIP
+
+headless:
+  enabled: true
+
+resources:
+  requests:
+    cpu: "4"
+    memory: "16Gi"
+  limits:
+    cpu: "8"
+    memory: "32Gi"
+
+config:
+  port: 8123
+  workerThreads: 8
+  analyticsMode: true
+  cloudNative: true
+  dataDir: /opt/zeptodb/data
+  hdbCompression: lz4
+  queryCacheSize: 1000
+  parallelThreshold: 100000
+
+cluster:
+  enabled: false
+  rpcPortOffset: 100       # rpc_port = service.port + offset
+  heartbeatPort: 9100
+
+persistence:
+  enabled: true
+  storageClass: gp3
+  size: 500Gi
+  accessMode: ReadWriteOnce
+
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+gracefulShutdown:
+  preStopSleepSeconds: 15
+  terminationGracePeriodSeconds: 30
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPU: 70
+  targetMemory: 80
+  scaleDown:
+    stabilizationSeconds: 300
+  scaleUp:
+    stabilizationSeconds: 60
+
+podAntiAffinity:
+  enabled: true
+  weight: 100
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+updateStrategy:
+  maxSurge: 1
+  maxUnavailable: 0
+
+prometheus:
+  scrape: true
+  port: 8123
+  path: /metrics
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+
+nodeSelector: {}
+tolerations: []
+
+# ---------------------------------------------------------------------------
+# Karpenter (Fleet API) — replaces Cluster Autoscaler
+# ---------------------------------------------------------------------------
+# Karpenter calls EC2 Fleet API directly (CreateFleet) instead of going
+# through ASG. This means:
+#   - price-capacity-optimized: Fleet picks Spot pools with lowest
+#     interruption rate AND lowest price automatically
+#   - Multi-pool request: wide instance family/size = more capacity pools
+#     = lower Spot interruption probability
+#   - Instant mode: no launch template, no ASG — node ready in 30-60s
+#
+# Enable with: --set karpenter.enabled=true
+# Requires: Karpenter v1.0+ installed on the cluster
+# ---------------------------------------------------------------------------
+karpenter:
+  enabled: false
+
+  nodeClass:
+    role: "KarpenterNodeRole"          # IAM instance profile for EC2 nodes
+    clusterName: "zeptodb-cluster"     # EKS cluster name (subnet/SG discovery)
+    amiAlias: "al2023@latest"          # Amazon Linux 2023
+    tags: {}                           # Additional EC2 tags
+
+  # =========================================================================
+  # Realtime pool: ingestion + low-latency queries
+  # Fleet API: On-Demand only → lowest-price allocation
+  # =========================================================================
+  realtime:
+    weight: 10                         # lower = higher priority
+    arch: ["arm64"]                    # Graviton (best price-performance)
+    instanceFamilies: ["c7g", "c6g"]   # compute-optimized
+    instanceSizes: ["xlarge", "2xlarge", "4xlarge"]
+    zones: []                          # empty = all AZs; set ["us-east-1a"] for single-AZ latency
+    volumeSize: "100Gi"
+    limits:
+      cpu: "64"
+      memory: "128Gi"
+    consolidateAfter: "30m"            # conservative — avoid churn during trading hours
+    budgets:                           # disruption budget — max 1 node at a time
+      - nodes: "1"
+    # userData: |                      # optional: bare-metal tuning on boot
+    #   #!/bin/bash
+    #   echo 16384 > /proc/sys/vm/nr_hugepages
+    #   echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+  # =========================================================================
+  # Analytics pool: backtesting + batch queries
+  # Fleet API: price-capacity-optimized → Spot with lowest interruption
+  #
+  # Wide instance selection = more Fleet capacity pools:
+  #   6 families × 3 sizes × 3 AZs = 54 pools
+  #   → Spot interruption rate drops significantly
+  # =========================================================================
+  analytics:
+    weight: 50                         # lower priority than realtime
+    arch: ["arm64"]
+    capacityTypes: ["spot", "on-demand"]  # Spot preferred, OD fallback
+    instanceFamilies: ["r7g", "r6g", "m7g", "m6g", "c7g", "c6g"]  # wide selection
+    instanceSizes: ["xlarge", "2xlarge", "4xlarge"]
+    zones: []                          # multi-AZ for Spot diversity
+    minCpu: ""                         # e.g. "4" — minimum vCPU per instance
+    minMemory: ""                      # e.g. "16384" (MiB) — minimum memory
+    volumeSize: "200Gi"
+    instanceStorePolicy: ""            # "RAID0" to use NVMe instance store as scratch
+    limits:
+      cpu: "128"
+      memory: "512Gi"
+    consolidateAfter: "5m"             # aggressive — reclaim idle analytics nodes fast
+    expireAfter: "24h"                 # recycle nodes daily (fresh AMI, no drift)
+    budgets:
+      - nodes: "20%"                   # allow 20% disruption for consolidation

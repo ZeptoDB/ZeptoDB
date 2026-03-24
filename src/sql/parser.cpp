@@ -1,17 +1,17 @@
 // ============================================================================
-// APEX-DB: SQL Parser Implementation
+// ZeptoDB: SQL Parser Implementation
 // ============================================================================
 // 재귀 하강 파서 — yacc/bison 없이 순수 C++ 구현
 // 윈도우 함수 지원: OVER (PARTITION BY ... ORDER BY ... ROWS N PRECEDING)
 // ============================================================================
 
-#include "apex/sql/parser.h"
+#include "zeptodb/sql/parser.h"
 #include <stdexcept>
 #include <algorithm>
 #include <cstdlib>
 #include <climits>
 
-namespace apex::sql {
+namespace zeptodb::sql {
 
 // ============================================================================
 // 토큰 유틸리티
@@ -83,6 +83,24 @@ ParsedStatement Parser::parse_statement(const std::string& sql) {
             return dispatch_ddl();
         }
     }
+    if (first.type == TokenType::INSERT) {
+        ParsedStatement ps;
+        ps.kind = ParsedStatement::Kind::INSERT;
+        ps.insert = parse_insert();
+        return ps;
+    }
+    if (first.type == TokenType::UPDATE) {
+        ParsedStatement ps;
+        ps.kind = ParsedStatement::Kind::UPDATE;
+        ps.update = parse_update();
+        return ps;
+    }
+    if (first.type == TokenType::DELETE_KW) {
+        ParsedStatement ps;
+        ps.kind = ParsedStatement::Kind::DELETE;
+        ps.del = parse_delete();
+        return ps;
+    }
 
     // Default: SELECT (handles EXPLAIN, WITH, UNION etc.)
     ParsedStatement ps;
@@ -133,9 +151,29 @@ ParsedStatement Parser::dispatch_ddl() {
     advance(); // consume CREATE / DROP / ALTER
 
     if (verb == "CREATE") {
+        // CREATE MATERIALIZED VIEW ...
+        if (current().type == TokenType::MATERIALIZED) {
+            advance(); // MATERIALIZED
+            if (current().type != TokenType::VIEW)
+                throw std::runtime_error("Expected VIEW after MATERIALIZED");
+            advance(); // VIEW
+            ParsedStatement ps;
+            ps.kind = ParsedStatement::Kind::CREATE_MV;
+            CreateMVStmt mv;
+            mv.view_name = expect(TokenType::IDENT, "view name").value;
+            // AS SELECT ...
+            if (!match(TokenType::AS)) {
+                if (current().type != TokenType::IDENT || to_upper_str(current().value) != "AS")
+                    throw std::runtime_error("Expected AS after view name");
+                advance();
+            }
+            mv.query = std::make_shared<SelectStmt>(parse_select());
+            ps.create_mv = std::move(mv);
+            return ps;
+        }
         if (current().type != TokenType::IDENT ||
             to_upper_str(current().value) != "TABLE")
-            throw std::runtime_error("Expected TABLE after CREATE");
+            throw std::runtime_error("Expected TABLE or MATERIALIZED after CREATE");
         advance(); // consume TABLE
         ParsedStatement ps;
         ps.kind = ParsedStatement::Kind::CREATE_TABLE;
@@ -143,9 +181,22 @@ ParsedStatement Parser::dispatch_ddl() {
         return ps;
     }
     if (verb == "DROP") {
+        // DROP MATERIALIZED VIEW ...
+        if (current().type == TokenType::MATERIALIZED) {
+            advance(); // MATERIALIZED
+            if (current().type != TokenType::VIEW)
+                throw std::runtime_error("Expected VIEW after MATERIALIZED");
+            advance(); // VIEW
+            ParsedStatement ps;
+            ps.kind = ParsedStatement::Kind::DROP_MV;
+            DropMVStmt mv;
+            mv.view_name = expect(TokenType::IDENT, "view name").value;
+            ps.drop_mv = std::move(mv);
+            return ps;
+        }
         if (current().type != TokenType::IDENT ||
             to_upper_str(current().value) != "TABLE")
-            throw std::runtime_error("Expected TABLE after DROP");
+            throw std::runtime_error("Expected TABLE or MATERIALIZED after DROP");
         advance(); // consume TABLE
         ParsedStatement ps;
         ps.kind = ParsedStatement::Kind::DROP_TABLE;
@@ -213,10 +264,15 @@ AlterTableStmt Parser::parse_alter_table() {
     AlterTableStmt stmt;
     stmt.table_name = expect(TokenType::IDENT, "table name").value;
 
-    if (current().type != TokenType::IDENT)
+    if (current().type != TokenType::IDENT && current().type != TokenType::SET)
         throw std::runtime_error("Expected ADD, DROP, or SET after ALTER TABLE name");
 
-    const std::string action = to_upper_str(current().value);
+    std::string action;
+    if (current().type == TokenType::SET) {
+        action = "SET";
+    } else {
+        action = to_upper_str(current().value);
+    }
     advance();
 
     if (action == "ADD") {
@@ -235,17 +291,62 @@ AlterTableStmt Parser::parse_alter_table() {
         stmt.col_name = expect(TokenType::IDENT, "column name").value;
     } else if (action == "SET") {
         // SET TTL n DAYS | HOURS
-        if (current().type != TokenType::IDENT ||
-            to_upper_str(current().value) != "TTL")
-            throw std::runtime_error("Expected TTL after SET");
-        advance(); // TTL
-        stmt.action    = AlterTableStmt::Action::SET_TTL;
-        stmt.ttl_value = parse_integer_literal();
-        if (current().type == TokenType::IDENT) {
-            stmt.ttl_unit = to_upper_str(current().value); // DAYS or HOURS
-            advance();
+        // SET ATTRIBUTE col sorted | grouped | parted
+        if (current().type != TokenType::IDENT)
+            throw std::runtime_error("Expected TTL or ATTRIBUTE after SET");
+        std::string set_what = to_upper_str(current().value);
+        if (set_what == "ATTRIBUTE") {
+            advance(); // ATTRIBUTE
+            stmt.action    = AlterTableStmt::Action::SET_ATTRIBUTE;
+            stmt.col_name  = expect(TokenType::IDENT, "column name").value;
+            stmt.attr_type = to_upper_str(expect(TokenType::IDENT, "attribute type (SORTED/GROUPED/PARTED)").value);
+            if (stmt.attr_type != "SORTED" && stmt.attr_type != "GROUPED" && stmt.attr_type != "PARTED")
+                throw std::runtime_error("Unknown attribute type: " + stmt.attr_type + " (expected SORTED, GROUPED, or PARTED)");
+        } else if (set_what == "TTL") {
+            advance(); // TTL
+            stmt.action    = AlterTableStmt::Action::SET_TTL;
+            stmt.ttl_value = parse_integer_literal();
+            if (current().type == TokenType::IDENT) {
+                stmt.ttl_unit = to_upper_str(current().value); // DAYS or HOURS
+                advance();
+            } else {
+                stmt.ttl_unit = "DAYS"; // default
+            }
+        } else if (set_what == "STORAGE") {
+            advance(); // STORAGE
+            // Expect POLICY keyword
+            if (current().type != TokenType::IDENT ||
+                to_upper_str(current().value) != "POLICY")
+                throw std::runtime_error("Expected POLICY after STORAGE");
+            advance(); // POLICY
+
+            stmt.action = AlterTableStmt::Action::SET_STORAGE_POLICY;
+
+            // Parse tier definitions: HOT n HOURS WARM n HOURS COLD n DAYS
+            auto parse_ns = [&]() -> int64_t {
+                int64_t val = parse_integer_literal();
+                std::string unit = "HOURS";
+                if (current().type == TokenType::IDENT) {
+                    unit = to_upper_str(current().value);
+                    advance();
+                }
+                if (unit == "HOURS") return val * 3'600'000'000'000LL;
+                if (unit == "DAYS")  return val * 86'400'000'000'000LL;
+                if (unit == "MINUTES") return val * 60'000'000'000LL;
+                throw std::runtime_error("Unknown time unit: " + unit);
+            };
+
+            while (current().type == TokenType::IDENT) {
+                std::string tier = to_upper_str(current().value);
+                advance();
+                if (tier == "HOT") { parse_ns(); /* HOT is implicit, just skip */ }
+                else if (tier == "WARM") { stmt.warm_after_ns = parse_ns(); }
+                else if (tier == "COLD") { stmt.cold_after_ns = parse_ns(); }
+                else if (tier == "DROP") { stmt.drop_after_ns = parse_ns(); }
+                else break;
+            }
         } else {
-            stmt.ttl_unit = "DAYS"; // default
+            throw std::runtime_error("Expected TTL, ATTRIBUTE, or STORAGE after SET");
         }
     } else {
         throw std::runtime_error("Unknown ALTER TABLE action: " + action);
@@ -412,14 +513,19 @@ SelectExpr Parser::parse_select_expr() {
             expect(TokenType::COMMA, ",");
             expr.xbar_bucket = parse_integer_literal();
         } else {
-            // SUM/AVG/MIN/MAX/FIRST/LAST: allow arithmetic expression
-            // e.g. SUM(price * volume), AVG(price - 15000)
-            auto arith = parse_arith_expr_node();
-            if (arith->kind == ArithExpr::Kind::COLUMN && !arith->left) {
-                expr.table_alias = arith->table_alias;
-                expr.column      = arith->column;
+            // SUM/AVG/MIN/MAX/FIRST/LAST: allow arithmetic expression or CASE WHEN
+            // e.g. SUM(price * volume), AVG(price - 15000), SUM(CASE WHEN ...)
+            if (check(TokenType::CASE)) {
+                advance(); // consume CASE
+                expr.case_when = parse_case_when_expr();
             } else {
-                expr.arith_expr = std::move(arith);
+                auto arith = parse_arith_expr_node();
+                if (arith->kind == ArithExpr::Kind::COLUMN && !arith->left) {
+                    expr.table_alias = arith->table_alias;
+                    expr.column      = arith->column;
+                } else {
+                    expr.arith_expr = std::move(arith);
+                }
             }
         }
         expect(TokenType::RPAREN, ")");
@@ -474,6 +580,25 @@ SelectExpr Parser::parse_select_expr() {
         case TokenType::MIN:   advance(); parse_agg(AggFunc::MIN);   break;
         case TokenType::MAX:   advance(); parse_agg(AggFunc::MAX);   break;
         case TokenType::VWAP:  advance(); parse_agg(AggFunc::VWAP);  break;
+        case TokenType::STDDEV:    advance(); parse_agg(AggFunc::STDDEV);    break;
+        case TokenType::VARIANCE:  advance(); parse_agg(AggFunc::VARIANCE);  break;
+        case TokenType::MEDIAN:    advance(); parse_agg(AggFunc::MEDIAN);    break;
+        case TokenType::PERCENTILE: {
+            advance();
+            expr.agg = AggFunc::PERCENTILE;
+            expect(TokenType::LPAREN, "(");
+            auto arith = parse_arith_expr_node();
+            if (arith->kind == ArithExpr::Kind::COLUMN && !arith->left) {
+                expr.table_alias = arith->table_alias;
+                expr.column      = arith->column;
+            } else {
+                expr.arith_expr = std::move(arith);
+            }
+            expect(TokenType::COMMA, ",");
+            expr.percentile_value = parse_integer_literal();
+            expect(TokenType::RPAREN, ")");
+            break;
+        }
 
         // kdb+ 스타일 집계 함수
         case TokenType::XBAR:  advance(); parse_agg(AggFunc::XBAR);  break;
@@ -1356,4 +1481,107 @@ std::vector<CTEDef> Parser::parse_cte_list() {
     return defs;
 }
 
-} // namespace apex::sql
+// ============================================================================
+// check_ahead_is_values: after table name, is '(' the start of VALUES (numbers)
+// or a column list (identifiers)?  Peek: if token after '(' is a number or '-',
+// it's VALUES shorthand without the VALUES keyword — treat as no column list.
+// ============================================================================
+bool Parser::check_ahead_is_values() {
+    // current() == LPAREN.  Peek at pos_+1.
+    if (pos_ + 1 >= tokens_.size()) return false;
+    auto t = tokens_[pos_ + 1].type;
+    return t == TokenType::NUMBER || t == TokenType::MINUS;
+}
+
+// ============================================================================
+// parse_insert: INSERT INTO table [(col, ...)] VALUES (v, ...) [, (v, ...)]
+// ============================================================================
+InsertStmt Parser::parse_insert() {
+    expect(TokenType::INSERT, "INSERT");
+    expect(TokenType::INTO, "INTO");
+
+    InsertStmt stmt;
+    stmt.table_name = expect(TokenType::IDENT, "table name").value;
+
+    // Optional column list: (col1, col2, ...)
+    if (check(TokenType::LPAREN) && !check_ahead_is_values()) {
+        advance(); // (
+        do {
+            stmt.columns.push_back(expect(TokenType::IDENT, "column name").value);
+        } while (match(TokenType::COMMA));
+        expect(TokenType::RPAREN, ")");
+    }
+
+    expect(TokenType::VALUES, "VALUES");
+
+    // Parse value rows: (v1, v2, ...) [, (v1, v2, ...)]
+    do {
+        expect(TokenType::LPAREN, "(");
+        std::vector<InsertValue> row;
+        do {
+            bool neg = match(TokenType::MINUS);
+            std::string s = expect(TokenType::NUMBER, "number").value;
+            if (s.find('.') != std::string::npos) {
+                double d = std::stod(s);
+                row.push_back(InsertValue(neg ? -d : d));
+            } else {
+                int64_t v = std::stoll(s);
+                row.push_back(InsertValue(neg ? -v : v));
+            }
+        } while (match(TokenType::COMMA));
+        expect(TokenType::RPAREN, ")");
+        stmt.value_rows.push_back(std::move(row));
+    } while (match(TokenType::COMMA));
+
+    return stmt;
+}
+
+// ============================================================================
+// parse_update: UPDATE table SET col = val [, ...] [WHERE ...]
+// ============================================================================
+UpdateStmt Parser::parse_update() {
+    expect(TokenType::UPDATE, "UPDATE");
+
+    UpdateStmt stmt;
+    stmt.table_name = expect(TokenType::IDENT, "table name").value;
+
+    expect(TokenType::SET, "SET");
+
+    // Parse assignments: col = val [, col = val ...]
+    do {
+        UpdateAssign assign;
+        assign.column = expect(TokenType::IDENT, "column name").value;
+        expect(TokenType::EQ, "=");
+        bool neg = match(TokenType::MINUS);
+        assign.value = parse_integer_literal();
+        if (neg) assign.value = -assign.value;
+        stmt.assignments.push_back(std::move(assign));
+    } while (match(TokenType::COMMA));
+
+    // Optional WHERE
+    if (match(TokenType::WHERE)) {
+        stmt.where = parse_where();
+    }
+
+    return stmt;
+}
+
+// ============================================================================
+// parse_delete: DELETE FROM table [WHERE ...]
+// ============================================================================
+DeleteStmt Parser::parse_delete() {
+    expect(TokenType::DELETE_KW, "DELETE");
+    expect(TokenType::FROM, "FROM");
+
+    DeleteStmt stmt;
+    stmt.table_name = expect(TokenType::IDENT, "table name").value;
+
+    // Optional WHERE
+    if (match(TokenType::WHERE)) {
+        stmt.where = parse_where();
+    }
+
+    return stmt;
+}
+
+} // namespace zeptodb::sql

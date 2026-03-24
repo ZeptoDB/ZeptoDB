@@ -19,12 +19,12 @@
 #include <hwy/highway.h>
 #include <hwy/cache_control.h>
 
-#include "apex/execution/vectorized_engine.h"
-#include "apex/common/logger.h"
+#include "zeptodb/execution/vectorized_engine.h"
+#include "zeptodb/common/logger.h"
 
 HWY_BEFORE_NAMESPACE();
 
-namespace apex::execution {
+namespace zeptodb::execution {
 namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
@@ -353,7 +353,7 @@ double vwap_fused_impl(const int64_t* prices, const int64_t* volumes, size_t n) 
 }
 
 }  // namespace HWY_NAMESPACE
-}  // namespace apex::execution
+}  // namespace zeptodb::execution
 
 HWY_AFTER_NAMESPACE();
 
@@ -364,7 +364,7 @@ HWY_AFTER_NAMESPACE();
 
 #include <numeric>  // popcount
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
 HWY_EXPORT(sum_i64_simd);
 HWY_EXPORT(sum_i64_simd_v2_impl);
@@ -512,6 +512,6 @@ double vwap_fused(const int64_t* prices, const int64_t* volumes, size_t n) {
     return HWY_DYNAMIC_DISPATCH(vwap_fused_impl)(prices, volumes, n);
 }
 
-}  // namespace apex::execution
+}  // namespace zeptodb::execution
 
 #endif  // HWY_ONCE

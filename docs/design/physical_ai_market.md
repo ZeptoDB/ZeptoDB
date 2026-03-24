@@ -1,4 +1,4 @@
-# APEX-DB x Physical AI — Business Opportunity Analysis
+# ZeptoDB x Physical AI — Business Opportunity Analysis
 # 2026-03-22
 
 ---
@@ -43,7 +43,7 @@ CAN bus:  1,000+ channels × 100Hz
 - Redis used for real-time sensor fusion → unstable latency
 - Python-based analytics pipeline is separate from C++ real-time loop
 
-**APEX-DB solution:**
+**ZeptoDB solution:**
 ```sql
 -- Camera-LiDAR time synchronization (ASOF JOIN)
 SELECT c.frame_id, c.timestamp, l.scan_data
@@ -65,13 +65,13 @@ WHERE DELTA(vibration) OVER (ORDER BY timestamp) > 500
 ```
 
 **Sales message:**
-> "The era of ROS bag + offline analysis is over. Fuse vehicle sensor data in real-time with APEX-DB and connect to Python ML pipeline zero-copy. 522ns latency."
+> "The era of ROS bag + offline analysis is over. Fuse vehicle sensor data in real-time with ZeptoDB and connect to Python ML pipeline zero-copy. 522ns latency."
 
 **Competitive advantages:**
 - InfluxDB: ms latency, no ASOF JOIN
 - TimescaleDB: has SQL but no SIMD, slow
 - Redis: no persistent storage, no aggregation
-- **APEX-DB: μs latency + ASOF/Window JOIN + Python zero-copy + HDB history**
+- **ZeptoDB: μs latency + ASOF/Window JOIN + Python zero-copy + HDB history**
 
 ---
 
@@ -91,7 +91,7 @@ Steel: rolling mill vibration 5KHz × 50 sensors = 250K points/sec
 - Anomaly detection is batch processing → post-incident analysis
 - Complex to connect predictive maintenance ML models to equipment
 
-**APEX-DB solution:**
+**ZeptoDB solution:**
 ```sql
 -- Real-time predictive maintenance (anomaly detection)
 SELECT equipment_id, timestamp,
@@ -114,7 +114,7 @@ GROUP BY xbar(timestamp, 60000000000)
 - Predictive maintenance reduces unplanned downtime by 80%
 
 **Sales message:**
-> "No DB could process semiconductor fab 10KHz sensor data in real-time — until now. APEX-DB delivers 5.52M points/sec ingestion, 272μs anomaly detection, and direct Python ML connection to make predictive maintenance a reality."
+> "No DB could process semiconductor fab 10KHz sensor data in real-time — until now. ZeptoDB delivers 5.52M points/sec ingestion, 272μs anomaly detection, and direct Python ML connection to make predictive maintenance a reality."
 
 ---
 
@@ -140,16 +140,16 @@ Industrial robot:
 Robot learning loop:
 Sensor → real-time feature calculation → neural net inference → action → back to sensor
                     ↑
-            APEX-DB needed here
+            ZeptoDB needed here
             (Feature Store + Replay Buffer)
 ```
 
-**APEX-DB solution:**
+**ZeptoDB solution:**
 ```python
-import apex
+import zeptodb
 
 # Robot sensor stream → Feature Store
-db = apex.Pipeline()
+db = zeptodb.Pipeline()
 db.start()
 
 # Real-time feature calculation (C++ engine)
@@ -169,7 +169,7 @@ action = policy_network(tensor)
 ```
 
 **Sales message:**
-> "The bottleneck in robot reinforcement learning is the Feature Store. Connect sensor → Feature → PyTorch pipeline in 522ns with APEX-DB Python zero-copy. NVIDIA Isaac compatible."
+> "The bottleneck in robot reinforcement learning is the Feature Store. Connect sensor → Feature → PyTorch pipeline in 522ns with ZeptoDB Python zero-copy. NVIDIA Isaac compatible."
 
 ---
 
@@ -185,7 +185,7 @@ action = policy_network(tensor)
   Collision avoidance: each drone needs real-time position of drones within 50m
 ```
 
-**APEX-DB distributed cluster:**
+**ZeptoDB distributed cluster:**
 ```
 Ground Station (coordinator node)
     ├── Edge Node 1 (drones 1~25)
@@ -193,7 +193,7 @@ Ground Station (coordinator node)
     ├── Edge Node 3 (drones 51~75)
     └── Edge Node 4 (drones 76~100)
 
-Each edge node: APEX-DB LocalQueryScheduler
+Each edge node: ZeptoDB LocalQueryScheduler
 Inter-node: UCX Transport (future CXL)
 ```
 
@@ -208,12 +208,12 @@ WHERE haversine(d1.lat, d1.lon, d2.lat, d2.lon) < 50
 
 ---
 
-## 3. APEX-DB x Physical AI Positioning Matrix
+## 3. ZeptoDB x Physical AI Positioning Matrix
 
 ```
                     LOW LATENCY
                         ↑
-           APEX-DB ●    │
+           ZeptoDB ●    │
             (μs)         │
                          │    ● Redis
                          │      (ms, no persistence)
@@ -226,7 +226,7 @@ WHERE haversine(d1.lat, d1.lon, d2.lat, d2.lon) < 50
                     HIGH LATENCY
 ```
 
-APEX-DB is the only open-source DB competitive in **both finance and Physical AI**.
+ZeptoDB is the only open-source DB competitive in **both finance and Physical AI**.
 
 ---
 
@@ -278,4 +278,4 @@ Add:
 > It's needed for robots avoiding obstacles, autonomous vehicles fusing sensors,
 > and factories predicting failures.
 >
-> APEX-DB: wherever time-series data is mission-critical.
+> ZeptoDB: wherever time-series data is mission-critical.

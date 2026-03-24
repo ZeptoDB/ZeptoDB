@@ -1,15 +1,15 @@
-# APEX-DB: Security & Access Control Layer (Layer 5)
+# ZeptoDB: Security & Access Control Layer (Layer 5)
 
 **Version:** 2.0
 **Last updated:** 2026-03-22
 **Status:** ✅ Fully Implemented (all contract-blocker features complete)
-**Related code:** `include/apex/auth/`, `src/auth/`, `tests/unit/test_auth.cpp`
+**Related code:** `include/zeptodb/auth/`, `src/auth/`, `tests/unit/test_auth.cpp`
 
 ---
 
 ## 1. Overview
 
-APEX-DB's security layer enforces authentication, authorization, and audit logging
+ZeptoDB's security layer enforces authentication, authorization, and audit logging
 across all HTTP API endpoints. It is designed to meet the requirements of financial
 institutions operating under EMIR, MiFID II, and SOC2 frameworks.
 
@@ -80,14 +80,14 @@ Secrets bootstrap:
 TLS is configured via `TlsConfig` passed to `HttpServer`:
 
 ```cpp
-apex::auth::TlsConfig tls;
+zeptodb::auth::TlsConfig tls;
 tls.enabled    = true;
-tls.cert_path  = "/etc/apex-db/tls/server.crt";  // PEM
-tls.key_path   = "/etc/apex-db/tls/server.key";  // PEM
+tls.cert_path  = "/etc/zeptodb/tls/server.crt";  // PEM
+tls.key_path   = "/etc/zeptodb/tls/server.key";  // PEM
 tls.https_port = 8443;
 tls.also_serve_http = false;  // disable unencrypted HTTP in production
 
-auto server = apex::server::HttpServer(executor, 8123, tls, auth_manager);
+auto server = zeptodb::server::HttpServer(executor, 8123, tls, auth_manager);
 ```
 
 Compile-time activation: when OpenSSL is detected, CMake sets `APEX_TLS_ENABLED=1`
@@ -99,13 +99,13 @@ falls back to HTTP (with a startup warning).
 **Self-signed (development / internal):**
 ```bash
 openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt \
-  -days 365 -nodes -subj "/CN=apex-db.internal"
+  -days 365 -nodes -subj "/CN=zeptodb.internal"
 ```
 
 **Production (Let's Encrypt / corporate CA):**
 ```bash
-certbot certonly --standalone -d apex-db.yourdomain.com
-# certificates at /etc/letsencrypt/live/apex-db.yourdomain.com/
+certbot certonly --standalone -d zeptodb.yourdomain.com
+# certificates at /etc/letsencrypt/live/zeptodb.yourdomain.com/
 ```
 
 **mTLS (inter-node cluster authentication):**
@@ -115,7 +115,7 @@ This prevents unauthorized nodes from joining the cluster.
 ```bash
 # Generate CA
 openssl genrsa -out ca.key 4096
-openssl req -new -x509 -key ca.key -out ca.crt -days 3650 -subj "/CN=apex-db-ca"
+openssl req -new -x509 -key ca.key -out ca.crt -days 3650 -subj "/CN=zeptodb-ca"
 
 # Per-node certificate
 openssl genrsa -out node-01.key 2048
@@ -134,8 +134,8 @@ openssl x509 -req -in node-01.csr -CA ca.crt -CAkey ca.key \
 
 **Rotation procedure (zero downtime):**
 1. Generate new certificate (keep old running)
-2. Deploy new cert to `/etc/apex-db/tls/server.crt.new`
-3. `systemctl reload apex-db` (SIGHUP reloads TLS context)
+2. Deploy new cert to `/etc/zeptodb/tls/server.crt.new`
+3. `systemctl reload zeptodb` (SIGHUP reloads TLS context)
 4. Verify TLS handshake on new cert
 5. Remove old cert backup
 
@@ -150,9 +150,9 @@ API keys are the primary authentication mechanism for service-to-service access
 
 **Key format:**
 ```
-apex_<64-character lowercase hex>    (256-bit entropy via RAND_bytes)
+zepto_<64-character lowercase hex>    (256-bit entropy via RAND_bytes)
 
-Example: apex_3f7a2b9d1e4c8f0a5b6d7e2c9a1b3f8e4d7c2a9b5e1f3d8a6b4c7e2f9a1b3d
+Example: zepto_3f7a2b9d1e4c8f0a5b6d7e2c9a1b3f8e4d7c2a9b5e1f3d8a6b4c7e2f9a1b3d
 ```
 
 **Security properties:**
@@ -177,9 +177,9 @@ Example: apex_3f7a2b9d1e4c8f0a5b6d7e2c9a1b3f8e4d7c2a9b5e1f3d8a6b4c7e2f9a1b3d
                 └──────────────┘
 ```
 
-**Storage format** (`/etc/apex-db/keys.conf`):
+**Storage format** (`/etc/zeptodb/keys.conf`):
 ```
-# apex-db-keys-v1
+# zeptodb-keys-v1
 # id|name|key_hash|role|symbols|enabled|created_at_ns
 ak_3f7a2b9d|trading-desk-1|sha256:<64-hex>|reader|AAPL,GOOG|1|1742000000000000000
 ak_1e4c8f0a|data-pipeline|sha256:<64-hex>|writer||1|1742000000000000000
@@ -189,15 +189,15 @@ ak_5b6d7e2c|prometheus|sha256:<64-hex>|metrics||1|1742000000000000000
 **Rotation procedure:**
 ```bash
 # 1. Create new key with same permissions
-NEW_KEY=$(apex-admin key create --name "trading-desk-1-v2" --role reader --symbols "AAPL,GOOG")
+NEW_KEY=$(zepto-admin key create --name "trading-desk-1-v2" --role reader --symbols "AAPL,GOOG")
 
 # 2. Deploy NEW_KEY to the client application
 
 # 3. After client confirms new key works, revoke old key
-apex-admin key revoke ak_3f7a2b9d
+zepto-admin key revoke ak_3f7a2b9d
 
 # 4. Verify old key no longer works
-curl -H "Authorization: Bearer <old_key>" https://apex-db:8443/ping
+curl -H "Authorization: Bearer <old_key>" https://zeptodb:8443/ping
 # → 401 Unauthorized
 ```
 
@@ -220,31 +220,31 @@ such as Okta, Azure Active Directory, Google Workspace, and Auth0.
 | `sub` | string | ✅ | Subject (user ID, service account) |
 | `exp` | integer | ✅ | Expiry (Unix seconds, validated) |
 | `iss` | string | When configured | Issuer URL (e.g. `https://corp.okta.com`) |
-| `aud` | string/array | When configured | Audience (e.g. `apex-db`) |
-| `apex_role` | string | Recommended | Role assignment: admin/writer/reader/analyst/metrics |
-| `apex_symbols` | string | Optional | Comma-separated symbol whitelist: `AAPL,GOOG,MSFT` |
+| `aud` | string/array | When configured | Audience (e.g. `zeptodb`) |
+| `zepto_role` | string | Recommended | Role assignment: admin/writer/reader/analyst/metrics |
+| `zepto_symbols` | string | Optional | Comma-separated symbol whitelist: `AAPL,GOOG,MSFT` |
 | `email` | string | Optional | Used for audit log display name |
 
 **OIDC integration example (Okta):**
 ```cpp
 JwtValidator::Config jwt_cfg;
-jwt_cfg.rs256_public_key_pem = load_file("/etc/apex-db/okta_public.pem");
+jwt_cfg.rs256_public_key_pem = load_file("/etc/zeptodb/okta_public.pem");
 jwt_cfg.expected_issuer      = "https://corp.okta.com/oauth2/default";
-jwt_cfg.expected_audience    = "apex-db";
-jwt_cfg.role_claim           = "apex_role";    // custom claim in Okta app
-jwt_cfg.symbols_claim        = "apex_symbols"; // custom claim in Okta app
+jwt_cfg.expected_audience    = "zeptodb";
+jwt_cfg.role_claim           = "zepto_role";    // custom claim in Okta app
+jwt_cfg.symbols_claim        = "zepto_symbols"; // custom claim in Okta app
 ```
 
 **IdP configuration (Okta example):**
 1. Create an API Services application in Okta
-2. Add custom claims: `apex_role` (string) and `apex_symbols` (string)
+2. Add custom claims: `zepto_role` (string) and `zepto_symbols` (string)
 3. Configure claim values per group: `Trading-Desk` → `reader`, `Quant-Research` → `analyst`
 4. Export the RS256 public key from Okta JWKS endpoint
-5. Configure APEX-DB with the exported PEM
+5. Configure ZeptoDB with the exported PEM
 
 **Token rotation:**
 - JWTs are short-lived (typically 1 hour). The IdP handles rotation transparently.
-- APEX-DB verifies `exp` on every request — no server-side token revocation needed.
+- ZeptoDB verifies `exp` on every request — no server-side token revocation needed.
 - For immediate revocation: rotate the signing key in the IdP (all existing tokens become invalid).
 
 ---
@@ -253,7 +253,7 @@ jwt_cfg.symbols_claim        = "apex_symbols"; // custom claim in Okta app
 
 ### 4.1 Role Model
 
-APEX-DB uses five predefined roles covering all access patterns for financial operations:
+ZeptoDB uses five predefined roles covering all access patterns for financial operations:
 
 | Role | Permissions | Target User |
 |------|-------------|-------------|
@@ -289,7 +289,7 @@ METRICS      3     /metrics, /stats, /health, /ready endpoints
 
 ### 4.3 Symbol-Level Access Control (Multi-Tenant)
 
-For organizations with multiple trading desks or external analysts, APEX-DB supports
+For organizations with multiple trading desks or external analysts, ZeptoDB supports
 per-identity symbol whitelisting.
 
 **API Key with symbol restriction:**
@@ -306,8 +306,8 @@ std::string key = auth->create_api_key(
 ```json
 {
   "sub": "analyst@hedge-fund-client.com",
-  "apex_role": "analyst",
-  "apex_symbols": "AAPL,GOOG,MSFT",
+  "zepto_role": "analyst",
+  "zepto_symbols": "AAPL,GOOG,MSFT",
   "exp": 9999999999
 }
 ```
@@ -359,7 +359,7 @@ Every authenticated request is recorded to the audit log:
 ```cpp
 AuthManager::Config cfg;
 cfg.audit_enabled  = true;
-cfg.audit_log_file = "/var/log/apex-db/audit.log";  // empty = spdlog default
+cfg.audit_log_file = "/var/log/zeptodb/audit.log";  // empty = spdlog default
 ```
 
 ### 5.3 Log Retention Policy
@@ -376,7 +376,7 @@ supporting regulatory inspection requests.
 
 ### 5.4 Regulatory Compliance Mapping
 
-| Regulation | Requirement | APEX-DB Implementation |
+| Regulation | Requirement | ZeptoDB Implementation |
 |-----------|-------------|----------------------|
 | **EMIR** | Transaction record retention (5 years) | Audit log + WAL archival to S3 |
 | **MiFID II Article 25** | Investment firm record keeping (7 years) | 7-year audit log retention |
@@ -397,14 +397,14 @@ supporting regulatory inspection requests.
 | Role assignment review | Quarterly | Department heads | Confirm RBAC roles are still appropriate |
 | Admin account audit | Monthly | CISO | Verify admin key count ≤ 3 |
 | Symbol ACL review | On change | Team lead | Confirm analyst symbol lists |
-| JWT claim mapping | On IdP changes | IAM team | Re-verify `apex_role` claim values |
+| JWT claim mapping | On IdP changes | IAM team | Re-verify `zepto_role` claim values |
 
 **Inactive key cleanup script:**
 ```bash
 # Revoke all keys not used in 30 days
-apex-admin key list --format json | \
+zepto-admin key list --format json | \
   jq -r '.[] | select(.last_used_days > 30) | .id' | \
-  xargs -I{} apex-admin key revoke {}
+  xargs -I{} zepto-admin key revoke {}
 ```
 
 ### 6.2 Separation of Duties
@@ -426,7 +426,7 @@ apex-admin key list --format json | \
 - [ ] VPC-only deployment (no public internet exposure)
 
 **Key management:**
-- [ ] Store `keys.conf` with permissions `600` (root or apex-db service user only)
+- [ ] Store `keys.conf` with permissions `600` (root or zeptodb service user only)
 - [ ] Rotate all API keys at 90-day intervals
 - [ ] Never log raw API keys — log short ID only
 - [ ] Admin key count ≤ 3 (principle of least privilege)
@@ -436,19 +436,19 @@ apex-admin key list --format json | \
 - [ ] Audit log shipped to immutable storage (S3 Object Lock) in real-time
 - [ ] Alert on failed authentication spikes (> 100 failures in 5 minutes)
 - [ ] Alert on new admin key creation (always unusual)
-- [ ] Enable Prometheus `apex_auth_failures_total` metric (todo: add metric)
+- [ ] Enable Prometheus `zepto_auth_failures_total` metric (todo: add metric)
 
 ### 6.4 Incident Response Procedures
 
 **Suspected API key compromise:**
-1. Immediately revoke the suspected key: `apex-admin key revoke <key_id>`
+1. Immediately revoke the suspected key: `zepto-admin key revoke <key_id>`
 2. Review audit log for all requests made by that key: `grep "subject=<key_id>" audit.log`
 3. Issue a new key with same permissions to the legitimate owner
 4. Notify security team and document the incident
 
 **Suspected JWT secret compromise (HS256):**
 1. Rotate the HS256 secret in AuthManager config immediately
-2. Restart APEX-DB to apply the new secret (all existing tokens become invalid)
+2. Restart ZeptoDB to apply the new secret (all existing tokens become invalid)
 3. Notify all SSO users to re-authenticate
 4. Review audit log for anomalous access patterns in the past 1 hour
 
@@ -456,7 +456,7 @@ apex-admin key list --format json | \
 1. Immediately rotate the signing key in the IdP (Okta/Azure AD)
 2. Download the new JWKS/PEM public key
 3. Update `rs256_public_key_pem` in AuthManager config
-4. Reload APEX-DB config
+4. Reload ZeptoDB config
 5. Existing tokens signed by old key are now invalid
 
 **Unauthorized access attempt:**
@@ -467,7 +467,7 @@ apex-admin key list --format json | \
 
 ### 6.5 Multi-Tenant Isolation Model
 
-For managed service operators running APEX-DB shared infrastructure:
+For managed service operators running ZeptoDB shared infrastructure:
 
 ```
 Tenant A (Hedge Fund Alpha)
@@ -500,21 +500,21 @@ AuthManager::Config cfg;
 cfg.enabled = true;
 
 // --- API Key ---
-cfg.api_keys_file = "/etc/apex-db/keys.conf";
+cfg.api_keys_file = "/etc/zeptodb/keys.conf";
 
 // --- JWT/SSO ---
 cfg.jwt_enabled = true;
 cfg.jwt.hs256_secret           = getenv("APEX_JWT_SECRET");   // or ""
-cfg.jwt.rs256_public_key_pem   = load_file("/etc/apex-db/idp_public.pem"); // or ""
+cfg.jwt.rs256_public_key_pem   = load_file("/etc/zeptodb/idp_public.pem"); // or ""
 cfg.jwt.expected_issuer        = "https://corp.okta.com/oauth2/default";
-cfg.jwt.expected_audience      = "apex-db";
+cfg.jwt.expected_audience      = "zeptodb";
 cfg.jwt.verify_expiry          = true;
-cfg.jwt.role_claim             = "apex_role";
-cfg.jwt.symbols_claim          = "apex_symbols";
+cfg.jwt.role_claim             = "zepto_role";
+cfg.jwt.symbols_claim          = "zepto_symbols";
 
 // --- Audit ---
 cfg.audit_enabled  = true;
-cfg.audit_log_file = "/var/log/apex-db/audit.log";
+cfg.audit_log_file = "/var/log/zeptodb/audit.log";
 
 // --- Public paths (no auth required) ---
 cfg.public_paths = {"/ping", "/health", "/ready"};
@@ -525,8 +525,8 @@ cfg.public_paths = {"/ping", "/health", "/ready"};
 ```cpp
 TlsConfig tls;
 tls.enabled         = true;
-tls.cert_path       = "/etc/apex-db/tls/server.crt";
-tls.key_path        = "/etc/apex-db/tls/server.key";
+tls.cert_path       = "/etc/zeptodb/tls/server.crt";
+tls.key_path        = "/etc/zeptodb/tls/server.key";
 tls.https_port      = 8443;
 tls.also_serve_http = false;  // true only during migration window
 ```
@@ -537,8 +537,8 @@ Never hardcode secrets in config files. Use environment variables:
 
 ```bash
 export APEX_JWT_SECRET="$(openssl rand -hex 32)"
-export APEX_TLS_CERT_PATH="/etc/apex-db/tls/server.crt"
-export APEX_TLS_KEY_PATH="/etc/apex-db/tls/server.key"
+export APEX_TLS_CERT_PATH="/etc/zeptodb/tls/server.crt"
+export APEX_TLS_KEY_PATH="/etc/zeptodb/tls/server.key"
 ```
 
 For Kubernetes deployments, store secrets in `Secret` objects:
@@ -546,7 +546,7 @@ For Kubernetes deployments, store secrets in `Secret` objects:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: apex-db-secrets
+  name: zeptodb-secrets
 data:
   jwt-secret: <base64-encoded>
   tls.crt: <base64-encoded>
@@ -560,7 +560,7 @@ data:
 ### 8.1 File Structure
 
 ```
-include/apex/auth/
+include/zeptodb/auth/
   rbac.h            — Role enum, Permission bitmask, role_to_string() (header-only)
   api_key_store.h   — ApiKeyEntry, ApiKeyStore class
   jwt_validator.h   — JwtClaims, JwtValidator class (HS256 + RS256)
@@ -688,7 +688,7 @@ Content-Type: application/json
 
 {"name":"algo-service","role":"writer"}
 
-→ {"key":"apex_<64-hex>"}  (shown once, store securely)
+→ {"key":"zepto_<64-hex>"}  (shown once, store securely)
 ```
 
 ### List active queries
@@ -790,11 +790,11 @@ VAULT_TOKEN=s.xxx
 Mount Kubernetes Secret or Docker secret to `/run/secrets/`:
 ```yaml
 volumes:
-  - name: apex-secrets
+  - name: zepto-secrets
     secret:
-      secretName: apex-db-secrets
+      secretName: zeptodb-secrets
 volumeMounts:
-  - name: apex-secrets
+  - name: zepto-secrets
     mountPath: /run/secrets
     readOnly: true
 ```

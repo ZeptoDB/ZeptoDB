@@ -1,4 +1,4 @@
-# APEX-DB Benchmark Results — Phase E (End-to-End MVP)
+# ZeptoDB Benchmark Results — Phase E (End-to-End MVP)
 # Run date: 2026-03-21
 # Environment: Intel Xeon 6975P-C, 8 vCPU, 30GB RAM, Amazon Linux 2023
 
@@ -67,7 +67,7 @@
 ## kdb+ Comparison Reference
 
 ### kdb+ Published Benchmarks (reference values)
-| Metric | kdb+ (reference) | APEX-DB (current) | Status |
+| Metric | kdb+ (reference) | ZeptoDB (current) | Status |
 |---|---|---|---|
 | Ingestion throughput | ~2–5M ticks/sec (single tickerplant) | **5.52M ticks/sec** | ✅ Equivalent to superior |
 | VWAP 1M rows | ~500–800μs | **637μs** | ✅ Equivalent |

@@ -12,8 +12,8 @@
 //     → 행당 함수 호출 오버헤드 완전 제거
 // ============================================================================
 
-#include "apex/execution/jit_engine.h"
-#include "apex/common/logger.h"
+#include "zeptodb/execution/jit_engine.h"
+#include "zeptodb/common/logger.h"
 
 // LLVM 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -44,7 +44,7 @@
 #include <stdexcept>
 #include <atomic>
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
 // ============================================================================
 // JITEngine::Impl — LLVM OrcJIT 상태 보관
@@ -123,7 +123,7 @@ bool JITEngine::initialize() {
     //   → unique_function이 소유권을 가져가므로 재설정 시 이전 람다 파괴
     impl_->jit->getIRTransformLayer().setTransform(apply_o3);
 
-    APEX_INFO("LLVM OrcJIT 초기화 완료 (O3 최적화 패스 등록)");
+    ZEPTO_INFO("LLVM OrcJIT 초기화 완료 (O3 최적화 패스 등록)");
     return true;
 }
 
@@ -194,7 +194,7 @@ FilterFn JITEngine::compile(const std::string& expr) {
 
     // 2. LLVM 모듈 + IR 빌더 생성
     auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto mod = std::make_unique<llvm::Module>("apex_jit_v1", *ctx);
+    auto mod = std::make_unique<llvm::Module>("zepto_jit_v1", *ctx);
 
     llvm::Type* i64_ty = llvm::Type::getInt64Ty(*ctx);
     llvm::Type* i1_ty  = llvm::Type::getInt1Ty(*ctx);
@@ -203,7 +203,7 @@ FilterFn JITEngine::compile(const std::string& expr) {
     );
 
     uint32_t fn_id = impl_->fn_counter.fetch_add(1);
-    std::string fn_name = "apex_filter_" + std::to_string(fn_id);
+    std::string fn_name = "zepto_filter_" + std::to_string(fn_id);
 
     llvm::Function* fn = llvm::Function::Create(
         fn_type, llvm::Function::ExternalLinkage, fn_name, *mod
@@ -252,7 +252,7 @@ FilterFn JITEngine::compile(const std::string& expr) {
 // compile_bulk (v2): 벌크 필터 함수 IR 생성
 //
 // 생성 IR 구조:
-//   void apex_bulk_filter_N(
+//   void zepto_bulk_filter_N(
 //       const i64* prices, const i64* volumes,
 //       i64 n, i32* out_indices, i64* out_count)
 //   {
@@ -296,7 +296,7 @@ BulkFilterFn JITEngine::compile_bulk(const std::string& expr) {
 
     // 2. 모듈 + 타입 정의
     auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto mod = std::make_unique<llvm::Module>("apex_jit_bulk", *ctx);
+    auto mod = std::make_unique<llvm::Module>("zepto_jit_bulk", *ctx);
 
     llvm::Type* void_ty   = llvm::Type::getVoidTy(*ctx);
     llvm::Type* i64_ty    = llvm::Type::getInt64Ty(*ctx);
@@ -314,7 +314,7 @@ BulkFilterFn JITEngine::compile_bulk(const std::string& expr) {
     );
 
     uint32_t fn_id = impl_->fn_counter.fetch_add(1);
-    std::string fn_name = "apex_bulk_filter_" + std::to_string(fn_id);
+    std::string fn_name = "zepto_bulk_filter_" + std::to_string(fn_id);
 
     llvm::Function* bulk_fn = llvm::Function::Create(
         bulk_fn_type, llvm::Function::ExternalLinkage, fn_name, *mod
@@ -567,4 +567,4 @@ std::unique_ptr<ASTNode> JITEngine::parse(const std::string& expr, size_t& pos) 
     return parse_or(expr, pos);
 }
 
-}  // namespace apex::execution
+}  // namespace zeptodb::execution

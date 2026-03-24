@@ -1,7 +1,7 @@
-## APEX-DB Feed Handler Guide
+## ZeptoDB Feed Handler Guide
 
 Feed Handlers are components that receive real-time market data from exchanges, data vendors,
-and feed providers and ingest it into APEX-DB.
+and feed providers and ingest it into ZeptoDB.
 
 ---
 
@@ -11,7 +11,7 @@ and feed providers and ingest it into APEX-DB.
 **Purpose:** Integration with data vendors such as Bloomberg, Reuters, ICE
 
 ```cpp
-#include "apex/feeds/fix_feed_handler.h"
+#include "zeptodb/feeds/fix_feed_handler.h"
 
 // FIX configuration
 feeds::FeedConfig config;
@@ -44,7 +44,7 @@ feed_handler.subscribe({"AAPL", "MSFT", "TSLA"});
 **Purpose:** Direct connection to exchanges such as NASDAQ, NYSE, CME
 
 ```cpp
-#include "apex/feeds/multicast_receiver.h"
+#include "zeptodb/feeds/multicast_receiver.h"
 
 // Multicast reception
 feeds::MulticastReceiver receiver("239.1.1.1", 10000);
@@ -70,7 +70,7 @@ receiver.start();
 **Purpose:** NASDAQ TotalView market data
 
 ```cpp
-#include "apex/feeds/nasdaq_itch.h"
+#include "zeptodb/feeds/nasdaq_itch.h"
 
 feeds::NASDAQITCHParser parser;
 
@@ -102,7 +102,7 @@ receiver.on_packet([&](const uint8_t* data, size_t len) {
 **Purpose:** Binance Spot/Futures real-time data
 
 ```cpp
-#include "apex/feeds/binance_feed.h"
+#include "zeptodb/feeds/binance_feed.h"
 
 // TODO: WebSocket library integration needed
 feeds::BinanceFeedHandler feed_handler(config, &mapper);
@@ -141,7 +141,7 @@ feed_handler.subscribe({"btcusdt@trade", "ethusdt@trade"});
 └─────────┬──────────┘
           ↓
 ┌─────────▼──────────┐
-│ APEX-DB Pipeline   │  5.52M ticks/sec
+│ ZeptoDB Pipeline   │  5.52M ticks/sec
 │ ingest()           │  zero-copy
 └────────────────────┘
 ```
@@ -205,7 +205,7 @@ pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 
 ### Complete Integration Example
 ```bash
-cd /home/ec2-user/apex-db
+cd /home/ec2-user/zeptodb
 mkdir build && cd build
 cmake ..
 make feed_handler_integration
@@ -259,7 +259,7 @@ make feed_handler_integration
 - Data vendor integration: Bloomberg, Reuters
 
 ### Competitive Advantages
-| Item | kdb+ | ClickHouse | APEX-DB |
+| Item | kdb+ | ClickHouse | ZeptoDB |
 |------|------|------------|---------|
 | FIX support | ✅ (external) | ❌ | ✅ Native |
 | ITCH support | ✅ (external) | ❌ | ✅ Native |
@@ -271,6 +271,6 @@ make feed_handler_integration
 ## Support
 
 **For issues:**
-- GitHub Issues: https://github.com/apex-db/apex-db/issues
-- Examples: `/home/ec2-user/apex-db/examples/feed_handler_integration.cpp`
-- Documentation: `/home/ec2-user/apex-db/docs/feeds/`
+- GitHub Issues: https://github.com/zeptodb/zeptodb/issues
+- Examples: `/home/ec2-user/zeptodb/examples/feed_handler_integration.cpp`
+- Documentation: `/home/ec2-user/zeptodb/docs/feeds/`

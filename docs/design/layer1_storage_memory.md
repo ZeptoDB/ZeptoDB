@@ -41,7 +41,7 @@ flowchart TD
 
 ## 5. Partition Attribute Hints (kdb+ `s#`/`g#`/`p#` equivalent)
 
-APEX-DB supports per-column attribute hints that allow the query executor to use index structures instead of linear scans.
+ZeptoDB supports per-column attribute hints that allow the query executor to use index structures instead of linear scans.
 
 ### 5.1 `s#` — Sorted Attribute
 
@@ -59,7 +59,7 @@ auto [begin, end] = part->sorted_range("price", 15000, 16000);
 // begin/end are row indices [begin, end) satisfying 15000 <= price <= 16000
 ```
 
-**Implementation:** `include/apex/storage/partition_manager.h`
+**Implementation:** `include/zeptodb/storage/partition_manager.h`
 - `sorted_columns_` (`unordered_set<string>`) stored per partition
 - `sorted_range()` uses `std::lower_bound` / `std::upper_bound` on the column span
 
@@ -103,7 +103,7 @@ Related code: `Partition::timestamp_range()`, `Partition::overlaps_time_range()`
 
 ### Problem
 
-APEX-DB is an in-memory database. Without explicit persistence:
+ZeptoDB is an in-memory database. Without explicit persistence:
 - A process crash or node restart loses all RDB (ACTIVE partition) data since the last EOD flush.
 - SEALED partitions are only written to HDB by `FlushManager` on memory pressure — not on a time-based schedule.
 
@@ -126,7 +126,7 @@ The snapshot uses the same LZ4-compressed binary format as HDB flush (`HDBWriter
 FlushConfig cfg;
 cfg.enable_auto_snapshot  = true;
 cfg.snapshot_interval_ms  = 60'000;   // 60s default
-cfg.snapshot_path         = "/var/apex/snap";
+cfg.snapshot_path         = "/var/zeptodb/snap";
 ```
 
 **Manual trigger:**
@@ -145,14 +145,14 @@ every check_interval_ms:
 
 #### 7.2 Recovery on Restart
 
-When `PipelineConfig::enable_recovery = true`, `ApexPipeline::start()` reloads the snapshot directory **before** starting drain threads. Recovery is safe at all `StorageMode` levels (PURE_IN_MEMORY, TIERED, PURE_ON_DISK).
+When `PipelineConfig::enable_recovery = true`, `ZeptoPipeline::start()` reloads the snapshot directory **before** starting drain threads. Recovery is safe at all `StorageMode` levels (PURE_IN_MEMORY, TIERED, PURE_ON_DISK).
 
 ```cpp
 PipelineConfig cfg;
 cfg.enable_recovery          = true;
-cfg.recovery_snapshot_path   = "/var/apex/snap";
+cfg.recovery_snapshot_path   = "/var/zeptodb/snap";
 
-ApexPipeline pipeline(cfg);
+ZeptoPipeline pipeline(cfg);
 pipeline.start();  // reads snapshot → store_tick() each row → starts drain
 ```
 
@@ -162,7 +162,7 @@ Recovery path:
 3. Each row reconstructed as `TickMessage` and replayed via `store_tick()`.
 4. Drain threads start after all rows are loaded — no concurrency hazard.
 
-**Implementation:** `src/core/pipeline.cpp` — `ApexPipeline::start()` recovery block
+**Implementation:** `src/core/pipeline.cpp` — `ZeptoPipeline::start()` recovery block
 
 ### Guarantees
 

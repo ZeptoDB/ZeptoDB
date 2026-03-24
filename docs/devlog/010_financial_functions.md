@@ -7,7 +7,7 @@
 ## Overview
 
 Implemented kdb+-style financial analysis functions and JOIN extensions.
-These are the core features that enable APEX-DB to handle real financial workloads as a time-series database.
+These are the core features that enable ZeptoDB to handle real financial workloads as a time-series database.
 
 ## Implementation
 
@@ -168,14 +168,14 @@ AND q.timestamp BETWEEN t.timestamp - 5000000000 AND t.timestamp + 5000000000
 - `tests/unit/test_financial_functions.cpp` — 40+ new tests
 
 ### Modified Files
-- `include/apex/sql/tokenizer.h` — New token types (XBAR, EMA, DELTA, RATIO, WINDOW, PLUS, MINUS)
+- `include/zeptodb/sql/tokenizer.h` — New token types (XBAR, EMA, DELTA, RATIO, WINDOW, PLUS, MINUS)
 - `src/sql/tokenizer.cpp` — New keyword mappings, MINUS/PLUS token handling
-- `include/apex/sql/ast.h` — AggFunc, WindowFunc, WJAggFunc, SelectExpr, GroupByClause, JoinClause extensions
+- `include/zeptodb/sql/ast.h` — AggFunc, WindowFunc, WJAggFunc, SelectExpr, GroupByClause, JoinClause extensions
 - `src/sql/parser.cpp` — All new syntax parsing (xbar, ema, delta, ratio, first, last, wj_*, WINDOW JOIN)
-- `include/apex/execution/window_function.h` — Added WindowEMA, WindowDelta, WindowRatio classes
-- `include/apex/execution/join_operator.h` — JoinType enum, WindowJoinOperator, JOIN_NULL constant
+- `include/zeptodb/execution/window_function.h` — Added WindowEMA, WindowDelta, WindowRatio classes
+- `include/zeptodb/execution/join_operator.h` — JoinType enum, WindowJoinOperator, JOIN_NULL constant
 - `src/execution/join_operator.cpp` — LEFT JOIN implementation, WindowJoinOperator binary search
-- `include/apex/sql/executor.h` — exec_window_join declaration
+- `include/zeptodb/sql/executor.h` — exec_window_join declaration
 - `src/sql/executor.cpp` — FIRST/LAST/XBAR aggregation, EMA/DELTA/RATIO window, LEFT JOIN NULL handling, WINDOW JOIN execution
 - `tests/CMakeLists.txt` — Added test_financial_functions.cpp
 

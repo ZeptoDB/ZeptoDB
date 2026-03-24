@@ -1,7 +1,7 @@
 # ============================================================================
-# Prometheus 설정 - APEX-DB 모니터링
+# Prometheus 설정 - ZeptoDB 모니터링
 # ============================================================================
-# 용도: APEX-DB 메트릭 수집
+# 용도: ZeptoDB 메트릭 수집
 # 배포: /etc/prometheus/prometheus.yml
 # ============================================================================
 
@@ -9,7 +9,7 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'apex-db-production'
+    cluster: 'zeptodb-production'
 
 # Alertmanager 설정
 alerting:
@@ -20,12 +20,12 @@ alerting:
 
 # 알림 규칙 로드
 rule_files:
-  - "apex-db-alerts.yml"
+  - "zeptodb-alerts.yml"
 
 # 스크랩 설정
 scrape_configs:
-  # ========== APEX-DB 메트릭 ==========
-  - job_name: 'apex-db'
+  # ========== ZeptoDB 메트릭 ==========
+  - job_name: 'zeptodb'
     static_configs:
       - targets:
           - 'localhost:8123'
@@ -40,7 +40,7 @@ scrape_configs:
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: target
-        replacement: 'apex-db-server'
+        replacement: 'zeptodb-server'
 
   # ========== Node Exporter (시스템 메트릭) ==========
   - job_name: 'node'

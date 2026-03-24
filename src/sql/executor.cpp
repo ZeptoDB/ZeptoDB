@@ -1,33 +1,36 @@
 // ============================================================================
-// APEX-DB: SQL Query Executor Implementation
+// ZeptoDB: SQL Query Executor Implementation
 // ============================================================================
-// SelectStmt AST를 ApexPipeline API로 변환 실행
+// SelectStmt AST를 ZeptoPipeline API로 변환 실행
 // ============================================================================
 
-#include "apex/sql/executor.h"
-#include "apex/sql/parser.h"
-#include "apex/execution/join_operator.h"
-#include "apex/execution/window_function.h"
-#include "apex/execution/vectorized_engine.h"
-#include "apex/execution/parallel_scan.h"
-#include "apex/execution/local_scheduler.h"
-#include "apex/common/logger.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/sql/parser.h"
+#include "zeptodb/execution/join_operator.h"
+#include "zeptodb/execution/window_function.h"
+#include "zeptodb/execution/vectorized_engine.h"
+#include "zeptodb/execution/parallel_scan.h"
+#include "zeptodb/execution/local_scheduler.h"
+#include "zeptodb/common/logger.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <unordered_map>
 #include <stdexcept>
 
-namespace apex::sql {
+namespace zeptodb::sql {
 
 // Thread-local cancellation token — set before execute(), cleared after.
 // Checked at partition scan boundaries without changing any inner function signatures.
-static thread_local apex::auth::CancellationToken* tl_cancel_token = nullptr;
+static thread_local zeptodb::auth::CancellationToken* tl_cancel_token = nullptr;
 
 // Helper: returns true if the current query should be aborted
 static inline bool is_cancelled() {
@@ -37,6 +40,22 @@ static inline bool is_cancelled() {
 // Thread-local CTE map — populated in execute() before exec_select(), cleared after.
 // Makes CTEs visible to recursive exec_select() calls (set operations, subqueries).
 static thread_local std::unordered_map<std::string, QueryResultSet> tl_cte_map;
+
+// ── Template helpers for type-dispatched comparisons ────────────────────────
+template<typename T>
+static bool compare_val(T v, CompareOp op, T cmp) {
+    switch (op) {
+        case CompareOp::EQ: return v == cmp;
+        case CompareOp::NE: return v != cmp;
+        case CompareOp::GT: return v >  cmp;
+        case CompareOp::LT: return v <  cmp;
+        case CompareOp::GE: return v >= cmp;
+        case CompareOp::LE: return v <= cmp;
+    }
+    return false;
+}
+static inline double read_as_double(int64_t v) { return std::bit_cast<double>(v); }
+static inline int64_t store_double(double v) { return std::bit_cast<int64_t>(v); }
 
 // ============================================================================
 // Virtual table helpers (CTE / FROM-subquery execution path)
@@ -115,17 +134,9 @@ static bool eval_expr_vt(const std::shared_ptr<Expr>& expr,
             return !eval_expr_vt(expr->left, src, col_idx, row_idx);
         case Expr::Kind::COMPARE: {
             int64_t v   = vt_col_val(expr->column, src, col_idx, row_idx);
-            int64_t cmp = expr->is_float
-                ? static_cast<int64_t>(expr->value_f) : expr->value;
-            switch (expr->op) {
-                case CompareOp::EQ: return v == cmp;
-                case CompareOp::NE: return v != cmp;
-                case CompareOp::GT: return v >  cmp;
-                case CompareOp::LT: return v <  cmp;
-                case CompareOp::GE: return v >= cmp;
-                case CompareOp::LE: return v <= cmp;
-            }
-            return false;
+            if (expr->is_float)
+                return compare_val(read_as_double(v), expr->op, expr->value_f);
+            return compare_val(v, expr->op, expr->value);
         }
         case Expr::Kind::BETWEEN: {
             int64_t v = vt_col_val(expr->column, src, col_idx, row_idx);
@@ -169,6 +180,14 @@ static int64_t sel_val_vt(const SelectExpr& sel,
                            const std::unordered_map<std::string, size_t>& col_idx,
                            size_t row_idx)
 {
+    if (sel.case_when) {
+        // CASE WHEN on virtual table: evaluate branches against virtual row
+        for (const auto& branch : sel.case_when->branches) {
+            // Simplified: check if the column value matches the condition
+            // Full virtual-table CASE WHEN evaluation would need eval_expr_single_vt
+            // For now, fall through to arith_expr or column
+        }
+    }
     if (sel.arith_expr) return eval_arith_vt(*sel.arith_expr, src, col_idx, row_idx);
     return vt_col_val(sel.column, src, col_idx, row_idx);
 }
@@ -187,9 +206,9 @@ struct VectorHash {
     }
 };
 
-using namespace apex::core;
-using namespace apex::storage;
-using namespace apex::execution;
+using namespace zeptodb::core;
+using namespace zeptodb::storage;
+using namespace zeptodb::execution;
 
 // ============================================================================
 // 고해상도 타이머
@@ -203,17 +222,17 @@ static inline double now_us() {
 // ============================================================================
 // 생성자
 // ============================================================================
-QueryExecutor::QueryExecutor(ApexPipeline& pipeline)
+QueryExecutor::QueryExecutor(ZeptoPipeline& pipeline)
     : pipeline_(pipeline)
 {
     // 기본: LocalQueryScheduler (hardware_concurrency 스레드)
-    auto local = std::make_unique<apex::execution::LocalQueryScheduler>(pipeline);
+    auto local = std::make_unique<zeptodb::execution::LocalQueryScheduler>(pipeline);
     pool_raw_  = &local->pool();
     scheduler_ = std::move(local);
 }
 
-QueryExecutor::QueryExecutor(ApexPipeline& pipeline,
-                             std::unique_ptr<apex::execution::QueryScheduler> sched)
+QueryExecutor::QueryExecutor(ZeptoPipeline& pipeline,
+                             std::unique_ptr<zeptodb::execution::QueryScheduler> sched)
     : pipeline_(pipeline)
     , scheduler_(std::move(sched))
     , pool_raw_(nullptr)  // 비-로컬 스케줄러: 직렬 폴백
@@ -224,7 +243,7 @@ void QueryExecutor::enable_parallel(size_t num_threads, size_t row_threshold) {
     par_opts_.num_threads  = num_threads;
     par_opts_.row_threshold = row_threshold;
     // 지정된 스레드 수로 LocalQueryScheduler 재생성
-    auto local = std::make_unique<apex::execution::LocalQueryScheduler>(
+    auto local = std::make_unique<zeptodb::execution::LocalQueryScheduler>(
         pipeline_, num_threads);
     pool_raw_  = &local->pool();
     scheduler_ = std::move(local);
@@ -233,7 +252,7 @@ void QueryExecutor::enable_parallel(size_t num_threads, size_t row_threshold) {
 void QueryExecutor::disable_parallel() {
     par_opts_.enabled = false;
     // 단일 스레드 스케줄러로 교체
-    auto local = std::make_unique<apex::execution::LocalQueryScheduler>(
+    auto local = std::make_unique<zeptodb::execution::LocalQueryScheduler>(
         pipeline_, 1);
     pool_raw_  = &local->pool();
     scheduler_ = std::move(local);
@@ -248,7 +267,7 @@ const PipelineStats& QueryExecutor::stats() const {
 // ============================================================================
 // Build a human-readable query plan for EXPLAIN without executing the query.
 static QueryResultSet build_explain_plan(const SelectStmt& stmt,
-                                          ApexPipeline& pipeline)
+                                          ZeptoPipeline& pipeline)
 {
     QueryResultSet result;
     result.column_names = {"plan"};
@@ -428,6 +447,40 @@ QueryResultSet QueryExecutor::exec_alter_table(const AlterTableStmt& stmt) {
         return ddl_ok("Column '" + stmt.col_name + "' dropped from '" + stmt.table_name + "'");
     }
 
+    if (stmt.action == AlterTableStmt::Action::SET_ATTRIBUTE) {
+        // Apply attribute to all partitions for this table's symbol
+        auto partitions = pipeline_.partition_manager().get_all_partitions();
+        size_t applied = 0;
+        for (auto* part : partitions) {
+            if (!part->get_column(stmt.col_name)) continue;
+            if (stmt.attr_type == "SORTED")       part->set_sorted(stmt.col_name);
+            else if (stmt.attr_type == "GROUPED")  part->set_grouped(stmt.col_name);
+            else if (stmt.attr_type == "PARTED")   part->set_parted(stmt.col_name);
+            ++applied;
+        }
+        return ddl_ok("Attribute " + stmt.attr_type + " set on column '" + stmt.col_name
+                      + "' (" + std::to_string(applied) + " partitions)");
+    }
+
+    if (stmt.action == AlterTableStmt::Action::SET_STORAGE_POLICY) {
+        if (pipeline_.flush_manager()) {
+            auto& fm = *pipeline_.flush_manager();
+            // Update tiering policy on the FlushManager's config
+            // We need mutable access — use a setter method
+            fm.set_tiering_policy(stmt.warm_after_ns, stmt.cold_after_ns, stmt.drop_after_ns);
+
+            std::string desc;
+            if (stmt.warm_after_ns > 0)
+                desc += "WARM=" + std::to_string(stmt.warm_after_ns / 3'600'000'000'000LL) + "h ";
+            if (stmt.cold_after_ns > 0)
+                desc += "COLD=" + std::to_string(stmt.cold_after_ns / 3'600'000'000'000LL) + "h ";
+            if (stmt.drop_after_ns > 0)
+                desc += "DROP=" + std::to_string(stmt.drop_after_ns / 86'400'000'000'000LL) + "d";
+            return ddl_ok("Storage policy set for '" + stmt.table_name + "': " + desc);
+        }
+        return ddl_ok("Storage policy configured (FlushManager not active)");
+    }
+
     // SET TTL
     const int64_t multiplier = (stmt.ttl_unit == "HOURS")
         ? 3'600'000'000'000LL    // ns per hour
@@ -454,6 +507,255 @@ QueryResultSet QueryExecutor::exec_alter_table(const AlterTableStmt& stmt) {
                   + " for table '" + stmt.table_name + "'");
 }
 
+// ============================================================================
+// exec_alter_table — SET STORAGE POLICY
+// ============================================================================
+// (handled inside exec_alter_table, but split here for clarity)
+// The actual dispatch is in exec_alter_table above; we add the case there.
+
+// ============================================================================
+// exec_create_mv — CREATE MATERIALIZED VIEW name AS SELECT ...
+// Parses the SELECT to extract GROUP BY + aggregations, registers with
+// MaterializedViewManager for incremental updates on each tick.
+// ============================================================================
+QueryResultSet QueryExecutor::exec_create_mv(const CreateMVStmt& stmt) {
+    auto& mgr = pipeline_.mat_view_manager();
+
+    if (mgr.exists(stmt.view_name)) {
+        QueryResultSet err;
+        err.error = "Materialized view '" + stmt.view_name + "' already exists";
+        return err;
+    }
+
+    // Extract MVDef from the SELECT statement
+    storage::MVDef def;
+    def.view_name    = stmt.view_name;
+    def.source_table = stmt.query->from_table;
+
+    // Extract xbar bucket from GROUP BY
+    if (stmt.query->group_by.has_value()) {
+        for (size_t i = 0; i < stmt.query->group_by->columns.size(); ++i) {
+            if (stmt.query->group_by->xbar_buckets.size() > i &&
+                stmt.query->group_by->xbar_buckets[i] > 0) {
+                def.xbar_bucket = stmt.query->group_by->xbar_buckets[i];
+            } else {
+                def.group_by.push_back(stmt.query->group_by->columns[i]);
+            }
+        }
+    }
+
+    // Extract aggregation columns from SELECT list
+    for (auto& col : stmt.query->columns) {
+        if (col.agg == sql::AggFunc::NONE) continue;
+
+        storage::MVColumnDef mc;
+        mc.name = col.alias.empty() ? col.column : col.alias;
+
+        switch (col.agg) {
+            case sql::AggFunc::SUM:   mc.agg = storage::MVAggType::SUM;   break;
+            case sql::AggFunc::COUNT: mc.agg = storage::MVAggType::COUNT; break;
+            case sql::AggFunc::MIN:   mc.agg = storage::MVAggType::MIN;   break;
+            case sql::AggFunc::MAX:   mc.agg = storage::MVAggType::MAX;   break;
+            case sql::AggFunc::FIRST: mc.agg = storage::MVAggType::FIRST; break;
+            case sql::AggFunc::LAST:  mc.agg = storage::MVAggType::LAST;  break;
+            default: continue;
+        }
+        mc.source_col = col.column;
+        def.columns.push_back(std::move(mc));
+    }
+
+    if (def.columns.empty()) {
+        QueryResultSet err;
+        err.error = "Materialized view must have at least one aggregation column";
+        return err;
+    }
+
+    mgr.create_view(std::move(def));
+    return ddl_ok("Materialized view '" + stmt.view_name + "' created");
+}
+
+// ============================================================================
+// exec_drop_mv — DROP MATERIALIZED VIEW name
+// ============================================================================
+QueryResultSet QueryExecutor::exec_drop_mv(const DropMVStmt& stmt) {
+    auto& mgr = pipeline_.mat_view_manager();
+    if (!mgr.drop_view(stmt.view_name)) {
+        QueryResultSet err;
+        err.error = "Materialized view '" + stmt.view_name + "' not found";
+        return err;
+    }
+    return ddl_ok("Materialized view '" + stmt.view_name + "' dropped");
+}
+
+// ============================================================================
+// exec_insert — INSERT INTO table VALUES (...)
+// Maps column values to TickMessage fields and calls pipeline_.ingest_tick().
+// Default column order: symbol, price, volume, timestamp
+// ============================================================================
+QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
+    // Resolve column order: explicit columns or default
+    std::vector<std::string> cols = stmt.columns;
+    if (cols.empty()) {
+        cols = {"symbol", "price", "volume", "timestamp"};
+    }
+
+    // Build column-name → index map
+    std::unordered_map<std::string, size_t> col_idx;
+    for (size_t i = 0; i < cols.size(); ++i) {
+        std::string lower = cols[i];
+        for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        col_idx[lower] = i;
+    }
+
+    size_t inserted = 0;
+    for (auto& row : stmt.value_rows) {
+        if (row.size() != cols.size()) {
+            QueryResultSet err;
+            err.error = "Column count mismatch: expected " +
+                        std::to_string(cols.size()) + ", got " +
+                        std::to_string(row.size());
+            return err;
+        }
+
+        zeptodb::ingestion::TickMessage msg{};
+
+        auto get_i = [&](const std::string& name, int64_t def) -> int64_t {
+            auto it = col_idx.find(name);
+            if (it == col_idx.end()) return def;
+            auto& v = row[it->second];
+            return v.is_float ? static_cast<int64_t>(v.f) : v.i;
+        };
+
+        // Check if price is float
+        auto price_it = col_idx.find("price");
+        bool price_float = (price_it != col_idx.end()) && row[price_it->second].is_float;
+
+        msg.symbol_id = static_cast<int32_t>(get_i("symbol", 0));
+        if (price_float) {
+            msg.price = std::bit_cast<int64_t>(row[price_it->second].f);
+            msg.price_is_float = 1;
+        } else {
+            msg.price = get_i("price", 0);
+            msg.price_is_float = 0;
+        }
+        msg.volume    = get_i("volume", 0);
+        msg.recv_ts   = get_i("timestamp", static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count()));
+        msg.seq_num   = static_cast<uint64_t>(pipeline_.stats().ticks_ingested.load());
+        msg.msg_type  = 0;  // Trade
+
+        pipeline_.ingest_tick(msg);
+        ++inserted;
+    }
+
+    // Drain to ensure data is stored before returning
+    pipeline_.drain_sync();
+
+    QueryResultSet result;
+    result.column_names = {"inserted"};
+    result.column_types = {storage::ColumnType::INT64};
+    result.rows = {{static_cast<int64_t>(inserted)}};
+    return result;
+}
+
+// ============================================================================
+// exec_update — UPDATE table SET col = val [, ...] WHERE ...
+// In-place modification of matching rows via as_span().
+// ============================================================================
+QueryResultSet QueryExecutor::exec_update(const UpdateStmt& stmt) {
+    SelectStmt sel;
+    sel.from_table = stmt.table_name;
+    sel.from_alias = "";
+    sel.where = stmt.where;
+
+    auto partitions = find_partitions(stmt.table_name);
+
+    // Filter partitions by symbol if WHERE has symbol = X
+    int64_t sym_filter = -1;
+    has_where_symbol(sel, sym_filter, "");
+
+    size_t updated = 0;
+    for (auto* part : partitions) {
+        if (sym_filter >= 0 && part->key().symbol_id != static_cast<int32_t>(sym_filter))
+            continue;
+
+        size_t nrows = part->num_rows();
+        if (nrows == 0) continue;
+
+        auto matching = eval_where(sel, *part, nrows);
+
+        for (auto& assign : stmt.assignments) {
+            auto* col = part->get_column(assign.column);
+            if (!col) continue;
+            auto span = col->as_span<int64_t>();
+            for (uint32_t idx : matching) {
+                if (idx < span.size()) {
+                    span[idx] = assign.value;
+                }
+            }
+        }
+        updated += matching.size();
+    }
+
+    QueryResultSet result;
+    result.column_names = {"updated"};
+    result.column_types = {storage::ColumnType::INT64};
+    result.rows = {{static_cast<int64_t>(updated)}};
+    return result;
+}
+
+// ============================================================================
+// exec_delete — DELETE FROM table WHERE ...
+// In-place compaction: shift kept rows down, then shrink column size.
+// ============================================================================
+QueryResultSet QueryExecutor::exec_delete(const DeleteStmt& stmt) {
+    SelectStmt sel;
+    sel.from_table = stmt.table_name;
+    sel.from_alias = "";
+    sel.where = stmt.where;
+
+    auto partitions = find_partitions(stmt.table_name);
+
+    int64_t sym_filter = -1;
+    has_where_symbol(sel, sym_filter, "");
+
+    size_t deleted = 0;
+    for (auto* part : partitions) {
+        if (sym_filter >= 0 && part->key().symbol_id != static_cast<int32_t>(sym_filter))
+            continue;
+
+        size_t nrows = part->num_rows();
+        if (nrows == 0) continue;
+
+        auto matching = eval_where(sel, *part, nrows);
+        if (matching.empty()) continue;
+
+        std::vector<bool> del_mask(nrows, false);
+        for (uint32_t idx : matching) del_mask[idx] = true;
+
+        size_t new_size = nrows - matching.size();
+        for (auto& col_ptr : part->columns()) {
+            auto span = col_ptr->as_span<int64_t>();
+            size_t write = 0;
+            for (size_t read = 0; read < nrows; ++read) {
+                if (!del_mask[read]) {
+                    span[write++] = span[read];
+                }
+            }
+            col_ptr->set_size(new_size);
+        }
+
+        deleted += matching.size();
+    }
+
+    QueryResultSet result;
+    result.column_names = {"deleted"};
+    result.column_types = {storage::ColumnType::INT64};
+    result.rows = {{static_cast<int64_t>(deleted)}};
+    return result;
+}
+
 QueryResultSet QueryExecutor::execute(const std::string& sql) {
     tl_cte_map.clear();
     double t0 = now_us();
@@ -473,6 +775,31 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
         }
         if (ps.kind == ParsedStatement::Kind::ALTER_TABLE) {
             auto r = exec_alter_table(*ps.alter_table);
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
+        if (ps.kind == ParsedStatement::Kind::INSERT) {
+            auto r = exec_insert(*ps.insert);
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
+        if (ps.kind == ParsedStatement::Kind::UPDATE) {
+            auto r = exec_update(*ps.update);
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
+        if (ps.kind == ParsedStatement::Kind::DELETE) {
+            auto r = exec_delete(*ps.del);
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
+        if (ps.kind == ParsedStatement::Kind::CREATE_MV) {
+            auto r = exec_create_mv(*ps.create_mv);
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
+        if (ps.kind == ParsedStatement::Kind::DROP_MV) {
+            auto r = exec_drop_mv(*ps.drop_mv);
             r.execution_time_us = now_us() - t0;
             return r;
         }
@@ -508,7 +835,7 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
 }
 
 QueryResultSet QueryExecutor::execute(const std::string& sql,
-                                       apex::auth::CancellationToken* token)
+                                       zeptodb::auth::CancellationToken* token)
 {
     tl_cancel_token = token;
     auto result = execute(sql);
@@ -571,6 +898,26 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
         return exec_select_virtual(stmt, sub_res, stmt.from_alias);
     }
 
+    // Materialized view reference: check if from_table names a registered MV.
+    {
+        auto& mgr = pipeline_.mat_view_manager();
+        if (mgr.exists(stmt.from_table)) {
+            auto vr = mgr.query(stmt.from_table);
+            QueryResultSet mv_result;
+            mv_result.column_names = std::move(vr.column_names);
+            mv_result.column_types.resize(mv_result.column_names.size(),
+                                          storage::ColumnType::INT64);
+            mv_result.rows = std::move(vr.rows);
+            // Apply WHERE/ORDER BY/LIMIT on the MV result
+            if (stmt.where || stmt.order_by || stmt.limit) {
+                const std::string& alias = stmt.from_alias.empty()
+                                           ? stmt.from_table : stmt.from_alias;
+                return exec_select_virtual(stmt, mv_result, alias);
+            }
+            return mv_result;
+        }
+    }
+
     // CTE reference: check if from_table names a CTE in the thread-local map.
     {
         auto cte_it = tl_cte_map.find(stmt.from_table);
@@ -593,7 +940,7 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
         // symbol 기반 파티션 필터링
         auto& pm = pipeline_.partition_manager();
         auto sym_parts = pm.get_partitions_for_symbol(
-            static_cast<apex::SymbolId>(sym_filter));
+            static_cast<zeptodb::SymbolId>(sym_filter));
 
         // Further narrow by time range if present (avoids passing entire symbol
         // history to exec functions when a tight timestamp window is queried).
@@ -662,6 +1009,38 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
         }
 
         // 윈도우 함수 적용
+        apply_window_functions(stmt, result);
+        return result;
+    }
+
+    // WHERE symbol IN (1, 2, 3) → multi-partition routing
+    std::vector<int64_t> in_syms;
+    if (has_where_symbol_in(stmt, in_syms) && !in_syms.empty()) {
+        auto& pm = pipeline_.partition_manager();
+        std::vector<Partition*> left_parts;
+        for (int64_t s : in_syms) {
+            auto sp = pm.get_partitions_for_symbol(static_cast<zeptodb::SymbolId>(s));
+            if (has_ts_range) {
+                for (auto* p : sp)
+                    if (p->overlaps_time_range(ts_lo_filter, ts_hi_filter))
+                        left_parts.push_back(p);
+            } else {
+                left_parts.insert(left_parts.end(), sp.begin(), sp.end());
+            }
+        }
+
+        bool has_agg = false;
+        for (const auto& col : stmt.columns)
+            if (col.agg != AggFunc::NONE) { has_agg = true; break; }
+
+        QueryResultSet result;
+        if (has_agg && stmt.group_by.has_value())
+            result = exec_group_agg(stmt, left_parts);
+        else if (has_agg)
+            result = exec_agg(stmt, left_parts);
+        else
+            result = exec_simple_select(stmt, left_parts);
+
         apply_window_functions(stmt, result);
         return result;
     }
@@ -756,6 +1135,24 @@ const int64_t* QueryExecutor::get_col_data(
     return static_cast<const int64_t*>(cv->raw_data());
 }
 
+// Check if a column stores float data (FLOAT32/FLOAT64)
+static bool col_is_float(const Partition& part, const std::string& col_name) {
+    const ColumnVector* cv = part.get_column(col_name);
+    if (!cv) return false;
+    return cv->type() == ColumnType::FLOAT64 || cv->type() == ColumnType::FLOAT32;
+}
+
+// ── scan_compare: vectorized column scan with type dispatch ─────────────────
+template<typename T>
+static void scan_compare(const void* raw, size_t n, CompareOp op, T val,
+                         std::vector<uint32_t>& out) {
+    const T* data = static_cast<const T*>(raw);
+    for (size_t i = 0; i < n; ++i) {
+        if (compare_val(data[i], op, val))
+            out.push_back(static_cast<uint32_t>(i));
+    }
+}
+
 // ============================================================================
 // WHERE Expr 평가 — 행 인덱스 벡터 반환
 // ============================================================================
@@ -813,36 +1210,14 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
                 for (size_t i = 0; i < num_rows; ++i) all[i] = static_cast<uint32_t>(i);
                 return all;
             }
-            const int64_t* data = get_col_data(part, expr->column);
-            if (!data) return {};
-            int64_t val = expr->value;
+            const ColumnVector* cv = part.get_column(expr->column);
+            if (!cv) return {};
             std::vector<uint32_t> result;
             result.reserve(num_rows / 4);
-            switch (expr->op) {
-                case CompareOp::EQ:
-                    for (size_t i = 0; i < num_rows; ++i)
-                        if (data[i] == val) result.push_back(static_cast<uint32_t>(i));
-                    break;
-                case CompareOp::NE:
-                    for (size_t i = 0; i < num_rows; ++i)
-                        if (data[i] != val) result.push_back(static_cast<uint32_t>(i));
-                    break;
-                case CompareOp::GT:
-                    for (size_t i = 0; i < num_rows; ++i)
-                        if (data[i] > val) result.push_back(static_cast<uint32_t>(i));
-                    break;
-                case CompareOp::LT:
-                    for (size_t i = 0; i < num_rows; ++i)
-                        if (data[i] < val) result.push_back(static_cast<uint32_t>(i));
-                    break;
-                case CompareOp::GE:
-                    for (size_t i = 0; i < num_rows; ++i)
-                        if (data[i] >= val) result.push_back(static_cast<uint32_t>(i));
-                    break;
-                case CompareOp::LE:
-                    for (size_t i = 0; i < num_rows; ++i)
-                        if (data[i] <= val) result.push_back(static_cast<uint32_t>(i));
-                    break;
+            if (expr->is_float) {
+                scan_compare<double>(cv->raw_data(), num_rows, expr->op, expr->value_f, result);
+            } else {
+                scan_compare<int64_t>(cv->raw_data(), num_rows, expr->op, expr->value, result);
             }
             return result;
         }
@@ -859,23 +1234,35 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
             return result;
         }
         case Expr::Kind::IN: {
-            const int64_t* data = get_col_data(part, expr->column);
-            if (!data) return {};
             const auto& vals = expr->in_values;
+            const int64_t* data = get_col_data(part, expr->column);
+            // symbol column: not stored as data, use partition key
+            if (!data && expr->column == "symbol") {
+                int64_t sym = static_cast<int64_t>(part.key().symbol_id);
+                bool match = false;
+                for (int64_t v : vals) { if (sym == v) { match = true; break; } }
+                if (match == expr->negated) return {};  // NOT IN inverts
+                // All rows in this partition match
+                std::vector<uint32_t> result(num_rows);
+                for (size_t i = 0; i < num_rows; ++i) result[i] = static_cast<uint32_t>(i);
+                return result;
+            }
+            if (!data) return {};
             std::vector<uint32_t> result;
             result.reserve(num_rows / 4);
             for (size_t i = 0; i < num_rows; ++i) {
+                bool found = false;
                 for (int64_t v : vals) {
-                    if (data[i] == v) {
-                        result.push_back(static_cast<uint32_t>(i));
-                        break;
-                    }
+                    if (data[i] == v) { found = true; break; }
+                }
+                if (found != expr->negated) {
+                    result.push_back(static_cast<uint32_t>(i));
                 }
             }
             return result;
         }
         case Expr::Kind::IS_NULL: {
-            // NULL is represented by INT64_MIN sentinel in APEX-DB
+            // NULL is represented by INT64_MIN sentinel in ZeptoDB
             const int64_t* data = get_col_data(part, expr->column);
             std::vector<uint32_t> result;
             if (!data) {
@@ -1079,6 +1466,35 @@ bool QueryExecutor::extract_sorted_col_range(
 }
 
 // ============================================================================
+// extract_index_eq: WHERE col = X on g# or p# indexed column
+// ============================================================================
+bool QueryExecutor::extract_index_eq(
+    const SelectStmt& stmt,
+    const Partition& part,
+    std::string& out_col,
+    int64_t& out_val) const
+{
+    if (!stmt.where.has_value()) return false;
+
+    std::function<bool(const std::shared_ptr<Expr>&)> find_eq =
+        [&](const std::shared_ptr<Expr>& e) -> bool {
+        if (!e) return false;
+        if (e->kind == Expr::Kind::COMPARE && e->op == CompareOp::EQ &&
+            !e->is_float &&
+            (part.is_grouped(e->column) || part.is_parted(e->column))) {
+            out_col = e->column;
+            out_val = e->value;
+            return true;
+        }
+        if (e->kind == Expr::Kind::AND) {
+            return find_eq(e->left) || find_eq(e->right);
+        }
+        return false;
+    };
+    return find_eq(stmt.where->expr);
+}
+
+// ============================================================================
 // ============================================================================
 // Static helpers: single-row evaluation
 // ============================================================================
@@ -1173,20 +1589,14 @@ static bool eval_expr_single(const std::shared_ptr<Expr>& expr,
         case Expr::Kind::NOT:
             return !eval_expr_single(expr->left, part, idx);
         case Expr::Kind::COMPARE: {
-            const int64_t* d = col_ptr(part, expr->column);
-            if (!d) return false;
-            int64_t v   = d[idx];
-            int64_t cmp = expr->is_float
-                ? static_cast<int64_t>(expr->value_f) : expr->value;
-            switch (expr->op) {
-                case CompareOp::EQ: return v == cmp;
-                case CompareOp::NE: return v != cmp;
-                case CompareOp::GT: return v >  cmp;
-                case CompareOp::LT: return v <  cmp;
-                case CompareOp::GE: return v >= cmp;
-                case CompareOp::LE: return v <= cmp;
+            const auto* cv = part.get_column(expr->column);
+            if (!cv) return false;
+            if (expr->is_float) {
+                const double* d = static_cast<const double*>(cv->raw_data());
+                return compare_val(d[idx], expr->op, expr->value_f);
             }
-            return false;
+            const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
+            return compare_val(d[idx], expr->op, expr->value);
         }
         case Expr::Kind::BETWEEN: {
             const int64_t* d = col_ptr(part, expr->column);
@@ -1225,6 +1635,28 @@ static bool eval_expr_single(const std::shared_ptr<Expr>& expr,
         }
     }
     return true;
+}
+
+// compute_stats: STDDEV/VARIANCE/MEDIAN/PERCENTILE from collected values
+static int64_t compute_stats(AggFunc func, std::vector<int64_t> vals, int64_t pct) {
+    if (vals.empty()) return INT64_MIN;
+    size_t n = vals.size();
+    if (func == AggFunc::STDDEV || func == AggFunc::VARIANCE) {
+        double sum = 0;
+        for (int64_t v : vals) sum += static_cast<double>(v);
+        double mean = sum / static_cast<double>(n);
+        double sq_sum = 0;
+        for (int64_t v : vals) {
+            double d = static_cast<double>(v) - mean;
+            sq_sum += d * d;
+        }
+        double var = sq_sum / static_cast<double>(n);
+        return static_cast<int64_t>(func == AggFunc::VARIANCE ? var : std::sqrt(var));
+    }
+    std::sort(vals.begin(), vals.end());
+    if (func == AggFunc::MEDIAN) pct = 50;
+    size_t idx = static_cast<size_t>(pct) * (n - 1) / 100;
+    return vals[idx];
 }
 
 // eval_case_when: evaluate CASE WHEN expression for one row
@@ -1375,7 +1807,8 @@ QueryResultSet QueryExecutor::exec_select_virtual(
         std::vector<int64_t> maxs;
         std::vector<int64_t> firsts; // INT64_MIN = not yet set
         std::vector<int64_t> lasts;
-        std::vector<int64_t> first_non_agg; // first observed value for non-agg columns
+        std::vector<int64_t> first_non_agg;
+        std::vector<std::vector<int64_t>> vals; // STDDEV/VARIANCE/MEDIAN/PERCENTILE
     };
 
     std::unordered_map<std::vector<int64_t>, AggState, VectorHash> groups;
@@ -1397,6 +1830,7 @@ QueryResultSet QueryExecutor::exec_select_virtual(
             state.firsts.assign(ncols, INT64_MIN);
             state.lasts.assign(ncols, INT64_MIN);
             state.first_non_agg.assign(ncols, 0);
+            state.vals.resize(ncols);
         }
 
         for (size_t ci = 0; ci < ncols; ++ci) {
@@ -1412,6 +1846,9 @@ QueryResultSet QueryExecutor::exec_select_virtual(
                     if (state.firsts[ci] == INT64_MIN) state.firsts[ci] = v;
                     break;
                 case AggFunc::LAST:  state.lasts[ci] = v; break;
+                case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                    state.vals[ci].push_back(v); break;
                 default:
                     if (state.counts[ci] == 0) state.first_non_agg[ci] = v;
                     state.counts[ci]++;
@@ -1440,6 +1877,9 @@ QueryResultSet QueryExecutor::exec_select_virtual(
                 case AggFunc::MAX:   v = state.maxs[ci]; break;
                 case AggFunc::FIRST: v = (state.firsts[ci] != INT64_MIN) ? state.firsts[ci] : 0; break;
                 case AggFunc::LAST:  v = (state.lasts[ci]  != INT64_MIN) ? state.lasts[ci]  : 0; break;
+                case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                    v = compute_stats(sel.agg, state.vals[ci], sel.percentile_value); break;
                 default: {
                     // Non-aggregate column: find its value from the group key or first row
                     bool found = false;
@@ -1504,18 +1944,9 @@ QueryResultSet QueryExecutor::apply_having_filter(
                 if (col_idx < 0 || col_idx >= static_cast<int>(row.size()))
                     return false;
                 int64_t v   = row[col_idx];
-                int64_t cmp = expr->is_float
-                    ? static_cast<int64_t>(expr->value_f)
-                    : expr->value;
-                switch (expr->op) {
-                    case CompareOp::EQ: return v == cmp;
-                    case CompareOp::NE: return v != cmp;
-                    case CompareOp::GT: return v >  cmp;
-                    case CompareOp::LT: return v <  cmp;
-                    case CompareOp::GE: return v >= cmp;
-                    case CompareOp::LE: return v <= cmp;
-                }
-                return false;
+                if (expr->is_float)
+                    return compare_val(read_as_double(v), expr->op, expr->value_f);
+                return compare_val(v, expr->op, expr->value);
             }
             case Expr::Kind::BETWEEN: {
                 int col_idx = -1;
@@ -1678,10 +2109,13 @@ QueryResultSet QueryExecutor::exec_simple_select(
             }
         } else {
             for (const auto& sel : stmt.columns) {
-                if (sel.window_func != WindowFunc::NONE) continue; // 윈도우 컬럼은 나중에 추가
+                if (sel.window_func != WindowFunc::NONE) continue;
                 result.column_names.push_back(
                     sel.alias.empty() ? sel.column : sel.alias);
-                result.column_types.push_back(ColumnType::INT64);
+                // Propagate actual column type (float64, etc.)
+                auto* cv = part->get_column(sel.column);
+                result.column_types.push_back(
+                    cv ? cv->type() : ColumnType::INT64);
             }
         }
     }
@@ -1711,8 +2145,25 @@ QueryResultSet QueryExecutor::exec_simple_select(
                 rows_scanned += r_end - r_begin;
                 sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
             } else {
-                rows_scanned += n;
-                sel_indices = eval_where(stmt, *part, n);
+                // g#/p# index equality optimization
+                std::string idx_col;
+                int64_t idx_val;
+                if (extract_index_eq(stmt, *part, idx_col, idx_val)) {
+                    if (part->is_grouped(idx_col)) {
+                        // g# hash index: O(1) lookup → only scan matching rows
+                        const auto& hits = part->grouped_lookup(idx_col, idx_val);
+                        rows_scanned += hits.size();
+                        sel_indices.assign(hits.begin(), hits.end());
+                    } else {
+                        // p# parted index: O(1) range lookup
+                        auto [r_begin, r_end] = part->parted_range(idx_col, idx_val);
+                        rows_scanned += r_end - r_begin;
+                        sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
+                    }
+                } else {
+                    rows_scanned += n;
+                    sel_indices = eval_where(stmt, *part, n);
+                }
             }
         }
 
@@ -1740,8 +2191,15 @@ QueryResultSet QueryExecutor::exec_simple_select(
                     } else if (sel.column == "symbol") {
                         val = static_cast<int64_t>(part->key().symbol_id);
                     } else {
-                        const int64_t* d = get_col_data(*part, sel.column);
-                        val = d ? d[idx] : 0;
+                        const auto* cv = part->get_column(sel.column);
+                        if (cv && (cv->type() == ColumnType::FLOAT64 ||
+                                   cv->type() == ColumnType::FLOAT32)) {
+                            const double* d = static_cast<const double*>(cv->raw_data());
+                            val = d ? store_double(d[idx]) : 0;
+                        } else {
+                            const int64_t* d = get_col_data(*part, sel.column);
+                            val = d ? d[idx] : 0;
+                        }
                     }
                     row.push_back(val);
                 }
@@ -1792,21 +2250,33 @@ QueryResultSet QueryExecutor::exec_agg(
     QueryResultSet result;
     size_t rows_scanned = 0;
 
-    std::vector<int64_t>  i_accum(stmt.columns.size(), 0);
     std::vector<double>   d_accum(stmt.columns.size(), 0.0);
     std::vector<int64_t>  cnt(stmt.columns.size(), 0);
-    std::vector<int64_t>  minv(stmt.columns.size(), INT64_MAX);
-    std::vector<int64_t>  maxv(stmt.columns.size(), INT64_MIN);
+    std::vector<double>   minv(stmt.columns.size(), std::numeric_limits<double>::max());
+    std::vector<double>   maxv(stmt.columns.size(), std::numeric_limits<double>::lowest());
     std::vector<double>   vwap_pv(stmt.columns.size(), 0.0);
     std::vector<int64_t>  vwap_v(stmt.columns.size(), 0);
     std::vector<int64_t>  first_val(stmt.columns.size(), 0);
     std::vector<int64_t>  last_val(stmt.columns.size(), 0);
     std::vector<bool>     has_first(stmt.columns.size(), false);
     std::vector<std::set<int64_t>> distinct_sets(stmt.columns.size());
+    // For STDDEV/VARIANCE/MEDIAN/PERCENTILE: collect all values
+    std::vector<std::vector<int64_t>> val_collectors(stmt.columns.size());
+    // Track which columns are float
+    std::vector<bool> is_fcol(stmt.columns.size(), false);
 
     // 타임스탬프 이진탐색 최적화
     int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
     bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
+
+    // Detect float columns from first partition
+    if (!partitions.empty()) {
+        for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
+            const auto& col = stmt.columns[ci];
+            if (!col.column.empty() && col.column != "*")
+                is_fcol[ci] = col_is_float(*partitions[0], col.column);
+        }
+    }
 
     for (auto* part : partitions) {
         if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
@@ -1819,18 +2289,55 @@ QueryResultSet QueryExecutor::exec_agg(
             rows_scanned += r_end - r_begin;
             sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
         } else {
-            rows_scanned += n;
-            sel_indices = eval_where(stmt, *part, n);
+            std::string sorted_col;
+            int64_t slo = INT64_MIN, shi = INT64_MAX;
+            if (extract_sorted_col_range(stmt, *part, sorted_col, slo, shi)) {
+                auto [r_begin, r_end] = part->sorted_range(sorted_col, slo, shi);
+                rows_scanned += r_end - r_begin;
+                sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
+            } else {
+                std::string idx_col;
+                int64_t idx_val;
+                if (extract_index_eq(stmt, *part, idx_col, idx_val)) {
+                    if (part->is_grouped(idx_col)) {
+                        const auto& hits = part->grouped_lookup(idx_col, idx_val);
+                        rows_scanned += hits.size();
+                        sel_indices.assign(hits.begin(), hits.end());
+                    } else {
+                        auto [r_begin, r_end] = part->parted_range(idx_col, idx_val);
+                        rows_scanned += r_end - r_begin;
+                        sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
+                    }
+                } else {
+                    rows_scanned += n;
+                    sel_indices = eval_where(stmt, *part, n);
+                }
+            }
         }
 
         for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
             const auto& col = stmt.columns[ci];
-            const int64_t* data = col.arith_expr
-                ? nullptr : get_col_data(*part, col.column);
-            // For arithmetic expressions, compute value per row; otherwise use raw data
+            const void* raw_ptr = nullptr;
+            if (!col.arith_expr && !col.case_when) {
+                const auto* cv = part->get_column(col.column);
+                if (cv) raw_ptr = cv->raw_data();
+            }
             auto agg_val = [&](uint32_t row_idx) -> int64_t {
+                if (col.case_when) return eval_case_when(*col.case_when, *part, row_idx);
                 if (col.arith_expr) return eval_arith(*col.arith_expr, *part, row_idx);
-                return data ? data[row_idx] : 0;
+                if (!raw_ptr) return 0;
+                if (is_fcol[ci])
+                    return store_double(static_cast<const double*>(raw_ptr)[row_idx]);
+                return static_cast<const int64_t*>(raw_ptr)[row_idx];
+            };
+            // Type-aware double reader
+            auto agg_dval = [&](uint32_t row_idx) -> double {
+                if (col.case_when || col.arith_expr)
+                    return static_cast<double>(agg_val(row_idx));
+                if (!raw_ptr) return 0.0;
+                if (is_fcol[ci])
+                    return static_cast<const double*>(raw_ptr)[row_idx];
+                return static_cast<double>(static_cast<const int64_t*>(raw_ptr)[row_idx]);
             };
 
             switch (col.agg) {
@@ -1842,21 +2349,21 @@ QueryResultSet QueryExecutor::exec_agg(
                     }
                     break;
                 case AggFunc::SUM:
-                    for (auto idx : sel_indices) i_accum[ci] += agg_val(idx);
+                    for (auto idx : sel_indices) d_accum[ci] += agg_dval(idx);
                     break;
                 case AggFunc::AVG:
                     for (auto idx : sel_indices) {
-                            d_accum[ci] += static_cast<double>(agg_val(idx));
-                            cnt[ci]++;
+                        d_accum[ci] += agg_dval(idx);
+                        cnt[ci]++;
                     }
                     break;
                 case AggFunc::MIN:
                     for (auto idx : sel_indices)
-                        minv[ci] = std::min(minv[ci], agg_val(idx));
+                        minv[ci] = std::min(minv[ci], agg_dval(idx));
                     break;
                 case AggFunc::MAX:
                     for (auto idx : sel_indices)
-                        maxv[ci] = std::max(maxv[ci], agg_val(idx));
+                        maxv[ci] = std::max(maxv[ci], agg_dval(idx));
                     break;
                 case AggFunc::FIRST:
                     for (auto idx : sel_indices) {
@@ -1874,18 +2381,18 @@ QueryResultSet QueryExecutor::exec_agg(
                     break;
                 case AggFunc::XBAR:
                     // GROUP BY 없이 XBAR SELECT — 단순히 첫 번째 값 반환
-                    if (data && !sel_indices.empty() && !has_first[ci]) {
+                    if (raw_ptr && !sel_indices.empty() && !has_first[ci]) {
                         int64_t b = col.xbar_bucket;
-                        int64_t v = data[sel_indices[0]];
+                        int64_t v = agg_val(sel_indices[0]);
                         first_val[ci] = b > 0 ? (v / b) * b : v;
                         has_first[ci] = true;
                     }
                     break;
                 case AggFunc::VWAP: {
                     const int64_t* vdata = get_col_data(*part, col.agg_arg2);
-                    if (data && vdata) {
+                    if (raw_ptr && vdata) {
                         for (auto idx : sel_indices) {
-                            vwap_pv[ci] += static_cast<double>(data[idx])
+                            vwap_pv[ci] += agg_dval(idx)
                                          * static_cast<double>(vdata[idx]);
                             vwap_v[ci]  += vdata[idx];
                         }
@@ -1894,11 +2401,20 @@ QueryResultSet QueryExecutor::exec_agg(
                 }
                 case AggFunc::NONE:
                     break;
+                case AggFunc::STDDEV:
+                case AggFunc::VARIANCE:
+                case AggFunc::MEDIAN:
+                case AggFunc::PERCENTILE:
+                    for (auto idx : sel_indices)
+                        val_collectors[ci].push_back(agg_val(idx));
+                    break;
             }
         }
     }
 
-    std::vector<int64_t> row(stmt.columns.size());
+    std::vector<QueryResultSet::Value> row(stmt.columns.size());
+
+    bool has_float = std::any_of(is_fcol.begin(), is_fcol.end(), [](bool b){ return b; });
 
     for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
         const auto& col = stmt.columns[ci];
@@ -1906,22 +2422,29 @@ QueryResultSet QueryExecutor::exec_agg(
             ? (col.column.empty() ? "*" : col.column)
             : col.alias;
         result.column_names.push_back(name);
-        result.column_types.push_back(ColumnType::INT64);
+        result.column_types.push_back(is_fcol[ci] ? ColumnType::FLOAT64 : ColumnType::INT64);
 
         switch (col.agg) {
             case AggFunc::COUNT: row[ci] = col.agg_distinct
                 ? static_cast<int64_t>(distinct_sets[ci].size()) : cnt[ci]; break;
-            case AggFunc::SUM:   row[ci] = i_accum[ci]; break;
+            case AggFunc::SUM:
+                row[ci] = is_fcol[ci] ? QueryResultSet::Value(d_accum[ci])
+                                      : QueryResultSet::Value(static_cast<int64_t>(d_accum[ci]));
+                break;
             case AggFunc::AVG:
-                row[ci] = cnt[ci] > 0
-                    ? static_cast<int64_t>(d_accum[ci] / cnt[ci])
-                    : INT64_MIN;
+                if (cnt[ci] > 0)
+                    row[ci] = is_fcol[ci] ? QueryResultSet::Value(d_accum[ci] / cnt[ci])
+                                          : QueryResultSet::Value(static_cast<int64_t>(d_accum[ci] / cnt[ci]));
+                else
+                    row[ci] = INT64_MIN;
                 break;
             case AggFunc::MIN:
-                row[ci] = (minv[ci] == INT64_MAX) ? INT64_MIN : minv[ci];
+                row[ci] = is_fcol[ci] ? QueryResultSet::Value(minv[ci])
+                                      : QueryResultSet::Value(static_cast<int64_t>(minv[ci]));
                 break;
             case AggFunc::MAX:
-                row[ci] = (maxv[ci] == INT64_MIN) ? INT64_MIN : maxv[ci];
+                row[ci] = is_fcol[ci] ? QueryResultSet::Value(maxv[ci])
+                                      : QueryResultSet::Value(static_cast<int64_t>(maxv[ci]));
                 break;
             case AggFunc::VWAP:
                 row[ci] = vwap_v[ci] > 0
@@ -1931,11 +2454,26 @@ QueryResultSet QueryExecutor::exec_agg(
             case AggFunc::FIRST: row[ci] = first_val[ci]; break;
             case AggFunc::LAST:  row[ci] = last_val[ci];  break;
             case AggFunc::XBAR:  row[ci] = first_val[ci]; break;
-            case AggFunc::NONE: row[ci] = 0; break;
+            case AggFunc::STDDEV:
+            case AggFunc::VARIANCE:
+            case AggFunc::MEDIAN:
+            case AggFunc::PERCENTILE:
+                row[ci] = compute_stats(col.agg, val_collectors[ci], col.percentile_value);
+                break;
+            case AggFunc::NONE: row[ci] = int64_t{0}; break;
         }
     }
 
-    result.rows.push_back(std::move(row));
+    // Populate typed_rows (float-native) and rows (backward compat)
+    if (has_float) {
+        result.typed_rows.push_back(row);
+    }
+    {
+        std::vector<int64_t> irow(row.size());
+        for (size_t c = 0; c < row.size(); ++c)
+            irow[c] = is_fcol[c] ? store_double(row[c].f) : row[c].i;
+        result.rows.push_back(std::move(irow));
+    }
     result.rows_scanned = rows_scanned;
     return result;
 }
@@ -1983,9 +2521,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
         int64_t  maxv    = INT64_MIN;
         double   vwap_pv = 0.0;
         int64_t  vwap_v  = 0;
-        int64_t  first_val = 0;      // FIRST() 집계
-        int64_t  last_val  = 0;      // LAST() 집계
-        bool     has_first = false;  // 첫 값 기록 여부
+        int64_t  first_val = 0;
+        int64_t  last_val  = 0;
+        bool     has_first = false;
+        std::vector<int64_t> vals; // STDDEV/VARIANCE/MEDIAN/PERCENTILE
     };
 
     // 타임스탬프 범위 이진탐색 최적화
@@ -2030,9 +2569,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
                     const auto& col = stmt.columns[ci];
                     auto& gs = states[ci];
                     if (col.agg == AggFunc::NONE) continue;
-                    const int64_t* data = col.arith_expr
+                    const int64_t* data = (col.arith_expr || col.case_when)
                         ? nullptr : get_col_data(*part, col.column);
                     auto agg_v = [&]() -> int64_t {
+                        if (col.case_when) return eval_case_when(*col.case_when, *part, idx);
                         if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
                         return data ? data[idx] : 0;
                     };
@@ -2074,6 +2614,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
                             }
                             break;
                         }
+                        case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                        case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                            gs.vals.push_back(agg_v()); break;
                         case AggFunc::NONE: break;
                     }
                 }
@@ -2116,6 +2659,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
                     case AggFunc::LAST:  row.push_back(gs.last_val);  break;
                     case AggFunc::XBAR:  row.push_back(gs.first_val); break;
                     case AggFunc::NONE: break;
+                    case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                    case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                        row.push_back(compute_stats(col.agg, gs.vals, col.percentile_value)); break;
                 }
             }
             result.rows.push_back(std::move(row));
@@ -2215,6 +2761,7 @@ QueryResultSet QueryExecutor::exec_group_agg(
                     if (col.agg == AggFunc::NONE) continue;
                     const int64_t* data = col_ptrs[ci];
                     auto agg_v = [&]() -> int64_t {
+                        if (col.case_when) return eval_case_when(*col.case_when, *part, idx);
                         if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
                         return data ? data[idx] : 0;
                     };
@@ -2254,6 +2801,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
                             break;
                         }
                         case AggFunc::NONE: break;
+                        case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                        case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                            gs.vals.push_back(agg_v()); break;
                     }
                 }
             }
@@ -2300,6 +2850,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
                     case AggFunc::FIRST: row.push_back(gs.first_val); break;
                     case AggFunc::LAST:  row.push_back(gs.last_val);  break;
                     case AggFunc::XBAR:  row.push_back(gs.first_val); break;
+                    case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                    case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                        row.push_back(compute_stats(col.agg, gs.vals, col.percentile_value)); break;
                     case AggFunc::NONE:  break;
                 }
             }
@@ -2369,9 +2922,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 const auto& col = stmt.columns[ci];
                 auto& gs = states[ci];
                 if (col.agg == AggFunc::NONE) continue;
-                const int64_t* data = col.arith_expr
+                const int64_t* data = (col.arith_expr || col.case_when)
                     ? nullptr : get_col_data(*part, col.column);
                 auto agg_v = [&]() -> int64_t {
+                    if (col.case_when) return eval_case_when(*col.case_when, *part, idx);
                     if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
                     return data ? data[idx] : 0;
                 };
@@ -2411,6 +2965,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
                         break;
                     }
                     case AggFunc::NONE: break;
+                    case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                    case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                        gs.vals.push_back(agg_v()); break;
                 }
             }
         }
@@ -2460,6 +3017,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 case AggFunc::FIRST: row.push_back(gs.first_val); break;
                 case AggFunc::LAST:  row.push_back(gs.last_val);  break;
                 case AggFunc::XBAR:  row.push_back(gs.first_val); break;
+                case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                    row.push_back(compute_stats(col.agg, gs.vals, col.percentile_value)); break;
                 case AggFunc::NONE:  break;
             }
         }
@@ -3124,6 +3684,23 @@ bool QueryExecutor::has_where_symbol(
     return find_sym(find_sym, stmt.where->expr);
 }
 
+// Extract symbol IN (1,2,3) for multi-partition routing
+bool QueryExecutor::has_where_symbol_in(
+    const SelectStmt& stmt,
+    std::vector<int64_t>& out_syms) const
+{
+    if (!stmt.where.has_value()) return false;
+    auto find_in = [&](const auto& self, const std::shared_ptr<Expr>& expr) -> bool {
+        if (!expr) return false;
+        if (expr->kind == Expr::Kind::IN && expr->column == "symbol" && !expr->negated) {
+            out_syms = expr->in_values;
+            return true;
+        }
+        return self(self, expr->left) || self(self, expr->right);
+    };
+    return find_in(find_in, stmt.where->expr);
+}
+
 // ============================================================================
 // WINDOW JOIN 실행 (kdb+ wj 스타일)
 // ============================================================================
@@ -3286,7 +3863,7 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
     const SelectStmt& stmt,
     const std::vector<Partition*>& partitions)
 {
-    using namespace apex::execution;
+    using namespace zeptodb::execution;
 
     size_t n_threads = pool_raw_->num_threads();
     ParallelScanExecutor pse(*pool_raw_);
@@ -3340,6 +3917,7 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
         std::vector<int64_t>  first_val;
         std::vector<int64_t>  last_val;
         std::vector<bool>     has_first;
+        std::vector<std::vector<int64_t>> vals; // STDDEV/VARIANCE/MEDIAN/PERCENTILE
         size_t rows_scanned = 0;
     };
 
@@ -3355,6 +3933,7 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
         p.first_val.assign(ncols, 0);
         p.last_val.assign(ncols, 0);
         p.has_first.assign(ncols, false);
+        p.vals.resize(ncols);
         return p;
     };
 
@@ -3453,6 +4032,9 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
                             }
                             break;
                         }
+                        case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                        case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                            for (auto idx : sel_indices) pa.vals[ci].push_back(agg_val(idx)); break;
                         case AggFunc::NONE: break;
                     }
                 }
@@ -3479,6 +4061,8 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
             if (pa.has_first[ci]) {
                 merged.last_val[ci] = pa.last_val[ci];
             }
+            merged.vals[ci].insert(merged.vals[ci].end(),
+                pa.vals[ci].begin(), pa.vals[ci].end());
         }
     }
 
@@ -3534,7 +4118,7 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
     const SelectStmt& stmt,
     const std::vector<Partition*>& partitions)
 {
-    using namespace apex::execution;
+    using namespace zeptodb::execution;
 
     size_t n_threads = pool_raw_->num_threads();
     ParallelScanExecutor pse(*pool_raw_);
@@ -3565,6 +4149,7 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
         int64_t  first_val = 0;
         int64_t  last_val  = 0;
         bool     has_first = false;
+        std::vector<int64_t> vals; // STDDEV/VARIANCE/MEDIAN/PERCENTILE
     };
 
     // ─────────────────────────────────────────────────────────────────────
@@ -3645,6 +4230,7 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                             auto& gs = states[ci];
                             const int64_t* data = col_ptrs[ci];
                             auto agg_v = [&]() -> int64_t {
+                                if (col.case_when) return eval_case_when(*col.case_when, *part, idx);
                                 if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
                                 return data ? data[idx] : 0;
                             };
@@ -3679,6 +4265,9 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                                     break;
                                 }
                                 case AggFunc::NONE: break;
+                                case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                                case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                                    gs.vals.push_back(agg_v()); break;
                             }
                         }
                     }
@@ -3730,6 +4319,9 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                             if (!d.has_first && s.has_first) { d.first_val = s.first_val; d.has_first = true; }
                             break;
                         case AggFunc::NONE: break;
+                        case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                        case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                            d.vals.insert(d.vals.end(), s.vals.begin(), s.vals.end()); break;
                     }
                 }
             }
@@ -3767,6 +4359,9 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                     case AggFunc::LAST:  row.push_back(gs.last_val); break;
                     case AggFunc::XBAR:  row.push_back(gs.first_val); break;
                     case AggFunc::NONE: break;
+                    case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                    case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                        row.push_back(compute_stats(col.agg, gs.vals, col.percentile_value)); break;
                 }
             }
             result.rows.push_back(std::move(row));
@@ -3841,9 +4436,10 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                         const auto& col = stmt.columns[ci];
                         if (col.agg == AggFunc::NONE) continue;
                         auto& gs = states[ci];
-                        const int64_t* data = col.arith_expr
+                        const int64_t* data = (col.arith_expr || col.case_when)
                             ? nullptr : get_col_data(*part, col.column);
                         auto agg_v = [&]() -> int64_t {
+                            if (col.case_when) return eval_case_when(*col.case_when, *part, idx);
                             if (col.arith_expr) return eval_arith(*col.arith_expr, *part, idx);
                             return data ? data[idx] : 0;
                         };
@@ -3926,6 +4522,9 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                         }
                         break;
                     case AggFunc::NONE: break;
+                    case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                    case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                        dst.vals.insert(dst.vals.end(), src.vals.begin(), src.vals.end()); break;
                 }
             }
         }
@@ -3971,6 +4570,9 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                 case AggFunc::LAST:  row.push_back(gs.last_val);  break;
                 case AggFunc::XBAR:  row.push_back(gs.first_val); break;
                 case AggFunc::NONE: break;
+                case AggFunc::STDDEV: case AggFunc::VARIANCE:
+                case AggFunc::MEDIAN: case AggFunc::PERCENTILE:
+                    row.push_back(compute_stats(col.agg, gs.vals, col.percentile_value)); break;
             }
         }
         result.rows.push_back(std::move(row));
@@ -3998,7 +4600,7 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
     const SelectStmt& stmt,
     const std::vector<Partition*>& partitions)
 {
-    using namespace apex::execution;
+    using namespace zeptodb::execution;
 
     size_t n_threads = pool_raw_->num_threads();
     ParallelScanExecutor pse(*pool_raw_);
@@ -4047,8 +4649,23 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
                     out.rows_scanned += re - rb;
                     sel = eval_where_ranged(stmt, *part, rb, re);
                 } else {
-                    out.rows_scanned += n;
-                    sel = eval_where(stmt, *part, n);
+                    // g#/p# index equality optimization
+                    std::string idx_col;
+                    int64_t idx_val;
+                    if (extract_index_eq(stmt, *part, idx_col, idx_val)) {
+                        if (part->is_grouped(idx_col)) {
+                            const auto& hits = part->grouped_lookup(idx_col, idx_val);
+                            out.rows_scanned += hits.size();
+                            sel.assign(hits.begin(), hits.end());
+                        } else {
+                            auto [rb, re] = part->parted_range(idx_col, idx_val);
+                            out.rows_scanned += re - rb;
+                            sel = eval_where_ranged(stmt, *part, rb, re);
+                        }
+                    } else {
+                        out.rows_scanned += n;
+                        sel = eval_where(stmt, *part, n);
+                    }
                 }
             }
 
@@ -4124,4 +4741,4 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
     return result;
 }
 
-} // namespace apex::sql
+} // namespace zeptodb::sql

@@ -1,4 +1,4 @@
-# APEX-DB Business Strategy
+# ZeptoDB Business Strategy
 **Date:** 2026-03-22
 **Version:** 1.0
 
@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-APEX-DB is an open-source time-series database that replaces kdb+, targeting the HFT (High-Frequency Trading) market.
+ZeptoDB is an open-source time-series database that replaces kdb+, targeting the HFT (High-Frequency Trading) market.
 
 **Key differentiators:**
 - **Performance:** kdb+ equivalent (5.52M ticks/sec, <1us latency)
@@ -41,13 +41,13 @@ APEX-DB is an open-source time-series database that replaces kdb+, targeting the
 
 #### vs kdb+
 
-| Item | kdb+ | APEX-DB | Advantage |
+| Item | kdb+ | ZeptoDB | Advantage |
 |------|------|---------|-----------|
-| **Price** | $100K-500K/year | Open-source | APEX-DB |
-| **Learning curve** | q (6-12 months) | SQL (1 week) | APEX-DB |
-| **Python integration** | PyKX (IPC) | zero-copy 522ns | APEX-DB |
+| **Price** | $100K-500K/year | Open-source | ZeptoDB |
+| **Learning curve** | q (6-12 months) | SQL (1 week) | ZeptoDB |
+| **Python integration** | PyKX (IPC) | zero-copy 522ns | ZeptoDB |
 | **Performance** | Baseline | 95% equivalent | Equivalent |
-| **Cloud** | Limited | Kubernetes native | APEX-DB |
+| **Cloud** | Limited | Kubernetes native | ZeptoDB |
 | **Ecosystem** | Mature | New | kdb+ |
 
 **Killing message:**
@@ -55,19 +55,19 @@ APEX-DB is an open-source time-series database that replaces kdb+, targeting the
 
 **TCO Comparison (3 years):**
 - kdb+: $900K (license $300K + staffing $600K)
-- APEX-DB: $150K (staffing $150K)
+- ZeptoDB: $150K (staffing $150K)
 - **Savings: $750K (83%)**
 
 ---
 
 #### vs ClickHouse
 
-| Item | ClickHouse | APEX-DB | Advantage |
+| Item | ClickHouse | ZeptoDB | Advantage |
 |------|-----------|---------|-----------|
-| **Financial functions** | None (UDF required) | xbar/EMA/wj native | APEX-DB |
-| **Real-time** | 100K/sec | 5.52M ticks/sec | APEX-DB (55x) |
-| **Python DSL** | None | 4-37x faster than Polars | APEX-DB |
-| **SIMD** | SSE4.2 | AVX-512 | APEX-DB |
+| **Financial functions** | None (UDF required) | xbar/EMA/wj native | ZeptoDB |
+| **Real-time** | 100K/sec | 5.52M ticks/sec | ZeptoDB (55x) |
+| **Python DSL** | None | 4-37x faster than Polars | ZeptoDB |
+| **SIMD** | SSE4.2 | AVX-512 | ZeptoDB |
 
 **Killing message:**
 > "ClickHouse + financial functions + Python quant tools"
@@ -76,17 +76,17 @@ APEX-DB is an open-source time-series database that replaces kdb+, targeting the
 
 #### vs TimescaleDB
 
-| Item | TimescaleDB | APEX-DB | Advantage |
+| Item | TimescaleDB | ZeptoDB | Advantage |
 |------|------------|---------|-----------|
-| **Performance** | PostgreSQL-based | 100x faster | APEX-DB |
-| **Ingestion** | 10K/sec | 5.52M ticks/sec | APEX-DB (552x) |
-| **Financial functions** | None | kdb+ compatible | APEX-DB |
+| **Performance** | PostgreSQL-based | 100x faster | ZeptoDB |
+| **Ingestion** | 10K/sec | 5.52M ticks/sec | ZeptoDB (552x) |
+| **Financial functions** | None | kdb+ compatible | ZeptoDB |
 
 ---
 
 #### vs Snowflake/Databricks (Complementary Strategy)
 
-| Workload | Snowflake/Databricks | APEX-DB | Strategy |
+| Workload | Snowflake/Databricks | ZeptoDB | Strategy |
 |---------|---------------------|---------|----------|
 | **Batch analytics** | Optimal | No | Yield |
 | **ML/AI** | Optimal | No | Yield |
@@ -165,7 +165,7 @@ Parallel work:
 
 ### 3.2 Migration Toolkit (Core for Customer Acquisition)
 
-#### Priority 0: kdb+ -> APEX-DB (7 weeks, $2.5M-12M)
+#### Priority 0: kdb+ -> ZeptoDB (7 weeks, $2.5M-12M)
 **Development items:**
 1. q -> SQL transpiler (4 weeks)
    - Auto-convert `select`, `where`, `fby`, `aj`, `wj`
@@ -184,7 +184,7 @@ Parallel work:
 
 ---
 
-#### Priority 1: ClickHouse -> APEX-DB (4 weeks, $1M-3M)
+#### Priority 1: ClickHouse -> ZeptoDB (4 weeks, $1M-3M)
 **Development items:**
 1. SQL dialect conversion (1 week)
    - `arrayJoin` -> `UNNEST`
@@ -212,7 +212,7 @@ Parallel work:
 
 #### Priority 1: DuckDB Interoperability (2 weeks, Strategic)
 **Development items:**
-1. DuckDB Parquet -> APEX-DB (1 week)
+1. DuckDB Parquet -> ZeptoDB (1 week)
    - Arrow zero-copy
 2. Benchmarks + blog post (1 week)
 
@@ -227,9 +227,9 @@ Parallel work:
 
 ---
 
-#### Priority 2: TimescaleDB -> APEX-DB (3 weeks, $500K-1M)
+#### Priority 2: TimescaleDB -> ZeptoDB (3 weeks, $500K-1M)
 **Development items:**
-1. Schema conversion (1 week): Hypertables -> APEX-DB
+1. Schema conversion (1 week): Hypertables -> ZeptoDB
 2. pg_dump auto-conversion (1 week)
 3. Function mapping (1 week): `time_bucket` -> `xbar`
 
@@ -254,7 +254,7 @@ Parallel work:
 - Regulated industry on-premises (5 customers x $200K = $1M)
 
 **Positioning:**
-> "Snowflake for batch, APEX-DB for real-time"
+> "Snowflake for batch, ZeptoDB for real-time"
 
 **Hybrid Architecture:**
 ```
@@ -265,7 +265,7 @@ Parallel work:
          | ETL (daily)
          v
 +────────v────────+
-│   APEX-DB       │  Real-time analytics, finance
+│   ZeptoDB       │  Real-time analytics, finance
 │   (Hot Data)    │  - Real-time dashboards
 +─────────────────+  - HFT trading
 ```
@@ -359,7 +359,7 @@ Exchange Matching Engine
     | UDP Multicast (1-10 Gbps)
 Feed Handler (C++)
     | Parsing (ITCH, SBE, FIX)
-APEX-DB TickerPlant
+ZeptoDB TickerPlant
     | 5.52M ticks/sec
 RDB (real-time) + HDB (historical)
 ```
@@ -369,7 +369,7 @@ RDB (real-time) + HDB (historical)
 - **CME iLink3:** FIX/SBE, TCP (10-50us)
 - **Bloomberg B-PIPE:** TCP, proprietary protocol
 
-**APEX-DB advantages:**
+**ZeptoDB advantages:**
 - FIX Parser: 350ns
 - ITCH Parser: 250ns
 - UDP Multicast: <1us
@@ -432,8 +432,8 @@ RDB (real-time) + HDB (historical)
 **Goal:** First customer acquisition
 
 **Content:**
-1. Blog: "ClickHouse -> APEX-DB Migration Guide"
-2. Benchmark: "ClickHouse vs APEX-DB (financial queries)"
+1. Blog: "ClickHouse -> ZeptoDB Migration Guide"
+2. Benchmark: "ClickHouse vs ZeptoDB (financial queries)"
 3. Webinar: "Building Real-time Financial Analytics"
 
 ---
@@ -442,7 +442,7 @@ RDB (real-time) + HDB (historical)
 **Goal:** Community building
 
 **Content:**
-1. Hacker News: "DuckDB + Real-time = APEX-DB"
+1. Hacker News: "DuckDB + Real-time = ZeptoDB"
 2. Reddit r/datascience: tutorials
 3. Twitter: performance benchmarks
 
@@ -492,7 +492,7 @@ RDB (real-time) + HDB (historical)
 
 **Win-Win:**
 - Snowflake: Fills real-time gap, prevents customer churn
-- APEX-DB: Brand credibility, lead generation
+- ZeptoDB: Brand credibility, lead generation
 
 ---
 
@@ -622,9 +622,9 @@ RDB (real-time) + HDB (historical)
 - DuckDB: https://duckdb.org
 
 ### C. Contact
-- Product inquiries: product@apex-db.io
-- Sales inquiries: sales@apex-db.io
-- Partnerships: partners@apex-db.io
+- Product inquiries: product@zeptodb.io
+- Sales inquiries: sales@zeptodb.io
+- Partnerships: partners@zeptodb.io
 
 ---
 

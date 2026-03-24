@@ -1,4 +1,4 @@
-# APEX-DB Production Operations Guide
+# ZeptoDB Production Operations Guide
 
 ## Table of Contents
 - [1. Initial Setup](#1-initial-setup)
@@ -15,8 +15,8 @@
 ### 1.1 Service Installation
 
 ```bash
-# 1. Build APEX-DB
-cd /home/ec2-user/apex-db
+# 1. Build ZeptoDB
+cd /home/ec2-user/zeptodb
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
@@ -27,9 +27,9 @@ sudo ./scripts/install_service.sh
 ```
 
 Installation includes:
-- ✅ `apex` user created
-- ✅ Directories: `/opt/apex-db`, `/data/apex-db`, `/var/log/apex-db`
-- ✅ systemd service: `apex-db.service`
+- ✅ `zeptodb` user created
+- ✅ Directories: `/opt/zeptodb`, `/data/zeptodb`, `/var/log/zeptodb`
+- ✅ systemd service: `zeptodb.service`
 - ✅ Cron jobs: backup (02:00), EOD (18:00 weekdays)
 - ✅ Log rotation: 30-day retention
 
@@ -37,13 +37,13 @@ Installation includes:
 
 ```bash
 # Start service
-sudo systemctl start apex-db
+sudo systemctl start zeptodb
 
 # Check status
-sudo systemctl status apex-db
+sudo systemctl status zeptodb
 
 # View logs
-sudo journalctl -u apex-db -f
+sudo journalctl -u zeptodb -f
 ```
 
 ### 1.3 Health Check
@@ -69,7 +69,7 @@ curl http://localhost:8123/stats
 
 ```bash
 # Run monitoring stack with Docker Compose
-cd /home/ec2-user/apex-db/monitoring
+cd /home/ec2-user/zeptodb/monitoring
 docker-compose up -d
 
 # Check services
@@ -77,7 +77,7 @@ docker-compose ps
 ```
 
 **Access:**
-- Grafana: http://localhost:3000 (admin/apex-admin-2026)
+- Grafana: http://localhost:3000 (admin/zepto-admin-2026)
 - Prometheus: http://localhost:9090
 
 ### 2.2 Grafana Dashboard Configuration
@@ -99,20 +99,20 @@ curl http://localhost:8123/metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `apex_ticks_ingested_total` | counter | Total ingested ticks |
-| `apex_ticks_stored_total` | counter | Stored ticks |
-| `apex_ticks_dropped_total` | counter | Dropped ticks |
-| `apex_queries_executed_total` | counter | Executed queries |
-| `apex_rows_scanned_total` | counter | Scanned rows |
-| `apex_server_up` | gauge | Server running state (0/1) |
-| `apex_server_ready` | gauge | Readiness state (0/1) |
+| `zepto_ticks_ingested_total` | counter | Total ingested ticks |
+| `zepto_ticks_stored_total` | counter | Stored ticks |
+| `zepto_ticks_dropped_total` | counter | Dropped ticks |
+| `zepto_queries_executed_total` | counter | Executed queries |
+| `zepto_rows_scanned_total` | counter | Scanned rows |
+| `zepto_server_up` | gauge | Server running state (0/1) |
+| `zepto_server_ready` | gauge | Readiness state (0/1) |
 
 ### 2.4 Alert Configuration
 
 Edit Alertmanager configuration:
 
 ```bash
-vi /home/ec2-user/apex-db/monitoring/alertmanager.yml
+vi /home/ec2-user/zeptodb/monitoring/alertmanager.yml
 ```
 
 **Slack Webhook setup:**
@@ -131,11 +131,11 @@ vi /home/ec2-user/apex-db/monitoring/alertmanager.yml
 
 ### 3.1 Structured Logging
 
-APEX-DB produces structured logs in JSON format.
+ZeptoDB produces structured logs in JSON format.
 
 **Log locations:**
-- File: `/var/log/apex-db/apex-db.log`
-- systemd: `journalctl -u apex-db`
+- File: `/var/log/zeptodb/zeptodb.log`
+- systemd: `journalctl -u zeptodb`
 
 **Log levels:**
 - `TRACE` - Detailed debug
@@ -149,16 +149,16 @@ APEX-DB produces structured logs in JSON format.
 
 ```bash
 # Recent logs (journalctl)
-sudo journalctl -u apex-db -n 100
+sudo journalctl -u zeptodb -n 100
 
 # Live logs
-sudo journalctl -u apex-db -f
+sudo journalctl -u zeptodb -f
 
 # JSON log file
-sudo tail -f /var/log/apex-db/apex-db.log | jq .
+sudo tail -f /var/log/zeptodb/zeptodb.log | jq .
 
 # Filter errors only
-sudo journalctl -u apex-db -p err
+sudo journalctl -u zeptodb -p err
 ```
 
 ### 3.3 Log Example
@@ -175,7 +175,7 @@ sudo journalctl -u apex-db -p err
 
 ### 3.4 Log Rotation
 
-Automatically configured (`/etc/logrotate.d/apex-db`):
+Automatically configured (`/etc/logrotate.d/zeptodb`):
 - Daily rotation
 - 30-day retention
 - Compressed storage
@@ -188,12 +188,12 @@ Automatically configured (`/etc/logrotate.d/apex-db`):
 
 **Cron configuration (auto-runs):**
 ```
-0 2 * * * /opt/apex-db/scripts/backup.sh
+0 2 * * * /opt/zeptodb/scripts/backup.sh
 ```
 
 **Manual backup:**
 ```bash
-sudo -u apex /opt/apex-db/scripts/backup.sh
+sudo -u zeptodb /opt/zeptodb/scripts/backup.sh
 ```
 
 **Backup contents:**
@@ -203,14 +203,14 @@ sudo -u apex /opt/apex-db/scripts/backup.sh
 - Metadata
 
 **Backup location:**
-- Local: `/backup/apex-db/apex-db-backup-YYYYMMDD_HHMMSS.tar.gz`
+- Local: `/backup/zeptodb/zeptodb-backup-YYYYMMDD_HHMMSS.tar.gz`
 - S3: `s3://${S3_BUCKET}/backups/` (optional)
 
 ### 4.2 S3 Backup Configuration
 
 ```bash
 # Set environment variables
-export APEX_S3_BACKUP_BUCKET="my-apex-backups"
+export ZEPTO_S3_BACKUP_BUCKET="my-apex-backups"
 export AWS_REGION="us-east-1"
 
 # Required IAM permissions:
@@ -224,24 +224,24 @@ export AWS_REGION="us-east-1"
 
 **Restore from local backup:**
 ```bash
-# 1. Stop APEX-DB
-sudo systemctl stop apex-db
+# 1. Stop ZeptoDB
+sudo systemctl stop zeptodb
 
 # 2. Restore backup
-sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000
+sudo /opt/zeptodb/scripts/restore.sh zeptodb-backup-20260322_020000
 
 # 3. Restart service
-sudo systemctl start apex-db
+sudo systemctl start zeptodb
 ```
 
 **Restore from S3 backup:**
 ```bash
-sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000 --from-s3
+sudo /opt/zeptodb/scripts/restore.sh zeptodb-backup-20260322_020000 --from-s3
 ```
 
 **Skip WAL replay:**
 ```bash
-sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000 --skip-wal-replay
+sudo /opt/zeptodb/scripts/restore.sh zeptodb-backup-20260322_020000 --skip-wal-replay
 ```
 
 ### 4.4 Backup Retention Policy
@@ -263,19 +263,19 @@ sudo /opt/apex-db/scripts/restore.sh apex-db-backup-20260322_020000 --skip-wal-r
 **Service management:**
 ```bash
 # Start
-sudo systemctl start apex-db
+sudo systemctl start zeptodb
 
 # Stop
-sudo systemctl stop apex-db
+sudo systemctl stop zeptodb
 
 # Restart
-sudo systemctl restart apex-db
+sudo systemctl restart zeptodb
 
 # Status
-sudo systemctl status apex-db
+sudo systemctl status zeptodb
 
 # Enable auto-start on boot
-sudo systemctl enable apex-db
+sudo systemctl enable zeptodb
 ```
 
 **Service features:**
@@ -288,12 +288,12 @@ sudo systemctl enable apex-db
 
 **Auto-runs (cron):**
 ```
-0 18 * * 1-5 /opt/apex-db/scripts/eod_process.sh
+0 18 * * 1-5 /opt/zeptodb/scripts/eod_process.sh
 ```
 
 **Manual run:**
 ```bash
-sudo -u apex /opt/apex-db/scripts/eod_process.sh
+sudo -u zeptodb /opt/zeptodb/scripts/eod_process.sh
 ```
 
 **EOD tasks:**
@@ -305,14 +305,14 @@ sudo -u apex /opt/apex-db/scripts/eod_process.sh
 
 **Logs:**
 ```bash
-tail -f /var/log/apex-db/eod.log
+tail -f /var/log/zeptodb/eod.log
 ```
 
 ### 5.3 Auto Tuning
 
 **Bare metal tuning:**
 ```bash
-sudo /opt/apex-db/scripts/tune_bare_metal.sh
+sudo /opt/zeptodb/scripts/tune_bare_metal.sh
 ```
 
 Tuning items:
@@ -330,16 +330,16 @@ Tuning items:
 
 ```bash
 # Check logs
-sudo journalctl -u apex-db -n 100
+sudo journalctl -u zeptodb -n 100
 
 # Check config file
-cat /opt/apex-db/config.yaml
+cat /opt/zeptodb/config.yaml
 
 # Check port conflict
 sudo lsof -i :8123
 
 # Check permissions
-ls -la /data/apex-db
+ls -la /data/zeptodb
 ```
 
 ### 6.2 High Tick Drop Rate
@@ -355,13 +355,13 @@ ls -la /data/apex-db
 curl http://localhost:8123/metrics | grep dropped
 
 # 2. Check CPU usage
-top -u apex
+top -u zeptodb
 
 # 3. Increase ring buffer size (config.yaml)
 ring_buffer_size: 1048576  # default 524288
 
 # 4. Restart
-sudo systemctl restart apex-db
+sudo systemctl restart zeptodb
 ```
 
 ### 6.3 Slow Queries
@@ -374,7 +374,7 @@ curl http://localhost:8123/stats
 curl -X POST http://localhost:8123/ -d "EXPLAIN SELECT ..."
 
 # 3. Check HDB compression status
-du -sh /data/apex-db/hdb
+du -sh /data/zeptodb/hdb
 
 # 4. Verify parallel query enabled (config.yaml)
 query_threads: 8
@@ -384,16 +384,16 @@ query_threads: 8
 
 ```bash
 # 1. Check usage
-df -h /data/apex-db
+df -h /data/zeptodb
 
 # 2. Clean old HDB
-find /data/apex-db/hdb -type d -mtime +90 -exec rm -rf {} \;
+find /data/zeptodb/hdb -type d -mtime +90 -exec rm -rf {} \;
 
 # 3. Compress WAL
-find /data/apex-db/wal -name "*.wal" -mtime +7 -exec gzip {} \;
+find /data/zeptodb/wal -name "*.wal" -mtime +7 -exec gzip {} \;
 
 # 4. Clean backups
-find /backup/apex-db -name "*.tar.gz" -mtime +30 -delete
+find /backup/zeptodb -name "*.tar.gz" -mtime +30 -delete
 ```
 
 ### 6.5 Out of Memory
@@ -401,7 +401,7 @@ find /backup/apex-db -name "*.tar.gz" -mtime +30 -delete
 ```bash
 # 1. Check memory usage
 free -h
-pmap -x $(pgrep apex-server)
+pmap -x $(pgrep zepto-server)
 
 # 2. OOM killer logs
 dmesg | grep -i "out of memory"
@@ -410,7 +410,7 @@ dmesg | grep -i "out of memory"
 cat /proc/meminfo | grep Huge
 
 # 4. Restart process (clear memory)
-sudo systemctl restart apex-db
+sudo systemctl restart zeptodb
 ```
 
 ### 6.6 Prometheus Metrics Not Visible
@@ -423,7 +423,7 @@ curl http://localhost:8123/metrics
 curl http://localhost:9090/api/v1/targets | jq .
 
 # 3. Prometheus logs
-docker logs apex-prometheus
+docker logs zepto-prometheus
 
 # 4. Check firewall
 sudo iptables -L -n | grep 8123
@@ -441,7 +441,7 @@ vi /etc/default/grub
 # GRUB_CMDLINE_LINUX="isolcpus=0-7 nohz_full=0-7"
 
 # Auto tuning
-sudo /opt/apex-db/scripts/tune_bare_metal.sh
+sudo /opt/zeptodb/scripts/tune_bare_metal.sh
 
 # Check NUMA topology
 numactl --hardware
@@ -493,8 +493,8 @@ sudo ufw allow from 10.0.0.0/8 to any port 8123
 server:
   tls:
     enabled: true
-    cert_file: /etc/apex-db/server.crt
-    key_file: /etc/apex-db/server.key
+    cert_file: /etc/zeptodb/server.crt
+    key_file: /etc/zeptodb/server.key
 ```
 
 ### 8.3 Authentication
@@ -514,10 +514,10 @@ auth:
 ## 9. Contact
 
 **For issues:**
-- GitHub Issues: https://github.com/apex-db/apex-db/issues
-- Slack: #apex-db-support
-- Email: support@apex-db.io
+- GitHub Issues: https://github.com/zeptodb/zeptodb/issues
+- Slack: #zeptodb-support
+- Email: support@zeptodb.io
 
 **Critical incidents:**
-- PagerDuty: APEX-DB Critical Alerts
+- PagerDuty: ZeptoDB Critical Alerts
 - On-call: +1-XXX-XXX-XXXX

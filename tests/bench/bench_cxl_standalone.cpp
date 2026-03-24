@@ -2,15 +2,15 @@
 // CXL-only Benchmark — UCX 의존성 제거
 // ============================================================================
 
-#include "apex/cluster/cxl_backend.h"
-#include "apex/common/types.h"
+#include "zeptodb/cluster/cxl_backend.h"
+#include "zeptodb/common/types.h"
 
 #include <chrono>
 #include <cstdio>
 #include <vector>
 #include <numeric>
 
-using namespace apex::cluster;
+using namespace zeptodb::cluster;
 using Clock = std::chrono::steady_clock;
 
 int main() {

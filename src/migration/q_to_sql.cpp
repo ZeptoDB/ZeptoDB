@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: q to SQL Transformer Implementation (Extended)
+// ZeptoDB: q to SQL Transformer Implementation (Extended)
 // ============================================================================
-#include "apex/migration/q_parser.h"
+#include "zeptodb/migration/q_parser.h"
 #include <sstream>
 #include <algorithm>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 QToSQLTransformer::QToSQLTransformer() {
     init_function_map();
@@ -332,4 +332,4 @@ std::string QToSQLTransformer::transform_expression(std::shared_ptr<QNode> node)
     }
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration

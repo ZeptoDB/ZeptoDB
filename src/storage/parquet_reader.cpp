@@ -1,19 +1,19 @@
-#include "apex/storage/parquet_reader.h"
-#include "apex/ingestion/tick_plant.h"
+#include "zeptodb/storage/parquet_reader.h"
+#include "zeptodb/ingestion/tick_plant.h"
 
-#if APEX_PARQUET_AVAILABLE
+#if ZEPTO_PARQUET_AVAILABLE
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 #endif
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 ParquetReadResult ParquetReader::read_file(const std::string& path,
                                             size_t limit) {
     ParquetReadResult result;
 
-#if APEX_PARQUET_AVAILABLE
+#if ZEPTO_PARQUET_AVAILABLE
     auto infile = arrow::io::ReadableFile::Open(path);
     if (!infile.ok()) {
         result.error = "Cannot open: " + path;
@@ -53,7 +53,7 @@ ParquetReadResult ParquetReader::read_file(const std::string& path,
         result.rows.push_back(std::move(row));
     }
 #else
-    result.error = "Parquet support not available (APEX_PARQUET_AVAILABLE=0)";
+    result.error = "Parquet support not available (ZEPTO_PARQUET_AVAILABLE=0)";
     (void)path; (void)limit;
 #endif
 
@@ -61,7 +61,7 @@ ParquetReadResult ParquetReader::read_file(const std::string& path,
 }
 
 size_t ParquetReader::ingest_file(const std::string& path,
-                                   apex::core::ApexPipeline& pipeline,
+                                   zeptodb::core::ZeptoPipeline& pipeline,
                                    size_t limit) {
     auto result = read_file(path, limit);
     if (!result.ok() || result.rows.empty()) return 0;
@@ -77,7 +77,7 @@ size_t ParquetReader::ingest_file(const std::string& path,
 
     size_t count = 0;
     for (auto& row : result.rows) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         if (col_sym >= 0)   msg.symbol_id = static_cast<uint32_t>(row[col_sym]);
         if (col_price >= 0) msg.price     = row[col_price];
         if (col_vol >= 0)   msg.volume    = row[col_vol];
@@ -88,4 +88,4 @@ size_t ParquetReader::ingest_file(const std::string& path,
     return count;
 }
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

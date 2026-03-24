@@ -1,13 +1,13 @@
 // ============================================================================
-// APEX-DB Scheduler implementation
+// ZeptoDB Scheduler implementation
 // ============================================================================
-#include "apex/scheduler/scheduler.h"
+#include "zeptodb/scheduler/scheduler.h"
 
 #include <cassert>
 #include <ctime>
 #include <stdexcept>
 
-namespace apex::scheduler {
+namespace zeptodb::scheduler {
 
 // ============================================================================
 // Utility
@@ -234,4 +234,4 @@ void Scheduler::run() {
     }
 }
 
-}  // namespace apex::scheduler
+}  // namespace zeptodb::scheduler

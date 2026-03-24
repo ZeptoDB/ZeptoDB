@@ -8,7 +8,7 @@
 
 ## Background
 
-APEX-DB previously had no user-visible schema management:
+ZeptoDB previously had no user-visible schema management:
 - The `store_tick()` path always wrote exactly 4 hardcoded columns: `timestamp`, `price`, `volume`, `msg_type`
 - There was no concept of "table" beyond the implicit all-symbols partition store
 - Memory retention was unbounded — partitions from any era remained in memory forever
@@ -21,7 +21,7 @@ This is a critical gap for production use: operators need to define schemas, man
 
 ### 1. `SchemaRegistry` (header-only)
 
-`include/apex/storage/schema_registry.h`
+`include/zeptodb/storage/schema_registry.h`
 
 Thread-safe (shared_mutex) per-pipeline store mapping `table_name → TableSchema`.
 
@@ -40,11 +40,11 @@ struct TableSchema {
 
 API: `create()`, `drop()`, `exists()`, `get()`, `add_column()`, `drop_column()`, `set_ttl()`, `min_ttl_ns()`, `list_tables()`
 
-`SchemaRegistry schema_registry_` is a member of `ApexPipeline` (accessible via `pipeline.schema_registry()`).
+`SchemaRegistry schema_registry_` is a member of `ZeptoPipeline` (accessible via `pipeline.schema_registry()`).
 
 ### 2. DDL AST nodes
 
-`include/apex/sql/ast.h`
+`include/zeptodb/sql/ast.h`
 
 ```cpp
 struct DdlColumnDef { std::string column; std::string type_str; };
@@ -84,7 +84,7 @@ ALTER TABLE name SET TTL n DAYS|HOURS
 
 `QueryExecutor::execute()` dispatches to `exec_create_table()`, `exec_drop_table()`, `exec_alter_table()` based on `ParsedStatement::kind`.
 
-DDL results return `QueryResultSet::string_rows = {"Table 'x' created"}` — same format as EXPLAIN — so HTTP clients and apex-cli display them consistently.
+DDL results return `QueryResultSet::string_rows = {"Table 'x' created"}` — same format as EXPLAIN — so HTTP clients and zepto-cli display them consistently.
 
 ### 5. TTL Eviction (two-phase)
 
@@ -98,7 +98,7 @@ DDL results return `QueryResultSet::string_rows = {"Table 'x' created"}` — sam
 
 `PartitionManager::evict_older_than(cutoff_ns)` — removes partitions with `key.hour_epoch < cutoff_ns` under mutex.
 
-**Critical fix:** `evict_older_than_ns()` in `ApexPipeline` rebuilds `partition_index_` after eviction. Without this, `total_stored_rows()` would dereference freed partitions (UAF / UB). Discovered and fixed during test run.
+**Critical fix:** `evict_older_than_ns()` in `ZeptoPipeline` rebuilds `partition_index_` after eviction. Without this, `total_stored_rows()` would dereference freed partitions (UAF / UB). Discovered and fixed during test run.
 
 ---
 
@@ -133,17 +133,17 @@ DROP TABLE IF EXISTS trades;
 
 | File | Change |
 |------|--------|
-| `include/apex/storage/schema_registry.h` | New header-only `SchemaRegistry` |
-| `include/apex/storage/partition_manager.h` | Added `evict_older_than(cutoff_ns)` |
+| `include/zeptodb/storage/schema_registry.h` | New header-only `SchemaRegistry` |
+| `include/zeptodb/storage/partition_manager.h` | Added `evict_older_than(cutoff_ns)` |
 | `src/storage/partition_manager.cpp` | Implemented `evict_older_than()` |
-| `include/apex/sql/ast.h` | Added DDL AST: `DdlColumnDef`, `CreateTableStmt`, `DropTableStmt`, `AlterTableStmt`, `ParsedStatement` |
-| `include/apex/sql/parser.h` | Added `parse_statement()` + DDL private methods |
+| `include/zeptodb/sql/ast.h` | Added DDL AST: `DdlColumnDef`, `CreateTableStmt`, `DropTableStmt`, `AlterTableStmt`, `ParsedStatement` |
+| `include/zeptodb/sql/parser.h` | Added `parse_statement()` + DDL private methods |
 | `src/sql/parser.cpp` | Implemented `parse_statement()`, DDL dispatch, `parse_create_table()`, `parse_drop_table()`, `parse_alter_table()`, `parse_ddl_column_def()` |
-| `include/apex/core/pipeline.h` | Added `#include schema_registry.h`; `schema_registry_` member; `schema_registry()` accessor; `evict_older_than_ns()` declaration |
+| `include/zeptodb/core/pipeline.h` | Added `#include schema_registry.h`; `schema_registry_` member; `schema_registry()` accessor; `evict_older_than_ns()` declaration |
 | `src/core/pipeline.cpp` | Implemented `evict_older_than_ns()` with `partition_index_` rebuild |
-| `include/apex/storage/flush_manager.h` | Added `set_ttl()` / `ttl_ns()` + `ttl_ns_` atomic |
+| `include/zeptodb/storage/flush_manager.h` | Added `set_ttl()` / `ttl_ns()` + `ttl_ns_` atomic |
 | `src/storage/flush_manager.cpp` | TTL eviction in `flush_loop()` |
-| `include/apex/sql/executor.h` | Added DDL method declarations |
+| `include/zeptodb/sql/executor.h` | Added DDL method declarations |
 | `src/sql/executor.cpp` | `exec_create_table()`, `exec_drop_table()`, `exec_alter_table()` + updated `execute()` to use `parse_statement()` |
 | `tests/unit/test_sql.cpp` | 8 new DDL tests |
 | `BACKLOG.md` | Marked CREATE/DROP TABLE, retention policy, schema evolution complete |

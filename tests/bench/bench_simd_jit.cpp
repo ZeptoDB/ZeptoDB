@@ -9,8 +9,8 @@
 //   4. JIT filter:     per-row v1(Os) → per-row v2(O3) → bulk(O3 루프 IR)
 // ============================================================================
 
-#include "apex/execution/vectorized_engine.h"
-#include "apex/execution/jit_engine.h"
+#include "zeptodb/execution/vectorized_engine.h"
+#include "zeptodb/execution/jit_engine.h"
 
 #include <algorithm>
 #include <array>
@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-using namespace apex::execution;
+using namespace zeptodb::execution;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -146,7 +146,7 @@ void print_bench(const std::string& op, size_t rows,
 // ============================================================================
 int main() {
     std::cout << "=============================================================\n";
-    std::cout << " APEX-DB Phase B: SIMD + JIT Benchmark\n";
+    std::cout << " ZeptoDB Phase B: SIMD + JIT Benchmark\n";
     std::cout << "=============================================================\n\n";
 
     // --------------------------------------------------------

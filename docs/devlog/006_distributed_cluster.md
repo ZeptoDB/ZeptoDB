@@ -9,10 +9,10 @@
 ## Overview
 
 After completing Phase E (LLVM JIT), B (Vectorized Engine), A (Storage), and D (Python Binding),
-Phase C takes APEX-DB to distributed systems.
+Phase C takes ZeptoDB to distributed systems.
 
 The goal is simple:
-**Scale APEX-DB horizontally across multiple nodes with zero virtual call overhead on the hot path.**
+**Scale ZeptoDB horizontally across multiple nodes with zero virtual call overhead on the hot path.**
 
 ---
 
@@ -52,7 +52,7 @@ Hot path operations (`remote_write`, `remote_read`, `fence`) are resolved at com
 ```
 Node1                          Node2
  |  register_memory(buf)        |
- |  -> shm_open("/apex_1_ptr")  |
+ |  -> shm_open("/zepto_1_ptr")  |
  |  -> mmap(MAP_SHARED)         |
  |  -> RemoteRegion{addr, rkey} |
  |                              |
@@ -73,8 +73,8 @@ When UCX headers are found, `APEX_HAS_UCX=1` flag is set automatically:
 
 ```cmake
 if(APEX_USE_UCX AND UCX_FOUND)
-    target_compile_definitions(apex_cluster PUBLIC APEX_HAS_UCX=1)
-    target_link_libraries(apex_cluster PUBLIC PkgConfig::UCX)
+    target_compile_definitions(zepto_cluster PUBLIC APEX_HAS_UCX=1)
+    target_link_libraries(zepto_cluster PUBLIC PkgConfig::UCX)
 endif()
 ```
 
@@ -145,7 +145,7 @@ class ClusterNode {
     Transport       transport_;   // SharedMem or UCX
     PartitionRouter router_;      // Consistent hash ring
     HealthMonitor   health_;      // UDP heartbeat
-    ApexPipeline    local_pipeline_; // Local APEX pipeline
+    ZeptoPipeline    local_pipeline_; // Local APEX pipeline
 };
 ```
 
@@ -179,7 +179,7 @@ Fix: Changed to `public`, and use `SharedMemBackend` directly as the Transport t
 
 ```
 sizeof(ClusterNode<SharedMemBackend>) = 8,390,528 bytes  // ~8MB!
-sizeof(ApexPipeline)                  = 8,389,312 bytes  // due to TickPlant 65K slots
+sizeof(ZeptoPipeline)                  = 8,389,312 bytes  // due to TickPlant 65K slots
 ```
 
 Declaring two ClusterNodes on the stack in a test caused 16MB -> segfault.
@@ -192,7 +192,7 @@ auto node2 = std::make_unique<ShmNode>(cfg2);
 ```
 
 Lesson: **Always heap-allocate large objects in HFT systems.**
-(ApexPipeline is this large because of the RingBuffer size designed in Phase A)
+(ZeptoPipeline is this large because of the RingBuffer size designed in Phase A)
 
 ### 3. HealthMonitor state transition bug
 
@@ -250,7 +250,7 @@ Will be implemented with gRPC or RDMA one-sided in C-3.
 ## File List
 
 ```
-include/apex/cluster/
+include/zeptodb/cluster/
 ├── transport.h          # CRTP TransportBackend interface
 ├── partition_router.h   # Consistent Hashing (virtual nodes 128)
 ├── health_monitor.h     # UDP Heartbeat + state transitions
@@ -266,5 +266,5 @@ tests/bench/bench_cluster.cpp # 7 benchmarks
 
 ---
 
-*Completing APEX-DB in order: Phase E -> B -> A -> D -> C.*
+*Completing ZeptoDB in order: Phase E -> B -> A -> D -> C.*
 *Now moving beyond single machine to the cluster.*

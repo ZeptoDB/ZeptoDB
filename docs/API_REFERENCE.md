@@ -1,4 +1,4 @@
-# APEX-DB API Reference
+# ZeptoDB API Reference
 
 *Last updated: 2026-03-22*
 
@@ -11,8 +11,8 @@ This is the top-level index. Each reference is in a separate file under `docs/ap
 | Document | Contents |
 |----------|----------|
 | [docs/api/SQL_REFERENCE.md](api/SQL_REFERENCE.md) | Full SQL syntax — SELECT, WHERE, aggregates, window functions, financial functions, date/time functions, JOINs, set operations, CASE WHEN |
-| [docs/api/PYTHON_REFERENCE.md](api/PYTHON_REFERENCE.md) | `apex` pybind11 binding, `apex_py` package — connection, dataframe, arrow, streaming |
-| [docs/api/CPP_REFERENCE.md](api/CPP_REFERENCE.md) | `ApexPipeline`, `QueryExecutor`, `PartitionManager`, `TickMessage`, `CancellationToken` |
+| [docs/api/PYTHON_REFERENCE.md](api/PYTHON_REFERENCE.md) | `zeptodb` pybind11 binding, `zepto_py` package — connection, dataframe, arrow, streaming |
+| [docs/api/CPP_REFERENCE.md](api/CPP_REFERENCE.md) | `ZeptoPipeline`, `QueryExecutor`, `PartitionManager`, `TickMessage`, `CancellationToken` |
 | [docs/api/HTTP_REFERENCE.md](api/HTTP_REFERENCE.md) | HTTP endpoints, JSON response format, authentication, Prometheus metrics, roles |
 
 Korean translations:
@@ -54,11 +54,11 @@ FROM trades GROUP BY DATE_TRUNC('min', timestamp)
 ### Python — most common patterns
 
 ```python
-import apex
-from apex_py import from_polars, to_pandas, ArrowSession
+import zeptodb
+from zepto_py import from_polars, to_pandas, ArrowSession
 
 # Setup
-pipeline = apex.Pipeline()
+pipeline = zeptodb.Pipeline()
 pipeline.start()
 
 # Ingest from polars (zero-copy Arrow path)
@@ -71,7 +71,7 @@ result_df = to_pandas(pipeline, symbol=1)
 prices = pipeline.get_column(symbol=1, name="price")
 
 # HTTP client
-db = apex.connect("localhost", 8123)
+db = zeptodb.connect("localhost", 8123)
 df = db.query_pandas("SELECT avg(price) FROM trades GROUP BY symbol")
 ```
 
@@ -79,7 +79,7 @@ df = db.query_pandas("SELECT avg(price) FROM trades GROUP BY symbol")
 
 ```cpp
 // Setup
-ApexPipeline pipeline;
+ZeptoPipeline pipeline;
 pipeline.start();
 
 // Ingest
@@ -100,11 +100,11 @@ auto r = pipeline.query_vwap(1);
 ```bash
 # Query
 curl -X POST http://localhost:8123/ \
-  -H "Authorization: Bearer apex_<key>" \
+  -H "Authorization: Bearer zepto_<key>" \
   -d 'SELECT vwap(price, volume) FROM trades WHERE symbol = 1'
 
 # Stats
-curl http://localhost:8123/stats -H "Authorization: Bearer apex_<key>"
+curl http://localhost:8123/stats -H "Authorization: Bearer zepto_<key>"
 
 # Health (no auth)
 curl http://localhost:8123/ping
@@ -116,8 +116,8 @@ curl http://localhost:8123/ping
 
 | From \ To | pandas | polars | numpy | Arrow | DuckDB | HTTP |
 |-----------|--------|--------|-------|-------|--------|------|
-| APEX-DB (in-proc) | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` | — |
-| APEX-DB (HTTP) | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — | `POST /` |
+| ZeptoDB (in-proc) | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` | — |
+| ZeptoDB (HTTP) | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — | `POST /` |
 | pandas → APEX | `from_pandas()` | — | — | — | — | `ingest_pandas()` |
 | polars → APEX | — | `from_polars()` | — | — | — | `ingest_polars()` |
 | Arrow → APEX | — | — | — | `ingest_arrow()` | — | — |

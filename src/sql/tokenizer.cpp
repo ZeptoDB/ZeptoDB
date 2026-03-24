@@ -1,13 +1,13 @@
 // ============================================================================
-// APEX-DB: SQL Tokenizer Implementation
+// ZeptoDB: SQL Tokenizer Implementation
 // ============================================================================
 
-#include "apex/sql/tokenizer.h"
+#include "zeptodb/sql/tokenizer.h"
 #include <cctype>
 #include <algorithm>
 #include <stdexcept>
 
-namespace apex::sql {
+namespace zeptodb::sql {
 
 // ============================================================================
 // 키워드 매핑 테이블
@@ -50,6 +50,11 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "MIN")         return TokenType::MIN;
     if (upper == "MAX")         return TokenType::MAX;
     if (upper == "VWAP")        return TokenType::VWAP;
+    if (upper == "STDDEV")      return TokenType::STDDEV;
+    if (upper == "VARIANCE")    return TokenType::VARIANCE;
+    if (upper == "MEDIAN")      return TokenType::MEDIAN;
+    if (upper == "PERCENTILE" || upper == "PERCENTILE_CONT")
+                                return TokenType::PERCENTILE;
     // 윈도우 함수 키워드
     if (upper == "OVER")        return TokenType::OVER;
     if (upper == "PARTITION")   return TokenType::PARTITION;
@@ -93,6 +98,15 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "EXPLAIN")     return TokenType::EXPLAIN;
     // CTE / subquery
     if (upper == "WITH")        return TokenType::WITH;
+    // DML
+    if (upper == "INSERT")      return TokenType::INSERT;
+    if (upper == "INTO")        return TokenType::INTO;
+    if (upper == "VALUES")      return TokenType::VALUES;
+    if (upper == "UPDATE")      return TokenType::UPDATE;
+    if (upper == "SET")         return TokenType::SET;
+    if (upper == "DELETE")      return TokenType::DELETE_KW;
+    if (upper == "MATERIALIZED") return TokenType::MATERIALIZED;
+    if (upper == "VIEW")        return TokenType::VIEW;
     // 집합 연산
     if (upper == "UNION")       return TokenType::UNION;
     if (upper == "ALL")         return TokenType::ALL;
@@ -302,4 +316,4 @@ std::vector<Token> Tokenizer::tokenize(const std::string& sql) {
     return tokens;
 }
 
-} // namespace apex::sql
+} // namespace zeptodb::sql

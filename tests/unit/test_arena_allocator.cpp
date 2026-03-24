@@ -2,12 +2,12 @@
 // Test: Arena Allocator (Layer 1)
 // ============================================================================
 
-#include "apex/storage/arena_allocator.h"
+#include "zeptodb/storage/arena_allocator.h"
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
 
-using namespace apex::storage;
+using namespace zeptodb::storage;
 
 TEST(ArenaAllocator, BasicAllocation) {
     ArenaConfig config{.total_size = 1024 * 1024, .use_hugepages = false};
@@ -21,7 +21,7 @@ TEST(ArenaAllocator, BasicAllocation) {
     EXPECT_GT(arena.used_bytes(), 0);
 
     // Alignment check (cache-line)
-    EXPECT_EQ(reinterpret_cast<uintptr_t>(p1) % apex::CACHE_LINE_SIZE, 0);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(p1) % zeptodb::CACHE_LINE_SIZE, 0);
 }
 
 TEST(ArenaAllocator, ArrayAllocation) {

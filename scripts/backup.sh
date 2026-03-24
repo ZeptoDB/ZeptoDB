@@ -1,10 +1,10 @@
 #!/bin/bash
 # ============================================================================
-# APEX-DB 자동 백업 스크립트
+# ZeptoDB 자동 백업 스크립트
 # ============================================================================
 # 용도: HDB/WAL/Config 백업 및 S3 업로드 (선택)
 # 실행: cron으로 일별 자동 실행
-# 예: 0 2 * * * /opt/apex-db/scripts/backup.sh
+# 예: 0 2 * * * /opt/zeptodb/scripts/backup.sh
 # ============================================================================
 
 set -euo pipefail
@@ -12,16 +12,16 @@ set -euo pipefail
 # ============================================================================
 # 설정
 # ============================================================================
-APEX_HOME="${APEX_HOME:-/opt/apex-db}"
-DATA_DIR="${APEX_DATA_DIR:-/data/apex-db}"
-BACKUP_DIR="${APEX_BACKUP_DIR:-/backup/apex-db}"
+APEX_HOME="${APEX_HOME:-/opt/zeptodb}"
+DATA_DIR="${APEX_DATA_DIR:-/data/zeptodb}"
+BACKUP_DIR="${APEX_BACKUP_DIR:-/backup/zeptodb}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
-S3_BUCKET="${APEX_S3_BACKUP_BUCKET:-}"
+S3_BUCKET="${ZEPTO_S3_BACKUP_BUCKET:-}"
 S3_REGION="${AWS_REGION:-us-east-1}"
 
 # 타임스탬프
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_NAME="apex-db-backup-${TIMESTAMP}"
+BACKUP_NAME="zeptodb-backup-${TIMESTAMP}"
 BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
 
 # 로그
@@ -128,7 +128,7 @@ fi
 # 7. 오래된 백업 삭제 (로컬)
 # ============================================================================
 log "Cleaning up backups older than ${RETENTION_DAYS} days..."
-find "$BACKUP_DIR" -name "apex-db-backup-*.tar.gz" \
+find "$BACKUP_DIR" -name "zeptodb-backup-*.tar.gz" \
     -type f -mtime +${RETENTION_DAYS} -delete
 
 # ============================================================================

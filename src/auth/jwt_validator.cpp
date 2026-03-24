@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: JWT Validator Implementation (HS256 + RS256)
+// ZeptoDB: JWT Validator Implementation (HS256 + RS256)
 // ============================================================================
-#include "apex/auth/jwt_validator.h"
+#include "zeptodb/auth/jwt_validator.h"
 
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
@@ -14,7 +14,7 @@
 #include <stdexcept>
 #include <cstring>
 
-namespace apex::auth {
+namespace zeptodb::auth {
 
 // ============================================================================
 // Constructor
@@ -309,4 +309,4 @@ std::vector<std::string> JwtValidator::get_json_string_array(
     return result;
 }
 
-} // namespace apex::auth
+} // namespace zeptodb::auth

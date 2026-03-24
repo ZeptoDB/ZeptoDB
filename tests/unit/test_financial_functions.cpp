@@ -1,19 +1,19 @@
 // ============================================================================
-// APEX-DB: 금융 함수 테스트 — xbar, ema, delta/ratio, LEFT JOIN, WINDOW JOIN
+// ZeptoDB: 금융 함수 테스트 — xbar, ema, delta/ratio, LEFT JOIN, WINDOW JOIN
 // ============================================================================
 // Part 7: 모든 새 기능에 대한 정확성 테스트
 // ============================================================================
 
-#include "apex/execution/window_function.h"
-#include "apex/execution/join_operator.h"
-#include "apex/sql/tokenizer.h"
-#include "apex/sql/parser.h"
-#include "apex/sql/executor.h"
-#include "apex/core/pipeline.h"
-#include "apex/storage/column_store.h"
-#include "apex/storage/partition_manager.h"
-#include "apex/storage/arena_allocator.h"
-#include "apex/ingestion/tick_plant.h"
+#include "zeptodb/execution/window_function.h"
+#include "zeptodb/execution/join_operator.h"
+#include "zeptodb/sql/tokenizer.h"
+#include "zeptodb/sql/parser.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/storage/column_store.h"
+#include "zeptodb/storage/partition_manager.h"
+#include "zeptodb/storage/arena_allocator.h"
+#include "zeptodb/ingestion/tick_plant.h"
 
 #include <gtest/gtest.h>
 #include <vector>
@@ -22,26 +22,26 @@
 #include <climits>
 #include <chrono>
 
-using namespace apex::execution;
-using namespace apex::sql;
-using namespace apex::storage;
-using namespace apex::core;
+using namespace zeptodb::execution;
+using namespace zeptodb::sql;
+using namespace zeptodb::storage;
+using namespace zeptodb::core;
 
 // ============================================================================
 // 헬퍼: 간단한 파이프라인 생성
 // ============================================================================
-static std::unique_ptr<ApexPipeline> make_pipeline() {
+static std::unique_ptr<ZeptoPipeline> make_pipeline() {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    return std::make_unique<ApexPipeline>(cfg);
+    return std::make_unique<ZeptoPipeline>(cfg);
 }
 
-static void store_tick_direct(ApexPipeline& pipeline, int64_t sym, int64_t ts,
+static void store_tick_direct(ZeptoPipeline& pipeline, int64_t sym, int64_t ts,
                                int64_t price, int64_t vol) {
     // partition_manager를 직접 사용하여 정확한 타임스탬프로 삽입
     // (ingest_tick/tick_plant는 recv_ts를 now()로 덮어씀)
     auto& pm = pipeline.partition_manager();
-    auto& part = pm.get_or_create(static_cast<apex::SymbolId>(sym), ts);
+    auto& part = pm.get_or_create(static_cast<zeptodb::SymbolId>(sym), ts);
 
     static const char* COL_TS  = "timestamp";
     static const char* COL_PR  = "price";
@@ -49,10 +49,10 @@ static void store_tick_direct(ApexPipeline& pipeline, int64_t sym, int64_t ts,
     static const char* COL_MSG = "msg_type";
 
     if (part.get_column(COL_TS) == nullptr) {
-        part.add_column(COL_TS,  apex::storage::ColumnType::TIMESTAMP_NS);
-        part.add_column(COL_PR,  apex::storage::ColumnType::INT64);
-        part.add_column(COL_VOL, apex::storage::ColumnType::INT64);
-        part.add_column(COL_MSG, apex::storage::ColumnType::INT32);
+        part.add_column(COL_TS,  zeptodb::storage::ColumnType::TIMESTAMP_NS);
+        part.add_column(COL_PR,  zeptodb::storage::ColumnType::INT64);
+        part.add_column(COL_VOL, zeptodb::storage::ColumnType::INT64);
+        part.add_column(COL_MSG, zeptodb::storage::ColumnType::INT32);
         // partition_index 업데이트 — pipeline 내부가 알 수 있도록 ingest 1번
         // 실제로는 pm이 인덱스를 관리하지만 executor는 pm.get_all_partitions()를 씀
     }
@@ -62,10 +62,10 @@ static void store_tick_direct(ApexPipeline& pipeline, int64_t sym, int64_t ts,
     part.get_column(COL_MSG)->append<int32_t>(0);
 }
 
-static void insert_tick(ApexPipeline& pipeline, int64_t sym, int64_t ts,
+static void insert_tick(ZeptoPipeline& pipeline, int64_t sym, int64_t ts,
                         int64_t price, int64_t vol) {
-    apex::ingestion::TickMessage msg{};
-    msg.symbol_id = static_cast<apex::SymbolId>(sym);
+    zeptodb::ingestion::TickMessage msg{};
+    msg.symbol_id = static_cast<zeptodb::SymbolId>(sym);
     msg.recv_ts   = ts;
     msg.price     = price;
     msg.volume    = vol;

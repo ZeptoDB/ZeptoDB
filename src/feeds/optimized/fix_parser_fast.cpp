@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: Optimized FIX Parser Implementation
+// ZeptoDB: Optimized FIX Parser Implementation
 // ============================================================================
-#include "apex/feeds/optimized/fix_parser_fast.h"
+#include "zeptodb/feeds/optimized/fix_parser_fast.h"
 #include <cstring>
 #include <cstdlib>
 
-namespace apex::feeds::optimized {
+namespace zeptodb::feeds::optimized {
 
 FIXParserFast::FIXParserFast() : FIXParser() {
     std::memset(field_views_, 0, sizeof(field_views_));
@@ -198,4 +198,4 @@ void TickMemoryPool::reset() {
     allocated_ = 0;
 }
 
-} // namespace apex::feeds::optimized
+} // namespace zeptodb::feeds::optimized

@@ -1,10 +1,10 @@
 // ============================================================================
-// APEX-DB: LocalQueryScheduler Implementation
+// ZeptoDB: LocalQueryScheduler Implementation
 // ============================================================================
 
-#include "apex/execution/local_scheduler.h"
-#include "apex/execution/parallel_scan.h"
-#include "apex/storage/column_store.h"
+#include "zeptodb/execution/local_scheduler.h"
+#include "zeptodb/execution/parallel_scan.h"
+#include "zeptodb/storage/column_store.h"
 
 #include <algorithm>
 #include <climits>
@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
 // ============================================================================
 // PartialAggResult 헬퍼 구현
@@ -94,7 +94,7 @@ PartialAggResult PartialAggResult::deserialize(const uint8_t* /*buf*/, size_t /*
 // LocalQueryScheduler
 // ============================================================================
 
-LocalQueryScheduler::LocalQueryScheduler(apex::core::ApexPipeline& pipeline,
+LocalQueryScheduler::LocalQueryScheduler(zeptodb::core::ZeptoPipeline& pipeline,
                                           size_t num_threads)
     : pipeline_(pipeline)
     , pool_(num_threads)
@@ -340,4 +340,4 @@ PartialAggResult LocalQueryScheduler::gather(
     return merged;
 }
 
-} // namespace apex::execution
+} // namespace zeptodb::execution

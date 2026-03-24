@@ -1,8 +1,8 @@
 // ============================================================================
-// APEX-DB: DistributedQueryScheduler — 스텁 구현
+// ZeptoDB: DistributedQueryScheduler — 스텁 구현
 // ============================================================================
 // 현재: 헤더-only 스텁. 이 파일은 빌드 포함만 확인용.
 // 나중에 UCX 전송 코드가 여기에 구현됨.
 // ============================================================================
 
-#include "apex/execution/distributed_scheduler.h"
+#include "zeptodb/execution/distributed_scheduler.h"

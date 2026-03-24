@@ -1,43 +1,43 @@
 // ============================================================================
-// APEX-DB: DuckDB Interoperability Tests
+// ZeptoDB: DuckDB Interoperability Tests
 // ============================================================================
-#include "apex/migration/duckdb_interop.h"
+#include "zeptodb/migration/duckdb_interop.h"
 #include <gtest/gtest.h>
 
-using namespace apex::migration;
+using namespace zeptodb::migration;
 
 // ============================================================================
 // Type Mapper Tests
 // ============================================================================
 
 TEST(DuckDBTypeMapperTest, APEXTypes) {
-    EXPECT_EQ(APEXToDuckDBTypeMapper::apex_to_duckdb("BIGINT"),    "BIGINT");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::apex_to_duckdb("DOUBLE"),    "DOUBLE");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::apex_to_duckdb("VARCHAR"),   "VARCHAR");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::apex_to_duckdb("TIMESTAMP"), "TIMESTAMP");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::apex_to_duckdb("BOOLEAN"),   "BOOLEAN");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::zepto_to_duckdb("BIGINT"),    "BIGINT");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::zepto_to_duckdb("DOUBLE"),    "DOUBLE");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::zepto_to_duckdb("VARCHAR"),   "VARCHAR");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::zepto_to_duckdb("TIMESTAMP"), "TIMESTAMP");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::zepto_to_duckdb("BOOLEAN"),   "BOOLEAN");
 }
 
 TEST(DuckDBTypeMapperTest, KDBTypes) {
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_duckdb(7),  "BIGINT");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_duckdb(9),  "DOUBLE");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_duckdb(11), "VARCHAR");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_duckdb(12), "TIMESTAMP");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_duckdb(14), "DATE");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_duckdb(7),  "BIGINT");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_duckdb(9),  "DOUBLE");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_duckdb(11), "VARCHAR");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_duckdb(12), "TIMESTAMP");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_duckdb(14), "DATE");
 }
 
 TEST(DuckDBTypeMapperTest, ParquetPhysicalTypes) {
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_physical(6),  "INT32");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_physical(7),  "INT64");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_physical(9),  "DOUBLE");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_physical(11), "BYTE_ARRAY");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_physical(12), "INT64");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_physical(6),  "INT32");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_physical(7),  "INT64");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_physical(9),  "DOUBLE");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_physical(11), "BYTE_ARRAY");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_physical(12), "INT64");
 }
 
 TEST(DuckDBTypeMapperTest, ParquetLogicalTypes) {
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_logical(11), "STRING");
-    EXPECT_EQ(APEXToDuckDBTypeMapper::ktype_to_parquet_logical(14), "DATE");
-    EXPECT_NE(APEXToDuckDBTypeMapper::ktype_to_parquet_logical(12).find("TIMESTAMP"),
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_logical(11), "STRING");
+    EXPECT_EQ(ZeptoToDuckDBTypeMapper::ktype_to_parquet_logical(14), "DATE");
+    EXPECT_NE(ZeptoToDuckDBTypeMapper::ktype_to_parquet_logical(12).find("TIMESTAMP"),
               std::string::npos);
 }
 
@@ -48,8 +48,8 @@ TEST(DuckDBTypeMapperTest, ParquetLogicalTypes) {
 TEST(DuckDBQueryAdapterTest, XbarToTimeBucket) {
     DuckDBQueryAdapter adapter;
 
-    std::string apex_sql = "SELECT xbar(timestamp, 300), sym FROM trades";
-    std::string duck_sql = adapter.adapt(apex_sql);
+    std::string zepto_sql = "SELECT xbar(timestamp, 300), sym FROM trades";
+    std::string duck_sql = adapter.adapt(zepto_sql);
 
     EXPECT_NE(duck_sql.find("time_bucket"), std::string::npos);
     EXPECT_NE(duck_sql.find("300"), std::string::npos);
@@ -128,7 +128,7 @@ TEST(ParquetExporterTest, GenerateHDBToParquetScript) {
         "/data/hdb", "/output",
         {"trades", "quotes"});
 
-    EXPECT_NE(script.find("apex-migrate"), std::string::npos);
+    EXPECT_NE(script.find("zepto-migrate"), std::string::npos);
     EXPECT_NE(script.find("trades"), std::string::npos);
     EXPECT_NE(script.find("quotes"), std::string::npos);
 }

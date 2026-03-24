@@ -2,11 +2,11 @@
 // Layer 2: WAL Writer Implementation
 // ============================================================================
 
-#include "apex/ingestion/wal_writer.h"
-#include "apex/common/logger.h"
+#include "zeptodb/ingestion/wal_writer.h"
+#include "zeptodb/common/logger.h"
 #include <stdexcept>
 
-namespace apex::ingestion {
+namespace zeptodb::ingestion {
 
 WALWriter::WALWriter(const std::string& path)
     : file_(path, std::ios::binary | std::ios::app)
@@ -14,7 +14,7 @@ WALWriter::WALWriter(const std::string& path)
     if (!file_.is_open()) {
         throw std::runtime_error("WALWriter: cannot open " + path);
     }
-    APEX_INFO("WAL opened: {}", path);
+    ZEPTO_INFO("WAL opened: {}", path);
 }
 
 WALWriter::~WALWriter() {
@@ -28,7 +28,7 @@ bool WALWriter::write(const TickMessage& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     file_.write(reinterpret_cast<const char*>(&msg), sizeof(TickMessage));
     if (!file_.good()) {
-        APEX_ERROR("WAL write failed at message #{}", count_);
+        ZEPTO_ERROR("WAL write failed at message #{}", count_);
         return false;
     }
     ++count_;
@@ -40,4 +40,4 @@ void WALWriter::flush() {
     file_.flush();
 }
 
-} // namespace apex::ingestion
+} // namespace zeptodb::ingestion

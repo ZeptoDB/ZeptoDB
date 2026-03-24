@@ -1,5 +1,5 @@
 # ============================================================================
-# Alertmanager 설정 - APEX-DB 알림 라우팅
+# Alertmanager 설정 - ZeptoDB 알림 라우팅
 # ============================================================================
 
 global:
@@ -36,8 +36,8 @@ receivers:
   - name: 'default'
     slack_configs:
       - api_url: 'YOUR_SLACK_WEBHOOK_URL'
-        channel: '#apex-db-alerts'
-        title: 'APEX-DB Alert'
+        channel: '#zeptodb-alerts'
+        title: 'ZeptoDB Alert'
         text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}\n{{ end }}'
 
   # Critical 알림 (PagerDuty + Slack)
@@ -47,7 +47,7 @@ receivers:
         description: '{{ .GroupLabels.alertname }}'
     slack_configs:
       - api_url: 'YOUR_SLACK_WEBHOOK_URL'
-        channel: '#apex-db-critical'
+        channel: '#zeptodb-critical'
         title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
         text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}\n{{ end }}'
         color: 'danger'
@@ -56,7 +56,7 @@ receivers:
   - name: 'warning-alerts'
     slack_configs:
       - api_url: 'YOUR_SLACK_WEBHOOK_URL'
-        channel: '#apex-db-alerts'
+        channel: '#zeptodb-alerts'
         title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
         text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}\n{{ end }}'
         color: 'warning'

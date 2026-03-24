@@ -1,10 +1,10 @@
 // ============================================================================
-// APEX-DB: 구조화된 로깅 시스템 구현
+// ZeptoDB: 구조화된 로깅 시스템 구현
 // ============================================================================
 // spdlog 기반 비동기 JSON 로깅
 // ============================================================================
 
-#include "apex/util/logger.h"
+#include "zeptodb/util/logger.h"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -13,7 +13,7 @@
 #include <iomanip>
 #include <filesystem>
 
-namespace apex::util {
+namespace zeptodb::util {
 
 namespace fs = std::filesystem;
 
@@ -36,7 +36,7 @@ public:
         fs::create_directories(log_dir);
 
         // 파일 경로
-        std::string log_path = log_dir + "/apex-db.log";
+        std::string log_path = log_dir + "/zeptodb.log";
 
         // Rotating file sink (자동 로테이션)
         size_t max_size = max_file_size_mb * 1024 * 1024;
@@ -50,7 +50,7 @@ public:
         spdlog::init_thread_pool(8192, 1);  // 큐 크기 8192, 스레드 1개
         std::vector<spdlog::sink_ptr> sinks{file_sink, console_sink};
         logger_ = std::make_shared<spdlog::async_logger>(
-            "apex-db", sinks.begin(), sinks.end(),
+            "zeptodb", sinks.begin(), sinks.end(),
             spdlog::thread_pool(),
             spdlog::async_overflow_policy::block);
 
@@ -238,8 +238,8 @@ void Logger::flush() {
 Logger::~Logger() {
     if (impl_ && impl_->logger_) {
         impl_->logger_->flush();
-        spdlog::drop("apex-db");
+        spdlog::drop("zeptodb");
     }
 }
 
-} // namespace apex::util
+} // namespace zeptodb::util

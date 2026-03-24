@@ -1,4 +1,4 @@
-# APEX-DB Feature Extension Performance Analysis
+# ZeptoDB Feature Extension Performance Analysis
 # Performance advantage viability assessment when adding each feature vs. competition
 
 ---
@@ -6,7 +6,7 @@
 ## Analysis Framework
 
 Each feature is evaluated on 3 axes:
-- **Structural advantage**: Is APEX-DB's architecture fundamentally favorable?
+- **Structural advantage**: Is ZeptoDB's architecture fundamentally favorable?
 - **Performance retention**: Does adding the feature avoid degrading hot-path performance?
 - **Competitive gap**: Can we achieve a meaningful difference vs. existing solutions?
 
@@ -20,17 +20,17 @@ Each feature is evaluated on 3 axes:
 | ClickHouse | Vectorized interpreter (Block pipeline) | ms~sec |
 | DuckDB | Vectorized + push-based pipeline | ms |
 | PostgreSQL | Volcano model (row-by-row) | ms~sec |
-| **APEX-DB** | **SIMD vectorized + LLVM JIT** | **μs** |
+| **ZeptoDB** | **SIMD vectorized + LLVM JIT** | **μs** |
 
 ### Performance Advantage Viability: ✅ High
 
 **Reasons:**
 1. ClickHouse Block approach: `IColumn::filter` → creates new column (immutable, copies occur)
-   APEX-DB: BitMask → zero-copy on original data, no copies
+   ZeptoDB: BitMask → zero-copy on original data, no copies
 2. ClickHouse: vectorized OR JIT (one or the other)
-   APEX-DB: **vectorized + JIT simultaneously** (Highway SIMD + LLVM)
+   ZeptoDB: **vectorized + JIT simultaneously** (Highway SIMD + LLVM)
 3. ClickHouse: disk-based, cold queries wait on I/O
-   APEX-DB: in-memory by default, cold also via mmap
+   ZeptoDB: in-memory by default, cold also via mmap
 
 **Risk factors:**
 - SQL parser parsing overhead itself (few μs)

@@ -1,7 +1,7 @@
-#include "apex/cluster/coordinator_ha.h"
+#include "zeptodb/cluster/coordinator_ha.h"
 #include <chrono>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 void CoordinatorHA::init(CoordinatorRole role, const std::string& peer_host,
                           uint16_t peer_port) {
@@ -30,7 +30,7 @@ void CoordinatorHA::add_remote_node(NodeAddress addr) {
 }
 
 void CoordinatorHA::add_local_node(NodeAddress addr,
-                                    apex::core::ApexPipeline& pipeline) {
+                                    zeptodb::core::ZeptoPipeline& pipeline) {
     coordinator_.add_local_node(addr, pipeline);
     std::lock_guard<std::mutex> lock(node_mu_);
     registered_nodes_.push_back(addr);
@@ -45,7 +45,7 @@ void CoordinatorHA::remove_node(NodeId id) {
         registered_nodes_.end());
 }
 
-apex::sql::QueryResultSet CoordinatorHA::execute_sql(const std::string& sql) {
+zeptodb::sql::QueryResultSet CoordinatorHA::execute_sql(const std::string& sql) {
     if (is_active()) {
         return coordinator_.execute_sql(sql);
     }
@@ -53,7 +53,7 @@ apex::sql::QueryResultSet CoordinatorHA::execute_sql(const std::string& sql) {
     if (peer_rpc_) {
         return peer_rpc_->execute_sql(sql);
     }
-    apex::sql::QueryResultSet err;
+    zeptodb::sql::QueryResultSet err;
     err.error = "CoordinatorHA: standby has no peer connection";
     return err;
 }
@@ -97,4 +97,4 @@ void CoordinatorHA::monitor_loop() {
     }
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

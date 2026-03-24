@@ -1,4 +1,4 @@
-# APEX-DB HTTP API Reference
+# ZeptoDB HTTP API Reference
 
 *Last updated: 2026-03-22*
 
@@ -29,10 +29,10 @@ using the ClickHouse data source plugin with no modification.
 cd build && ninja -j$(nproc)
 
 # Start with default settings (port 8123, no auth)
-./apex_server --port 8123
+./zepto_server --port 8123
 
 # Start with TLS + auth enabled
-./apex_server --port 8123 --tls-cert server.crt --tls-key server.key
+./zepto_server --port 8123 --tls-cert server.crt --tls-key server.key
 ```
 
 ### Run your first query
@@ -75,23 +75,23 @@ curl -s -X POST http://localhost:8123/ \
 
 ```bash
 # Generate and store an API key (admin role, server-side tool)
-./apex_server --gen-key --role admin
-# apex_a1b2c3d4e5f6...  (64 hex chars)
+./zepto_server --gen-key --role admin
+# zepto_a1b2c3d4e5f6...  (64 hex chars)
 
 # Use the key
-export APEX_KEY="apex_a1b2c3d4e5f6..."
+export APEX_KEY="zepto_a1b2c3d4e5f6..."
 
 curl -s -X POST http://localhost:8123/ \
   -H "Authorization: Bearer $APEX_KEY" \
   -d 'SELECT count(*) FROM trades'
 ```
 
-### Python client (apex_py)
+### Python client (zepto_py)
 
 ```python
-import apex_py as apex
+import zepto_py as apex
 
-db = apex.connect("localhost", 8123)
+db = zeptodb.connect("localhost", 8123)
 
 # DataFrame results
 df = db.query_pandas("SELECT symbol, avg(price) FROM trades GROUP BY symbol")
@@ -189,11 +189,11 @@ non-public paths.
 
 ### API Key
 
-Format: `apex_` followed by 64 hex characters (256-bit entropy).
+Format: `zepto_` followed by 64 hex characters (256-bit entropy).
 
 ```bash
 curl -X POST http://localhost:8123/ \
-  -H "Authorization: Bearer apex_a1b2c3d4...64hexchars" \
+  -H "Authorization: Bearer zepto_a1b2c3d4...64hexchars" \
   -d 'SELECT count(*) FROM trades'
 ```
 
@@ -223,7 +223,7 @@ Returns pipeline operational statistics as JSON.
 
 ```bash
 curl http://localhost:8123/stats \
-  -H "Authorization: Bearer apex_..."
+  -H "Authorization: Bearer zepto_..."
 ```
 
 ```json
@@ -259,33 +259,33 @@ curl http://localhost:8123/metrics
 ```
 
 ```
-# HELP apex_ticks_ingested_total Total ticks ingested
-# TYPE apex_ticks_ingested_total counter
-apex_ticks_ingested_total 5000000
+# HELP zepto_ticks_ingested_total Total ticks ingested
+# TYPE zepto_ticks_ingested_total counter
+zepto_ticks_ingested_total 5000000
 
-# HELP apex_ticks_stored_total Total ticks stored to column store
-# TYPE apex_ticks_stored_total counter
-apex_ticks_stored_total 4999800
+# HELP zepto_ticks_stored_total Total ticks stored to column store
+# TYPE zepto_ticks_stored_total counter
+zepto_ticks_stored_total 4999800
 
-# HELP apex_ticks_dropped_total Total ticks dropped (queue overflow)
-# TYPE apex_ticks_dropped_total counter
-apex_ticks_dropped_total 200
+# HELP zepto_ticks_dropped_total Total ticks dropped (queue overflow)
+# TYPE zepto_ticks_dropped_total counter
+zepto_ticks_dropped_total 200
 
-# HELP apex_queries_executed_total Total SQL queries executed
-# TYPE apex_queries_executed_total counter
-apex_queries_executed_total 12345
+# HELP zepto_queries_executed_total Total SQL queries executed
+# TYPE zepto_queries_executed_total counter
+zepto_queries_executed_total 12345
 
-# HELP apex_rows_scanned_total Total rows scanned
-# TYPE apex_rows_scanned_total counter
-apex_rows_scanned_total 50000000
+# HELP zepto_rows_scanned_total Total rows scanned
+# TYPE zepto_rows_scanned_total counter
+zepto_rows_scanned_total 50000000
 
-# HELP apex_partitions_total Total partitions created
-# TYPE apex_partitions_total gauge
-apex_partitions_total 10
+# HELP zepto_partitions_total Total partitions created
+# TYPE zepto_partitions_total gauge
+zepto_partitions_total 10
 
-# HELP apex_last_ingest_latency_ns Last ingest latency in nanoseconds
-# TYPE apex_last_ingest_latency_ns gauge
-apex_last_ingest_latency_ns 181
+# HELP zepto_last_ingest_latency_ns Last ingest latency in nanoseconds
+# TYPE zepto_last_ingest_latency_ns gauge
+zepto_last_ingest_latency_ns 181
 ```
 
 ### Grafana setup

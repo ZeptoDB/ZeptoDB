@@ -1,20 +1,20 @@
 // ============================================================================
-// APEX-DB: Feed Handler Integration Example
+// ZeptoDB: Feed Handler Integration Example
 // ============================================================================
-// Feed Handler → APEX-DB Pipeline 통합 예제
+// Feed Handler → ZeptoDB Pipeline 통합 예제
 // ============================================================================
 
-#include "apex/core/pipeline.h"
-#include "apex/feeds/fix_feed_handler.h"
-#include "apex/feeds/multicast_receiver.h"
-#include "apex/feeds/nasdaq_itch.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/feeds/fix_feed_handler.h"
+#include "zeptodb/feeds/multicast_receiver.h"
+#include "zeptodb/feeds/nasdaq_itch.h"
 #include <iostream>
 #include <unordered_map>
 #include <string>
 #include <csignal>
 #include <atomic>
 
-using namespace apex;
+using namespace zeptodb;
 
 // ============================================================================
 // Simple Symbol Mapper
@@ -58,12 +58,12 @@ void signal_handler(int signum) {
 }
 
 // ============================================================================
-// Example 1: FIX Feed → APEX-DB
+// Example 1: FIX Feed → ZeptoDB
 // ============================================================================
 void example_fix_feed() {
     std::cout << "=== Example 1: FIX Feed Handler ===\n";
 
-    // APEX-DB Pipeline 초기화
+    // ZeptoDB Pipeline 초기화
     core::Pipeline pipeline;
     pipeline.start();
 
@@ -80,7 +80,7 @@ void example_fix_feed() {
 
     feeds::FIXFeedHandler feed_handler(config, &mapper);
 
-    // Tick 콜백 등록 → APEX-DB로 인제스션
+    // Tick 콜백 등록 → ZeptoDB로 인제스션
     feed_handler.on_tick([&](const feeds::Tick& tick) {
         pipeline.ingest(tick.symbol_id, tick.price, tick.volume, tick.timestamp_ns);
 
@@ -128,12 +128,12 @@ void example_fix_feed() {
 }
 
 // ============================================================================
-// Example 2: NASDAQ ITCH (Multicast UDP) → APEX-DB
+// Example 2: NASDAQ ITCH (Multicast UDP) → ZeptoDB
 // ============================================================================
 void example_nasdaq_itch() {
     std::cout << "=== Example 2: NASDAQ ITCH Feed ===\n";
 
-    // APEX-DB Pipeline 초기화
+    // ZeptoDB Pipeline 초기화
     core::Pipeline pipeline;
     pipeline.start();
 
@@ -147,7 +147,7 @@ void example_nasdaq_itch() {
     // NASDAQ ITCH: 239.1.1.1:10000 (예시 주소)
     feeds::MulticastReceiver receiver("239.1.1.1", 10000);
 
-    // 패킷 콜백: ITCH 파싱 → APEX-DB 인제스션
+    // 패킷 콜백: ITCH 파싱 → ZeptoDB 인제스션
     receiver.on_packet([&](const uint8_t* data, size_t len) {
         if (!parser.parse_packet(data, len)) {
             return;

@@ -1,10 +1,10 @@
 #!/bin/bash
-# APEX-DB 베어메탈 최적화 스크립트
+# ZeptoDB 베어메탈 최적화 스크립트
 # 실행: sudo ./tune_bare_metal.sh
 
 set -e
 
-echo "=== APEX-DB Bare Metal Tuning Script ==="
+echo "=== ZeptoDB Bare Metal Tuning Script ==="
 echo "Version: 1.0.0"
 echo "Date: $(date)"
 echo ""
@@ -111,8 +111,8 @@ fi
 
 # 10. 설정 영구화 (sysctl.conf)
 echo "[10/10] Making network settings persistent..."
-cat > /etc/sysctl.d/99-apex-tuning.conf <<EOF
-# APEX-DB Bare Metal Tuning
+cat > /etc/sysctl.d/99-zepto-tuning.conf <<EOF
+# ZeptoDB Bare Metal Tuning
 net.core.busy_poll=50
 net.core.busy_read=50
 net.ipv4.tcp_low_latency=1
@@ -124,7 +124,7 @@ net.ipv4.tcp_wmem=4096 65536 134217728
 kernel.numa_balancing=0
 vm.swappiness=0
 EOF
-echo "  ✓ Settings saved to /etc/sysctl.d/99-apex-tuning.conf"
+echo "  ✓ Settings saved to /etc/sysctl.d/99-zepto-tuning.conf"
 
 echo ""
 echo "=== Tuning Complete ==="
@@ -140,5 +140,5 @@ echo "⚠️  IMPORTANT: Verify kernel parameters in /etc/default/grub:"
 echo "   isolcpus=0-3 nohz_full=0-3 rcu_nocbs=0-3"
 echo "   If not set, add them and run: grub2-mkconfig -o /boot/grub2/grub.cfg && reboot"
 echo ""
-echo "🚀 Ready to run APEX-DB with:"
-echo "   numactl --cpunodebind=0 --membind=0 taskset -c 0-3 ./apex_server --hugepages"
+echo "🚀 Ready to run ZeptoDB with:"
+echo "   numactl --cpunodebind=0 --membind=0 taskset -c 0-3 ./zepto_server --hugepages"

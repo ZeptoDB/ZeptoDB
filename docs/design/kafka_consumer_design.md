@@ -1,4 +1,4 @@
-# APEX-DB Kafka Consumer — Design Document
+# ZeptoDB Kafka Consumer — Design Document
 
 *Status: Design (not yet implemented)*
 *Last updated: 2026-03-22*
@@ -7,14 +7,14 @@
 
 ## 1. Overview
 
-The Kafka Consumer connects APEX-DB to the enterprise data streaming ecosystem.
+The Kafka Consumer connects ZeptoDB to the enterprise data streaming ecosystem.
 It bridges Apache Kafka topics to the existing TickPlant ingestion pipeline,
 enabling real-time analytics on any data source that publishes to Kafka.
 
 **Target use cases:**
-- Fintech: FIX/market data → Kafka → APEX-DB real-time analytics
+- Fintech: FIX/market data → Kafka → ZeptoDB real-time analytics
 - AdTech: bid-stream events → real-time aggregation
-- IoT/sensor: time-series telemetry → APEX-DB columnar storage
+- IoT/sensor: time-series telemetry → ZeptoDB columnar storage
 - Log analytics: structured event streams → SQL query interface
 
 ---
@@ -35,7 +35,7 @@ Kafka Broker (topic: "trades-AAPL", "trades-GOOG", ...)
 │  ② Batch poll                          │  rd_kafka_consume_batch (1000 msg/poll)
 │  ③ MessageDecoder::decode()            │  raw bytes → TickMessage
 │  ④ KafkaSymbolMapper::resolve()        │  topic/key → internal SymbolId
-│  ⑤ ApexPipeline::ingest_tick()         │  normalized tick → Ring Buffer
+│  ⑤ ZeptoPipeline::ingest_tick()         │  normalized tick → Ring Buffer
 │  ⑥ Offset commit (manual)             │  after batch drain (at-least-once)
 └─────────────────────────────────────────┘
         │
@@ -123,7 +123,7 @@ public:
                         size_t             len,
                         const std::string& topic,
                         const std::string& key,
-                        apex::ingestion::TickMessage& out) = 0;
+                        zeptodb::ingestion::TickMessage& out) = 0;
 
     virtual std::string name() const = 0;
 };
@@ -147,23 +147,23 @@ class MyFIXDecoder : public MessageDecoder {
 
 ### 3.4 KafkaSymbolMapper
 
-Bridges string-based Kafka identities (topic name, message key) to APEX-DB's
+Bridges string-based Kafka identities (topic name, message key) to ZeptoDB's
 integer `SymbolId`.
 
 ```cpp
 class KafkaSymbolMapper {
 public:
     // Static mapping: topic "trades-AAPL" → symbol_id 1
-    void add_topic(const std::string& topic, apex::SymbolId id);
+    void add_topic(const std::string& topic, zeptodb::SymbolId id);
 
     // Key mapping: message key "AAPL" → symbol_id 1
-    void add_key(const std::string& key, apex::SymbolId id);
+    void add_key(const std::string& key, zeptodb::SymbolId id);
 
     // Dynamic mode: auto-assign incrementing IDs for unknown keys
     void set_dynamic(bool enabled);
 
     // Resolve: topic + key → SymbolId (0 = unknown/drop)
-    apex::SymbolId resolve(const std::string& topic,
+    zeptodb::SymbolId resolve(const std::string& topic,
                            const std::string& key) const;
 };
 ```
@@ -176,7 +176,7 @@ public:
 class KafkaConsumer {
 public:
     KafkaConsumer(const KafkaConsumerConfig&          cfg,
-                  apex::core::ApexPipeline&           pipeline,
+                  zeptodb::core::ZeptoPipeline&           pipeline,
                   std::unique_ptr<MessageDecoder>     decoder,
                   std::unique_ptr<KafkaSymbolMapper>  mapper);
     ~KafkaConsumer();
@@ -200,7 +200,7 @@ private:
     void update_lag();
 
     KafkaConsumerConfig                cfg_;
-    apex::core::ApexPipeline&          pipeline_;
+    zeptodb::core::ZeptoPipeline&          pipeline_;
     std::unique_ptr<MessageDecoder>    decoder_;
     std::unique_ptr<KafkaSymbolMapper> mapper_;
 
@@ -292,7 +292,7 @@ bool JsonDecoder::decode(const void* data, size_t len, ..., TickMessage& out) {
 ## 5. File Structure
 
 ```
-include/apex/feeds/
+include/zeptodb/feeds/
     kafka_consumer.h           — public interface (all types + KafkaConsumer)
 
 src/feeds/
@@ -325,17 +325,17 @@ else()
 endif()
 
 if(APEX_USE_KAFKA)
-    add_library(apex_kafka STATIC
+    add_library(zepto_kafka STATIC
         src/feeds/kafka_consumer.cpp
         src/feeds/kafka_json_decoder.cpp
         src/feeds/kafka_binary_decoder.cpp)
-    target_include_directories(apex_kafka PUBLIC include ${RDKAFKA_INCLUDE})
-    target_link_libraries(apex_kafka PRIVATE ${RDKAFKA_LIB})
-    target_compile_definitions(apex_kafka PUBLIC APEX_KAFKA_ENABLED)
+    target_include_directories(zepto_kafka PUBLIC include ${RDKAFKA_INCLUDE})
+    target_link_libraries(zepto_kafka PRIVATE ${RDKAFKA_LIB})
+    target_compile_definitions(zepto_kafka PUBLIC APEX_KAFKA_ENABLED)
     # Optional: simdjson for JsonDecoder
     if(TARGET simdjson)
-        target_link_libraries(apex_kafka PRIVATE simdjson)
-        target_compile_definitions(apex_kafka PRIVATE APEX_KAFKA_SIMDJSON)
+        target_link_libraries(zepto_kafka PRIVATE simdjson)
+        target_compile_definitions(zepto_kafka PRIVATE APEX_KAFKA_SIMDJSON)
     endif()
 endif()
 ```
@@ -349,7 +349,7 @@ endif()
 ```cpp
 KafkaConsumerConfig cfg;
 cfg.brokers   = {"kafka-broker:9092"};
-cfg.group_id  = "apex-analytics";
+cfg.group_id  = "zepto-analytics";
 cfg.topics    = {"trades"};
 cfg.format    = KafkaMessageFormat::JSON;
 cfg.price_scale = 100;  // "$150.25" stored as 15025
@@ -372,7 +372,7 @@ consumer->stop();
 ```cpp
 KafkaConsumerConfig cfg;
 cfg.brokers            = {"pkc-xxxxx.us-east-1.aws.confluent.cloud:9092"};
-cfg.group_id           = "apex-prod";
+cfg.group_id           = "zepto-prod";
 cfg.topics             = {"market-data"};
 cfg.security_protocol  = "SASL_SSL";
 cfg.sasl_mechanism     = "PLAIN";
@@ -386,7 +386,7 @@ cfg.sasl_password      = secrets->get("KAFKA_API_SECRET");
 class MyAvroDecoder : public MessageDecoder {
     bool decode(const void* data, size_t len,
                 const std::string& topic, const std::string& key,
-                apex::ingestion::TickMessage& out) override {
+                zeptodb::ingestion::TickMessage& out) override {
         auto record = avro_deserialize(data, len, schema_registry_url_);
         out.symbol_id = mapper_->resolve(topic, record["symbol"].as_string());
         out.price     = record["price"].as_int64();
@@ -475,7 +475,7 @@ for financial analytics (duplicate ticks in same partition are overwritten).
 - `AvroDecoder` + Confluent Schema Registry client
 - `ProtobufDecoder`
 - Admin REST API: `GET /admin/kafka/stats`, `POST /admin/kafka/pause`
-- Prometheus metrics: `apex_kafka_consumed_total`, `apex_kafka_lag`
+- Prometheus metrics: `zepto_kafka_consumed_total`, `zepto_kafka_lag`
 - Multi-topic fan-out (one consumer, N symbol groups)
 
 ### Phase 3 (Advanced)

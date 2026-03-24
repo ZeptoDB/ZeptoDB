@@ -19,4 +19,4 @@ KIRO.md
 
 # Python build artifacts
 dist/
-*.egg-info/
+*.egg-info/site/

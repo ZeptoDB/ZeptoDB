@@ -1,0 +1,55 @@
+[Unit]
+Description=ZeptoDB High-Performance Time-Series Database
+Documentation=https://github.com/zeptodb/zeptodb
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeptodb
+Group=zeptodb
+
+# 환경 변수
+Environment="APEX_HOME=/opt/zeptodb"
+Environment="APEX_DATA_DIR=/data/zeptodb"
+Environment="ZEPTO_LOG_DIR=/var/log/zeptodb"
+Environment="APEX_CONFIG=/opt/zeptodb/config.yaml"
+
+# 실행 파일
+ExecStart=/opt/zeptodb/bin/zepto-server --config ${APEX_CONFIG}
+
+# 프로세스 관리
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# 리소스 제한
+LimitNOFILE=1048576
+LimitNPROC=512
+LimitMEMLOCK=infinity
+
+# 성능 튜닝 (HFT 환경)
+# CPU affinity: 코어 0-7 사용
+CPUAffinity=0-7
+
+# OOM 방지 (Out-of-Memory killer 우선순위 낮춤)
+OOMScoreAdjust=-900
+
+# 보안
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data/zeptodb /var/log/zeptodb
+
+# 작업 디렉토리
+WorkingDirectory=/opt/zeptodb
+
+# 로그
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zeptodb
+
+[Install]
+WantedBy=multi-user.target

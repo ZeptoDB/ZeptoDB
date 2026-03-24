@@ -2,7 +2,7 @@
 // Phase C-3: TcpRpcServer + TcpRpcClient implementation
 // ============================================================================
 
-#include "apex/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/tcp_rpc.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 // ============================================================================
 // Low-level helpers
@@ -175,7 +175,7 @@ void TcpRpcServer::handle_connection(int cfd) {
 
         if (type == RpcType::SQL_QUERY) {
             std::string sql(reinterpret_cast<const char*>(payload.data()), payload.size());
-            apex::sql::QueryResultSet result;
+            zeptodb::sql::QueryResultSet result;
             try {
                 result = sql_callback_(sql);
             } catch (const std::exception& e) {
@@ -204,7 +204,7 @@ void TcpRpcServer::handle_connection(int cfd) {
             }
             bool ok = false;
             if (tick_callback_) {
-                apex::ingestion::TickMessage tick_msg{};
+                zeptodb::ingestion::TickMessage tick_msg{};
                 if (deserialize_tick(payload.data(), payload.size(), tick_msg)) {
                     try {
                         ok = tick_callback_(tick_msg);
@@ -238,7 +238,7 @@ void TcpRpcServer::handle_connection(int cfd) {
             }
             size_t applied = 0;
             if (wal_callback_) {
-                std::vector<apex::ingestion::TickMessage> batch;
+                std::vector<zeptodb::ingestion::TickMessage> batch;
                 if (deserialize_wal_batch(payload.data(), payload.size(), batch)) {
                     try { applied = wal_callback_(batch); } catch (...) {}
                 }
@@ -366,14 +366,22 @@ int TcpRpcClient::connect_to_server() const {
     return fd;
 }
 
-apex::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
-    apex::sql::QueryResultSet err_result;
+zeptodb::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
+    zeptodb::sql::QueryResultSet err_result;
 
     int fd = acquire();
     if (fd < 0) {
         err_result.error = "TcpRpcClient: cannot connect to "
                          + host_ + ":" + std::to_string(port_);
         return err_result;
+    }
+
+    // P0-3: Set per-query read timeout on the socket
+    if (query_timeout_ms_ > 0) {
+        struct timeval tv;
+        tv.tv_sec  = query_timeout_ms_ / 1000;
+        tv.tv_usec = (query_timeout_ms_ % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
 
     std::vector<uint8_t> payload(sql.begin(), sql.end());
@@ -386,7 +394,9 @@ apex::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
     RpcHeader hdr{};
     if (!recv_all(fd, &hdr, sizeof(hdr))) {
         release(fd, false);
-        err_result.error = "TcpRpcClient: recv header failed";
+        err_result.error = (errno == EAGAIN || errno == EWOULDBLOCK)
+            ? "TcpRpcClient: query timeout (" + std::to_string(query_timeout_ms_) + "ms)"
+            : "TcpRpcClient: recv header failed";
         return err_result;
     }
 
@@ -407,7 +417,7 @@ apex::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
     return deserialize_result(resp.data(), resp.size());
 }
 
-bool TcpRpcClient::ingest_tick(const apex::ingestion::TickMessage& msg) {
+bool TcpRpcClient::ingest_tick(const zeptodb::ingestion::TickMessage& msg) {
     int fd = acquire();
     if (fd < 0) return false;
 
@@ -441,7 +451,7 @@ bool TcpRpcClient::ingest_tick(const apex::ingestion::TickMessage& msg) {
 }
 
 bool TcpRpcClient::replicate_wal(
-    const std::vector<apex::ingestion::TickMessage>& batch)
+    const std::vector<zeptodb::ingestion::TickMessage>& batch)
 {
     if (batch.empty()) return true;
     int fd = acquire();
@@ -495,4 +505,4 @@ bool TcpRpcClient::ping() {
     return ok && static_cast<RpcType>(resp.type) == RpcType::PONG;
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

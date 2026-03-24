@@ -1,13 +1,13 @@
 // ============================================================================
-// APEX-DB: HDB Loader Tests
+// ZeptoDB: HDB Loader Tests
 // ============================================================================
-#include "apex/migration/hdb_loader.h"
+#include "zeptodb/migration/hdb_loader.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 
-using namespace apex::migration;
+using namespace zeptodb::migration;
 namespace fs = std::filesystem;
 
 // ============================================================================
@@ -21,7 +21,7 @@ protected:
 
     void SetUp() override {
         // Create temporary test directory
-        test_dir_ = fs::temp_directory_path() / "apex_hdb_test";
+        test_dir_ = fs::temp_directory_path() / "zepto_hdb_test";
         hdb_dir_ = test_dir_ / "hdb";
         fs::create_directories(hdb_dir_);
     }
@@ -284,8 +284,8 @@ TEST_F(HDBLoaderTest, ExportToAPEX) {
     HDBLoader loader(hdb_dir_);
     EXPECT_TRUE(loader.scan());
 
-    auto output_dir = test_dir_ / "apex_output";
-    EXPECT_TRUE(loader.export_to_apex("trades", output_dir.string()));
+    auto output_dir = test_dir_ / "zepto_output";
+    EXPECT_TRUE(loader.export_to_zepto("trades", output_dir.string()));
 
     // Verify output structure
     auto table_dir = output_dir / "trades";

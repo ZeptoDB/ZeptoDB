@@ -9,7 +9,7 @@
 // 두 프로세스가 같은 shm 이름으로 접근하면 물리 메모리를 공유
 // ============================================================================
 
-#include "apex/cluster/transport.h"
+#include "zeptodb/cluster/transport.h"
 #include <atomic>
 #include <cstring>
 #include <fcntl.h>
@@ -22,7 +22,7 @@
 #include <cerrno>
 #include <cstdio>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 // ============================================================================
 // SharedMemRegionMeta: 공유 메모리 슬롯 메타데이터
@@ -30,7 +30,7 @@ namespace apex::cluster {
 struct SharedMemRegionMeta {
     uint64_t  addr_offset;  // shm 내 오프셋 (rkey로 인코딩)
     size_t    size;
-    char      shm_name[64]; // /apex_shm_XXXXXXXX
+    char      shm_name[64]; // /zepto_shm_XXXXXXXX
     int       shm_fd;
     void*     local_ptr;    // 로컬 mmap 주소
 };
@@ -84,9 +84,9 @@ public:
 
     /// 로컬 메모리 블록을 공유 메모리에 노출
     RemoteRegion do_register_memory(void* addr, size_t size) {
-        // shm 이름: /apex_<node_id>_<ptr>
+        // shm 이름: /zepto_<node_id>_<ptr>
         char shm_name[64];
-        snprintf(shm_name, sizeof(shm_name), "/apex_%u_%llx",
+        snprintf(shm_name, sizeof(shm_name), "/zepto_%u_%llx",
                  self_node_.id, (unsigned long long)(uintptr_t)addr);
 
         // POSIX shm 생성
@@ -238,4 +238,4 @@ private:
 // 타입 별칭
 using ShmTransport = TransportBackend<SharedMemBackend>;
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

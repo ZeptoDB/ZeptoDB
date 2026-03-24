@@ -3,16 +3,16 @@
 // ============================================================================
 
 #include "shm_backend.h"
-#include "apex/cluster/cxl_backend.h"
-#include "apex/cluster/transport.h"
-#include "apex/common/logger.h"
+#include "zeptodb/cluster/cxl_backend.h"
+#include "zeptodb/cluster/transport.h"
+#include "zeptodb/common/logger.h"
 
 #include <chrono>
 #include <cstdio>
 #include <vector>
 #include <numeric>
 
-using namespace apex::cluster;
+using namespace zeptodb::cluster;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -60,10 +60,10 @@ BenchResult bench_read(Transport& t, RemoteRegion region,
 // 메인
 // ============================================================================
 int main() {
-    apex::Logger::init("bench-cxl", spdlog::level::warn);
+    zeptodb::Logger::init("bench-cxl", spdlog::level::warn);
 
     printf("╔══════════════════════════════════════════════════════════════╗\n");
-    printf("║   APEX-DB Transport Backend Comparison                     ║\n");
+    printf("║   ZeptoDB Transport Backend Comparison                     ║\n");
     printf("║   SharedMem vs CXL(no latency) vs CXL(200ns) vs CXL(300ns)║\n");
     printf("╚══════════════════════════════════════════════════════════════╝\n\n");
 

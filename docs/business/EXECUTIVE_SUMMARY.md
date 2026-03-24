@@ -1,9 +1,9 @@
-# APEX-DB Executive Summary
+# ZeptoDB Executive Summary
 **One-Page Overview**
 
 ---
 
-## What is APEX-DB?
+## What is ZeptoDB?
 
 An open-source time-series database that replaces kdb+, targeting the HFT (High-Frequency Trading) market.
 
@@ -138,6 +138,6 @@ An open-source time-series database that replaces kdb+, targeting the HFT (High-
 **Goal:** $3.6M ARR, break-even
 
 **Contact:**
-- Email: founders@apex-db.io
-- Deck: https://apex-db.io/deck
-- Demo: https://demo.apex-db.io
+- Email: founders@zeptodb.io
+- Deck: https://zeptodb.io/deck
+- Demo: https://demo.zeptodb.io

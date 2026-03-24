@@ -2,10 +2,10 @@
 // Test: Tick Plant (Layer 2)
 // ============================================================================
 
-#include "apex/ingestion/tick_plant.h"
+#include "zeptodb/ingestion/tick_plant.h"
 #include <gtest/gtest.h>
 
-using namespace apex::ingestion;
+using namespace zeptodb::ingestion;
 
 TEST(TickPlant, IngestAndConsume) {
     TickPlant tp;
@@ -39,7 +39,7 @@ TEST(TickPlant, FIFOOrdering) {
     }
 
     // Consume and verify monotonic sequence
-    apex::SeqNum last_seq = 0;
+    zeptodb::SeqNum last_seq = 0;
     bool first = true;
     for (int i = 0; i < 1000; ++i) {
         auto consumed = tp.consume();

@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB: Feature Tests
+// ZeptoDB: Feature Tests
 // Tests for:
 //   1. s# sorted column attribute hint — Partition::set_sorted / sorted_range
 //      and executor SQL query optimization
@@ -11,19 +11,19 @@
 #include <gtest/gtest.h>
 
 // --- Storage ---
-#include "apex/storage/partition_manager.h"
-#include "apex/storage/column_store.h"
+#include "zeptodb/storage/partition_manager.h"
+#include "zeptodb/storage/column_store.h"
 
 // --- SQL ---
-#include "apex/sql/executor.h"
-#include "apex/core/pipeline.h"
-#include "apex/ingestion/tick_plant.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/ingestion/tick_plant.h"
 
 // --- Server ---
-#include "apex/server/http_server.h"
+#include "zeptodb/server/http_server.h"
 
 // --- Feeds ---
-#include "apex/feeds/kafka_consumer.h"
+#include "zeptodb/feeds/kafka_consumer.h"
 
 #include <atomic>
 #include <chrono>
@@ -34,19 +34,19 @@
 #include <thread>
 #include <unistd.h>
 
-using namespace apex::storage;
-using namespace apex::sql;
-using namespace apex::core;
+using namespace zeptodb::storage;
+using namespace zeptodb::sql;
+using namespace zeptodb::core;
 using namespace std::chrono_literals;
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-static std::unique_ptr<ApexPipeline> make_pipeline() {
+static std::unique_ptr<ZeptoPipeline> make_pipeline() {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    return std::make_unique<ApexPipeline>(cfg);
+    return std::make_unique<ZeptoPipeline>(cfg);
 }
 
 // Send a raw HTTP request to localhost:port, return response body string.
@@ -102,7 +102,7 @@ protected:
         // Insert 5 rows for symbol=1 with monotonically increasing price
         // prices: 100, 200, 300, 400, 500
         for (int i = 0; i < 5; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = 1;
             msg.recv_ts   = 1000LL + i;
             msg.price     = (i + 1) * 100;  // 100,200,300,400,500
@@ -118,7 +118,7 @@ protected:
         part_ = parts[0];
     }
 
-    std::unique_ptr<ApexPipeline>  pipeline_;
+    std::unique_ptr<ZeptoPipeline>  pipeline_;
     std::unique_ptr<QueryExecutor> executor_;
     Partition*                     part_ = nullptr;
 };
@@ -186,7 +186,7 @@ protected:
 
         // Insert 20 rows for symbol=1: price 1000, 1010, ..., 1190 (step 10)
         for (int i = 0; i < 20; ++i) {
-            apex::ingestion::TickMessage msg{};
+            zeptodb::ingestion::TickMessage msg{};
             msg.symbol_id = 1;
             msg.recv_ts   = 1000LL + i;
             msg.price     = 1000 + i * 10;
@@ -201,7 +201,7 @@ protected:
             part->set_sorted("price");
     }
 
-    std::unique_ptr<ApexPipeline>  pipeline_;
+    std::unique_ptr<ZeptoPipeline>  pipeline_;
     std::unique_ptr<QueryExecutor> executor_;
 };
 
@@ -262,16 +262,16 @@ protected:
     void SetUp() override {
         pipeline_ = make_pipeline();
         executor_  = std::make_unique<QueryExecutor>(*pipeline_);
-        server_    = std::make_unique<apex::server::HttpServer>(*executor_, test_port_);
+        server_    = std::make_unique<zeptodb::server::HttpServer>(*executor_, test_port_);
 
         connect_count_.store(0);
         disconnect_count_.store(0);
 
-        server_->set_on_connect([this](const apex::server::ConnectionInfo& info) {
+        server_->set_on_connect([this](const zeptodb::server::ConnectionInfo& info) {
             connect_count_.fetch_add(1);
             last_connect_addr_ = info.remote_addr;
         });
-        server_->set_on_disconnect([this](const apex::server::ConnectionInfo& info) {
+        server_->set_on_disconnect([this](const zeptodb::server::ConnectionInfo& info) {
             disconnect_count_.fetch_add(1);
             last_disconnect_addr_ = info.remote_addr;
         });
@@ -286,9 +286,9 @@ protected:
 
     static constexpr uint16_t test_port_ = 19871;
 
-    std::unique_ptr<ApexPipeline>            pipeline_;
+    std::unique_ptr<ZeptoPipeline>            pipeline_;
     std::unique_ptr<QueryExecutor>           executor_;
-    std::unique_ptr<apex::server::HttpServer> server_;
+    std::unique_ptr<zeptodb::server::HttpServer> server_;
 
     std::atomic<int> connect_count_{0};
     std::atomic<int> disconnect_count_{0};
@@ -379,7 +379,7 @@ protected:
     void SetUp() override {
         pipeline_ = make_pipeline();
         executor_  = std::make_unique<QueryExecutor>(*pipeline_);
-        server_    = std::make_unique<apex::server::HttpServer>(*executor_, test_port_);
+        server_    = std::make_unique<zeptodb::server::HttpServer>(*executor_, test_port_);
         server_->start_async();
         std::this_thread::sleep_for(60ms);
     }
@@ -390,15 +390,15 @@ protected:
 
     static constexpr uint16_t test_port_ = 19872;
 
-    std::unique_ptr<ApexPipeline>             pipeline_;
+    std::unique_ptr<ZeptoPipeline>             pipeline_;
     std::unique_ptr<QueryExecutor>            executor_;
-    std::unique_ptr<apex::server::HttpServer> server_;
+    std::unique_ptr<zeptodb::server::HttpServer> server_;
 };
 
 TEST_F(MetricsProviderTest, DefaultMetricsContainApexCounters) {
     const std::string body = http_get(test_port_, "/metrics");
-    EXPECT_NE(body.find("apex_ticks_ingested_total"), std::string::npos);
-    EXPECT_NE(body.find("apex_server_ready"),          std::string::npos);
+    EXPECT_NE(body.find("zepto_ticks_ingested_total"), std::string::npos);
+    EXPECT_NE(body.find("zepto_server_ready"),          std::string::npos);
 }
 
 TEST_F(MetricsProviderTest, RegisteredProviderAppearsInOutput) {
@@ -410,7 +410,7 @@ TEST_F(MetricsProviderTest, RegisteredProviderAppearsInOutput) {
 
     const std::string body = http_get(test_port_, "/metrics");
     EXPECT_NE(body.find("my_custom_counter 42"), std::string::npos);
-    EXPECT_NE(body.find("apex_ticks_ingested_total"), std::string::npos);
+    EXPECT_NE(body.find("zepto_ticks_ingested_total"), std::string::npos);
 }
 
 TEST_F(MetricsProviderTest, MultipleProvidersAllAppear) {
@@ -424,30 +424,30 @@ TEST_F(MetricsProviderTest, MultipleProvidersAllAppear) {
 
 TEST_F(MetricsProviderTest, KafkaStatsProviderIntegration) {
     // Simulate a KafkaConsumer and register it with the server.
-    apex::feeds::KafkaConfig cfg;
+    zeptodb::feeds::KafkaConfig cfg;
     cfg.topic = "market-data";
-    apex::feeds::KafkaConsumer consumer(cfg);
+    zeptodb::feeds::KafkaConsumer consumer(cfg);
 
     // Ingest one tick via on_message() so all stats (messages_consumed,
     // route_local) are populated from a realistic code path.
-    apex::core::PipelineConfig pc;
-    pc.storage_mode = apex::core::StorageMode::PURE_IN_MEMORY;
-    apex::core::ApexPipeline pipe(pc);
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline pipe(pc);
     consumer.set_pipeline(&pipe);
     // JSON format: symbol_id=1, price=15000, volume=100
     const char* json = R"({"symbol_id":1,"price":15000,"volume":100})";
     consumer.on_message(json, strlen(json));
 
     server_->add_metrics_provider([&consumer]() {
-        return apex::feeds::KafkaConsumer::format_prometheus(
+        return zeptodb::feeds::KafkaConsumer::format_prometheus(
             "market-data", consumer.stats());
     });
 
     const std::string body = http_get(test_port_, "/metrics");
-    EXPECT_NE(body.find("apex_kafka_messages_consumed_total{consumer=\"market-data\"} 1"),
+    EXPECT_NE(body.find("zepto_kafka_messages_consumed_total{consumer=\"market-data\"} 1"),
               std::string::npos);
-    EXPECT_NE(body.find("apex_kafka_route_local_total{consumer=\"market-data\"} 1"),
+    EXPECT_NE(body.find("zepto_kafka_route_local_total{consumer=\"market-data\"} 1"),
               std::string::npos);
-    EXPECT_NE(body.find("apex_kafka_ingest_failures_total{consumer=\"market-data\"} 0"),
+    EXPECT_NE(body.find("zepto_kafka_ingest_failures_total{consumer=\"market-data\"} 0"),
               std::string::npos);
 }

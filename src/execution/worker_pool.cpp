@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: WorkerPool Implementation
+// ZeptoDB: WorkerPool Implementation
 // ============================================================================
 
-#include "apex/execution/worker_pool.h"
+#include "zeptodb/execution/worker_pool.h"
 #include <algorithm>
 
-namespace apex::execution {
+namespace zeptodb::execution {
 
 WorkerPool::WorkerPool(size_t num_threads) {
     if (num_threads == 0) {
@@ -103,4 +103,4 @@ void WorkerPool::worker_loop(std::stop_token st) {
     }
 }
 
-} // namespace apex::execution
+} // namespace zeptodb::execution

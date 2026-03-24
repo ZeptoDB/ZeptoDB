@@ -1,8 +1,8 @@
 // ============================================================================
-// APEX-DB: Apache Kafka Consumer — implementation
+// ZeptoDB: Apache Kafka Consumer — implementation
 // ============================================================================
 
-#include "apex/feeds/kafka_consumer.h"
+#include "zeptodb/feeds/kafka_consumer.h"
 #include "spdlog/spdlog.h"
 
 #include <cerrno>
@@ -18,7 +18,7 @@
 #include <librdkafka/rdkafkacpp.h>
 #endif
 
-namespace apex::feeds {
+namespace zeptodb::feeds {
 
 // ============================================================================
 // Internal JSON parsing helpers
@@ -94,7 +94,7 @@ static bool parse_string_field(const char* json, const char* key, std::string& o
 // ============================================================================
 
 // {"symbol_id":1,"price":15000,"volume":100,"ts":1234567890000000000}
-std::optional<apex::ingestion::TickMessage>
+std::optional<zeptodb::ingestion::TickMessage>
 KafkaConsumer::decode_json(const char* data, size_t len) {
     if (!data || len == 0) return std::nullopt;
 
@@ -112,7 +112,7 @@ KafkaConsumer::decode_json(const char* data, size_t len) {
     // ts is optional — pipeline overwrites recv_ts anyway
     parse_int64_field(buf, "ts", ts);
 
-    apex::ingestion::TickMessage msg{};
+    zeptodb::ingestion::TickMessage msg{};
     msg.symbol_id = static_cast<SymbolId>(symbol_id);
     msg.price     = static_cast<Price>(price);
     msg.volume    = static_cast<Volume>(volume);
@@ -122,17 +122,17 @@ KafkaConsumer::decode_json(const char* data, size_t len) {
 }
 
 // Raw TickMessage bytes (must be exactly sizeof(TickMessage) = 64 bytes)
-std::optional<apex::ingestion::TickMessage>
+std::optional<zeptodb::ingestion::TickMessage>
 KafkaConsumer::decode_binary(const char* data, size_t len) {
-    if (!data || len != sizeof(apex::ingestion::TickMessage)) return std::nullopt;
+    if (!data || len != sizeof(zeptodb::ingestion::TickMessage)) return std::nullopt;
 
-    apex::ingestion::TickMessage msg{};
+    zeptodb::ingestion::TickMessage msg{};
     std::memcpy(&msg, data, sizeof(msg));
     return msg;
 }
 
 // {"symbol":"AAPL","price":150.25,"volume":100,"ts":1234567890000000000}
-std::optional<apex::ingestion::TickMessage>
+std::optional<zeptodb::ingestion::TickMessage>
 KafkaConsumer::decode_json_human(
     const char* data, size_t len,
     const std::unordered_map<std::string, SymbolId>& symbol_map,
@@ -158,7 +158,7 @@ KafkaConsumer::decode_json_human(
     if (!parse_int64_field(buf,  "volume", volume))  return std::nullopt;
     parse_int64_field(buf, "ts", ts);
 
-    apex::ingestion::TickMessage msg{};
+    zeptodb::ingestion::TickMessage msg{};
     msg.symbol_id = it->second;
     msg.price     = static_cast<Price>(price_f * price_scale);
     msg.volume    = static_cast<Volume>(volume);
@@ -182,15 +182,15 @@ KafkaConsumer::~KafkaConsumer() {
 // Routing setup
 // ============================================================================
 
-void KafkaConsumer::set_pipeline(apex::core::ApexPipeline* pipeline) {
+void KafkaConsumer::set_pipeline(zeptodb::core::ZeptoPipeline* pipeline) {
     pipeline_ = pipeline;
 }
 
 void KafkaConsumer::set_routing(
-    apex::cluster::NodeId local_id,
-    std::shared_ptr<apex::cluster::PartitionRouter> router,
-    std::unordered_map<apex::cluster::NodeId,
-        std::shared_ptr<apex::cluster::TcpRpcClient>> remotes)
+    zeptodb::cluster::NodeId local_id,
+    std::shared_ptr<zeptodb::cluster::PartitionRouter> router,
+    std::unordered_map<zeptodb::cluster::NodeId,
+        std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes)
 {
     local_id_ = local_id;
     router_   = std::move(router);
@@ -214,13 +214,13 @@ static bool try_with_backpressure(Fn ingest_fn, int retries, int sleep_us) {
     return false;
 }
 
-bool KafkaConsumer::ingest_decoded(apex::ingestion::TickMessage msg) {
+bool KafkaConsumer::ingest_decoded(zeptodb::ingestion::TickMessage msg) {
     const int  retries   = config_.backpressure_retries;
     const int  sleep_us  = config_.backpressure_sleep_us;
 
     if (router_) {
         // Multi-node: route via consistent-hash ring
-        apex::cluster::NodeId target = router_->route(msg.symbol_id);
+        zeptodb::cluster::NodeId target = router_->route(msg.symbol_id);
         if (target == local_id_) {
             if (!pipeline_) {
                 std::lock_guard<std::mutex> lk(stats_mu_);
@@ -264,7 +264,7 @@ bool KafkaConsumer::ingest_decoded(apex::ingestion::TickMessage msg) {
 // ============================================================================
 
 bool KafkaConsumer::on_message(const char* data, size_t len) {
-    std::optional<apex::ingestion::TickMessage> tick;
+    std::optional<zeptodb::ingestion::TickMessage> tick;
 
     switch (config_.format) {
         case MessageFormat::JSON:
@@ -344,7 +344,7 @@ bool KafkaConsumer::start() {
 
 #else
     spdlog::warn("KafkaConsumer: Kafka support not compiled in "
-                 "(rebuild with APEX_USE_KAFKA=ON and librdkafka++ installed)");
+                 "(rebuild with ZEPTO_USE_KAFKA=ON and librdkafka++ installed)");
     return false;
 #endif
 }
@@ -430,31 +430,31 @@ std::string KafkaConsumer::format_prometheus(const std::string& consumer_name,
     std::ostringstream os;
     const auto& n = consumer_name;  // shorter alias for label value
 
-    os << "# HELP apex_kafka_messages_consumed_total Messages successfully decoded and dispatched\n";
-    os << "# TYPE apex_kafka_messages_consumed_total counter\n";
-    os << "apex_kafka_messages_consumed_total{consumer=\"" << n << "\"} " << stats.messages_consumed << "\n\n";
+    os << "# HELP zepto_kafka_messages_consumed_total Messages successfully decoded and dispatched\n";
+    os << "# TYPE zepto_kafka_messages_consumed_total counter\n";
+    os << "zepto_kafka_messages_consumed_total{consumer=\"" << n << "\"} " << stats.messages_consumed << "\n\n";
 
-    os << "# HELP apex_kafka_bytes_consumed_total Total payload bytes received from Kafka\n";
-    os << "# TYPE apex_kafka_bytes_consumed_total counter\n";
-    os << "apex_kafka_bytes_consumed_total{consumer=\"" << n << "\"} " << stats.bytes_consumed << "\n\n";
+    os << "# HELP zepto_kafka_bytes_consumed_total Total payload bytes received from Kafka\n";
+    os << "# TYPE zepto_kafka_bytes_consumed_total counter\n";
+    os << "zepto_kafka_bytes_consumed_total{consumer=\"" << n << "\"} " << stats.bytes_consumed << "\n\n";
 
-    os << "# HELP apex_kafka_decode_errors_total Messages that failed to decode\n";
-    os << "# TYPE apex_kafka_decode_errors_total counter\n";
-    os << "apex_kafka_decode_errors_total{consumer=\"" << n << "\"} " << stats.decode_errors << "\n\n";
+    os << "# HELP zepto_kafka_decode_errors_total Messages that failed to decode\n";
+    os << "# TYPE zepto_kafka_decode_errors_total counter\n";
+    os << "zepto_kafka_decode_errors_total{consumer=\"" << n << "\"} " << stats.decode_errors << "\n\n";
 
-    os << "# HELP apex_kafka_route_local_total Ticks dispatched to the local pipeline\n";
-    os << "# TYPE apex_kafka_route_local_total counter\n";
-    os << "apex_kafka_route_local_total{consumer=\"" << n << "\"} " << stats.route_local << "\n\n";
+    os << "# HELP zepto_kafka_route_local_total Ticks dispatched to the local pipeline\n";
+    os << "# TYPE zepto_kafka_route_local_total counter\n";
+    os << "zepto_kafka_route_local_total{consumer=\"" << n << "\"} " << stats.route_local << "\n\n";
 
-    os << "# HELP apex_kafka_route_remote_total Ticks forwarded to a remote node via RPC\n";
-    os << "# TYPE apex_kafka_route_remote_total counter\n";
-    os << "apex_kafka_route_remote_total{consumer=\"" << n << "\"} " << stats.route_remote << "\n\n";
+    os << "# HELP zepto_kafka_route_remote_total Ticks forwarded to a remote node via RPC\n";
+    os << "# TYPE zepto_kafka_route_remote_total counter\n";
+    os << "zepto_kafka_route_remote_total{consumer=\"" << n << "\"} " << stats.route_remote << "\n\n";
 
-    os << "# HELP apex_kafka_ingest_failures_total Messages dropped after all backpressure retries\n";
-    os << "# TYPE apex_kafka_ingest_failures_total counter\n";
-    os << "apex_kafka_ingest_failures_total{consumer=\"" << n << "\"} " << stats.ingest_failures << "\n";
+    os << "# HELP zepto_kafka_ingest_failures_total Messages dropped after all backpressure retries\n";
+    os << "# TYPE zepto_kafka_ingest_failures_total counter\n";
+    os << "zepto_kafka_ingest_failures_total{consumer=\"" << n << "\"} " << stats.ingest_failures << "\n";
 
     return os.str();
 }
 
-} // namespace apex::feeds
+} // namespace zeptodb::feeds

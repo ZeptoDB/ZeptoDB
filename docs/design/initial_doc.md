@@ -1,11 +1,11 @@
-# APEX-DB Initial Vision and Design Principles
-**Last updated: 2026-03-22 (General OLAP/TSDb expansion, kdb+ 95% replacement, Migration Toolkit, Parquet HDB, S3 Sink, Python Ecosystem apex_py completed)**
+# ZeptoDB Initial Vision and Design Principles
+**Last updated: 2026-03-22 (General OLAP/TSDb expansion, kdb+ 95% replacement, Migration Toolkit, Parquet HDB, S3 Sink, Python Ecosystem zepto_py completed)**
 
-APEX-DB is an **ultra-low latency in-memory database** that started as a finance-focused system and has expanded to **general-purpose OLAP, time-series DB, and ML Feature Store**.
+ZeptoDB is an **ultra-low latency in-memory database** that started as a finance-focused system and has expanded to **general-purpose OLAP, time-series DB, and ML Feature Store**.
 
 ---
 
-## APEX-DB Development Strategy and Status
+## ZeptoDB Development Strategy and Status
 
 ### **1. Target Markets — Expanded**
 
@@ -60,9 +60,9 @@ APEX-DB is an **ultra-low latency in-memory database** that started as a finance
 
 ---
 
-### **4. Technical Differentiation: kdb+ vs APEX-DB**
+### **4. Technical Differentiation: kdb+ vs ZeptoDB**
 
-| Item | kdb+ | APEX-DB |
+| Item | kdb+ | ZeptoDB |
 |---|---|---|
 | **Financial functions** | xbar, ema, wj (q DSL) | ✅ **93% compatible** (SQL + Python DSL) |
 | **Performance** | μs latency (proprietary) | ✅ **272μs filter, 2.2ms EMA** (Highway SIMD + LLVM JIT) |
@@ -87,7 +87,7 @@ APEX-DB is an **ultra-low latency in-memory database** that started as a finance
 | **Financial functions** | xbar, EMA, DELTA, RATIO, FIRST, LAST, Window JOIN | 2.2ms EMA, 24ms xbar |
 | **Parallel query** | LocalQueryScheduler, WorkerPool (scatter/gather) | 3.48x (8T) |
 | **SQL** | Parser, HTTP API (port 8123), GROUP BY, Window functions | 1.5~4.5μs parsing |
-| **Python** | pybind11, zero-copy numpy, apex_py (from_pandas/polars/arrow, ArrowSession, StreamingSession, 208 tests) | 522ns zero-copy |
+| **Python** | pybind11, zero-copy numpy, zepto_py (from_pandas/polars/arrow, ArrowSession, StreamingSession, 208 tests) | 522ns zero-copy |
 | **Cluster** | UCX/SharedMem transport, Partition routing | 13.5ns SHM, 2ns routing |
 | **Operations** | Monitoring, Backup, systemd service | Prometheus + Grafana |
 
@@ -107,7 +107,7 @@ APEX-DB is an **ultra-low latency in-memory database** that started as a finance
 
 #### **High Priority (Business)**
 - [x] **Migration Toolkit** ✅ **Complete** (kdb+/ClickHouse/DuckDB/TimescaleDB, 70 tests)
-- [x] **Python ecosystem** ✅ **Complete** (apex_py: from_pandas/polars/arrow, ArrowSession, StreamingSession, ApexConnection, 208 tests)
+- [x] **Python ecosystem** ✅ **Complete** (zepto_py: from_pandas/polars/arrow, ArrowSession, StreamingSession, ApexConnection, 208 tests)
 - [ ] **DSL AOT compilation** — Nuitka/Cython, production deployment + IP protection
 
 #### **Medium Priority**

@@ -7,7 +7,7 @@
 
 ## Background and Goals
 
-The existing HDB only supported APEX-DB's proprietary binary format (`.bin`).
+The existing HDB only supported ZeptoDB's proprietary binary format (`.bin`).
 This format is optimized for maximum-speed local I/O, but has the disadvantage of being
 incompatible with external tools (DuckDB, Spark, Polars).
 
@@ -40,11 +40,11 @@ Partition (SEALED)
 
 | File | Role |
 |------|------|
-| `include/apex/storage/parquet_writer.h` | ParquetWriter header (Arrow/Parquet API) |
+| `include/zeptodb/storage/parquet_writer.h` | ParquetWriter header (Arrow/Parquet API) |
 | `src/storage/parquet_writer.cpp` | Parquet serialization implementation |
-| `include/apex/storage/s3_sink.h` | S3Sink header (AWS SDK C++) |
+| `include/zeptodb/storage/s3_sink.h` | S3Sink header (AWS SDK C++) |
 | `src/storage/s3_sink.cpp` | S3 upload implementation |
-| `include/apex/storage/flush_manager.h` | FlushConfig output format options added |
+| `include/zeptodb/storage/flush_manager.h` | FlushConfig output format options added |
 | `src/storage/flush_manager.cpp` | flush_partition_parquet() integration |
 | `CMakeLists.txt` | Arrow/Parquet/AWS SDK dependency additions |
 
@@ -54,7 +54,7 @@ Partition (SEALED)
 
 ### ColumnType to Arrow DataType Mapping
 
-| APEX-DB ColumnType | Arrow DataType | Parquet Physical Type |
+| ZeptoDB ColumnType | Arrow DataType | Parquet Physical Type |
 |--------------------|----------------|----------------------|
 | INT32 | int32() | INT32 |
 | INT64 | int64() | INT64 |
@@ -94,8 +94,8 @@ s3_sink.upload_buffer(
 s3://{bucket}/{prefix}/{symbol_id}/{hour_epoch}.parquet
 
 Examples:
-  s3://apex-hdb/prod/hdb/1/1742648000.parquet
-  s3://apex-hdb/prod/hdb/2/1742648000.parquet
+  s3://zepto-hdb/prod/hdb/1/1742648000.parquet
+  s3://zepto-hdb/prod/hdb/2/1742648000.parquet
 ```
 
 ### AWS Credential Auto-Detection
@@ -109,7 +109,7 @@ Uses AWS SDK standard credential chain:
 
 ```cpp
 S3SinkConfig config;
-config.bucket        = "apex-hdb";
+config.bucket        = "zepto-hdb";
 config.endpoint_url  = "http://minio:9000";
 config.use_path_style = true;   // required for MinIO
 ```
@@ -139,7 +139,7 @@ config.output_format               = HDBOutputFormat::PARQUET;
 config.parquet_config.compression  = ParquetCompression::ZSTD;
 
 config.enable_s3_upload            = true;
-config.s3_config.bucket            = "apex-hdb-prod";
+config.s3_config.bucket            = "zepto-hdb-prod";
 config.s3_config.prefix            = "hdb";
 config.s3_config.region            = "ap-southeast-1";  // Singapore
 config.delete_local_after_s3       = true;  // save local storage
@@ -154,7 +154,7 @@ flush_mgr.start();
 FlushConfig config;
 config.output_format               = HDBOutputFormat::BOTH;
 config.enable_s3_upload            = true;
-config.s3_config.bucket            = "apex-hdb-backup";
+config.s3_config.bucket            = "zepto-hdb-backup";
 // -> Binary stored on local NVMe, Parquet stored on S3
 ```
 
@@ -163,7 +163,7 @@ config.s3_config.bucket            = "apex-hdb-backup";
 ## Direct S3 Parquet Query from DuckDB
 
 ```sql
--- Query APEX-DB HDB stored in S3 directly with DuckDB
+-- Query ZeptoDB HDB stored in S3 directly with DuckDB
 INSTALL httpfs;
 LOAD httpfs;
 SET s3_region='ap-southeast-1';
@@ -176,7 +176,7 @@ SELECT
     min(price)    AS low,
     last(price)   AS close,
     sum(volume)   AS volume
-FROM read_parquet('s3://apex-hdb-prod/hdb/1/*.parquet')
+FROM read_parquet('s3://zepto-hdb-prod/hdb/1/*.parquet')
 GROUP BY time_bucket(INTERVAL '5 minutes', bar_time)
 ORDER BY bar_time;
 ```
@@ -189,9 +189,9 @@ ORDER BY bar_time;
 import polars as pl
 
 # S3 Parquet -> Polars DataFrame
-df = pl.read_parquet("s3://apex-hdb-prod/hdb/1/1742648000.parquet")
+df = pl.read_parquet("s3://zepto-hdb-prod/hdb/1/1742648000.parquet")
 
-# EMA calculation (with Polars, without APEX-DB)
+# EMA calculation (with Polars, without ZeptoDB)
 df = df.with_columns([
     pl.col("price").ewm_mean(span=20).alias("ema20")
 ])

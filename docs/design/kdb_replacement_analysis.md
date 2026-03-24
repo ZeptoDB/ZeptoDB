@@ -1,15 +1,15 @@
-# APEX-DB vs kdb+ Replacement Analysis
+# ZeptoDB vs kdb+ Replacement Analysis
 # 2026-03-22 (Updated: parallel query, Parquet HDB, S3 Sink completed)
 
 ---
 
 ## 1. kdb+ Feature Checklist
 
-Comprehensive survey of kdb+/q features compared to APEX-DB current state.
+Comprehensive survey of kdb+/q features compared to ZeptoDB current state.
 
 ### A. Data Ingestion & Storage
 
-| kdb+ Feature | Description | APEX-DB | Status |
+| kdb+ Feature | Description | ZeptoDB | Status |
 |---|---|---|---|
 | Tickerplant (TP) | Real-time tick collection, Pub/Sub | TickPlant + MPMC | ✅ |
 | RDB (real-time DB) | Today's data in-memory | Arena + ColumnStore | ✅ |
@@ -21,11 +21,11 @@ Comprehensive survey of kdb+/q features compared to APEX-DB current state.
 | Attributes (g#, p#, s#, u#) | Index hints | Partition-based (partial) | ⚠️ |
 | Symbol interning | Symbol hash optimization | SymbolId (uint32) | ✅ |
 
-**Gap:** kdb+ attributes (g#=grouped, s#=sorted, p#=parted) are query optimizer hints. APEX-DB covers most via partition structure, but no explicit attribute API.
+**Gap:** kdb+ attributes (g#=grouped, s#=sorted, p#=parted) are query optimizer hints. ZeptoDB covers most via partition structure, but no explicit attribute API.
 
 ### B. Query Language & Execution
 
-| kdb+ Feature | Description | APEX-DB | Status |
+| kdb+ Feature | Description | ZeptoDB | Status |
 |---|---|---|---|
 | q-SQL select | SELECT-WHERE-GROUP BY | SQL Parser + Executor | ✅ |
 | fby (filter by) | Per-group filtering | SQL WHERE + GROUP BY | ✅ |
@@ -43,7 +43,7 @@ Comprehensive survey of kdb+/q features compared to APEX-DB current state.
 
 ### C. JOIN Operations
 
-| kdb+ Feature | Description | APEX-DB | Status |
+| kdb+ Feature | Description | ZeptoDB | Status |
 |---|---|---|---|
 | aj (asof join) | Time-series join | AsofJoinOperator | ✅ |
 | aj0 | Return left columns only | Possible as variant | ⚠️ |
@@ -60,7 +60,7 @@ Comprehensive survey of kdb+/q features compared to APEX-DB current state.
 
 ### D. System & Operations
 
-| kdb+ Feature | Description | APEX-DB | Status |
+| kdb+ Feature | Description | ZeptoDB | Status |
 |---|---|---|---|
 | IPC protocol | Inter-process communication | HTTP API + UCX | ✅ |
 | Multi-process (TP/RDB/HDB/GW) | Role-based process separation | Pipeline unified + distributed | ⚠️ |
@@ -70,11 +70,11 @@ Comprehensive survey of kdb+/q features compared to APEX-DB current state.
 | \t timing | Query benchmarking | execution_time_us | ✅ |
 
 **Remaining gaps:**
-- **Process role separation**: kdb+ uses separate processes for TP/RDB/HDB/Gateway. APEX-DB is unified (resolved in future by distributed scheduler)
+- **Process role separation**: kdb+ uses separate processes for TP/RDB/HDB/Gateway. ZeptoDB is unified (resolved in future by distributed scheduler)
 
 ### E. Python Integration
 
-| kdb+ Feature | Description | APEX-DB | Status |
+| kdb+ Feature | Description | ZeptoDB | Status |
 |---|---|---|---|
 | PyKX | kdb+↔Python | pybind11 + DSL | ✅ |
 | IPC-based access | Data transfer via socket | zero-copy (direct memory) | ✅ advantage |
@@ -83,7 +83,7 @@ Comprehensive survey of kdb+/q features compared to APEX-DB current state.
 
 ### F. Migration Toolkit (new 2026-03-22)
 
-| Feature | Description | APEX-DB | Status |
+| Feature | Description | ZeptoDB | Status |
 |---|---|---|---|
 | kdb+ q→SQL conversion | q language → APEX SQL automatic conversion | QToSQLTransformer | ✅ |
 | kdb+ HDB loader | Splayed tables → Columnar mmap | HDBLoader | ✅ |
@@ -91,11 +91,11 @@ Comprehensive survey of kdb+/q features compared to APEX-DB current state.
 | ClickHouse query conversion | xbar/ASOF/argMin/argMax | ClickHouseQueryTranslator | ✅ |
 | DuckDB Parquet export | SNAPPY/ZSTD, hive partitioning | ParquetExporter | ✅ |
 | TimescaleDB DDL generation | Hypertable, Continuous Aggregate | TimescaleDBSchemaGenerator | ✅ |
-| apex-migrate CLI | 5-mode unified CLI | tools/apex-migrate.cpp | ✅ |
+| zepto-migrate CLI | 5-mode unified CLI | tools/zepto-migrate.cpp | ✅ |
 
 **Result:** Dramatically reduced migration friction for customers from competing systems
 
-→ Python integration: **APEX-DB is clearly superior to kdb+** (zero-copy vs IPC serialization)
+→ Python integration: **ZeptoDB is clearly superior to kdb+** (zero-copy vs IPC serialization)
 
 ---
 
@@ -131,7 +131,7 @@ All urgent gaps have been implemented!
 
 ### ✅ Already Better Than kdb+
 
-| Item | kdb+ | APEX-DB | Reason |
+| Item | kdb+ | ZeptoDB | Reason |
 |---|---|---|---|
 | Language accessibility | q (cryptic) | **SQL + Python** | Learning curve |
 | Python integration | PyKX (IPC) | **zero-copy** | 522ns vs ms |

@@ -1,0 +1,199 @@
+{{- if .Values.karpenter.enabled }}
+# =============================================================================
+# EC2NodeClass — Realtime (On-Demand, optimized for latency)
+# =============================================================================
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: {{ include "zeptodb.fullname" . }}-realtime
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+spec:
+  role: {{ .Values.karpenter.nodeClass.role | quote }}
+  amiSelectorTerms:
+    - alias: {{ .Values.karpenter.nodeClass.amiAlias }}
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.karpenter.nodeClass.clusterName }}
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.karpenter.nodeClass.clusterName }}
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: {{ .Values.karpenter.realtime.volumeSize | default "100Gi" | quote }}
+        volumeType: gp3
+        iops: 6000
+        throughput: 400
+        deleteOnTermination: true
+  {{- with .Values.karpenter.realtime.userData }}
+  userData: |
+    {{- . | nindent 4 }}
+  {{- end }}
+  tags:
+    zeptodb.io/role: realtime
+    {{- with .Values.karpenter.nodeClass.tags }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+
+# =============================================================================
+# EC2NodeClass — Analytics (Spot-friendly, cost-optimized)
+# =============================================================================
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: {{ include "zeptodb.fullname" . }}-analytics
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+spec:
+  role: {{ .Values.karpenter.nodeClass.role | quote }}
+  amiSelectorTerms:
+    - alias: {{ .Values.karpenter.nodeClass.amiAlias }}
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.karpenter.nodeClass.clusterName }}
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.karpenter.nodeClass.clusterName }}
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: {{ .Values.karpenter.analytics.volumeSize | default "200Gi" | quote }}
+        volumeType: gp3
+        deleteOnTermination: true
+  {{- if .Values.karpenter.analytics.instanceStorePolicy }}
+  instanceStorePolicy: {{ .Values.karpenter.analytics.instanceStorePolicy }}
+  {{- end }}
+  tags:
+    zeptodb.io/role: analytics
+    {{- with .Values.karpenter.nodeClass.tags }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+
+# =============================================================================
+# NodePool — Realtime (ingestion + low-latency queries)
+#
+# Fleet API behavior:
+#   - On-Demand only → lowest-price allocation strategy
+#   - Multiple instance types → Fleet picks cheapest available
+#   - Single AZ preference via topology spread → consistent network latency
+# =============================================================================
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ include "zeptodb.fullname" . }}-realtime
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+spec:
+  weight: {{ .Values.karpenter.realtime.weight | default 10 }}
+  template:
+    metadata:
+      labels:
+        zeptodb.io/role: realtime
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: {{ toYaml .Values.karpenter.realtime.arch | nindent 12 }}
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: {{ toYaml .Values.karpenter.realtime.instanceFamilies | nindent 12 }}
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: {{ toYaml .Values.karpenter.realtime.instanceSizes | nindent 12 }}
+        {{- if .Values.karpenter.realtime.zones }}
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: {{ toYaml .Values.karpenter.realtime.zones | nindent 12 }}
+        {{- end }}
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: {{ include "zeptodb.fullname" . }}-realtime
+  limits:
+    cpu: {{ .Values.karpenter.realtime.limits.cpu | quote }}
+    memory: {{ .Values.karpenter.realtime.limits.memory | quote }}
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: {{ .Values.karpenter.realtime.consolidateAfter }}
+    {{- if .Values.karpenter.realtime.budgets }}
+    budgets:
+      {{- toYaml .Values.karpenter.realtime.budgets | nindent 6 }}
+    {{- end }}
+
+# =============================================================================
+# NodePool — Analytics (backtesting + batch, Spot OK)
+#
+# Fleet API behavior:
+#   - price-capacity-optimized → picks Spot pools with lowest interruption
+#     rate AND lowest price (Fleet API default since 2023)
+#   - Wide instance family/size range → more capacity pools → lower
+#     interruption probability
+#   - Multi-AZ spread → if one AZ's Spot is reclaimed, others survive
+# =============================================================================
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ include "zeptodb.fullname" . }}-analytics
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+spec:
+  weight: {{ .Values.karpenter.analytics.weight | default 50 }}
+  template:
+    metadata:
+      labels:
+        zeptodb.io/role: analytics
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: {{ toYaml .Values.karpenter.analytics.arch | nindent 12 }}
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: {{ toYaml .Values.karpenter.analytics.capacityTypes | nindent 12 }}
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: {{ toYaml .Values.karpenter.analytics.instanceFamilies | nindent 12 }}
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: {{ toYaml .Values.karpenter.analytics.instanceSizes | nindent 12 }}
+        {{- if .Values.karpenter.analytics.zones }}
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: {{ toYaml .Values.karpenter.analytics.zones | nindent 12 }}
+        {{- end }}
+        {{- if .Values.karpenter.analytics.minCpu }}
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: Gte
+          values: [{{ .Values.karpenter.analytics.minCpu | quote }}]
+        {{- end }}
+        {{- if .Values.karpenter.analytics.minMemory }}
+        - key: karpenter.k8s.aws/instance-memory
+          operator: Gte
+          values: [{{ .Values.karpenter.analytics.minMemory | quote }}]
+        {{- end }}
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: {{ include "zeptodb.fullname" . }}-analytics
+  limits:
+    cpu: {{ .Values.karpenter.analytics.limits.cpu | quote }}
+    memory: {{ .Values.karpenter.analytics.limits.memory | quote }}
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: {{ .Values.karpenter.analytics.consolidateAfter }}
+    {{- if .Values.karpenter.analytics.expireAfter }}
+    expireAfter: {{ .Values.karpenter.analytics.expireAfter }}
+    {{- end }}
+    {{- if .Values.karpenter.analytics.budgets }}
+    budgets:
+      {{- toYaml .Values.karpenter.analytics.budgets | nindent 6 }}
+    {{- end }}
+{{- end }}

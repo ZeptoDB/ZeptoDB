@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: kdb+ q Lexer Implementation
+// ZeptoDB: kdb+ q Lexer Implementation
 // ============================================================================
-#include "apex/migration/q_parser.h"
+#include "zeptodb/migration/q_parser.h"
 #include <cctype>
 #include <stdexcept>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 QLexer::QLexer(const std::string& source)
     : source_(source)
@@ -348,4 +348,4 @@ std::vector<QToken> QLexer::tokenize() {
     return tokens;
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration

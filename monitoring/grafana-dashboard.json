@@ -1,7 +1,7 @@
 {
   "dashboard": {
-    "title": "APEX-DB Production Dashboard",
-    "tags": ["apex-db", "timeseries", "production"],
+    "title": "ZeptoDB Production Dashboard",
+    "tags": ["zeptodb", "timeseries", "production"],
     "timezone": "browser",
     "panels": [
       {
@@ -11,11 +11,11 @@
         "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
         "targets": [
           {
-            "expr": "apex_server_up",
+            "expr": "zepto_server_up",
             "legendFormat": "Up"
           },
           {
-            "expr": "apex_server_ready",
+            "expr": "zepto_server_ready",
             "legendFormat": "Ready"
           }
         ],
@@ -35,15 +35,15 @@
         "gridPos": {"x": 6, "y": 0, "w": 9, "h": 8},
         "targets": [
           {
-            "expr": "rate(apex_ticks_ingested_total[1m])",
+            "expr": "rate(zepto_ticks_ingested_total[1m])",
             "legendFormat": "Ingested"
           },
           {
-            "expr": "rate(apex_ticks_stored_total[1m])",
+            "expr": "rate(zepto_ticks_stored_total[1m])",
             "legendFormat": "Stored"
           },
           {
-            "expr": "rate(apex_ticks_dropped_total[1m])",
+            "expr": "rate(zepto_ticks_dropped_total[1m])",
             "legendFormat": "Dropped"
           }
         ],
@@ -58,7 +58,7 @@
         "gridPos": {"x": 15, "y": 0, "w": 9, "h": 8},
         "targets": [
           {
-            "expr": "rate(apex_queries_executed_total[1m])",
+            "expr": "rate(zepto_queries_executed_total[1m])",
             "legendFormat": "Queries"
           }
         ],
@@ -73,7 +73,7 @@
         "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4},
         "targets": [
           {
-            "expr": "apex_ticks_ingested_total"
+            "expr": "zepto_ticks_ingested_total"
           }
         ],
         "fieldConfig": {
@@ -90,7 +90,7 @@
         "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "rate(apex_rows_scanned_total[1m])",
+            "expr": "rate(zepto_rows_scanned_total[1m])",
             "legendFormat": "Rows Scanned"
           }
         ],
@@ -158,7 +158,7 @@
         "gridPos": {"x": 0, "y": 24, "w": 24, "h": 6},
         "targets": [
           {
-            "expr": "rate(apex_ticks_dropped_total[1m])",
+            "expr": "rate(zepto_ticks_dropped_total[1m])",
             "legendFormat": "Dropped"
           }
         ],

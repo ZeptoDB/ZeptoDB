@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB: End-to-End Integration Pipeline — Implementation
+// ZeptoDB: End-to-End Integration Pipeline — Implementation
 // ============================================================================
 // Layer 1 (Storage) + Layer 2 (Ingestion) + Layer 3 (Execution) 통합
 //
@@ -18,14 +18,15 @@
 //     쿼리 시: RDB (메모리) + HDB (디스크 mmap) 통합 집계
 // ============================================================================
 
-#include "apex/core/pipeline.h"
-#include "apex/common/logger.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/common/logger.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <filesystem>
 
-namespace apex::core {
+namespace zeptodb::core {
 
 // ============================================================================
 // 스키마 상수: 파티션에 생성할 컬럼 이름
@@ -47,11 +48,11 @@ static inline int64_t pipeline_now_ns() {
 // ============================================================================
 // 생성자 / 소멸자
 // ============================================================================
-ApexPipeline::ApexPipeline(PipelineConfig config)
+ZeptoPipeline::ZeptoPipeline(PipelineConfig config)
     : config_(config)
     , partition_mgr_(config.arena_size_per_partition)
 {
-    APEX_INFO("ApexPipeline 초기화 (arena={}MB, batch={}, mode={})",
+    ZEPTO_INFO("ZeptoPipeline 초기화 (arena={}MB, batch={}, mode={})",
               config.arena_size_per_partition / (1024*1024),
               config.drain_batch_size,
               static_cast<int>(config.storage_mode));
@@ -70,14 +71,14 @@ ApexPipeline::ApexPipeline(PipelineConfig config)
                 *hdb_writer_,
                 config_.flush_config
             );
-            APEX_INFO("FlushManager 생성됨 (Tiered 모드)");
+            ZEPTO_INFO("FlushManager 생성됨 (Tiered 모드)");
         }
 
-        APEX_INFO("HDB 활성화: path={}", config_.hdb_base_path);
+        ZEPTO_INFO("HDB 활성화: path={}", config_.hdb_base_path);
     }
 }
 
-ApexPipeline::~ApexPipeline() {
+ZeptoPipeline::~ZeptoPipeline() {
     if (running_.load(std::memory_order_acquire)) {
         stop();
     }
@@ -86,12 +87,12 @@ ApexPipeline::~ApexPipeline() {
 // ============================================================================
 // start / stop
 // ============================================================================
-void ApexPipeline::start() {
+void ZeptoPipeline::start() {
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true,
                                           std::memory_order_release,
                                           std::memory_order_relaxed)) {
-        APEX_WARN("ApexPipeline::start() — 이미 실행 중");
+        ZEPTO_WARN("ZeptoPipeline::start() — 이미 실행 중");
         return;
     }
 
@@ -125,7 +126,7 @@ void ApexPipeline::start() {
                     auto mt_col  = snap_reader.read_column(sym_id, hour_epoch, COL_MSG_TYPE);
 
                     if (!ts_col.valid() || !px_col.valid() || !vol_col.valid()) {
-                        APEX_WARN("Recovery: incomplete snapshot for symbol={} hour={}",
+                        ZEPTO_WARN("Recovery: incomplete snapshot for symbol={} hour={}",
                                   sym_id, hour_epoch);
                         continue;
                     }
@@ -152,7 +153,7 @@ void ApexPipeline::start() {
             }
         }
 
-        APEX_INFO("Recovery complete: {} rows reloaded from {}", recovered_rows, snap);
+        ZEPTO_INFO("Recovery complete: {} rows reloaded from {}", recovered_rows, snap);
     }
 
     // FlushManager 시작 (Tiered 모드)
@@ -163,10 +164,10 @@ void ApexPipeline::start() {
     size_t n_drain = std::max<size_t>(1, config_.drain_threads);
     for (size_t i = 0; i < n_drain; ++i)
         drain_threads_.emplace_back([this]() { drain_loop(); });
-    APEX_INFO("ApexPipeline 시작 완료 (drain_threads={})", n_drain);
+    ZEPTO_INFO("ZeptoPipeline 시작 완료 (drain_threads={})", n_drain);
 }
 
-void ApexPipeline::stop() {
+void ZeptoPipeline::stop() {
     running_.store(false, std::memory_order_release);
 
     if (flush_manager_) {
@@ -180,13 +181,13 @@ void ApexPipeline::stop() {
 
     // 남은 큐 아이템 동기 플러시
     const size_t remaining = drain_sync();
-    APEX_INFO("ApexPipeline 중지 (잔여 flush={})", remaining);
+    ZEPTO_INFO("ZeptoPipeline 중지 (잔여 flush={})", remaining);
 }
 
 // ============================================================================
 // ingest_tick: 외부 틱 수신 (Thread-safe, lock-free)
 // ============================================================================
-bool ApexPipeline::ingest_tick(TickMessage msg) {
+bool ZeptoPipeline::ingest_tick(TickMessage msg) {
     const int64_t t0 = pipeline_now_ns();
     const bool ok = tick_plant_.ingest(msg);
     if (ok) {
@@ -201,17 +202,38 @@ bool ApexPipeline::ingest_tick(TickMessage msg) {
     return ok;
 }
 
+size_t ZeptoPipeline::ingest_batch(int32_t symbol,
+                                    const int64_t* prices,
+                                    const int64_t* volumes,
+                                    const int64_t* timestamps,
+                                    size_t count) {
+    int64_t ts = timestamps ? 0 : pipeline_now_ns();
+    size_t queued = 0;
+    for (size_t i = 0; i < count; ++i) {
+        TickMessage msg{};
+        msg.symbol_id = symbol;
+        msg.price     = prices[i];
+        msg.volume    = volumes[i];
+        msg.recv_ts   = timestamps ? timestamps[i] : (ts + static_cast<int64_t>(i));
+        msg.msg_type  = 0;
+        ingest_tick(msg);
+        ++queued;
+    }
+    return queued;
+}
+
 // ============================================================================
 // store_tick: 틱 → ColumnStore 저장 (드레인 스레드에서만 호출)
 // ============================================================================
-void ApexPipeline::store_tick(const TickMessage& msg) {
+void ZeptoPipeline::store_tick(const TickMessage& msg) {
     // 파티션 가져오기 (없으면 자동 생성)
     Partition& partition = partition_mgr_.get_or_create(msg.symbol_id, msg.recv_ts);
 
     // 파티션 최초 접근 시 스키마 초기화
     if (partition.get_column(COL_TIMESTAMP) == nullptr) {
         partition.add_column(COL_TIMESTAMP, ColumnType::TIMESTAMP_NS);
-        partition.add_column(COL_PRICE,     ColumnType::INT64);
+        partition.add_column(COL_PRICE,     msg.price_is_float ? ColumnType::FLOAT64
+                                                               : ColumnType::INT64);
         partition.add_column(COL_VOLUME,    ColumnType::INT64);
         partition.add_column(COL_MSG_TYPE,  ColumnType::INT32);
 
@@ -222,24 +244,42 @@ void ApexPipeline::store_tick(const TickMessage& msg) {
         }
 
         stats_.partitions_created.fetch_add(1, std::memory_order_relaxed);
-        APEX_DEBUG("파티션 스키마 초기화: symbol={}", msg.symbol_id);
+        ZEPTO_DEBUG("파티션 스키마 초기화: symbol={}", msg.symbol_id);
     }
 
-    // 컬럼에 데이터 append
+    // 컬럼에 데이터 append (타입 디스패치)
     partition.get_column(COL_TIMESTAMP)->append<int64_t>(msg.recv_ts);
-    partition.get_column(COL_PRICE    )->append<int64_t>(msg.price);
+    if (partition.get_column(COL_PRICE)->type() == ColumnType::FLOAT64)
+        partition.get_column(COL_PRICE)->append<double>(std::bit_cast<double>(msg.price));
+    else
+        partition.get_column(COL_PRICE)->append<int64_t>(msg.price);
     partition.get_column(COL_VOLUME   )->append<int64_t>(msg.volume);
     partition.get_column(COL_MSG_TYPE )->append<int32_t>(
         static_cast<int32_t>(msg.msg_type));
 
     stats_.ticks_stored.fetch_add(1, std::memory_order_relaxed);
+
+    // Materialized view incremental update
+    mat_view_mgr_.on_tick(msg.symbol_id, msg.recv_ts, msg.price, msg.volume);
+
+    // P0-6: Memory limit check — evict oldest partition if over limit
+    if (config_.max_memory_bytes > 0) {
+        size_t total = partition_mgr_.total_memory_bytes();
+        if (total > config_.max_memory_bytes) {
+            auto* oldest = partition_mgr_.oldest_partition();
+            if (oldest && oldest != &partition) {
+                partition_mgr_.evict_partition(oldest);
+                stats_.partitions_evicted.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
 }
 
 // ============================================================================
 // drain_loop: 백그라운드 드레인 스레드
 // ============================================================================
-void ApexPipeline::drain_loop() {
-    APEX_DEBUG("드레인 스레드 시작");
+void ZeptoPipeline::drain_loop() {
+    ZEPTO_DEBUG("드레인 스레드 시작");
     while (running_.load(std::memory_order_acquire)) {
         size_t drained = 0;
         for (size_t i = 0; i < config_.drain_batch_size; ++i) {
@@ -254,13 +294,13 @@ void ApexPipeline::drain_loop() {
                 std::chrono::microseconds(config_.drain_sleep_us));
         }
     }
-    APEX_DEBUG("드레인 스레드 종료");
+    ZEPTO_DEBUG("드레인 스레드 종료");
 }
 
 // ============================================================================
 // drain_sync: 동기 드레인 (테스트/벤치용)
 // ============================================================================
-size_t ApexPipeline::drain_sync(size_t max_items) {
+size_t ZeptoPipeline::drain_sync(size_t max_items) {
     size_t count = 0;
     while (count < max_items) {
         auto msg = tick_plant_.consume();
@@ -274,7 +314,7 @@ size_t ApexPipeline::drain_sync(size_t max_items) {
 // ============================================================================
 // find_partitions: symbol에 대한 모든 파티션 포인터 반환
 // ============================================================================
-std::vector<Partition*> ApexPipeline::find_partitions(SymbolId symbol) const {
+std::vector<Partition*> ZeptoPipeline::find_partitions(SymbolId symbol) const {
     std::lock_guard<std::mutex> lk(partition_index_mu_);
     auto it = partition_index_.find(symbol);
     if (it == partition_index_.end()) return {};
@@ -284,7 +324,7 @@ std::vector<Partition*> ApexPipeline::find_partitions(SymbolId symbol) const {
 // ============================================================================
 // build_snapshot: 파티션에서 ColumnSnapshot 빌드
 // ============================================================================
-ApexPipeline::ColumnSnapshot ApexPipeline::build_snapshot(
+ZeptoPipeline::ColumnSnapshot ZeptoPipeline::build_snapshot(
     Partition* part, const std::string& extra_col_name
 ) const {
     ColumnSnapshot snap;
@@ -313,7 +353,7 @@ ApexPipeline::ColumnSnapshot ApexPipeline::build_snapshot(
 // hdb_count_range: HDB에서 시간 범위 내 COUNT 집계
 // (Tiered 쿼리의 HDB 기여분 계산)
 // ============================================================================
-size_t ApexPipeline::hdb_count_range(SymbolId symbol,
+size_t ZeptoPipeline::hdb_count_range(SymbolId symbol,
                                       Timestamp from, Timestamp to) const {
     if (!hdb_reader_) return 0;
 
@@ -338,7 +378,7 @@ size_t ApexPipeline::hdb_count_range(SymbolId symbol,
 // ============================================================================
 // query_vwap: VWAP 쿼리
 // ============================================================================
-QueryResult ApexPipeline::query_vwap(
+QueryResult ZeptoPipeline::query_vwap(
     SymbolId symbol, Timestamp from, Timestamp to
 ) {
     const int64_t t0 = pipeline_now_ns();
@@ -426,7 +466,7 @@ QueryResult ApexPipeline::query_vwap(
 // ============================================================================
 // query_filter_sum: Filter + Sum 쿼리
 // ============================================================================
-QueryResult ApexPipeline::query_filter_sum(
+QueryResult ZeptoPipeline::query_filter_sum(
     SymbolId symbol,
     const std::string& column,
     int64_t threshold,
@@ -522,7 +562,7 @@ QueryResult ApexPipeline::query_filter_sum(
 // ============================================================================
 // query_count
 // ============================================================================
-QueryResult ApexPipeline::query_count(
+QueryResult ZeptoPipeline::query_count(
     SymbolId symbol, Timestamp from, Timestamp to
 ) {
     const int64_t t0 = pipeline_now_ns();
@@ -570,7 +610,7 @@ QueryResult ApexPipeline::query_count(
 // ============================================================================
 // evict_older_than_ns: TTL eviction + partition_index_ rebuild
 // ============================================================================
-size_t ApexPipeline::evict_older_than_ns(int64_t cutoff_ns) {
+size_t ZeptoPipeline::evict_older_than_ns(int64_t cutoff_ns) {
     const size_t evicted = partition_mgr_.evict_older_than(cutoff_ns);
     if (evicted > 0) {
         // Rebuild partition_index_ to eliminate stale raw pointers.
@@ -586,7 +626,7 @@ size_t ApexPipeline::evict_older_than_ns(int64_t cutoff_ns) {
 // ============================================================================
 // total_stored_rows
 // ============================================================================
-size_t ApexPipeline::total_stored_rows() const {
+size_t ZeptoPipeline::total_stored_rows() const {
     std::lock_guard<std::mutex> lk(partition_index_mu_);
     size_t total = 0;
     for (const auto& [sym, parts] : partition_index_) {
@@ -597,5 +637,5 @@ size_t ApexPipeline::total_stored_rows() const {
     return total;
 }
 
-} // namespace apex::core
+} // namespace zeptodb::core
 

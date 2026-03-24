@@ -1,7 +1,7 @@
-#include "apex/cluster/failover_manager.h"
+#include "zeptodb/cluster/failover_manager.h"
 #include <set>
 
-namespace apex::cluster {
+namespace zeptodb::cluster {
 
 void FailoverManager::connect(HealthMonitor& hm) {
     hm.on_state_change([this](NodeId id, NodeState /*old_s*/, NodeState new_s) {
@@ -47,4 +47,4 @@ FailoverEvent FailoverManager::trigger_failover(NodeId dead_node) {
     return event;
 }
 
-} // namespace apex::cluster
+} // namespace zeptodb::cluster

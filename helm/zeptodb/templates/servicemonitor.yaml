@@ -1,0 +1,17 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "zeptodb.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "zeptodb.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.prometheus.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

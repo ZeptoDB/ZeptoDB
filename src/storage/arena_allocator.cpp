@@ -2,7 +2,7 @@
 // Layer 1: Arena Allocator Implementation
 // ============================================================================
 
-#include "apex/storage/arena_allocator.h"
+#include "zeptodb/storage/arena_allocator.h"
 
 #include <sys/mman.h>    // mmap, munmap, MAP_HUGETLB
 #include <numa.h>        // numa_alloc_onnode
@@ -10,7 +10,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 ArenaAllocator::ArenaAllocator(const ArenaConfig& config)
     : total_size_(config.total_size)
@@ -31,7 +31,7 @@ ArenaAllocator::ArenaAllocator(const ArenaConfig& config)
             -1, 0
         );
         if (base_ == MAP_FAILED) {
-            APEX_WARN("HugePages mmap failed (errno={}), falling back to regular pages",
+            ZEPTO_WARN("HugePages mmap failed (errno={}), falling back to regular pages",
                       std::strerror(errno));
             hugepages_ = false;
             base_ = nullptr;
@@ -42,7 +42,7 @@ ArenaAllocator::ArenaAllocator(const ArenaConfig& config)
     if (!base_ && config.numa_node >= 0 && numa_available() >= 0) {
         base_ = numa_alloc_onnode(total_size_, config.numa_node);
         if (!base_) {
-            APEX_WARN("NUMA alloc on node {} failed, falling back to regular mmap",
+            ZEPTO_WARN("NUMA alloc on node {} failed, falling back to regular mmap",
                       config.numa_node);
         }
     }
@@ -66,7 +66,7 @@ ArenaAllocator::ArenaAllocator(const ArenaConfig& config)
     // Prefault: 전 영역 zero 터치로 page fault 사전 해소
     std::memset(base_, 0, total_size_);
 
-    APEX_INFO("Arena allocated: {} MB (hugepages={}, addr={})",
+    ZEPTO_INFO("Arena allocated: {} MB (hugepages={}, addr={})",
               total_size_ / (1024 * 1024), hugepages_, base_);
 }
 
@@ -79,7 +79,7 @@ ArenaAllocator::~ArenaAllocator() {
             // Both can be munmap'd safely
             ::munmap(base_, total_size_);
         }
-        APEX_DEBUG("Arena freed: {} MB", total_size_ / (1024 * 1024));
+        ZEPTO_DEBUG("Arena freed: {} MB", total_size_ / (1024 * 1024));
     }
 }
 
@@ -95,7 +95,7 @@ void* ArenaAllocator::allocate(size_t size, size_t alignment) {
         new_offset = aligned_offset + size;
 
         if (new_offset > total_size_) {
-            APEX_ERROR("Arena exhausted: requested {} bytes, only {} free",
+            ZEPTO_ERROR("Arena exhausted: requested {} bytes, only {} free",
                        size, total_size_ - current);
             return nullptr;
         }
@@ -110,7 +110,7 @@ void* ArenaAllocator::allocate(size_t size, size_t alignment) {
 
 void ArenaAllocator::reset() {
     offset_.store(0, std::memory_order_release);
-    APEX_DEBUG("Arena reset (capacity={} MB)", total_size_ / (1024 * 1024));
+    ZEPTO_DEBUG("Arena reset (capacity={} MB)", total_size_ / (1024 * 1024));
 }
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

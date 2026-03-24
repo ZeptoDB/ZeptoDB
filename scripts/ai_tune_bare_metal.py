@@ -1,8 +1,8 @@
 #!/usr/bin/env python3.13
 """
-APEX-DB AI-Driven Bare Metal Tuner
+ZeptoDB AI-Driven Bare Metal Tuner
 Uses claude-opus-4-6 with extended thinking to analyze the system,
-run APEX-DB benchmarks, and iteratively apply optimizations.
+run ZeptoDB benchmarks, and iteratively apply optimizations.
 
 Usage:
     python3.13 scripts/ai_tune_bare_metal.py --build-dir build
@@ -31,7 +31,7 @@ import anthropic
 
 # Use Bedrock model ID when running on AWS (no ANTHROPIC_API_KEY needed)
 MODEL = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "us.anthropic.claude-opus-4-6-v1")
-BENCHMARK_BINARY = "tests/apex_tests"
+BENCHMARK_BINARY = "tests/zepto_tests"
 BENCHMARK_FILTER = "Benchmark.*"
 
 THINKING_BUDGET = 8000   # tokens for extended thinking
@@ -252,7 +252,7 @@ def run_benchmarks(build_dir: str) -> BenchmarkResult:
 
 SYSTEM_PROMPT = """\
 You are an expert Linux bare-metal performance engineer specializing in ultra-low latency systems for HFT (high-frequency trading).
-You are tuning APEX-DB, a C++20 in-memory columnar database running on Linux.
+You are tuning ZeptoDB, a C++20 in-memory columnar database running on Linux.
 
 Your job:
 1. Analyze the system profile and benchmark results provided.
@@ -466,10 +466,10 @@ def print_benchmark_comparison(baseline: BenchmarkResult, current: BenchmarkResu
 
 def main():
     parser = argparse.ArgumentParser(
-        description="APEX-DB AI-Driven Bare Metal Tuner using claude-opus-4-6"
+        description="ZeptoDB AI-Driven Bare Metal Tuner using claude-opus-4-6"
     )
     parser.add_argument("--build-dir", default="build",
-                        help="Path to APEX-DB build directory (default: build)")
+                        help="Path to ZeptoDB build directory (default: build)")
     parser.add_argument("--iterations", type=int, default=2,
                         help="Number of tuning iterations (default: 2)")
     parser.add_argument("--dry-run", action="store_true",
@@ -492,7 +492,7 @@ def main():
         client = anthropic.AnthropicBedrock()
     build_dir = str(Path(args.build_dir).resolve())
 
-    print_section(f"APEX-DB AI Bare Metal Tuner  |  model: {MODEL}")
+    print_section(f"ZeptoDB AI Bare Metal Tuner  |  model: {MODEL}")
     print(f"  Build dir:   {build_dir}")
     print(f"  Iterations:  {args.iterations}")
     print(f"  Dry-run:     {args.dry_run}")

@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB: 병렬 쿼리 엔진 벤치마크
+// ZeptoDB: 병렬 쿼리 엔진 벤치마크
 // ============================================================================
 // 측정 항목:
 //   - 스레드 수 1/2/4/8 별 SUM, COUNT, VWAP, GROUP BY 성능
@@ -7,18 +7,18 @@
 //   - 1M / 10M rows 두 가지 규모
 // ============================================================================
 
-#include "apex/sql/executor.h"
-#include "apex/core/pipeline.h"
-#include "apex/execution/query_scheduler.h"
-#include "apex/execution/local_scheduler.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/execution/query_scheduler.h"
+#include "zeptodb/execution/local_scheduler.h"
 
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <vector>
 
-using namespace apex::core;
-using namespace apex::sql;
+using namespace zeptodb::core;
+using namespace zeptodb::sql;
 
 // ============================================================================
 // 타이머
@@ -32,14 +32,14 @@ static double now_ms() {
 // ============================================================================
 // 데이터 생성
 // ============================================================================
-static std::unique_ptr<ApexPipeline> make_pipeline(size_t n_rows, size_t n_symbols = 8) {
+static std::unique_ptr<ZeptoPipeline> make_pipeline(size_t n_rows, size_t n_symbols = 8) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    auto pipeline = std::make_unique<ApexPipeline>(cfg);
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
 
     for (size_t i = 0; i < n_rows; ++i) {
-        apex::ingestion::TickMessage msg{};
-        msg.symbol_id = static_cast<apex::SymbolId>((i % n_symbols) + 1);
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = static_cast<zeptodb::SymbolId>((i % n_symbols) + 1);
         msg.recv_ts   = static_cast<int64_t>(1'000'000LL + i);
         msg.price     = 10'000LL + static_cast<int64_t>(i % 1000);
         msg.volume    = 100LL    + static_cast<int64_t>(i % 500);
@@ -71,7 +71,7 @@ static double bench_query(QueryExecutor& ex, const std::string& sql, int reps = 
 // ============================================================================
 // 스레드 수별 speedup 측정
 // ============================================================================
-static void bench_speedup(ApexPipeline& pipeline,
+static void bench_speedup(ZeptoPipeline& pipeline,
                           const std::string& label,
                           const std::string& sql,
                           size_t row_threshold = 1000)
@@ -99,7 +99,7 @@ static void bench_speedup(ApexPipeline& pipeline,
 // ============================================================================
 int main() {
     std::printf("=============================================================\n");
-    std::printf("  APEX-DB 병렬 쿼리 엔진 벤치마크\n");
+    std::printf("  ZeptoDB 병렬 쿼리 엔진 벤치마크\n");
     std::printf("=============================================================\n");
 
     for (size_t n_rows : {1'000'000UL, 5'000'000UL}) {
@@ -135,13 +135,13 @@ int main() {
     {
         size_t n_rows = 1'000'000;
         auto pipeline = make_pipeline(n_rows, 4);
-        apex::execution::LocalQueryScheduler sched(*pipeline, 4);
+        zeptodb::execution::LocalQueryScheduler sched(*pipeline, 4);
 
         // 빈 fragment 목록으로 scatter 성능 측정 (오버헤드)
-        std::vector<apex::execution::QueryFragment> frags(4);
+        std::vector<zeptodb::execution::QueryFragment> frags(4);
         for (size_t i = 0; i < 4; ++i) {
             frags[i].table_name = "trades";
-            frags[i].agg_types  = {apex::execution::AggType::COUNT};
+            frags[i].agg_types  = {zeptodb::execution::AggType::COUNT};
             frags[i].agg_columns = {""};
         }
 

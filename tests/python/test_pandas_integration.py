@@ -1,5 +1,5 @@
 """
-Tests for APEX-DB pandas integration.
+Tests for ZeptoDB pandas integration.
 """
 import pytest
 import sys
@@ -14,12 +14,12 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-from apex_py.dataframe import (
+from zepto_py.dataframe import (
     query_to_pandas,
     from_pandas,
     to_pandas,
 )
-from apex_py.connection import ApexConnection, QueryResult
+from zepto_py.connection import ZeptoConnection, QueryResult
 
 
 pytestmark = pytest.mark.skipif(not HAS_PANDAS, reason="pandas not installed")
@@ -60,7 +60,7 @@ def sample_quotes_df():
 
 @pytest.fixture
 def mock_json_response():
-    """Mock APEX-DB JSON response."""
+    """Mock ZeptoDB JSON response."""
     return '{"columns":["sym","avg_price"],"data":[[1,150.5],[2,200.5],[3,300.0]],"rows":3,"execution_time_us":52.3}'
 
 
@@ -205,11 +205,11 @@ class TestDataFrameStructure:
 
 
 # ============================================================================
-# ApexConnection mock tests
+# ZeptoConnection mock tests
 # ============================================================================
 
-class TestApexConnectionParsing:
-    """Test ApexConnection parsing logic without a live server."""
+class TestZeptoConnectionParsing:
+    """Test ZeptoConnection parsing logic without a live server."""
 
     def test_query_result_creation(self):
         data = {"columns": ["c1"], "data": [[1], [2]], "rows": 2}
@@ -225,12 +225,12 @@ class TestApexConnectionParsing:
         assert d["b"] == ["x", "y"]
 
     def test_repr(self):
-        conn = ApexConnection("testhost", 9999)
+        conn = ZeptoConnection("testhost", 9999)
         assert "testhost" in repr(conn)
         assert "9999" in repr(conn)
 
     def test_context_manager(self):
-        with ApexConnection("localhost", 8123) as conn:
+        with ZeptoConnection("localhost", 8123) as conn:
             assert conn.host == "localhost"
 
 

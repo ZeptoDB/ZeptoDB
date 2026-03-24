@@ -1,5 +1,5 @@
 """
-Tests for APEX-DB Apache Arrow integration.
+Tests for ZeptoDB Apache Arrow integration.
 """
 import pytest
 import sys
@@ -32,7 +32,7 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-from apex_py.arrow import ArrowSession, apex_type_to_arrow, APEX_TO_ARROW
+from zepto_py.arrow import ArrowSession, zepto_type_to_arrow, ZEPTO_TO_ARROW
 
 
 pytestmark = pytest.mark.skipif(not HAS_PYARROW, reason="pyarrow not installed")
@@ -93,41 +93,41 @@ def mock_pipeline():
 # Type mapping tests
 # ============================================================================
 
-class TestApexTypeMapping:
+class TestZeptoTypeMapping:
 
     def test_boolean(self):
-        assert apex_type_to_arrow("BOOLEAN") == pa.bool_()
+        assert zepto_type_to_arrow("BOOLEAN") == pa.bool_()
 
     def test_integer_types(self):
-        assert apex_type_to_arrow("TINYINT")  == pa.int8()
-        assert apex_type_to_arrow("SMALLINT") == pa.int16()
-        assert apex_type_to_arrow("INTEGER")  == pa.int32()
-        assert apex_type_to_arrow("BIGINT")   == pa.int64()
+        assert zepto_type_to_arrow("TINYINT")  == pa.int8()
+        assert zepto_type_to_arrow("SMALLINT") == pa.int16()
+        assert zepto_type_to_arrow("INTEGER")  == pa.int32()
+        assert zepto_type_to_arrow("BIGINT")   == pa.int64()
 
     def test_float_types(self):
-        assert apex_type_to_arrow("REAL")   == pa.float32()
-        assert apex_type_to_arrow("DOUBLE") == pa.float64()
+        assert zepto_type_to_arrow("REAL")   == pa.float32()
+        assert zepto_type_to_arrow("DOUBLE") == pa.float64()
 
     def test_string_type(self):
-        assert apex_type_to_arrow("VARCHAR") == pa.large_utf8()
+        assert zepto_type_to_arrow("VARCHAR") == pa.large_utf8()
 
     def test_timestamp_type(self):
-        t = apex_type_to_arrow("TIMESTAMP")
+        t = zepto_type_to_arrow("TIMESTAMP")
         assert t == pa.timestamp("ns", tz="UTC")
 
     def test_date_type(self):
-        assert apex_type_to_arrow("DATE") == pa.date32()
+        assert zepto_type_to_arrow("DATE") == pa.date32()
 
     def test_unknown_defaults_to_float64(self):
-        assert apex_type_to_arrow("UNKNOWN_TYPE") == pa.float64()
+        assert zepto_type_to_arrow("UNKNOWN_TYPE") == pa.float64()
 
     def test_case_insensitive(self):
-        assert apex_type_to_arrow("bigint") == pa.int64()
-        assert apex_type_to_arrow("Double") == pa.float64()
+        assert zepto_type_to_arrow("bigint") == pa.int64()
+        assert zepto_type_to_arrow("Double") == pa.float64()
 
-    def test_all_apex_types_covered(self):
-        for apex_type in APEX_TO_ARROW:
-            result = apex_type_to_arrow(apex_type)
+    def test_all_zepto_types_covered(self):
+        for zepto_type in ZEPTO_TO_ARROW:
+            result = zepto_type_to_arrow(zepto_type)
             assert result is not None
 
 
@@ -305,14 +305,14 @@ class TestArrowSessionExport:
 
 class TestArrowSchemaUtilities:
 
-    def test_apex_schema_to_arrow(self, mock_pipeline):
+    def test_zepto_schema_to_arrow(self, mock_pipeline):
         sess = ArrowSession(mock_pipeline)
-        apex_schema = [
+        zepto_schema = [
             ("sym",       "BIGINT"),
             ("price",     "DOUBLE"),
             ("timestamp", "TIMESTAMP"),
         ]
-        schema = sess.apex_schema_to_arrow(apex_schema)
+        schema = sess.zepto_schema_to_arrow(zepto_schema)
         assert isinstance(schema, pa.Schema)
         assert schema.field("sym").type       == pa.int64()
         assert schema.field("price").type     == pa.float64()

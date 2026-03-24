@@ -2,13 +2,13 @@
 // Layer 1: FlushManager — 구현
 // ============================================================================
 
-#include "apex/storage/flush_manager.h"
+#include "zeptodb/storage/flush_manager.h"
 
 #include <bit>
 #include <chrono>
 #include <filesystem>
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 // ============================================================================
 // 생성자 / 소멸자
@@ -30,10 +30,10 @@ FlushManager::FlushManager(PartitionManager& pm,
     if (config_.enable_s3_upload && !config_.s3_config.bucket.empty()) {
         s3_sink_ = std::make_unique<S3Sink>(config_.s3_config);
     } else if (config_.enable_s3_upload) {
-        APEX_WARN("FlushManager: S3 업로드 활성화됐지만 bucket이 비어있음 — 비활성화");
+        ZEPTO_WARN("FlushManager: S3 업로드 활성화됐지만 bucket이 비어있음 — 비활성화");
     }
 
-    APEX_INFO("FlushManager 초기화: threshold={:.0f}%, interval={}ms, "
+    ZEPTO_INFO("FlushManager 초기화: threshold={:.0f}%, interval={}ms, "
               "compression={}, format={}, s3={}",
               config_.memory_threshold * 100.0,
               config_.check_interval_ms,
@@ -57,12 +57,12 @@ void FlushManager::start() {
     if (!running_.compare_exchange_strong(expected, true,
                                           std::memory_order_release,
                                           std::memory_order_relaxed)) {
-        APEX_WARN("FlushManager::start() — 이미 실행 중");
+        ZEPTO_WARN("FlushManager::start() — 이미 실행 중");
         return;
     }
 
     flush_thread_ = std::thread([this]() { flush_loop(); });
-    APEX_INFO("FlushManager 백그라운드 스레드 시작");
+    ZEPTO_INFO("FlushManager 백그라운드 스레드 시작");
 }
 
 void FlushManager::stop() {
@@ -70,7 +70,7 @@ void FlushManager::stop() {
     if (flush_thread_.joinable()) {
         flush_thread_.join();
     }
-    APEX_INFO("FlushManager 중지 (총 플러시={}, 총 바이트={})",
+    ZEPTO_INFO("FlushManager 중지 (총 플러시={}, 총 바이트={})",
               stat_partitions_flushed_.load(),
               stat_bytes_written_.load());
 }
@@ -79,7 +79,7 @@ void FlushManager::stop() {
 // flush_loop: 백그라운드 모니터링 루프
 // ============================================================================
 void FlushManager::flush_loop() {
-    APEX_DEBUG("FlushManager 루프 시작");
+    ZEPTO_DEBUG("FlushManager 루프 시작");
 
     while (running_.load(std::memory_order_acquire)) {
         // 인터벌 대기 (1ms 단위 폴링으로 stop() 반응성 확보)
@@ -103,7 +103,7 @@ void FlushManager::flush_loop() {
         const size_t flushed = do_flush_sealed();
         if (flushed > 0) {
             stat_flush_triggers_.fetch_add(1, std::memory_order_relaxed);
-            APEX_DEBUG("FlushManager: auto-flush {} partitions", flushed);
+            ZEPTO_DEBUG("FlushManager: auto-flush {} partitions", flushed);
         }
 
         // TTL-based partition eviction
@@ -112,7 +112,7 @@ void FlushManager::flush_loop() {
             const int64_t cutoff = now_ns() - ttl;
             const size_t evicted = pm_.evict_older_than(cutoff);
             if (evicted > 0) {
-                APEX_INFO("FlushManager: TTL evicted {} partitions older than {}ns",
+                ZEPTO_INFO("FlushManager: TTL evicted {} partitions older than {}ns",
                           evicted, ttl);
             }
         }
@@ -126,16 +126,21 @@ void FlushManager::flush_loop() {
                 do_snapshot();
             }
         }
+
+        // Storage tiering: Hot → Warm → Cold → Drop
+        if (config_.tiering.enabled) {
+            do_tiering();
+        }
     }
 
-    APEX_DEBUG("FlushManager loop exit");
+    ZEPTO_DEBUG("FlushManager loop exit");
 }
 
 // ============================================================================
 // flush_now: 수동 즉시 플러시
 // ============================================================================
 size_t FlushManager::flush_now() {
-    APEX_INFO("FlushManager::flush_now() 수동 트리거");
+    ZEPTO_INFO("FlushManager::flush_now() 수동 트리거");
     const size_t flushed = do_flush_sealed();
     stat_manual_flushes_.fetch_add(1, std::memory_order_relaxed);
     return flushed;
@@ -196,7 +201,7 @@ size_t FlushManager::do_flush_sealed() {
             stat_last_flush_ns_.store(now_ns(), std::memory_order_relaxed);
             ++count;
         } else {
-            APEX_WARN("do_flush_sealed: 플러시 실패, SEALED 상태 복원");
+            ZEPTO_WARN("do_flush_sealed: 플러시 실패, SEALED 상태 복원");
             part->set_state(Partition::State::SEALED);
         }
     }
@@ -208,7 +213,7 @@ size_t FlushManager::do_flush_sealed() {
 // snapshot_now / do_snapshot: all partitions (including ACTIVE) → snapshot_path
 // ============================================================================
 size_t FlushManager::snapshot_now() {
-    APEX_INFO("FlushManager::snapshot_now() triggered");
+    ZEPTO_INFO("FlushManager::snapshot_now() triggered");
     return do_snapshot();
 }
 
@@ -225,7 +230,7 @@ size_t FlushManager::do_snapshot() {
 
     last_snapshot_ns_.store(now_ns(), std::memory_order_relaxed);
     if (count > 0) {
-        APEX_INFO("FlushManager: snapshot {} partitions → {}", count, config_.snapshot_path);
+        ZEPTO_INFO("FlushManager: snapshot {} partitions → {}", count, config_.snapshot_path);
     }
     return count;
 }
@@ -247,7 +252,7 @@ void FlushManager::flush_partition_parquet(const Partition& partition)
     const std::string filepath = parquet_writer_->flush_to_file(partition, parquet_dir);
 
     if (filepath.empty()) {
-        APEX_WARN("flush_partition_parquet: Parquet 쓰기 실패 (symbol={}, hour={})",
+        ZEPTO_WARN("flush_partition_parquet: Parquet 쓰기 실패 (symbol={}, hour={})",
                   key.symbol_id, key.hour_epoch);
         return;
     }
@@ -260,7 +265,7 @@ void FlushManager::flush_partition_parquet(const Partition& partition)
         const bool uploaded = s3_sink_->upload_file(filepath, s3_key);
 
         if (uploaded) {
-            APEX_INFO("S3 업로드: {} → {}",
+            ZEPTO_INFO("S3 업로드: {} → {}",
                       filepath, s3_sink_->make_s3_uri(s3_key));
 
             // 로컬 파일 삭제 (S3 업로드 후 스토리지 절약)
@@ -268,10 +273,83 @@ void FlushManager::flush_partition_parquet(const Partition& partition)
                 std::error_code ec;
                 std::filesystem::remove(filepath, ec);
                 if (ec) {
-                    APEX_WARN("로컬 Parquet 삭제 실패: {} ({})", filepath, ec.message());
+                    ZEPTO_WARN("로컬 Parquet 삭제 실패: {} ({})", filepath, ec.message());
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// do_tiering: age-based storage tier promotion
+//   HOT  (ACTIVE, in-memory) → WARM (SEALED+FLUSHED, local SSD)
+//   WARM (FLUSHED, local)    → COLD (S3 Parquet, local deleted)
+//   COLD (S3 only)           → DROP (evict partition metadata)
+// ============================================================================
+void FlushManager::do_tiering() {
+    const auto& tp = config_.tiering;
+    const int64_t current = now_ns();
+    auto all = pm_.get_all_partitions();
+
+    for (Partition* part : all) {
+        if (!part || part->num_rows() == 0) continue;
+
+        const int64_t age = current - part->key().hour_epoch;
+
+        // DROP tier: evict partition entirely
+        if (tp.drop_after_ns > 0 && age >= tp.drop_after_ns) {
+            ZEPTO_INFO("Tiering DROP: symbol={} hour={} age={}h",
+                      part->key().symbol_id, part->key().hour_epoch,
+                      age / 3'600'000'000'000LL);
+            pm_.evict_partition(part);
+            continue;
+        }
+
+        // COLD tier: flush to S3 Parquet if not already uploaded
+        if (tp.cold_after_ns > 0 && age >= tp.cold_after_ns) {
+            if (part->state() == Partition::State::FLUSHED) {
+                // Already on local disk — upload to S3 and reclaim local
+                if (s3_sink_ && parquet_writer_) {
+                    flush_partition_parquet(*part);
+                    ZEPTO_INFO("Tiering COLD: symbol={} hour={} → S3",
+                              part->key().symbol_id, part->key().hour_epoch);
+                }
+            } else if (part->state() == Partition::State::ACTIVE) {
+                // Still in memory — seal, flush to disk, then S3
+                part->seal();
+                part->set_state(Partition::State::FLUSHING);
+                writer_.flush_partition(*part);
+                if (s3_sink_ && parquet_writer_) {
+                    flush_partition_parquet(*part);
+                }
+                part->set_state(Partition::State::FLUSHED);
+                if (config_.reclaim_after_flush) part->reclaim_arena();
+                stat_partitions_flushed_.fetch_add(1, std::memory_order_relaxed);
+                ZEPTO_INFO("Tiering COLD: symbol={} hour={} → SSD + S3",
+                          part->key().symbol_id, part->key().hour_epoch);
+            }
+            continue;
+        }
+
+        // WARM tier: seal and flush to local SSD
+        if (tp.warm_after_ns > 0 && age >= tp.warm_after_ns) {
+            if (part->state() == Partition::State::ACTIVE) {
+                part->seal();
+                part->set_state(Partition::State::FLUSHING);
+                const size_t bytes = writer_.flush_partition(*part);
+                if (bytes > 0) {
+                    part->set_state(Partition::State::FLUSHED);
+                    if (config_.reclaim_after_flush) part->reclaim_arena();
+                    stat_partitions_flushed_.fetch_add(1, std::memory_order_relaxed);
+                    stat_bytes_written_.fetch_add(bytes, std::memory_order_relaxed);
+                    ZEPTO_INFO("Tiering WARM: symbol={} hour={} → SSD ({}B)",
+                              part->key().symbol_id, part->key().hour_epoch, bytes);
+                } else {
+                    part->set_state(Partition::State::SEALED);
+                }
+            }
+        }
+        // else: HOT tier — keep in memory, no action
     }
 }
 
@@ -302,4 +380,4 @@ int64_t FlushManager::now_ns() {
     ).count();
 }
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

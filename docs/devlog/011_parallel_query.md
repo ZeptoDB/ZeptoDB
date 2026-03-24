@@ -61,12 +61,12 @@ Falls back to serial when non-local scheduler is injected (`nullptr`).
 
 | File | Role |
 |------|------|
-| `include/apex/execution/query_scheduler.h` | QueryFragment + PartialAggResult + interface |
-| `include/apex/execution/local_scheduler.h` | LocalQueryScheduler declaration |
+| `include/zeptodb/execution/query_scheduler.h` | QueryFragment + PartialAggResult + interface |
+| `include/zeptodb/execution/local_scheduler.h` | LocalQueryScheduler declaration |
 | `src/execution/local_scheduler.cpp` | scatter/gather/execute_fragment implementation |
-| `include/apex/execution/distributed_scheduler.h` | Distributed scheduler stub |
+| `include/zeptodb/execution/distributed_scheduler.h` | Distributed scheduler stub |
 | `src/execution/distributed_scheduler.cpp` | stub |
-| `include/apex/execution/parallel_scan.h` | ParallelScanExecutor (partition chunk distribution) |
+| `include/zeptodb/execution/parallel_scan.h` | ParallelScanExecutor (partition chunk distribution) |
 | `src/execution/parallel_scan.cpp` | make_partition_chunks / select_mode |
 | `src/sql/executor.cpp` | parallel path + DI constructor |
 

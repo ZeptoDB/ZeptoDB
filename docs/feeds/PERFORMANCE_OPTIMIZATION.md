@@ -254,8 +254,8 @@ taskset -c 0-1 ./feed_handler_nasdaq &
 # Feed Handler 2: cores 2-3
 taskset -c 2-3 ./feed_handler_cme &
 
-# APEX-DB Pipeline: cores 4-7
-taskset -c 4-7 ./apex_server &
+# ZeptoDB Pipeline: cores 4-7
+taskset -c 4-7 ./zepto_server &
 ```
 
 ---

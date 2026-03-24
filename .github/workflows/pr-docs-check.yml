@@ -1,0 +1,19 @@
+name: PR Docs Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.pull_request.labels.*.name, 'skip-docs-check')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check documentation updated
+        run: |
+          git diff --name-only origin/main...HEAD | bash scripts/check_docs_updated.sh
+      - name: Check English-first policy
+        run: bash scripts/check_english_first.sh

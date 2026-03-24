@@ -1,0 +1,349 @@
+#pragma once
+// ============================================================================
+// Phase C-2: ClusterNode — 분산 클러스터 노드 (컴파일 타임 Transport 선택)
+// ============================================================================
+// Transport 파라미터로 컴파일 타임 다형성:
+//   ClusterNode<ShmTransport>   → 로컬 테스트
+//   ClusterNode<UcxTransport>   → RDMA 프로덕션
+//
+// 책임:
+//   1. 클러스터 참가/이탈 (HealthMonitor + PartitionRouter 연동)
+//   2. 분산 ingest: PartitionRouter로 담당 노드 결정 → local or remote
+//   3. 분산 쿼리: 담당 노드에서 로컬 쿼리 실행 (scatter-gather 기초)
+//   4. 로컬 파이프라인 (ZeptoPipeline) 관리
+// ============================================================================
+
+#include "zeptodb/cluster/transport.h"
+#include "zeptodb/cluster/partition_router.h"
+#include "zeptodb/cluster/health_monitor.h"
+#include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/ingestion/tick_plant.h"
+#include "zeptodb/sql/executor.h"
+
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+namespace zeptodb::cluster {
+
+using zeptodb::core::ZeptoPipeline;
+using zeptodb::core::QueryResult;
+using zeptodb::core::PipelineConfig;
+using zeptodb::ingestion::TickMessage;
+
+// ============================================================================
+// ClusterConfig: 클러스터 노드 설정
+// ============================================================================
+struct ClusterConfig {
+    NodeAddress       self;              // 이 노드의 주소/ID
+    HealthConfig      health;            // heartbeat 설정
+    PipelineConfig    pipeline;          // 로컬 파이프라인 설정
+    bool              enable_remote_ingest = true;  // 원격 인제스트 활성화
+    uint16_t          rpc_port = 0;      // TCP RPC port (0 = self.port + 100)
+};
+
+// ============================================================================
+// ClusterNode<Transport>: 분산 노드 메인 클래스
+// ============================================================================
+template <typename Transport>
+class ClusterNode {
+public:
+    explicit ClusterNode(const ClusterConfig& cfg = {})
+        : config_(cfg)
+        , health_(cfg.health)
+        , local_pipeline_(cfg.pipeline)
+    {}
+
+    ~ClusterNode() { leave_cluster(); }
+
+    // Non-copyable
+    ClusterNode(const ClusterNode&) = delete;
+    ClusterNode& operator=(const ClusterNode&) = delete;
+
+    // ----------------------------------------------------------------
+    // 클러스터 참가/이탈
+    // ----------------------------------------------------------------
+
+    /// 클러스터 참가
+    /// seeds: 이미 클러스터에 있는 노드 주소 목록
+    void join_cluster(const std::vector<NodeAddress>& seeds = {}) {
+        if (joined_.load()) return;
+
+        // 1. Transport 초기화
+        transport_.init(config_.self);
+
+        // 2. PartitionRouter에 자신 등록
+        {
+            std::unique_lock lock(router_mutex_);
+            router_.add_node(config_.self.id);
+            for (auto& seed : seeds) {
+                router_.add_node(seed.id);
+            }
+        }
+
+        // 3. Seed 노드에 연결 + RPC client 생성
+        for (auto& seed : seeds) {
+            try {
+                ConnectionId conn = transport_.connect(seed);
+                peer_connections_[seed.id] = conn;
+                peer_addresses_[seed.id]   = seed;
+
+                // Pre-create RPC client for remote tick ingest.
+                // Peer's RPC port convention: peer.port + 100
+                uint16_t peer_rpc_port = static_cast<uint16_t>(seed.port + 100);
+                peer_rpc_clients_[seed.id] = std::make_unique<TcpRpcClient>(
+                    seed.host, peer_rpc_port, 2000);
+            } catch (...) {
+                // 연결 실패 시 무시 (나중에 재시도)
+            }
+        }
+
+        // 4. Health Monitor 시작
+        health_.start(config_.self, seeds);
+        health_.on_state_change([this](NodeId id, NodeState old_s, NodeState new_s) {
+            on_node_state_change(id, old_s, new_s);
+        });
+
+        // 5. 로컬 파이프라인 시작
+        local_pipeline_.start();
+
+        // 6. TCP RPC 서버 시작 (원격 SQL 쿼리 + Tick ingest 수신)
+        uint16_t rport = (config_.rpc_port > 0)
+                       ? config_.rpc_port
+                       : static_cast<uint16_t>(config_.self.port + 100);
+        rpc_server_.start(
+            rport,
+            [this](const std::string& sql) { return execute_sql_local(sql); },
+            [this](const zeptodb::ingestion::TickMessage& msg) {
+                return local_pipeline_.ingest_tick(msg);
+            });
+        rpc_port_ = rport;
+
+        joined_.store(true);
+    }
+
+    /// 클러스터 이탈 (graceful shutdown)
+    void leave_cluster() {
+        if (!joined_.exchange(false)) return;
+
+        // TCP RPC 서버 중지
+        rpc_server_.stop();
+
+        // Health Monitor에 이탈 알림
+        health_.mark_leaving(config_.self.id);
+        health_.stop();
+
+        // 로컬 파이프라인 중지
+        local_pipeline_.stop();
+
+        // Transport 종료
+        for (auto& [id, conn] : peer_connections_) {
+            transport_.disconnect(conn);
+        }
+        peer_connections_.clear();
+        peer_rpc_clients_.clear();
+        transport_.shutdown();
+    }
+
+    // ----------------------------------------------------------------
+    // 분산 Ingest
+    // ----------------------------------------------------------------
+
+    /// 틱 데이터 수신 → 담당 노드로 라우팅
+    /// @return true if ingested (local or remote), false if failed
+    bool ingest_tick(TickMessage msg) {
+        NodeId owner = route(msg.symbol_id);
+
+        if (owner == config_.self.id) {
+            // 로컬 처리
+            return local_pipeline_.ingest_tick(msg);
+        } else if (config_.enable_remote_ingest) {
+            // 원격 노드로 전송
+            return remote_ingest(owner, msg);
+        }
+        return false;
+    }
+
+    /// 로컬 파이프라인에 직접 ingest (라우팅 없이)
+    bool ingest_local(TickMessage msg) {
+        return local_pipeline_.ingest_tick(msg);
+    }
+
+    // ----------------------------------------------------------------
+    // 분산 쿼리
+    // ----------------------------------------------------------------
+
+    /// VWAP 쿼리 → 담당 노드에서 실행
+    QueryResult query_vwap(SymbolId symbol,
+                           Timestamp from = 0,
+                           Timestamp to = INT64_MAX) {
+        NodeId owner = route(symbol);
+
+        if (owner == config_.self.id) {
+            // 로컬 쿼리
+            return local_pipeline_.query_vwap(symbol, from, to);
+        } else {
+            // 원격 쿼리 (현재는 에러 반환, 실제 구현에서 gRPC 추가)
+            return remote_query_vwap(owner, symbol, from, to);
+        }
+    }
+
+    /// 로컬 파이프라인 직접 쿼리
+    QueryResult query_local_vwap(SymbolId symbol,
+                                  Timestamp from = 0,
+                                  Timestamp to = INT64_MAX) {
+        return local_pipeline_.query_vwap(symbol, from, to);
+    }
+
+    // ----------------------------------------------------------------
+    // 상태 조회
+    // ----------------------------------------------------------------
+
+    NodeId self_id() const { return config_.self.id; }
+
+    bool     is_joined() const { return joined_.load(); }
+    uint16_t rpc_port()  const { return rpc_port_; }
+
+    // ----------------------------------------------------------------
+    // SQL 실행 (로컬 파이프라인)
+    // ----------------------------------------------------------------
+
+    /// Execute a SQL query against the local pipeline (in-process).
+    zeptodb::sql::QueryResultSet execute_sql_local(const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(local_pipeline_);
+        return ex.execute(sql);
+    }
+
+    NodeId route(SymbolId symbol) const {
+        std::shared_lock lock(router_mutex_);
+        return router_.route(symbol);
+    }
+
+    PartitionRouter& router() { return router_; }
+    const PartitionRouter& router() const { return router_; }
+
+    /// Share this node's PartitionRouter with a QueryCoordinator so both
+    /// use the same routing table.  Call before join_cluster().
+    void connect_coordinator(QueryCoordinator& coord) {
+        coord.set_shared_router(&router_, &router_mutex_);
+    }
+
+    HealthMonitor& health() { return health_; }
+    ZeptoPipeline& pipeline() { return local_pipeline_; }
+
+    // ----------------------------------------------------------------
+    // 원격 메모리 노출 (RDMA one-sided)
+    // ----------------------------------------------------------------
+
+    /// 로컬 메모리 영역을 클러스터에 노출 (다른 노드가 직접 읽기/쓰기 가능)
+    RemoteRegion expose_memory(void* addr, size_t size) {
+        return transport_.register_memory(addr, size);
+    }
+
+    void unexpose_memory(RemoteRegion& region) {
+        transport_.deregister_memory(region);
+    }
+
+    /// 원격 노드의 메모리에 직접 쓰기
+    void write_to_remote(NodeId target, const RemoteRegion& region,
+                         const void* data, size_t offset, size_t size) {
+        (void)target;
+        transport_.remote_write(data, region, offset, size);
+    }
+
+    /// 원격 노드의 메모리에서 직접 읽기
+    void read_from_remote(NodeId target, const RemoteRegion& region,
+                          size_t offset, void* dst, size_t size) {
+        (void)target;
+        transport_.remote_read(region, offset, dst, size);
+    }
+
+    Transport& transport() { return transport_; }
+
+private:
+    // ----------------------------------------------------------------
+    // 내부 구현
+    // ----------------------------------------------------------------
+
+    /// 원격 노드로 틱 전송 — TCP RPC TICK_INGEST
+    bool remote_ingest(NodeId target, const TickMessage& msg) {
+        auto it = peer_rpc_clients_.find(target);
+        if (it == peer_rpc_clients_.end()) {
+            // Peer not yet known (joined after us); try to create client lazily
+            auto addr_it = peer_addresses_.find(target);
+            if (addr_it == peer_addresses_.end()) return false;
+
+            uint16_t peer_rpc_port = static_cast<uint16_t>(addr_it->second.port + 100);
+            auto [ins, _] = peer_rpc_clients_.emplace(
+                target,
+                std::make_unique<TcpRpcClient>(addr_it->second.host, peer_rpc_port, 2000));
+            it = ins;
+        }
+        return it->second->ingest_tick(msg);
+    }
+
+    /// 원격 VWAP 쿼리 (stub — 실제는 gRPC)
+    QueryResult remote_query_vwap(NodeId /*target*/, SymbolId /*symbol*/,
+                                   Timestamp /*from*/, Timestamp /*to*/) {
+        QueryResult r;
+        r.type  = QueryResult::Type::ERROR;
+        r.value = 0.0;
+        return r;
+    }
+
+    /// 노드 상태 변경 콜백
+    void on_node_state_change(NodeId id, NodeState old_s, NodeState new_s) {
+        if (new_s == NodeState::DEAD) {
+            // 장애 노드 라우터에서 제거
+            std::unique_lock lock(router_mutex_);
+            router_.remove_node(id);
+        } else if (new_s == NodeState::ACTIVE && old_s == NodeState::JOINING) {
+            // 새 노드 활성화 시 라우터에 추가
+            std::unique_lock lock(router_mutex_);
+            router_.add_node(id);
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // 데이터 멤버
+    // ----------------------------------------------------------------
+
+    ClusterConfig                              config_;
+    Transport                                  transport_;
+    mutable std::shared_mutex                  router_mutex_;
+    PartitionRouter                            router_;
+    HealthMonitor                              health_;
+    ZeptoPipeline                               local_pipeline_;
+    TcpRpcServer                               rpc_server_;
+    uint16_t                                   rpc_port_ = 0;
+
+    std::atomic<bool>                          joined_{false};
+
+    // 피어 연결 정보
+    std::unordered_map<NodeId, ConnectionId>              peer_connections_;
+    std::unordered_map<NodeId, NodeAddress>               peer_addresses_;
+
+    // TCP RPC clients for remote tick ingest (pre-created per seed in join_cluster)
+    std::unordered_map<NodeId, std::unique_ptr<TcpRpcClient>> peer_rpc_clients_;
+
+    // 원격 ingest용 RDMA 영역 (target NodeId → RemoteRegion, future UCX path)
+    std::unordered_map<NodeId, RemoteRegion>              remote_ingest_regions_;
+};
+
+// ----------------------------------------------------------------
+// 편의 타입 별칭
+// ----------------------------------------------------------------
+
+// SharedMem 기반 (테스트용)
+#include "zeptodb/cluster/transport.h"
+
+} // namespace zeptodb::cluster

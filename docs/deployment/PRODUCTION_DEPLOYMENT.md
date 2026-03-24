@@ -1,4 +1,4 @@
-# APEX-DB Production Deployment Guide
+# ZeptoDB Production Deployment Guide
 
 > Choose **bare metal** or **cloud-native** deployment based on your workload.
 
@@ -64,15 +64,15 @@ sudo reboot
 
 #### 2. Runtime Tuning Script
 
-`/opt/apex-db/tune_bare_metal.sh`:
+`/opt/zeptodb/tune_bare_metal.sh`:
 
 ```bash
 #!/bin/bash
-# APEX-DB Bare Metal Optimization Script
+# ZeptoDB Bare Metal Optimization Script
 
 set -e
 
-echo "=== APEX-DB Bare Metal Tuning ==="
+echo "=== ZeptoDB Bare Metal Tuning ==="
 
 # 1. CPU Governor: performance mode
 echo "Setting CPU governor to performance..."
@@ -126,7 +126,7 @@ echo "  - cat /proc/meminfo | grep Huge"
 echo "  - cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 ```
 
-#### 3. APEX-DB Build (Bare Metal Optimized)
+#### 3. ZeptoDB Build (Bare Metal Optimized)
 
 ```bash
 # Install dependencies
@@ -135,8 +135,8 @@ sudo dnf install -y clang19 clang19-devel llvm19-devel \
     liburing-devel ninja-build cmake
 
 # Download source
-git clone https://github.com/your-org/apex-db.git
-cd apex-db
+git clone https://github.com/your-org/zeptodb.git
+cd zeptodb
 
 # Bare metal optimized build
 mkdir -p build && cd build
@@ -163,7 +163,7 @@ sudo ../scripts/tune_bare_metal.sh
 # Single NUMA node
 sudo numactl --cpunodebind=0 --membind=0 \
     taskset -c 0-3 \
-    ./apex_server \
+    ./zepto_server \
         --port 8123 \
         --realtime-cores 0-3 \
         --analytics-cores 4-7 \
@@ -173,32 +173,32 @@ sudo numactl --cpunodebind=0 --membind=0 \
 # Node 0 (realtime)
 sudo numactl --cpunodebind=0 --membind=0 \
     taskset -c 0-3 \
-    ./apex_server --port 8123 --node-id 0 --role realtime &
+    ./zepto_server --port 8123 --node-id 0 --role realtime &
 
 # Node 1 (analytics)
 sudo numactl --cpunodebind=1 --membind=1 \
     taskset -c 16-19 \
-    ./apex_server --port 8124 --node-id 1 --role analytics &
+    ./zepto_server --port 8124 --node-id 1 --role analytics &
 ```
 
 #### 5. Verification & Monitoring
 
 ```bash
 # Check CPU affinity
-taskset -p $(pidof apex_server)
+taskset -p $(pidof zepto_server)
 
 # Check NUMA memory usage
-numastat -p $(pidof apex_server)
+numastat -p $(pidof zepto_server)
 
 # Check Hugepages usage
 grep Huge /proc/meminfo
 
 # Latency profiling
 sudo perf record -F 999 -a -g -- sleep 30
-sudo perf script | flamegraph.pl > apex_latency.svg
+sudo perf script | flamegraph.pl > zepto_latency.svg
 
 # Continuous monitoring
-watch -n 1 'cat /proc/$(pidof apex_server)/status | grep VmHWM'
+watch -n 1 'cat /proc/$(pidof zepto_server)/status | grep VmHWM'
 ```
 
 ### Bare Metal Benchmarks (Expected)
@@ -293,31 +293,31 @@ RUN apt-get update && apt-get install -y \
     curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/apex-db
-COPY --from=builder /build/build/apex_server .
+WORKDIR /opt/zeptodb
+COPY --from=builder /build/build/zepto_server .
 COPY --from=builder /build/build/*.so .
 
 # Non-root user
-RUN useradd -r -u 1000 apex && \
-    chown -R apex:apex /opt/apex-db
+RUN useradd -r -u 1000 zeptodb && \
+    chown -R zeptodb:zeptodb /opt/zeptodb
 
-USER apex
+USER zeptodb
 EXPOSE 8123
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s \
     CMD curl -f http://localhost:8123/health || exit 1
 
-ENTRYPOINT ["./apex_server"]
+ENTRYPOINT ["./zepto_server"]
 CMD ["--port", "8123"]
 ```
 
 Build:
 
 ```bash
-docker build -t apex-db:latest .
-docker tag apex-db:latest your-registry/apex-db:v1.0.0
-docker push your-registry/apex-db:v1.0.0
+docker build -t zeptodb:latest .
+docker tag zeptodb:latest your-registry/zeptodb:v1.0.0
+docker push your-registry/zeptodb:v1.0.0
 ```
 
 #### 2. Kubernetes Deployment
@@ -328,15 +328,15 @@ docker push your-registry/apex-db:v1.0.0
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: apex-db
+  name: zeptodb
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: apex-config
-  namespace: apex-db
+  name: zepto-config
+  namespace: zeptodb
 data:
-  apex.conf: |
+  zeptodb.conf: |
     port: 8123
     worker_threads: 8
     analytics_mode: true
@@ -345,17 +345,17 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: apex-db
-  namespace: apex-db
+  name: zeptodb
+  namespace: zeptodb
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: apex-db
+      app: zeptodb
   template:
     metadata:
       labels:
-        app: apex-db
+        app: zeptodb
     spec:
       affinity:
         podAntiAffinity:
@@ -367,11 +367,11 @@ spec:
                 - key: app
                   operator: In
                   values:
-                  - apex-db
+                  - zeptodb
               topologyKey: kubernetes.io/hostname
       containers:
-      - name: apex-db
-        image: your-registry/apex-db:v1.0.0
+      - name: zeptodb
+        image: your-registry/zeptodb:v1.0.0
         ports:
         - containerPort: 8123
           name: http
@@ -390,9 +390,9 @@ spec:
           value: "true"
         volumeMounts:
         - name: config
-          mountPath: /opt/apex-db/config
+          mountPath: /opt/zeptodb/config
         - name: data
-          mountPath: /opt/apex-db/data
+          mountPath: /opt/zeptodb/data
         livenessProbe:
           httpGet:
             path: /health
@@ -408,16 +408,16 @@ spec:
       volumes:
       - name: config
         configMap:
-          name: apex-config
+          name: zepto-config
       - name: data
         persistentVolumeClaim:
-          claimName: apex-db-pvc
+          claimName: zeptodb-pvc
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: apex-db-pvc
-  namespace: apex-db
+  name: zeptodb-pvc
+  namespace: zeptodb
 spec:
   accessModes:
     - ReadWriteOnce
@@ -429,12 +429,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: apex-db-service
-  namespace: apex-db
+  name: zeptodb-service
+  namespace: zeptodb
 spec:
   type: LoadBalancer
   selector:
-    app: apex-db
+    app: zeptodb
   ports:
   - port: 8123
     targetPort: 8123
@@ -444,13 +444,13 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: apex-db-hpa
-  namespace: apex-db
+  name: zeptodb-hpa
+  namespace: zeptodb
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: apex-db
+    name: zeptodb
   minReplicas: 3
   maxReplicas: 10
   metrics:
@@ -474,22 +474,22 @@ Deploy:
 kubectl apply -f k8s/deployment.yaml
 
 # Verify
-kubectl get pods -n apex-db
-kubectl get svc -n apex-db
+kubectl get pods -n zeptodb
+kubectl get svc -n zeptodb
 
 # Check logs
-kubectl logs -f deployment/apex-db -n apex-db
+kubectl logs -f deployment/zeptodb -n zeptodb
 ```
 
 #### 3. Helm Chart (Recommended)
 
-`helm/apex-db/values.yaml`:
+`helm/zeptodb/values.yaml`:
 
 ```yaml
 replicaCount: 3
 
 image:
-  repository: your-registry/apex-db
+  repository: your-registry/zeptodb
   tag: v1.0.0
   pullPolicy: IfNotPresent
 
@@ -528,8 +528,8 @@ monitoring:
 Install:
 
 ```bash
-helm install apex-db ./helm/apex-db \
-    --namespace apex-db \
+helm install zeptodb ./helm/zeptodb \
+    --namespace zeptodb \
     --create-namespace \
     --values values-prod.yaml
 ```
@@ -542,12 +542,12 @@ helm install apex-db ./helm/apex-db \
 apiVersion: v1
 kind: ServiceMonitor
 metadata:
-  name: apex-db-metrics
-  namespace: apex-db
+  name: zeptodb-metrics
+  namespace: zeptodb
 spec:
   selector:
     matchLabels:
-      app: apex-db
+      app: zeptodb
   endpoints:
   - port: http
     path: /metrics
@@ -557,24 +557,24 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-dashboard
-  namespace: apex-db
+  namespace: zeptodb
 data:
-  apex-db.json: |
+  zeptodb.json: |
     {
       "dashboard": {
-        "title": "APEX-DB Analytics",
+        "title": "ZeptoDB Analytics",
         "panels": [
           {
             "title": "Query Latency (p95)",
-            "targets": [{"expr": "histogram_quantile(0.95, apex_query_duration_seconds)"}]
+            "targets": [{"expr": "histogram_quantile(0.95, zepto_query_duration_seconds)"}]
           },
           {
             "title": "Throughput (queries/sec)",
-            "targets": [{"expr": "rate(apex_queries_total[1m])"}]
+            "targets": [{"expr": "rate(zepto_queries_total[1m])"}]
           },
           {
             "title": "Memory Usage",
-            "targets": [{"expr": "apex_memory_bytes / 1024 / 1024 / 1024"}]
+            "targets": [{"expr": "zepto_memory_bytes / 1024 / 1024 / 1024"}]
           }
         ]
       }
@@ -652,9 +652,9 @@ Development -> Docker local test -> K8s staging -> Validation
 
 ## Support
 
-- **Bare metal deployment support**: enterprise@apex-db.io
-- **Cloud deployment support**: cloud@apex-db.io
-- **Community**: https://discord.gg/apex-db
+- **Bare metal deployment support**: enterprise@zeptodb.io
+- **Cloud deployment support**: cloud@zeptodb.io
+- **Community**: https://discord.gg/zeptodb
 
 ---
 

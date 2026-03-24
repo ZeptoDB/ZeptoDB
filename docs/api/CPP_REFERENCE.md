@@ -1,4 +1,4 @@
-# APEX-DB C++ API Reference
+# ZeptoDB C++ API Reference
 
 *Last updated: 2026-03-22*
 
@@ -6,7 +6,7 @@
 
 ## Table of Contents
 
-- [ApexPipeline](#apexpipeline)
+- [ZeptoPipeline](#zeptopipeline)
 - [QueryExecutor (SQL)](#queryexecutor-sql)
 - [PartitionManager & Partition](#partitionmanager--partition)
 - [TickMessage](#tickmessage)
@@ -19,17 +19,17 @@
 ### Complete example: ingest ticks, run SQL, read raw columns
 
 ```cpp
-#include "apex/core/pipeline.h"
-#include "apex/sql/executor.h"
-#include "apex/common/types.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/common/types.h"
 #include <iostream>
 
 int main() {
-    using namespace apex::core;
-    using namespace apex::sql;
+    using namespace zeptodb::core;
+    using namespace zeptodb::sql;
 
     // 1. Create and start pipeline (pure in-memory)
-    ApexPipeline pipeline;
+    ZeptoPipeline pipeline;
     pipeline.start();
 
     // 2. Ingest ticks
@@ -126,20 +126,20 @@ auto result = exec.execute(
 
 ---
 
-## ApexPipeline
+## ZeptoPipeline
 
-`#include "apex/core/pipeline.h"` — Namespace: `apex::core`
+`#include "zeptodb/core/pipeline.h"` — Namespace: `zeptodb::core`
 
 The top-level end-to-end pipeline: tick ingestion → column store → query execution.
 
 ### Construction
 
 ```cpp
-#include "apex/core/pipeline.h"
-using namespace apex::core;
+#include "zeptodb/core/pipeline.h"
+using namespace zeptodb::core;
 
 // Default config (pure in-memory, 32 MB arena per partition)
-ApexPipeline pipeline;
+ZeptoPipeline pipeline;
 
 // Custom config
 PipelineConfig cfg;
@@ -147,8 +147,8 @@ cfg.arena_size_per_partition = 64ULL * 1024 * 1024; // 64 MB
 cfg.drain_batch_size         = 512;
 cfg.drain_sleep_us           = 5;
 cfg.storage_mode             = StorageMode::TIERED;
-cfg.hdb_base_path            = "/data/apex_hdb";
-ApexPipeline pipeline{cfg};
+cfg.hdb_base_path            = "/data/zepto_hdb";
+ZeptoPipeline pipeline{cfg};
 ```
 
 ### Lifecycle
@@ -170,7 +170,7 @@ struct PipelineConfig {
     size_t   drain_batch_size         = 256;
     uint32_t drain_sleep_us           = 10;
     StorageMode storage_mode          = StorageMode::PURE_IN_MEMORY;
-    std::string hdb_base_path         = "/tmp/apex_hdb";
+    std::string hdb_base_path         = "/tmp/zepto_hdb";
     FlushConfig flush_config{};   // tiered mode HDB flush settings
 };
 ```
@@ -188,7 +188,7 @@ enum class StorageMode : uint8_t {
 ### Ingest
 
 ```cpp
-#include "apex/common/types.h"
+#include "zeptodb/common/types.h"
 
 TickMessage msg;
 msg.symbol_id = 1;
@@ -267,15 +267,15 @@ FlushManager* fm  = pipeline.flush_manager();
 
 ## QueryExecutor (SQL)
 
-`#include "apex/sql/executor.h"` — Namespace: `apex::sql`
+`#include "zeptodb/sql/executor.h"` — Namespace: `zeptodb::sql`
 
-Parses SQL strings and executes them against `ApexPipeline`.
+Parses SQL strings and executes them against `ZeptoPipeline`.
 
 ### Construction
 
 ```cpp
-#include "apex/sql/executor.h"
-using namespace apex::sql;
+#include "zeptodb/sql/executor.h"
+using namespace zeptodb::sql;
 
 // Default: serial execution, LocalQueryScheduler
 QueryExecutor exec{pipeline};
@@ -336,9 +336,9 @@ std::cout << result.execution_time_us << " μs, "
 ### Execute with cancellation token
 
 ```cpp
-#include "apex/auth/cancellation_token.h"
+#include "zeptodb/auth/cancellation_token.h"
 
-apex::auth::CancellationToken token;
+zeptodb::auth::CancellationToken token;
 
 // Cancel from another thread
 std::thread canceller([&token] {
@@ -374,7 +374,7 @@ struct QueryResultSet {
 
 ## PartitionManager & Partition
 
-`#include "apex/storage/partition_manager.h"` — Namespace: `apex::storage`
+`#include "zeptodb/storage/partition_manager.h"` — Namespace: `zeptodb::storage`
 
 ### PartitionManager
 
@@ -425,7 +425,7 @@ bool overlaps = part.overlaps_time_range(from_ns, to_ns);
 
 ## TickMessage
 
-`#include "apex/common/types.h"`
+`#include "zeptodb/common/types.h"`
 
 ```cpp
 using SymbolId  = int64_t;
@@ -445,7 +445,7 @@ struct TickMessage {
 ### Timestamp utilities
 
 ```cpp
-#include "apex/common/types.h"
+#include "zeptodb/common/types.h"
 
 // Current nanosecond timestamp
 Timestamp ts = now_ns();
@@ -469,14 +469,14 @@ constexpr int64_t NS_PER_DAY = 86'400'000'000'000LL;
 
 ## Auth — CancellationToken
 
-`#include "apex/auth/cancellation_token.h"` — Namespace: `apex::auth`
+`#include "zeptodb/auth/cancellation_token.h"` — Namespace: `zeptodb::auth`
 
 Used to cancel long-running queries from another thread.
 
 ```cpp
-#include "apex/auth/cancellation_token.h"
+#include "zeptodb/auth/cancellation_token.h"
 
-apex::auth::CancellationToken token;
+zeptodb::auth::CancellationToken token;
 
 // In another thread:
 token.cancel();          // signals cancellation
@@ -502,7 +502,7 @@ cmake .. -G Ninja \
 ninja -j$(nproc)
 
 # Run tests
-./tests/apex_tests
+./tests/zepto_tests
 ```
 
 ---

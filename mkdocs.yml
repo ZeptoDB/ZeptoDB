@@ -1,0 +1,164 @@
+site_name: ZeptoDB
+site_description: Ultra-Low Latency In-Memory Database
+site_url: https://zeptodb.io
+repo_url: https://github.com/zeptodb/zeptodb
+repo_name: zeptodb/zeptodb
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+
+plugins:
+  - search
+  - i18n:
+      default_language: en
+      languages:
+        - locale: en
+          name: English
+          build: true
+          default: true
+        - locale: ko
+          name: 한국어
+          build: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.snippets
+  - admonition
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/zeptodb/zeptodb
+  version:
+    provider: mike
+  alternate:
+    - name: English
+      link: /
+      lang: en
+    - name: 한국어
+      link: /ko/
+      lang: ko
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quick Start: getting-started/quickstart.md
+      - Installation: getting-started/installation.md
+      - Build from Source: getting-started/build.md
+  - API Reference:
+      - SQL Reference: api/SQL_REFERENCE.md
+      - Python Reference: api/PYTHON_REFERENCE.md
+      - C++ Reference: api/CPP_REFERENCE.md
+      - HTTP Reference: api/HTTP_REFERENCE.md
+  - Architecture:
+      - Overview: design/high_level_architecture.md
+      - Storage Engine: design/layer1_storage_memory.md
+      - Ingestion: design/layer2_ingestion_network.md
+      - Execution Engine: design/layer3_execution_engine.md
+      - SQL & Client: design/layer4_transpiler_client.md
+      - Security: design/layer5_security_auth.md
+      - Distributed Cluster: design/phase_c_distributed.md
+      - Tech Stack: design/tech_stack.md
+  - Operations:
+      - Production Deployment: deployment/PRODUCTION_DEPLOYMENT.md
+      - Production Operations: operations/PRODUCTION_OPERATIONS.md
+      - Kubernetes Operations: operations/KUBERNETES_OPERATIONS.md
+      - K8s Failure Scenarios: operations/KUBERNETES_FAILURE_SCENARIOS.md
+      - Rolling Upgrade: ops/rolling_upgrade.md
+  - Feed Handlers:
+      - Guide: feeds/FEED_HANDLER_GUIDE.md
+      - Complete Reference: feeds/FEED_HANDLER_COMPLETE.md
+      - Performance Tuning: feeds/PERFORMANCE_OPTIMIZATION.md
+  - Benchmarks:
+      - E2E MVP: bench/results_e2e_mvp.md
+      - SIMD Phase B: bench/results_phase_b.md
+      - SIMD Phase B v2: bench/results_phase_b_v2.md
+      - HDB Phase A: bench/results_phase_a.md
+      - Index Attributes: bench/results_index_attributes.md
+      - kdb+ Reference: bench/kdb_reference.md
+      - Multi-node: bench/multinode_benchmark_guide.md
+      - RDMA/EFA: bench/rdma_efa_benchmark.md
+      - EKS Multi-node: bench/eks_multinode_benchmark.md
+  - Design Docs:
+      - Architecture Design: design/architecture_design.md
+      - Feature Analysis: design/feature_performance_analysis.md
+      - kdb+ Replacement: design/kdb_replacement_analysis.md
+      - Industry Analysis: design/industry_business_analysis.md
+      - Kafka Consumer: design/kafka_consumer_design.md
+      - Multi-node Use Cases: design/multinode_usecases.md
+      - Physical AI Market: design/physical_ai_market.md
+  - Business:
+      - Executive Summary: business/EXECUTIVE_SUMMARY.md
+      - Business Strategy: business/BUSINESS_STRATEGY.md
+      - Product Positioning: business/product_positioning.md
+      - Industry Gap Analysis: business/industry_gap_analysis.md
+  - Development Log:
+      - "000: Environment Setup": devlog/000_environment_setup.md
+      - "001: E2E Pipeline": devlog/001_e2e_pipeline.md
+      - "002: SIMD + JIT": devlog/002_simd_jit.md
+      - "003: Optimization v2": devlog/003_optimization_v2.md
+      - "004: HDB Tiered Storage": devlog/004_hdb_tiered_storage.md
+      - "005: Python Bridge": devlog/005_python_bridge.md
+      - "006: Distributed Cluster": devlog/006_distributed_cluster.md
+      - "007: SQL + HTTP + JOIN": devlog/007_sql_http_join.md
+      - "008: Equi JOIN + Window": devlog/008_equi_join_window.md
+      - "009: GROUP BY + Time Index": devlog/009_groupby_timeindex.md
+      - "010: Financial Functions": devlog/010_financial_functions.md
+      - "011: Parallel Query": devlog/011_parallel_query.md
+      - "012: Parquet + S3": devlog/012_parquet_s3.md
+      - "013: Python Ecosystem": devlog/013_python_ecosystem.md
+      - "014: SQL Phase 2 & 3": devlog/014_sql_phase2_phase3.md
+      - "015: Bare Metal Tuning": devlog/015_bare_metal_tuning.md
+      - "016: xbar + Sorted + EXPLAIN": devlog/016_xbar_sortedcan_explain_null.md
+      - "017: Connection Hooks": devlog/017_connection_hooks_sorted_index_cli_timer.md
+      - "018: Cluster Integrity": devlog/018_cluster_integrity.md
+      - "019: Distributed Query": devlog/019_distributed_query_correctness.md
+      - "020: Data Durability": devlog/020_data_durability.md
+      - "021: DDL Schema": devlog/021_ddl_schema_management.md
+      - "022: Helm Rolling Upgrade": devlog/022_helm_rolling_upgrade.md
+      - "023: ARM Graviton": devlog/023_arm_graviton_verification.md

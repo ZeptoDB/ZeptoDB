@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB: Authentication & Authorization Tests
+// ZeptoDB: Authentication & Authorization Tests
 // ============================================================================
 // Tests for:
 //   - RBAC role/permission model
@@ -14,15 +14,15 @@
 // ============================================================================
 
 #include <gtest/gtest.h>
-#include "apex/auth/rbac.h"
-#include "apex/auth/api_key_store.h"
-#include "apex/auth/jwt_validator.h"
-#include "apex/auth/auth_manager.h"
-#include "apex/auth/cancellation_token.h"
-#include "apex/auth/rate_limiter.h"
-#include "apex/auth/query_tracker.h"
-#include "apex/auth/secrets_provider.h"
-#include "apex/auth/audit_buffer.h"
+#include "zeptodb/auth/rbac.h"
+#include "zeptodb/auth/api_key_store.h"
+#include "zeptodb/auth/jwt_validator.h"
+#include "zeptodb/auth/auth_manager.h"
+#include "zeptodb/auth/cancellation_token.h"
+#include "zeptodb/auth/rate_limiter.h"
+#include "zeptodb/auth/query_tracker.h"
+#include "zeptodb/auth/secrets_provider.h"
+#include "zeptodb/auth/audit_buffer.h"
 
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
@@ -36,7 +36,7 @@
 #include <fstream>
 #include <thread>
 
-using namespace apex::auth;
+using namespace zeptodb::auth;
 
 // ============================================================================
 // Helpers
@@ -96,7 +96,7 @@ static int64_t unix_now(int64_t offset_sec = 0) {
 
 // Temporary file path (deleted in TearDown)
 static std::string tmp_key_file() {
-    return "/tmp/apex_test_keys_" +
+    return "/tmp/zepto_test_keys_" +
            std::to_string(
                std::chrono::steady_clock::now().time_since_epoch().count()) +
            ".txt";
@@ -160,8 +160,8 @@ TEST_F(ApiKeyTest, CreateAndValidate) {
     ApiKeyStore store(path_);
     std::string key = store.create_key("test-service", Role::READER);
 
-    EXPECT_EQ(key.substr(0, 5), "apex_");
-    EXPECT_EQ(key.size(), 5 + 64u);  // "apex_" + 64 hex chars
+    EXPECT_EQ(key.substr(0, 6), "zepto_");
+    EXPECT_EQ(key.size(), 6 + 64u);  // "zepto_" + 64 hex chars
 
     auto entry = store.validate(key);
     ASSERT_TRUE(entry.has_value());
@@ -172,9 +172,9 @@ TEST_F(ApiKeyTest, CreateAndValidate) {
 
 TEST_F(ApiKeyTest, InvalidKeyReturnsNullopt) {
     ApiKeyStore store(path_);
-    EXPECT_FALSE(store.validate("apex_invalid_key").has_value());
+    EXPECT_FALSE(store.validate("zepto_invalid_key").has_value());
     EXPECT_FALSE(store.validate("").has_value());
-    EXPECT_FALSE(store.validate("Bearer apex_abc").has_value());
+    EXPECT_FALSE(store.validate("Bearer zepto_abc").has_value());
 }
 
 TEST_F(ApiKeyTest, RevokedKeyFails) {
@@ -239,7 +239,7 @@ TEST_F(ApiKeyTest, Sha256Hex) {
 // ============================================================================
 class JwtHs256Test : public ::testing::Test {
 protected:
-    static constexpr const char* SECRET = "apex_test_hs256_secret";
+    static constexpr const char* SECRET = "zepto_test_hs256_secret";
     JwtValidator::Config cfg_;
     void SetUp() override {
         cfg_.hs256_secret     = SECRET;
@@ -249,7 +249,7 @@ protected:
 };
 
 TEST_F(JwtHs256Test, ValidTokenDecodesClaims) {
-    std::string payload = R"({"sub":"user1","apex_role":"reader","exp":)"
+    std::string payload = R"({"sub":"user1","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(3600))
                         + R"(,"iss":"test-issuer"})";
     std::string token = make_hs256_jwt(payload, SECRET);
@@ -263,7 +263,7 @@ TEST_F(JwtHs256Test, ValidTokenDecodesClaims) {
 }
 
 TEST_F(JwtHs256Test, AdminRole) {
-    std::string payload = R"({"sub":"admin1","apex_role":"admin","exp":)"
+    std::string payload = R"({"sub":"admin1","zepto_role":"admin","exp":)"
                         + std::to_string(unix_now(3600))
                         + R"(,"iss":"test-issuer"})";
     auto claims = JwtValidator(cfg_).validate(make_hs256_jwt(payload, SECRET));
@@ -272,7 +272,7 @@ TEST_F(JwtHs256Test, AdminRole) {
 }
 
 TEST_F(JwtHs256Test, ExpiredTokenReturnsNullopt) {
-    std::string payload = R"({"sub":"u","apex_role":"reader","exp":)"
+    std::string payload = R"({"sub":"u","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(-3600))  // 1 hour ago
                         + R"(,"iss":"test-issuer"})";
     JwtValidator v(cfg_);
@@ -280,7 +280,7 @@ TEST_F(JwtHs256Test, ExpiredTokenReturnsNullopt) {
 }
 
 TEST_F(JwtHs256Test, WrongIssuerReturnsNullopt) {
-    std::string payload = R"({"sub":"u","apex_role":"reader","exp":)"
+    std::string payload = R"({"sub":"u","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(3600))
                         + R"(,"iss":"wrong-issuer"})";
     JwtValidator v(cfg_);
@@ -288,7 +288,7 @@ TEST_F(JwtHs256Test, WrongIssuerReturnsNullopt) {
 }
 
 TEST_F(JwtHs256Test, WrongSecretReturnsNullopt) {
-    std::string payload = R"({"sub":"u","apex_role":"reader","exp":)"
+    std::string payload = R"({"sub":"u","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(3600))
                         + R"(,"iss":"test-issuer"})";
     JwtValidator v(cfg_);
@@ -296,7 +296,7 @@ TEST_F(JwtHs256Test, WrongSecretReturnsNullopt) {
 }
 
 TEST_F(JwtHs256Test, SymbolClaimParsed) {
-    std::string payload = R"({"sub":"a","apex_role":"analyst","apex_symbols":"AAPL,GOOG","exp":)"
+    std::string payload = R"({"sub":"a","zepto_role":"analyst","zepto_symbols":"AAPL,GOOG","exp":)"
                         + std::to_string(unix_now(3600))
                         + R"(,"iss":"test-issuer"})";
     auto claims = JwtValidator(cfg_).validate(make_hs256_jwt(payload, SECRET));
@@ -308,7 +308,7 @@ TEST_F(JwtHs256Test, SymbolClaimParsed) {
 
 TEST_F(JwtHs256Test, SkipExpiryValidation) {
     cfg_.verify_expiry = false;
-    std::string payload = R"({"sub":"u","apex_role":"reader","exp":1,"iss":"test-issuer"})";
+    std::string payload = R"({"sub":"u","zepto_role":"reader","exp":1,"iss":"test-issuer"})";
     JwtValidator v(cfg_);
     // expired, but verification disabled
     EXPECT_TRUE(v.validate(make_hs256_jwt(payload, SECRET)).has_value());
@@ -322,15 +322,15 @@ TEST_F(JwtHs256Test, MalformedTokenReturnsNullopt) {
 }
 
 TEST_F(JwtHs256Test, AudienceValidation) {
-    cfg_.expected_audience = "apex-db";
-    std::string payload = R"({"sub":"u","apex_role":"reader","exp":)"
+    cfg_.expected_audience = "zeptodb";
+    std::string payload = R"({"sub":"u","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(3600))
-                        + R"(,"iss":"test-issuer","aud":"apex-db"})";
+                        + R"(,"iss":"test-issuer","aud":"zeptodb"})";
     JwtValidator v(cfg_);
     EXPECT_TRUE(v.validate(make_hs256_jwt(payload, SECRET)).has_value());
 
     // Wrong audience
-    std::string bad_payload = R"({"sub":"u","apex_role":"reader","exp":)"
+    std::string bad_payload = R"({"sub":"u","zepto_role":"reader","exp":)"
                             + std::to_string(unix_now(3600))
                             + R"(,"iss":"test-issuer","aud":"other-service"})";
     EXPECT_FALSE(v.validate(make_hs256_jwt(bad_payload, SECRET)).has_value());
@@ -398,7 +398,7 @@ protected:
 };
 
 TEST_F(JwtRs256Test, ValidRS256Token) {
-    std::string payload = R"({"sub":"rsauser","apex_role":"writer","exp":)"
+    std::string payload = R"({"sub":"rsauser","zepto_role":"writer","exp":)"
                         + std::to_string(unix_now(3600)) + "}";
     std::string token = make_rs256_jwt(payload);
 
@@ -413,7 +413,7 @@ TEST_F(JwtRs256Test, ValidRS256Token) {
 }
 
 TEST_F(JwtRs256Test, TamperedPayloadFails) {
-    std::string payload = R"({"sub":"user","apex_role":"reader","exp":)"
+    std::string payload = R"({"sub":"user","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(3600)) + "}";
     std::string token = make_rs256_jwt(payload);
 
@@ -421,7 +421,7 @@ TEST_F(JwtRs256Test, TamperedPayloadFails) {
     auto dot1 = token.find('.');
     auto dot2 = token.find('.', dot1 + 1);
     std::string tampered_payload = base64url_str(
-        R"({"sub":"user","apex_role":"admin","exp":)" +
+        R"({"sub":"user","zepto_role":"admin","exp":)" +
         std::to_string(unix_now(3600)) + "}");
     token = token.substr(0, dot1 + 1) + tampered_payload +
             token.substr(dot2);
@@ -507,7 +507,7 @@ TEST_F(AuthManagerTest, NoHeaderReturnsUnauthorized) {
 
 TEST_F(AuthManagerTest, InvalidApiKeyReturnsUnauthorized) {
     AuthManager mgr = make_manager();
-    auto d = mgr.check("POST", "/", "Bearer apex_invalid", "127.0.0.1");
+    auto d = mgr.check("POST", "/", "Bearer zepto_invalid", "127.0.0.1");
     EXPECT_EQ(d.status, AuthStatus::UNAUTHORIZED);
 }
 
@@ -568,7 +568,7 @@ TEST_F(AuthManagerTest, JwtBeatsApiKeyWhenBothConfigured) {
     AuthManager mgr(cfg);
 
     // Create a JWT that starts with "ey" — should be tried first
-    std::string payload = R"({"sub":"jwt_user","apex_role":"writer","exp":)"
+    std::string payload = R"({"sub":"jwt_user","zepto_role":"writer","exp":)"
                         + std::to_string(unix_now(3600)) + "}";
     std::string token = make_hs256_jwt(payload, SECRET);
 
@@ -882,7 +882,7 @@ class FileSecretsTest : public ::testing::Test {
 protected:
     std::string dir_;
     void SetUp() override {
-        dir_ = "/tmp/apex_secrets_test_" +
+        dir_ = "/tmp/zepto_secrets_test_" +
                std::to_string(std::chrono::steady_clock::now()
                                   .time_since_epoch().count());
         std::filesystem::create_directory(dir_);
@@ -917,7 +917,7 @@ TEST_F(FileSecretsTest, MissingFileReturnsDefault) {
 }
 
 TEST_F(FileSecretsTest, MissingDirNotAvailable) {
-    FileSecretsProvider p("/tmp/no_such_dir_apex_xyz");
+    FileSecretsProvider p("/tmp/no_such_dir_zepto_xyz");
     EXPECT_FALSE(p.available());
 }
 

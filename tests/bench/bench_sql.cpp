@@ -1,19 +1,19 @@
 // ============================================================================
-// APEX-DB: SQL 벤치마크
+// ZeptoDB: SQL 벤치마크
 // ============================================================================
 // 1. SQL 파싱 시간 (< 50μs 목표)
 // 2. SQL 실행 vs 직접 C++ API (오버헤드 측정)
 // 3. ASOF JOIN 성능 (다양한 데이터 크기)
 // ============================================================================
 
-#include "apex/sql/tokenizer.h"
-#include "apex/sql/parser.h"
-#include "apex/sql/executor.h"
-#include "apex/execution/join_operator.h"
-#include "apex/execution/window_function.h"
-#include "apex/core/pipeline.h"
-#include "apex/storage/arena_allocator.h"
-#include "apex/storage/column_store.h"
+#include "zeptodb/sql/tokenizer.h"
+#include "zeptodb/sql/parser.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/execution/join_operator.h"
+#include "zeptodb/execution/window_function.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/storage/arena_allocator.h"
+#include "zeptodb/storage/column_store.h"
 
 #include <chrono>
 #include <cstdio>
@@ -22,10 +22,10 @@
 #include <numeric>
 #include <algorithm>
 
-using namespace apex::sql;
-using namespace apex::execution;
-using namespace apex::storage;
-using namespace apex::core;
+using namespace zeptodb::sql;
+using namespace zeptodb::execution;
+using namespace zeptodb::storage;
+using namespace zeptodb::core;
 
 // ============================================================================
 // 타이머 유틸리티
@@ -117,13 +117,13 @@ void bench_sql_execute() {
 
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
     pipeline.start();
 
     // 데이터 삽입: 100K 행
     constexpr size_t N = 100'000;
     for (size_t i = 0; i < N; ++i) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = 1;
         msg.recv_ts   = static_cast<int64_t>(i) * 1000;
         msg.price     = 15000 + static_cast<int64_t>(i % 1000);
@@ -354,13 +354,13 @@ void bench_time_range_index() {
 
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
     pipeline.start();
 
     // 1M 행 삽입 (symbol=1, timestamp: 0..999999)
     constexpr size_t N = 1'000'000;
     for (size_t i = 0; i < N; ++i) {
-        apex::ingestion::TickMessage msg{};
+        zeptodb::ingestion::TickMessage msg{};
         msg.symbol_id = 1;
         msg.recv_ts   = static_cast<int64_t>(i);
         msg.price     = 15000 + static_cast<int64_t>(i % 1000);
@@ -402,7 +402,7 @@ void bench_group_by_symbol() {
 
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
-    ApexPipeline pipeline(cfg);
+    ZeptoPipeline pipeline(cfg);
     pipeline.start();
 
     // 10개 symbol, 각 10K 행 → 총 100K 행
@@ -410,8 +410,8 @@ void bench_group_by_symbol() {
     constexpr size_t ROWS_PER_SYM = 10000;
     for (size_t s = 1; s <= SYMBOLS; ++s) {
         for (size_t i = 0; i < ROWS_PER_SYM; ++i) {
-            apex::ingestion::TickMessage msg{};
-            msg.symbol_id = static_cast<apex::SymbolId>(s);
+            zeptodb::ingestion::TickMessage msg{};
+            msg.symbol_id = static_cast<zeptodb::SymbolId>(s);
             msg.recv_ts   = static_cast<int64_t>(i);
             msg.price     = 15000 + static_cast<int64_t>(i % 100);
             msg.volume    = 100 + static_cast<int64_t>(i % 50);
@@ -454,8 +454,67 @@ void bench_group_by_symbol() {
 // ============================================================================
 // 메인
 // ============================================================================
+// 10. g#/p# Index Benchmarks
+// ============================================================================
+void bench_index_attributes() {
+    printf("\n=== Index Attribute Benchmarks (s# / g# / p#) ===\n");
+
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+
+    // 1M rows, single symbol — all in one partition for fair comparison
+    constexpr size_t N = 1'000'000;
+    for (size_t i = 0; i < N; ++i) {
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = 1;
+        msg.recv_ts   = static_cast<int64_t>(i);
+        msg.price     = 15000 + static_cast<int64_t>(i % 1000);
+        msg.volume    = 100 + static_cast<int64_t>(i % 100);
+        msg.msg_type  = 0;
+        pipeline.ingest_tick(msg);
+    }
+    pipeline.drain_sync(N + 100);
+
+    // Force serial execution to isolate index effect
+    QueryExecutor executor(pipeline);
+    printf("Stored: %zu rows (1 symbol)\n", pipeline.total_stored_rows());
+
+    // Baseline: no index (full scan)
+    bench("filter_eq_no_index_1M", 500, [&]() {
+        auto r = executor.execute(
+            "SELECT count(*) FROM trades WHERE symbol = 1 AND price = 15500");
+        (void)r;
+    });
+
+    // Apply g# on price column
+    auto partitions = pipeline.partition_manager().get_all_partitions();
+    for (auto* part : partitions) part->set_grouped("price");
+
+    bench("filter_eq_g#_index_1M", 500, [&]() {
+        auto r = executor.execute(
+            "SELECT count(*) FROM trades WHERE symbol = 1 AND price = 15500");
+        (void)r;
+    });
+
+    // Clear g#, apply p# on price column
+    // (p# works best on clustered data — price is repeating mod 1000, so
+    //  it's not perfectly clustered, but still tests the code path)
+    for (auto* part : partitions) part->set_parted("price");
+
+    bench("filter_eq_p#_index_1M", 500, [&]() {
+        auto r = executor.execute(
+            "SELECT count(*) FROM trades WHERE symbol = 1 AND price = 15500");
+        (void)r;
+    });
+
+    pipeline.stop();
+}
+
+// ============================================================================
 int main() {
-    printf("APEX-DB SQL Benchmark Suite\n");
+    printf("ZeptoDB SQL Benchmark Suite\n");
     printf("============================\n");
 
     bench_sql_parse();
@@ -467,6 +526,7 @@ int main() {
     bench_rolling_avg_compare();
     bench_time_range_index();
     bench_group_by_symbol();
+    bench_index_attributes();
 
     return 0;
 }

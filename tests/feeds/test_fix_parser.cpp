@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: FIX Parser Unit Tests
+// ZeptoDB: FIX Parser Unit Tests
 // ============================================================================
-#include "apex/feeds/fix_parser.h"
+#include "zeptodb/feeds/fix_parser.h"
 #include <gtest/gtest.h>
 #include <cstring>
 
-using namespace apex::feeds;
+using namespace zeptodb::feeds;
 
 // ============================================================================
 // Mock Symbol Mapper
@@ -156,26 +156,26 @@ TEST_F(FIXParserTest, MultipleMessages) {
 // FIX Message Builder Tests
 // ============================================================================
 TEST(FIXMessageBuilderTest, BuildLogon) {
-    FIXMessageBuilder builder("APEX", "SERVER");
+    FIXMessageBuilder builder("ZEPTO", "SERVER");
     std::string logon = builder.build_logon(30);
 
     // 기본 구조 검증
     EXPECT_TRUE(logon.find("8=FIX.4.4") != std::string::npos);
     EXPECT_TRUE(logon.find("35=A") != std::string::npos);  // Logon
-    EXPECT_TRUE(logon.find("49=APEX") != std::string::npos);
+    EXPECT_TRUE(logon.find("49=ZEPTO") != std::string::npos);
     EXPECT_TRUE(logon.find("56=SERVER") != std::string::npos);
     EXPECT_TRUE(logon.find("108=30") != std::string::npos);  // HeartBtInt
 }
 
 TEST(FIXMessageBuilderTest, BuildHeartbeat) {
-    FIXMessageBuilder builder("APEX", "SERVER");
+    FIXMessageBuilder builder("ZEPTO", "SERVER");
     std::string hb = builder.build_heartbeat();
 
     EXPECT_TRUE(hb.find("35=0") != std::string::npos);  // Heartbeat
 }
 
 TEST(FIXMessageBuilderTest, AddFields) {
-    FIXMessageBuilder builder("APEX", "SERVER");
+    FIXMessageBuilder builder("ZEPTO", "SERVER");
 
     builder.add_field(55, "AAPL");  // Symbol
     builder.add_field(44, 150.50);  // Price

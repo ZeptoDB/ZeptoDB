@@ -2,7 +2,7 @@
 // Layer 1: HDB Writer — 구현
 // ============================================================================
 
-#include "apex/storage/hdb_writer.h"
+#include "zeptodb/storage/hdb_writer.h"
 
 #include <cerrno>
 #include <cstring>
@@ -14,11 +14,11 @@
 #include <unistd.h>
 #include <vector>
 
-#if APEX_HDB_LZ4_AVAILABLE
+#if ZEPTO_HDB_LZ4_AVAILABLE
     #include <lz4.h>
 #endif
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 namespace fs = std::filesystem;
 
@@ -29,19 +29,19 @@ HDBWriter::HDBWriter(const std::string& base_path, bool use_compression)
     : base_path_(base_path)
     , use_compression_(use_compression)
 {
-    APEX_INFO("HDBWriter 초기화: base_path={}, compression={}",
+    ZEPTO_INFO("HDBWriter 초기화: base_path={}, compression={}",
               base_path_, use_compression_);
 
-#if !APEX_HDB_LZ4_AVAILABLE
+#if !ZEPTO_HDB_LZ4_AVAILABLE
     if (use_compression_) {
-        APEX_WARN("LZ4 라이브러리 없음 — 압축 비활성화 (패스스루 모드)");
+        ZEPTO_WARN("LZ4 라이브러리 없음 — 압축 비활성화 (패스스루 모드)");
         use_compression_ = false;
     }
 #endif
 
     // 기본 디렉토리 생성
     if (!mkdir_p(base_path_)) {
-        APEX_WARN("HDBWriter: 기본 디렉토리 생성 실패: {}", base_path_);
+        ZEPTO_WARN("HDBWriter: 기본 디렉토리 생성 실패: {}", base_path_);
     }
 }
 
@@ -55,14 +55,14 @@ size_t HDBWriter::flush_partition(const Partition& partition) {
     const auto state = partition.state();
     if (state != Partition::State::SEALED &&
         state != Partition::State::FLUSHING) {
-        APEX_WARN("flush_partition: 파티션이 봉인 상태 아님 (symbol={}, hour={})",
+        ZEPTO_WARN("flush_partition: 파티션이 봉인 상태 아님 (symbol={}, hour={})",
                   key.symbol_id, key.hour_epoch);
         return 0;
     }
 
     const size_t num_rows = partition.num_rows();
     if (num_rows == 0) {
-        APEX_DEBUG("flush_partition: 빈 파티션 스킵 (symbol={}, hour={})",
+        ZEPTO_DEBUG("flush_partition: 빈 파티션 스킵 (symbol={}, hour={})",
                    key.symbol_id, key.hour_epoch);
         return 0;
     }
@@ -70,7 +70,7 @@ size_t HDBWriter::flush_partition(const Partition& partition) {
     // 파티션 디렉토리 생성
     const std::string dir = partition_dir(key.symbol_id, key.hour_epoch);
     if (!mkdir_p(dir)) {
-        APEX_WARN("flush_partition: 디렉토리 생성 실패: {}", dir);
+        ZEPTO_WARN("flush_partition: 디렉토리 생성 실패: {}", dir);
         return 0;
     }
 
@@ -86,7 +86,7 @@ size_t HDBWriter::flush_partition(const Partition& partition) {
     total_bytes_written_.fetch_add(total_written, std::memory_order_relaxed);
     partitions_flushed_.fetch_add(1, std::memory_order_relaxed);
 
-    APEX_INFO("HDB flush 완료: symbol={}, hour={}, rows={}, bytes={}",
+    ZEPTO_INFO("HDB flush 완료: symbol={}, hour={}, rows={}, bytes={}",
               key.symbol_id, key.hour_epoch, num_rows, total_written);
 
     return total_written;
@@ -107,7 +107,7 @@ size_t HDBWriter::snapshot_partition(const Partition& partition,
                             std::to_string(key.symbol_id) + "/" +
                             std::to_string(key.hour_epoch);
     if (!mkdir_p(dir)) {
-        APEX_WARN("snapshot_partition: 디렉토리 생성 실패: {}", dir);
+        ZEPTO_WARN("snapshot_partition: 디렉토리 생성 실패: {}", dir);
         return 0;
     }
 
@@ -117,7 +117,7 @@ size_t HDBWriter::snapshot_partition(const Partition& partition,
         total_written += write_column_file(dir, *col_ptr);
     }
 
-    APEX_DEBUG("snapshot 완료: symbol={}, hour={}, rows={}, bytes={}",
+    ZEPTO_DEBUG("snapshot 완료: symbol={}, hour={}, rows={}, bytes={}",
                key.symbol_id, key.hour_epoch, num_rows, total_written);
     return total_written;
 }
@@ -135,7 +135,7 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
     const size_t raw_data_size = col.size() * elem_sz;
 
     if (raw_data_size == 0) {
-        APEX_DEBUG("컬럼 '{}'가 비어있음 — 스킵", col.name());
+        ZEPTO_DEBUG("컬럼 '{}'가 비어있음 — 스킵", col.name());
         return 0;
     }
 
@@ -145,7 +145,7 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
     size_t       write_size   = raw_data_size;
     HDBCompression compression = HDBCompression::NONE;
 
-#if APEX_HDB_LZ4_AVAILABLE
+#if ZEPTO_HDB_LZ4_AVAILABLE
     if (use_compression_) {
         const int max_dst = LZ4_compressBound(static_cast<int>(raw_data_size));
         compressed_buf.resize(static_cast<size_t>(max_dst));
@@ -183,14 +183,14 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
                           O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
                           0644);
     if (fd < 0) {
-        APEX_WARN("컬럼 파일 열기 실패: {} (errno={})", file_path, errno);
+        ZEPTO_WARN("컬럼 파일 열기 실패: {} (errno={})", file_path, errno);
         return 0;
     }
 
     // 헤더 쓰기
     ssize_t wrote = ::write(fd, &header, sizeof(header));
     if (wrote != static_cast<ssize_t>(sizeof(header))) {
-        APEX_WARN("헤더 쓰기 실패: {} (wrote={})", file_path, wrote);
+        ZEPTO_WARN("헤더 쓰기 실패: {} (wrote={})", file_path, wrote);
         ::close(fd);
         return 0;
     }
@@ -203,7 +203,7 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
     while (remaining > 0) {
         const ssize_t n = ::write(fd, data_ptr + data_written, remaining);
         if (n <= 0) {
-            APEX_WARN("데이터 쓰기 실패: {} (errno={})", file_path, errno);
+            ZEPTO_WARN("데이터 쓰기 실패: {} (errno={})", file_path, errno);
             ::close(fd);
             return sizeof(header) + data_written;
         }
@@ -214,7 +214,7 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
     ::close(fd);
 
     const size_t total = sizeof(header) + write_size;
-    APEX_DEBUG("컬럼 기록: {} (rows={}, raw={}B, write={}B, comp={})",
+    ZEPTO_DEBUG("컬럼 기록: {} (rows={}, raw={}B, write={}B, comp={})",
                col.name(), col.size(), raw_data_size, write_size,
                compression == HDBCompression::LZ4 ? "LZ4" : "NONE");
 
@@ -238,10 +238,10 @@ bool HDBWriter::mkdir_p(const std::string& path) {
     std::error_code ec;
     fs::create_directories(path, ec);
     if (ec) {
-        APEX_WARN("mkdir_p 실패: {} ({})", path, ec.message());
+        ZEPTO_WARN("mkdir_p 실패: {} ({})", path, ec.message());
         return false;
     }
     return true;
 }
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

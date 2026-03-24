@@ -1,12 +1,12 @@
 // ============================================================================
-// APEX-DB: FIX Protocol Parser Implementation
+// ZeptoDB: FIX Protocol Parser Implementation
 // ============================================================================
-#include "apex/feeds/fix_parser.h"
+#include "zeptodb/feeds/fix_parser.h"
 #include <sstream>
 #include <iomanip>
 #include <ctime>
 
-namespace apex::feeds {
+namespace zeptodb::feeds {
 
 // ============================================================================
 // FIX Parser
@@ -367,4 +367,4 @@ uint8_t FIXMessageBuilder::calculate_checksum(const std::string& msg) const {
     return sum % 256;
 }
 
-} // namespace apex::feeds
+} // namespace zeptodb::feeds

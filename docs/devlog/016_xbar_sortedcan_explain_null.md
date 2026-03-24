@@ -69,10 +69,10 @@ The same cache was applied to the parallel path's per-thread `PartialGroupScalar
 
 ### Implementation
 
-**Tokenizer** (`include/apex/sql/tokenizer.h`, `src/sql/tokenizer.cpp`):
+**Tokenizer** (`include/zeptodb/sql/tokenizer.h`, `src/sql/tokenizer.cpp`):
 - Added `TokenType::EXPLAIN` keyword
 
-**AST** (`include/apex/sql/ast.h`):
+**AST** (`include/zeptodb/sql/ast.h`):
 - Added `bool explain = false` flag to `SelectStmt`
 
 **Parser** (`src/sql/parser.cpp`):
@@ -110,7 +110,7 @@ Different executor paths were inconsistent about what to return for an empty agg
 - `exec_agg` (scalar aggregate, serial): returned `0` for MIN, MAX, AVG, VWAP ✗
 - `exec_agg_parallel` (scalar aggregate, parallel): returned `0` for MIN, MAX, AVG ✗
 
-APEX-DB uses `INT64_MIN` as the universal NULL sentinel throughout the column store.
+ZeptoDB uses `INT64_MIN` as the universal NULL sentinel throughout the column store.
 
 ### Fix
 
@@ -133,11 +133,11 @@ After all code changes, collected a new PGO profile (replacing the stale PGO5):
 
 ```bash
 # Instrumentation build
-cmake . -DCMAKE_CXX_FLAGS="-O3 -march=native -fprofile-generate=/tmp/apex_pgo6" ...
-./tests/apex_tests --gtest_filter="Benchmark.*:SqlExecutor*:FinancialFunction*:WindowJoin*"
+cmake . -DCMAKE_CXX_FLAGS="-O3 -march=native -fprofile-generate=/tmp/zepto_pgo6" ...
+./tests/zepto_tests --gtest_filter="Benchmark.*:SqlExecutor*:FinancialFunction*:WindowJoin*"
 
 # Optimization build
-cmake . -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -fprofile-use=/tmp/apex_pgo6 -fprofile-correction" \
+cmake . -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -fprofile-use=/tmp/zepto_pgo6 -fprofile-correction" \
         -DCMAKE_EXE_LINKER_FLAGS="-flto" -DAPEX_USE_TCMALLOC=ON
 ```
 

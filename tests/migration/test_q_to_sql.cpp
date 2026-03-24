@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: q to SQL Transformation Tests
+// ZeptoDB: q to SQL Transformation Tests
 // ============================================================================
-#include "apex/migration/q_parser.h"
+#include "zeptodb/migration/q_parser.h"
 #include <gtest/gtest.h>
 #include <string>
 
-using namespace apex::migration;
+using namespace zeptodb::migration;
 
 // ============================================================================
 // Helper Function

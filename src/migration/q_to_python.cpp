@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: q to Python Transformer Implementation (Extended)
+// ZeptoDB: q to Python Transformer Implementation (Extended)
 // ============================================================================
-#include "apex/migration/q_to_python.h"
+#include "zeptodb/migration/q_to_python.h"
 #include <sstream>
 #include <algorithm>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 QToPythonTransformer::QToPythonTransformer() {
     init_func_map();
@@ -68,9 +68,9 @@ std::string QToPythonTransformer::ind() const {
 // ============================================================================
 std::string QToPythonTransformer::transform_script(const std::string& q_script) {
     std::ostringstream out;
-    out << "import apex_py as apex\n";
-    out << "from apex_py.dsl import DataFrame\n\n";
-    out << "db = apex.connect()\n\n";
+    out << "import zepto_py as apex\n";
+    out << "from zepto_py.dsl import DataFrame\n\n";
+    out << "db = zeptodb.connect()\n\n";
 
     std::istringstream stream(q_script);
     std::string line;
@@ -553,4 +553,4 @@ std::string QToPythonTransformer::transform_expression(std::shared_ptr<QNode> no
     }
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration

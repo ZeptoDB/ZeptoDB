@@ -8,7 +8,7 @@
 
 ## Summary
 
-This devlog records the iterative bare-metal performance tuning of APEX-DB using an AI-driven tuner (`scripts/ai_tune_bare_metal.py`) powered by Claude Opus 4.6 with extended thinking, combined with manual profiling and compiler optimization experiments.
+This devlog records the iterative bare-metal performance tuning of ZeptoDB using an AI-driven tuner (`scripts/ai_tune_bare_metal.py`) powered by Claude Opus 4.6 with extended thinking, combined with manual profiling and compiler optimization experiments.
 
 **Final Results vs. Original Baseline:**
 
@@ -28,7 +28,7 @@ This devlog records the iterative bare-metal performance tuning of APEX-DB using
 
 The tuner uses `claude-opus-4-6` (via AWS Bedrock) with extended thinking (`budget_tokens=8000`) to:
 1. Profile the system (CPU governor, hugepages, THP, C-states, NUMA, sysctl)
-2. Run APEX-DB benchmarks and parse results
+2. Run ZeptoDB benchmarks and parse results
 3. Ask Claude to analyze and produce prioritized tuning commands (JSON)
 4. Apply commands, re-benchmark, and iterate
 
@@ -142,9 +142,9 @@ GCC `-flto` enables cross-translation-unit inlining, particularly benefiting the
 
 **PGO profile collection:**
 ```bash
-cmake ... -DCMAKE_CXX_FLAGS="-O3 -march=native -fprofile-generate=/tmp/apex_pgo2"
-./apex_tests --gtest_filter="Benchmark.*:SqlExecutor*:FinancialFunction*:WindowJoin*"
-cmake ... -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -fprofile-use=/tmp/apex_pgo2 -fprofile-correction"
+cmake ... -DCMAKE_CXX_FLAGS="-O3 -march=native -fprofile-generate=/tmp/zepto_pgo2"
+./zepto_tests --gtest_filter="Benchmark.*:SqlExecutor*:FinancialFunction*:WindowJoin*"
+cmake ... -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -fprofile-use=/tmp/zepto_pgo2 -fprofile-correction"
 ```
 
 ---
@@ -247,4 +247,4 @@ The general path (`gb.columns.size() > 1`) is unchanged for multi-column GROUP B
 - [ ] Evaluate 1GB hugepages for the 8.9GB arena working set (requires kernel cmdline `hugepagesz=1G`)
 - [ ] Pin benchmark process to dedicated cores with `isolcpus` kernel parameter
 
-Last updated: 2026-03-22 (final: parallel path optimization + fresh PGO profile /tmp/apex_pgo4)
+Last updated: 2026-03-22 (final: parallel path optimization + fresh PGO profile /tmp/zepto_pgo4)

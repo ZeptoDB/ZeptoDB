@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# APEX-DB 재해 복구 스크립트
+# ZeptoDB 재해 복구 스크립트
 # ============================================================================
 # 용도: 백업으로부터 데이터 복원 + WAL replay
 # 실행: ./restore.sh <backup-name> [--from-s3]
@@ -11,10 +11,10 @@ set -euo pipefail
 # ============================================================================
 # 설정
 # ============================================================================
-APEX_HOME="${APEX_HOME:-/opt/apex-db}"
-DATA_DIR="${APEX_DATA_DIR:-/data/apex-db}"
-BACKUP_DIR="${APEX_BACKUP_DIR:-/backup/apex-db}"
-S3_BUCKET="${APEX_S3_BACKUP_BUCKET:-}"
+APEX_HOME="${APEX_HOME:-/opt/zeptodb}"
+DATA_DIR="${APEX_DATA_DIR:-/data/zeptodb}"
+BACKUP_DIR="${APEX_BACKUP_DIR:-/backup/zeptodb}"
+S3_BUCKET="${ZEPTO_S3_BACKUP_BUCKET:-}"
 S3_REGION="${AWS_REGION:-us-east-1}"
 
 LOG_FILE="${BACKUP_DIR}/restore.log"
@@ -44,13 +44,13 @@ Options:
 
 Examples:
   # 로컬 백업 복원
-  $0 apex-db-backup-20260322_020000
+  $0 zeptodb-backup-20260322_020000
 
   # S3 백업 복원
-  $0 apex-db-backup-20260322_020000 --from-s3
+  $0 zeptodb-backup-20260322_020000 --from-s3
 
   # WAL replay 없이 복원
-  $0 apex-db-backup-20260322_020000 --skip-wal-replay
+  $0 zeptodb-backup-20260322_020000 --skip-wal-replay
 EOF
     exit 1
 }
@@ -87,12 +87,12 @@ while [ $# -gt 0 ]; do
 done
 
 # ============================================================================
-# APEX-DB 중지 확인
+# ZeptoDB 중지 확인
 # ============================================================================
-log "Checking if APEX-DB is stopped..."
-if systemctl is-active --quiet apex-db; then
-    log_error "APEX-DB is still running. Stop it first:"
-    log_error "  sudo systemctl stop apex-db"
+log "Checking if ZeptoDB is stopped..."
+if systemctl is-active --quiet zeptodb; then
+    log_error "ZeptoDB is still running. Stop it first:"
+    log_error "  sudo systemctl stop zeptodb"
     exit 1
 fi
 
@@ -190,9 +190,9 @@ rm -rf "${BACKUP_DIR}/${BACKUP_NAME}"
 if [ "$SKIP_WAL_REPLAY" = false ] && [ -d "${DATA_DIR}/wal" ]; then
     log "Replaying WAL..."
 
-    # WAL replay 바이너리 실행 (APEX-DB에 구현 필요)
-    if [ -f "${APEX_HOME}/bin/apex-wal-replay" ]; then
-        "${APEX_HOME}/bin/apex-wal-replay" --data-dir "$DATA_DIR"
+    # WAL replay 바이너리 실행 (ZeptoDB에 구현 필요)
+    if [ -f "${APEX_HOME}/bin/zepto-wal-replay" ]; then
+        "${APEX_HOME}/bin/zepto-wal-replay" --data-dir "$DATA_DIR"
         log "WAL replay completed"
     else
         log "WAL replay binary not found, skipping"
@@ -205,13 +205,13 @@ fi
 # 10. 권한 설정
 # ============================================================================
 log "Setting permissions..."
-chown -R apex:apex "$DATA_DIR" 2>/dev/null || true
+chown -R zeptodb:zeptodb "$DATA_DIR" 2>/dev/null || true
 chmod -R 750 "$DATA_DIR"
 
 # ============================================================================
 # 완료
 # ============================================================================
 log "Restore completed successfully!"
-log "You can now start APEX-DB:"
-log "  sudo systemctl start apex-db"
+log "You can now start ZeptoDB:"
+log "  sudo systemctl start zeptodb"
 exit 0

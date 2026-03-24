@@ -29,7 +29,7 @@ Probe Phase: left_table  -> hash_map.find(key) -> match pairs
 
 ### File Changes
 
-- `include/apex/execution/join_operator.h` — `HashJoinOperator` stub -> actual implementation
+- `include/zeptodb/execution/join_operator.h` — `HashJoinOperator` stub -> actual implementation
 - `src/execution/join_operator.cpp` — Added `HashJoinOperator::execute()` implementation
 - `src/sql/executor.cpp` — Added `exec_hash_join()`, INNER/LEFT JOIN routing in `exec_select()` dispatcher
 
@@ -82,7 +82,7 @@ for (each partition) { process independently }
 
 ### New Files
 
-- `include/apex/execution/window_function.h` — Full framework (header-only)
+- `include/zeptodb/execution/window_function.h` — Full framework (header-only)
   - `WindowFunction` abstract base class
   - `WindowRowNumber`, `WindowRank`, `WindowDenseRank`
   - `WindowSum`, `WindowAvg`, `WindowMin`, `WindowMax`

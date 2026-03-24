@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB: HTTP API Server Implementation
+// ZeptoDB: HTTP API Server Implementation
 // ============================================================================
 // cpp-httplib based lightweight HTTP/HTTPS server.
 // ClickHouse compatible port 8123.
@@ -12,9 +12,9 @@
 
 // httplib is header-only — include only in .cpp (compile speed)
 #include "third_party/httplib.h"
-#include "apex/server/http_server.h"
-#include "apex/core/pipeline.h"
-#include "apex/auth/cancellation_token.h"
+#include "zeptodb/server/http_server.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/auth/cancellation_token.h"
 
 #include <sstream>
 #include <string>
@@ -23,12 +23,12 @@
 #include <chrono>
 #include <algorithm>
 
-namespace apex::server {
+namespace zeptodb::server {
 
 // ============================================================================
 // Constructors
 // ============================================================================
-HttpServer::HttpServer(apex::sql::QueryExecutor& executor, uint16_t port)
+HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor, uint16_t port)
     : executor_(executor)
     , port_(port)
     , tls_{}
@@ -41,10 +41,10 @@ HttpServer::HttpServer(apex::sql::QueryExecutor& executor, uint16_t port)
     setup_session_tracking();
 }
 
-HttpServer::HttpServer(apex::sql::QueryExecutor& executor,
+HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
                        uint16_t port,
-                       apex::auth::TlsConfig tls,
-                       std::shared_ptr<apex::auth::AuthManager> auth)
+                       zeptodb::auth::TlsConfig tls,
+                       std::shared_ptr<zeptodb::auth::AuthManager> auth)
     : executor_(executor)
     , port_(port)
     , tls_(std::move(tls))
@@ -61,7 +61,7 @@ HttpServer::HttpServer(apex::sql::QueryExecutor& executor,
 #else
     if (tls_.enabled) {
         // TLS requested but not compiled in — fall back to HTTP with a warning
-        fprintf(stderr, "[APEX-DB] WARNING: TLS requested but not compiled in "
+        fprintf(stderr, "[ZeptoDB] WARNING: TLS requested but not compiled in "
                         "(rebuild with APEX_TLS_ENABLED). Falling back to HTTP.\n");
     }
     svr_ = std::make_unique<httplib::Server>();
@@ -95,16 +95,16 @@ void HttpServer::setup_auth_middleware() {
         auto decision = auth_->check(req.method, req.path,
                                      auth_header, remote_addr);
 
-        if (decision.status == apex::auth::AuthStatus::OK) {
+        if (decision.status == zeptodb::auth::AuthStatus::OK) {
             // Continue to route handler
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
-        int status_code = (decision.status == apex::auth::AuthStatus::UNAUTHORIZED)
+        int status_code = (decision.status == zeptodb::auth::AuthStatus::UNAUTHORIZED)
                           ? 401 : 403;
         res.status = status_code;
         if (status_code == 401)
-            res.set_header("WWW-Authenticate", "Bearer realm=\"APEX-DB\"");
+            res.set_header("WWW-Authenticate", "Bearer realm=\"ZeptoDB\"");
         res.set_content(build_error_json(decision.reason), "application/json");
         return httplib::Server::HandlerResponse::Handled;
     });
@@ -257,7 +257,7 @@ void HttpServer::setup_routes() {
                            httplib::Response& res) {
         auto q = req.get_param_value("query");
         if (q.empty()) {
-            res.set_content(R"({"status":"ok","engine":"APEX-DB"})", "application/json");
+            res.set_content(R"({"status":"ok","engine":"ZeptoDB"})", "application/json");
             return;
         }
 
@@ -276,14 +276,14 @@ void HttpServer::setup_routes() {
 // ============================================================================
 // run_query_with_tracking — executes SQL with timeout + QueryTracker
 // ============================================================================
-apex::sql::QueryResultSet HttpServer::run_query_with_tracking(
+zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
     const std::string& sql,
     const std::string& subject)
 {
-    auto token = std::make_shared<apex::auth::CancellationToken>();
+    auto token = std::make_shared<zeptodb::auth::CancellationToken>();
     std::string query_id = query_tracker_.register_query(subject, sql, token);
 
-    apex::sql::QueryResultSet result;
+    zeptodb::sql::QueryResultSet result;
 
     if (query_timeout_ms_ > 0) {
         // Run the query on a separate thread; cancel after timeout
@@ -320,13 +320,13 @@ void HttpServer::setup_admin_routes() {
         if (req.has_header("Authorization"))
             auth_hdr = req.get_header_value("Authorization");
         auto decision = auth_->check(req.method, req.path, auth_hdr, req.remote_addr);
-        if (decision.status != apex::auth::AuthStatus::OK) {
+        if (decision.status != zeptodb::auth::AuthStatus::OK) {
             res.status = 401;
-            res.set_header("WWW-Authenticate", "Bearer realm=\"APEX-DB\"");
+            res.set_header("WWW-Authenticate", "Bearer realm=\"ZeptoDB\"");
             res.set_content(build_error_json(decision.reason), "application/json");
             return false;
         }
-        if (!decision.context.has_permission(apex::auth::Permission::ADMIN)) {
+        if (!decision.context.has_permission(zeptodb::auth::Permission::ADMIN)) {
             res.status = 403;
             res.set_content(build_error_json("Admin permission required"),
                             "application/json");
@@ -368,7 +368,7 @@ void HttpServer::setup_admin_routes() {
             res.set_content(build_error_json("Missing 'name' field"), "application/json");
             return;
         }
-        apex::auth::Role role = apex::auth::role_from_string(role_str);
+        zeptodb::auth::Role role = zeptodb::auth::role_from_string(role_str);
         std::string key = auth_->create_api_key(name, role, {});
         res.set_content("{\"key\":\"" + key + "\"}", "application/json");
     });
@@ -392,7 +392,7 @@ void HttpServer::setup_admin_routes() {
             const auto& k = keys[i];
             os << "{\"id\":\"" << k.id << "\","
                << "\"name\":\"" << k.name << "\","
-               << "\"role\":\"" << apex::auth::role_to_string(k.role) << "\","
+               << "\"role\":\"" << zeptodb::auth::role_to_string(k.role) << "\","
                << "\"enabled\":" << (k.enabled ? "true" : "false") << ","
                << "\"created_at_ns\":" << k.created_at_ns << "}";
         }
@@ -533,8 +533,52 @@ void HttpServer::setup_admin_routes() {
     {
         if (!require_admin(req, res)) return;
         res.set_content(
-            R"({"engine":"APEX-DB","version":"0.1.0","build":")" __DATE__ R"("})",
+            R"({"engine":"ZeptoDB","version":"0.1.0","build":")" __DATE__ R"("})",
             "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/nodes — list cluster node info (standalone: self only)
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/nodes", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        const auto& stats = executor_.stats();
+        // In standalone mode, report self as the only node
+        std::ostringstream os;
+        os << "{\"nodes\":[{\"id\":0"
+           << ",\"host\":\"localhost\""
+           << ",\"port\":" << port_
+           << ",\"state\":\"ACTIVE\""
+           << ",\"ticks_ingested\":" << stats.ticks_ingested.load()
+           << ",\"ticks_stored\":" << stats.ticks_stored.load()
+           << ",\"queries_executed\":" << stats.queries_executed.load()
+           << "}]}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/cluster — cluster overview (stats, partitions, memory)
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/cluster", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        const auto& stats = executor_.stats();
+        std::ostringstream os;
+        os << "{\"mode\":\"standalone\""
+           << ",\"node_count\":1"
+           << ",\"partitions_created\":" << stats.partitions_created.load()
+           << ",\"partitions_evicted\":" << stats.partitions_evicted.load()
+           << ",\"ticks_ingested\":" << stats.ticks_ingested.load()
+           << ",\"ticks_stored\":" << stats.ticks_stored.load()
+           << ",\"ticks_dropped\":" << stats.ticks_dropped.load()
+           << ",\"queries_executed\":" << stats.queries_executed.load()
+           << ",\"total_rows_scanned\":" << stats.total_rows_scanned.load()
+           << ",\"last_ingest_latency_ns\":" << stats.last_ingest_latency_ns.load()
+           << "}";
+        res.set_content(os.str(), "application/json");
     });
 }
 
@@ -573,7 +617,7 @@ void HttpServer::stop() {
 // JSON response builder
 // ============================================================================
 std::string HttpServer::build_json_response(
-    const apex::sql::QueryResultSet& result)
+    const zeptodb::sql::QueryResultSet& result)
 {
     std::ostringstream os;
     os << "{";
@@ -591,10 +635,24 @@ std::string HttpServer::build_json_response(
     for (size_t r = 0; r < result.rows.size(); ++r) {
         if (r > 0) os << ",";
         os << "[";
-        const auto& row = result.rows[r];
-        for (size_t c = 0; c < row.size(); ++c) {
-            if (c > 0) os << ",";
-            os << row[c];
+        if (r < result.typed_rows.size()) {
+            // Use typed_rows (float-native, no bit_cast needed)
+            const auto& trow = result.typed_rows[r];
+            for (size_t c = 0; c < trow.size(); ++c) {
+                if (c > 0) os << ",";
+                if (c < result.column_types.size() &&
+                    (result.column_types[c] == storage::ColumnType::FLOAT64 ||
+                     result.column_types[c] == storage::ColumnType::FLOAT32))
+                    os << trow[c].f;
+                else
+                    os << trow[c].i;
+            }
+        } else {
+            const auto& row = result.rows[r];
+            for (size_t c = 0; c < row.size(); ++c) {
+                if (c > 0) os << ",";
+                os << row[c];
+            }
         }
         os << "]";
     }
@@ -632,7 +690,7 @@ std::string HttpServer::build_error_json(const std::string& msg) {
 // Stats JSON
 // ============================================================================
 std::string HttpServer::build_stats_json(
-    const apex::core::PipelineStats& stats)
+    const zeptodb::core::PipelineStats& stats)
 {
     std::ostringstream os;
     os << "{"
@@ -652,33 +710,33 @@ std::string HttpServer::build_prometheus_metrics() const {
     const auto& stats = executor_.stats();
     std::ostringstream os;
 
-    os << "# HELP apex_ticks_ingested_total Total number of ticks ingested\n";
-    os << "# TYPE apex_ticks_ingested_total counter\n";
-    os << "apex_ticks_ingested_total " << stats.ticks_ingested.load() << "\n\n";
+    os << "# HELP zepto_ticks_ingested_total Total number of ticks ingested\n";
+    os << "# TYPE zepto_ticks_ingested_total counter\n";
+    os << "zepto_ticks_ingested_total " << stats.ticks_ingested.load() << "\n\n";
 
-    os << "# HELP apex_ticks_stored_total Total number of ticks stored\n";
-    os << "# TYPE apex_ticks_stored_total counter\n";
-    os << "apex_ticks_stored_total " << stats.ticks_stored.load() << "\n\n";
+    os << "# HELP zepto_ticks_stored_total Total number of ticks stored\n";
+    os << "# TYPE zepto_ticks_stored_total counter\n";
+    os << "zepto_ticks_stored_total " << stats.ticks_stored.load() << "\n\n";
 
-    os << "# HELP apex_ticks_dropped_total Total number of ticks dropped\n";
-    os << "# TYPE apex_ticks_dropped_total counter\n";
-    os << "apex_ticks_dropped_total " << stats.ticks_dropped.load() << "\n\n";
+    os << "# HELP zepto_ticks_dropped_total Total number of ticks dropped\n";
+    os << "# TYPE zepto_ticks_dropped_total counter\n";
+    os << "zepto_ticks_dropped_total " << stats.ticks_dropped.load() << "\n\n";
 
-    os << "# HELP apex_queries_executed_total Total number of queries executed\n";
-    os << "# TYPE apex_queries_executed_total counter\n";
-    os << "apex_queries_executed_total " << stats.queries_executed.load() << "\n\n";
+    os << "# HELP zepto_queries_executed_total Total number of queries executed\n";
+    os << "# TYPE zepto_queries_executed_total counter\n";
+    os << "zepto_queries_executed_total " << stats.queries_executed.load() << "\n\n";
 
-    os << "# HELP apex_rows_scanned_total Total number of rows scanned\n";
-    os << "# TYPE apex_rows_scanned_total counter\n";
-    os << "apex_rows_scanned_total " << stats.total_rows_scanned.load() << "\n\n";
+    os << "# HELP zepto_rows_scanned_total Total number of rows scanned\n";
+    os << "# TYPE zepto_rows_scanned_total counter\n";
+    os << "zepto_rows_scanned_total " << stats.total_rows_scanned.load() << "\n\n";
 
-    os << "# HELP apex_server_up Server is up and running\n";
-    os << "# TYPE apex_server_up gauge\n";
-    os << "apex_server_up " << (running_.load() ? "1" : "0") << "\n\n";
+    os << "# HELP zepto_server_up Server is up and running\n";
+    os << "# TYPE zepto_server_up gauge\n";
+    os << "zepto_server_up " << (running_.load() ? "1" : "0") << "\n\n";
 
-    os << "# HELP apex_server_ready Server is ready to accept queries\n";
-    os << "# TYPE apex_server_ready gauge\n";
-    os << "apex_server_ready " << (ready_.load() ? "1" : "0") << "\n";
+    os << "# HELP zepto_server_ready Server is ready to accept queries\n";
+    os << "# TYPE zepto_server_ready gauge\n";
+    os << "zepto_server_ready " << (ready_.load() ? "1" : "0") << "\n";
 
     // Append output from registered metrics providers (e.g. Kafka consumers).
     {
@@ -696,4 +754,4 @@ void HttpServer::add_metrics_provider(std::function<std::string()> provider) {
     metrics_providers_.push_back(std::move(provider));
 }
 
-} // namespace apex::server
+} // namespace zeptodb::server

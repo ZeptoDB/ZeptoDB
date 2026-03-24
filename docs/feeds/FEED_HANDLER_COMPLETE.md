@@ -89,8 +89,8 @@ ctest --verbose  # unit tests
 ## File Structure
 
 ```
-apex-db/
-├── include/apex/feeds/
+zeptodb/
+├── include/zeptodb/feeds/
 │   ├── tick.h                      # Common data structures
 │   ├── feed_handler.h              # Feed Handler interface
 │   ├── fix_parser.h                # FIX parser
@@ -156,7 +156,7 @@ apex-db/
 
 **TCO savings (vs kdb+):**
 - kdb+ license: $100K-500K/year
-- APEX-DB: $0 (open source) + $50K (enterprise support)
+- ZeptoDB: $0 (open source) + $50K (enterprise support)
 - **Savings: 50-90%**
 
 ---

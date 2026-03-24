@@ -2,12 +2,12 @@
 // Test: Vectorized Execution Engine (Layer 3)
 // ============================================================================
 
-#include "apex/execution/vectorized_engine.h"
+#include "zeptodb/execution/vectorized_engine.h"
 #include <gtest/gtest.h>
 #include <vector>
 #include <numeric>
 
-using namespace apex::execution;
+using namespace zeptodb::execution;
 
 TEST(VectorizedEngine, FilterGtI64) {
     constexpr size_t N = 8192;

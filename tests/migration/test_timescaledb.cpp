@@ -1,28 +1,28 @@
 // ============================================================================
-// APEX-DB: TimescaleDB Migration Tests
+// ZeptoDB: TimescaleDB Migration Tests
 // ============================================================================
-#include "apex/migration/timescaledb_migrator.h"
+#include "zeptodb/migration/timescaledb_migrator.h"
 #include <gtest/gtest.h>
 
-using namespace apex::migration;
+using namespace zeptodb::migration;
 
 // ============================================================================
 // Type Mapper Tests
 // ============================================================================
 
 TEST(TSDBTypeMapperTest, APEXTypes) {
-    EXPECT_EQ(APEXToTSDBTypeMapper::apex_to_pg("BIGINT"),    "BIGINT");
-    EXPECT_EQ(APEXToTSDBTypeMapper::apex_to_pg("DOUBLE"),    "DOUBLE PRECISION");
-    EXPECT_EQ(APEXToTSDBTypeMapper::apex_to_pg("VARCHAR"),   "TEXT");
-    EXPECT_EQ(APEXToTSDBTypeMapper::apex_to_pg("TIMESTAMP"), "TIMESTAMPTZ");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::zepto_to_pg("BIGINT"),    "BIGINT");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::zepto_to_pg("DOUBLE"),    "DOUBLE PRECISION");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::zepto_to_pg("VARCHAR"),   "TEXT");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::zepto_to_pg("TIMESTAMP"), "TIMESTAMPTZ");
 }
 
 TEST(TSDBTypeMapperTest, KDBTypes) {
-    EXPECT_EQ(APEXToTSDBTypeMapper::ktype_to_pg(7),  "BIGINT");
-    EXPECT_EQ(APEXToTSDBTypeMapper::ktype_to_pg(9),  "DOUBLE PRECISION");
-    EXPECT_EQ(APEXToTSDBTypeMapper::ktype_to_pg(11), "TEXT");
-    EXPECT_EQ(APEXToTSDBTypeMapper::ktype_to_pg(12), "TIMESTAMPTZ");
-    EXPECT_EQ(APEXToTSDBTypeMapper::ktype_to_pg(14), "DATE");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::ktype_to_pg(7),  "BIGINT");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::ktype_to_pg(9),  "DOUBLE PRECISION");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::ktype_to_pg(11), "TEXT");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::ktype_to_pg(12), "TIMESTAMPTZ");
+    EXPECT_EQ(ZeptoToTSDBTypeMapper::ktype_to_pg(14), "DATE");
 }
 
 // ============================================================================
@@ -154,8 +154,8 @@ TEST(TSDBDDLTest, FullSetupSQL) {
 TEST(TSDBQueryTranslatorTest, XbarToTimeBucket) {
     TimescaleDBQueryTranslator translator;
 
-    std::string apex_sql = "SELECT xbar(timestamp, 60), sym FROM trades";
-    std::string tsdb_sql = translator.translate(apex_sql);
+    std::string zepto_sql = "SELECT xbar(timestamp, 60), sym FROM trades";
+    std::string tsdb_sql = translator.translate(zepto_sql);
 
     EXPECT_NE(tsdb_sql.find("time_bucket"), std::string::npos);
     EXPECT_NE(tsdb_sql.find("60"), std::string::npos);
@@ -164,8 +164,8 @@ TEST(TSDBQueryTranslatorTest, XbarToTimeBucket) {
 TEST(TSDBQueryTranslatorTest, FirstLastRewrite) {
     TimescaleDBQueryTranslator translator;
 
-    std::string apex_sql = "SELECT FIRST(price), LAST(price) FROM trades";
-    std::string tsdb_sql = translator.translate(apex_sql);
+    std::string zepto_sql = "SELECT FIRST(price), LAST(price) FROM trades";
+    std::string tsdb_sql = translator.translate(zepto_sql);
 
     EXPECT_NE(tsdb_sql.find("first(price, timestamp)"), std::string::npos);
     EXPECT_NE(tsdb_sql.find("last(price, timestamp)"), std::string::npos);

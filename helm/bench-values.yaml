@@ -1,0 +1,37 @@
+# helm/bench-values.yaml — EKS multi-node benchmark override
+# Usage: helm install zepto ./helm/zeptodb -n zeptodb -f helm/bench-values.yaml
+
+replicaCount: 3
+
+image:
+  # Replace with your ECR repo
+  repository: "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/zeptodb"
+  tag: "bench"
+
+resources:
+  requests:
+    cpu: "6"
+    memory: "48Gi"
+  limits:
+    cpu: "8"
+    memory: "60Gi"
+
+cluster:
+  enabled: true
+  rpcPortOffset: 100
+  heartbeatPort: 9100
+
+persistence:
+  enabled: true
+  storageClass: gp3
+  size: 100Gi
+
+autoscaling:
+  enabled: false
+
+nodeSelector:
+  role: data-node
+
+config:
+  workerThreads: 6
+  parallelThreshold: 50000

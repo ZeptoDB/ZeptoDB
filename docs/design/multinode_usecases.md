@@ -1,4 +1,4 @@
-# APEX-DB Multi-Node: Industry Use Case Analysis
+# ZeptoDB Multi-Node: Industry Use Case Analysis
 
 **Last updated:** 2026-03-22
 **Status:** Design / Planning
@@ -8,7 +8,7 @@
 
 ## Overview
 
-APEX-DB targets multiple industries with significantly different requirements. This document captures the use-case analysis for each vertical and derives design principles that allow a single distributed architecture to serve all of them — with HFT as the primary focus.
+ZeptoDB targets multiple industries with significantly different requirements. This document captures the use-case analysis for each vertical and derives design principles that allow a single distributed architecture to serve all of them — with HFT as the primary focus.
 
 ---
 
@@ -74,7 +74,7 @@ Exchange Feed
 - Latency tolerance is higher (seconds to minutes), but throughput matters
 
 **Key Requirements:**
-- **Large historical storage**: 10+ years of tick data per symbol. Hot tier (last 30 days) in APEX-DB memory; cold tier in Parquet/S3.
+- **Large historical storage**: 10+ years of tick data per symbol. Hot tier (last 30 days) in ZeptoDB memory; cold tier in Parquet/S3.
 - **Complex SQL**: Full CTE, subquery, window function, UNION support (all implemented in Phase 3).
 - **Python/Polars zero-copy**: Results returned as Arrow arrays for seamless Jupyter integration.
 - **Parallel backtest execution**: Multiple backtest jobs run concurrently. Node-level parallelism required.
@@ -128,7 +128,7 @@ Exchange Feed
 ```
 
 **Key Challenge:**
-- COUNT DISTINCT across nodes: Partial sketches (HyperLogLog) must be mergeable. APEX-DB does not yet implement HLL — this is a future requirement.
+- COUNT DISTINCT across nodes: Partial sketches (HyperLogLog) must be mergeable. ZeptoDB does not yet implement HLL — this is a future requirement.
 - Hot campaign problem mirrors HFT hot symbol problem.
 
 ---
@@ -143,7 +143,7 @@ Exchange Feed
 - Often intermittent connectivity (edge sites may go offline)
 
 **Key Requirements:**
-- **Hierarchical topology**: Edge node (local APEX-DB instance) aggregates locally, syncs to cloud APEX-DB cluster. Queries can target edge (real-time) or cloud (historical).
+- **Hierarchical topology**: Edge node (local ZeptoDB instance) aggregates locally, syncs to cloud ZeptoDB cluster. Queries can target edge (real-time) or cloud (historical).
 - **Offline resilience**: Edge nodes must buffer locally when cloud connectivity is unavailable, then replay.
 - **Long retention + tiered storage**: 1 year hot in memory, 10 years cold in Parquet. Automatic tier migration.
 - **Simple query patterns**: Mostly time-range scans with simple aggregations. Full SQL complexity not needed at edge.
@@ -162,7 +162,7 @@ Exchange Feed
 
 **Key Challenge:**
 - Clock sync at edge sites: PTP is not available everywhere. GPS-disciplined NTP is the practical solution. Sub-ms precision achievable but not guaranteed.
-- Edge node sizing: Raspberry Pi / industrial PC with 8–64GB RAM. APEX-DB must run with configurable memory limits.
+- Edge node sizing: Raspberry Pi / industrial PC with 8–64GB RAM. ZeptoDB must run with configurable memory limits.
 
 ---
 
@@ -266,7 +266,7 @@ Three fundamental conflicts arise when targeting all verticals simultaneously:
        +----------++-----------+
                   |
          +--------+--------+
-         | Regional Cloud  |  <- full APEX-DB cluster
+         | Regional Cloud  |  <- full ZeptoDB cluster
          +--------+--------+
                   |
          +--------+--------+
@@ -274,7 +274,7 @@ Three fundamental conflicts arise when targeting all verticals simultaneously:
          +-----------------+
 ```
 
-- Edge node runs a **single-node APEX-DB** with reduced memory limits
+- Edge node runs a **single-node ZeptoDB** with reduced memory limits
 - Sync protocol: streaming replication of WAL segments, deduplication on reconnect
 - Edge can serve queries independently when cloud is unreachable (degraded mode)
 
@@ -292,7 +292,7 @@ Three fundamental conflicts arise when targeting all verticals simultaneously:
 
 5. **Clock source is a deployment contract**: The system does not abstract away clock sync. HFT deployments must provision PTP. Non-HFT deployments use NTP. ASOF JOIN in strict mode rejects queries on NTP clusters.
 
-6. **Edge is first-class**: Edge nodes run the same APEX-DB binary with a `--mode edge` flag. This disables multi-node coordinator features and enables local-only operation + sync protocol.
+6. **Edge is first-class**: Edge nodes run the same ZeptoDB binary with a `--mode edge` flag. This disables multi-node coordinator features and enables local-only operation + sync protocol.
 
 ---
 

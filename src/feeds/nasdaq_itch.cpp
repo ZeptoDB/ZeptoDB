@@ -1,11 +1,11 @@
 // ============================================================================
-// APEX-DB: NASDAQ ITCH Parser Implementation
+// ZeptoDB: NASDAQ ITCH Parser Implementation
 // ============================================================================
-#include "apex/feeds/nasdaq_itch.h"
+#include "zeptodb/feeds/nasdaq_itch.h"
 #include <cstring>
 #include <algorithm>
 
-namespace apex::feeds {
+namespace zeptodb::feeds {
 
 NASDAQITCHParser::NASDAQITCHParser()
     : msg_type_(ITCHMessageType::SYSTEM_EVENT)
@@ -154,4 +154,4 @@ double NASDAQITCHParser::parse_price(uint32_t price) const {
     return static_cast<double>(price) / 10000.0;
 }
 
-} // namespace apex::feeds
+} // namespace zeptodb::feeds

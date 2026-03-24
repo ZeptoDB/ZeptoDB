@@ -7,17 +7,17 @@
 
 ## Overview
 
-Implemented the full Python ecosystem integration for APEX-DB, enabling seamless
-data exchange between APEX-DB and the scientific Python stack (pandas, polars,
+Implemented the full Python ecosystem integration for ZeptoDB, enabling seamless
+data exchange between ZeptoDB and the scientific Python stack (pandas, polars,
 pyarrow, numpy, duckdb). This closes the "Research-to-Production" gap where
-analysts prototype in Jupyter notebooks and then need to move data into APEX-DB
+analysts prototype in Jupyter notebooks and then need to move data into ZeptoDB
 for production-scale real-time queries.
 
 ---
 
 ## What Was Built
 
-### `apex_py/` package (6 modules)
+### `zepto_py/` package (6 modules)
 
 | Module | Purpose |
 |--------|---------|
@@ -31,10 +31,10 @@ for production-scale real-time queries.
 ### Key API surface
 
 ```python
-import apex_py as apex
+import zepto_py as apex
 
 # Connect via HTTP
-db = apex.connect("localhost", 8123)
+db = zeptodb.connect("localhost", 8123)
 df = db.query_pandas("SELECT sym, avg(price) FROM trades GROUP BY sym")
 
 # Ingest from pandas
@@ -48,17 +48,17 @@ ticks_pl = pl.from_pandas(ticks)
 db.ingest_polars(ticks_pl)
 
 # StreamingSession — high-throughput with progress
-sess = apex.StreamingSession(pipeline, batch_size=50_000)
+sess = zeptodb.StreamingSession(pipeline, batch_size=50_000)
 sess.ingest_pandas(df, show_progress=True)
 # Ingested 1,000,000 rows in 1.82s (549,451 rows/sec)
 
 # ArrowSession — zero-copy interop
-from apex_py import ArrowSession
+from zepto_py import ArrowSession
 sess = ArrowSession(pipeline)
-sess.ingest_arrow(arrow_table)          # pa.Table → APEX-DB
-tbl  = sess.to_arrow(symbol=1)          # APEX-DB → pa.Table (zero-copy)
+sess.ingest_arrow(arrow_table)          # pa.Table → ZeptoDB
+tbl  = sess.to_arrow(symbol=1)          # ZeptoDB → pa.Table (zero-copy)
 conn = sess.to_duckdb(symbol=1)         # register as DuckDB table
-pl_df = sess.to_polars_zero_copy(sym=1) # APEX-DB → polars (via Arrow)
+pl_df = sess.to_polars_zero_copy(sym=1) # ZeptoDB → polars (via Arrow)
 ```
 
 ---
@@ -68,7 +68,7 @@ pl_df = sess.to_polars_zero_copy(sym=1) # APEX-DB → polars (via Arrow)
 ### Arrow as the universal intermediary
 
 All Polars paths go through Arrow (Polars is Arrow-native). This gives:
-- True zero-copy between Polars and APEX-DB via Arrow buffers
+- True zero-copy between Polars and ZeptoDB via Arrow buffers
 - Compatibility with DuckDB, Ray, Spark via `RecordBatchReader`
 - Type fidelity — timestamps preserve nanosecond precision and UTC timezone
 
@@ -130,7 +130,7 @@ tests/python/
 │   ├── TestArrowTableOps        — Arrow filter/sort/group/slice (10 tests)
 │   ├── TestArrowSessionIngest   — ingest_arrow, null handling (5 tests)
 │   ├── TestArrowSessionExport   — to_arrow, schema, RecordBatchReader (7 tests)
-│   ├── TestArrowSchemaUtilities — apex_schema_to_arrow (2 tests)
+│   ├── TestArrowSchemaUtilities — zepto_schema_to_arrow (2 tests)
 │   ├── TestArrowRoundtrips      — Arrow↔Polars↔Pandas↔NumPy (8 tests)
 │   ├── TestArrowDuckDB          — to_duckdb, SQL on Arrow (2 tests)
 │   └── TestArrowPerformance     — 1M row construction/filter (2 tests)
@@ -175,13 +175,13 @@ python3 -m pytest tests/python/ -v
 
 ## Interoperability Matrix
 
-| APEX-DB → | pandas | polars | numpy | Arrow | DuckDB |
+| ZeptoDB → | pandas | polars | numpy | Arrow | DuckDB |
 |-----------|--------|--------|-------|-------|--------|
 | via HTTP query | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — |
 | via pipeline | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` |
 | zero-copy | numpy view | via Arrow | direct | yes | Arrow register |
 
-| → APEX-DB | pandas | polars | Arrow | generator |
+| → ZeptoDB | pandas | polars | Arrow | generator |
 |-----------|--------|--------|-------|-----------|
 | batch ingest | `from_pandas()` | `from_polars()` | `ingest_arrow()` | `ingest_iter()` |
 | streaming | `StreamingSession.ingest_pandas()` | `StreamingSession.ingest_polars()` | `ArrowSession.ingest_arrow()` | `ingest_iter()` |
@@ -192,13 +192,13 @@ python3 -m pytest tests/python/ -v
 
 | File | Change |
 |------|--------|
-| `apex_py/dataframe.py` | Rewrote `from_pandas()`/`from_polars()`: iterrows() → numpy vectorized batch |
-| `apex_py/dataframe.py` | Added `from_arrow()` function + `_arrow_col_to_numpy()` null-safe helper |
-| `apex_py/arrow.py` | Rewrote `ingest_arrow()` to delegate to `from_arrow()` (vectorized) |
-| `apex_py/arrow.py` | Added `ingest_arrow_columnar()` for per-column Arrow array ingest |
-| `apex_py/arrow.py` | Updated `ingest_record_batch()` to use new vectorized path |
+| `zepto_py/dataframe.py` | Rewrote `from_pandas()`/`from_polars()`: iterrows() → numpy vectorized batch |
+| `zepto_py/dataframe.py` | Added `from_arrow()` function + `_arrow_col_to_numpy()` null-safe helper |
+| `zepto_py/arrow.py` | Rewrote `ingest_arrow()` to delegate to `from_arrow()` (vectorized) |
+| `zepto_py/arrow.py` | Added `ingest_arrow_columnar()` for per-column Arrow array ingest |
+| `zepto_py/arrow.py` | Updated `ingest_record_batch()` to use new vectorized path |
 | `src/transpiler/python_binding.cpp` | Added `ingest_float_batch()` — float64 C++ batch ingest |
-| `apex_py/__init__.py` | Exported `from_arrow`, `from_polars_arrow` |
+| `zepto_py/__init__.py` | Exported `from_arrow`, `from_polars_arrow` |
 | `tests/python/test_fast_ingest.py` | NEW: 38 tests for all new paths |
 
 ## Next Steps
@@ -208,5 +208,5 @@ python3 -m pytest tests/python/ -v
   (eliminates even the numpy view step for contiguous Arrow buffers)
 - **Arrow Flight server** — stream query results as Arrow batches over the network
   (Pandas/Polars clients connect directly without HTTP JSON overhead)
-- **`pip install apex-db`** — PyPI package with pre-built wheels for Linux/macOS
-- **Jupyter integration** — `apex_py.display()` for rich notebook output
+- **`pip install zeptodb`** — PyPI package with pre-built wheels for Linux/macOS
+- **Jupyter integration** — `zepto_py.display()` for rich notebook output

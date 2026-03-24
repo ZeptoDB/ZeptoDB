@@ -104,9 +104,9 @@
 
 ---
 
-## kdb+ vs APEX-DB Final Comparison (Phase B v2)
+## kdb+ vs ZeptoDB Final Comparison (Phase B v2)
 
-| Operation | kdb+ reference | APEX-DB v2 | Status |
+| Operation | kdb+ reference | ZeptoDB v2 | Status |
 |---|---|---|---|
 | Ingestion | ~2–5M/sec | **5.52M/sec** | ✅ Superior |
 | VWAP 1M | ~200–500μs | **532μs** | ⚠️ Close |

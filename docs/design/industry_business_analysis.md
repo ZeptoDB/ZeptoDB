@@ -1,4 +1,4 @@
-# APEX-DB Industry Business Analysis
+# ZeptoDB Industry Business Analysis
 # 2026-03-22
 
 ---
@@ -8,7 +8,7 @@
 Each industry evaluated on 5 axes:
 1. **Market Size & Growth** — TAM/SAM, CAGR
 2. **Current Pain Points** — Limitations of existing solutions
-3. **APEX-DB Value Proposition** — Differentiation points
+3. **ZeptoDB Value Proposition** — Differentiation points
 4. **Sales Message** — Decision-maker persuasion logic
 5. **Entry Strategy** — Competitive landscape + approach
 
@@ -30,9 +30,9 @@ Each industry evaluated on 5 axes:
 - **Python bottleneck**: PyKX is IPC-based, serialization overhead for C++ engine data exchange
 - **Vendor lock-in**: Without kdb+, entire analytics pipeline is paralyzed
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```
-Cost:     kdb+ $100K+/year  →  APEX-DB open source (server cost only)
+Cost:     kdb+ $100K+/year  →  ZeptoDB open source (server cost only)
 Language: q (cryptic)       →  SQL + Python (team productive immediately)
 Python:   IPC ~1ms          →  zero-copy 522ns (2000x faster)
 Perf:     equivalent        →  some query advantage (SIMD JIT)
@@ -69,7 +69,7 @@ Perf:     equivalent        →  some query advantage (SIMD JIT)
 - **Data silos**: Market data / alternative data / risk data in separate DBs
 - **Collaboration barrier**: Quant (Python) ↔ Engineer (C++) language gap
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```
 Backtest speed:  Pandas hours  →  APEX C++ minutes (100x)
 R2P gap:         Python → C++ re-impl weeks  →  zero-copy immediate
@@ -105,7 +105,7 @@ EMA/Window:      pandas rolling slow  →  APEX SIMD 4x faster
 - **Audit trail**: Timestamp tracking of what data drove which decisions
 - **Regulatory reporting**: EMIR, MiFID II — large-scale trade data queries
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```
 VaR calculation:     Batch hours  →  Parallel query 3.4x, real-time possible
 Position × market:   Slow cross join  →  SIMD Hash JOIN
@@ -140,7 +140,7 @@ SQL standard:        Non-standard query language  →  standard SQL, existing to
 - **Multi-chain**: Different DB per chain, no unified analytics
 - **On-chain + Off-chain**: Hard to JOIN blockchain data + orderbook data
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```
 Throughput:    5.52M ticks/sec → covers even the largest exchanges
 24/7:          HDB auto flush, WAL recovery → uninterrupted operations
@@ -150,7 +150,7 @@ Distributed:   Consolidate multi-exchange data with cluster
 
 ### Sales Message
 > "BTC alone tens of thousands of trades/second, all coins combined millions.
-> APEX-DB 5.52M ticks/sec processes every trade in real-time,
+> ZeptoDB 5.52M ticks/sec processes every trade in real-time,
 > then analyze directly in SQL. Grafana dashboard connects instantly."
 
 ---
@@ -171,7 +171,7 @@ Distributed:   Consolidate multi-exchange data with cluster
 - **ML pipeline separation**: Sensor DB and ML training pipeline are separate
 - **Multi-factory integration**: Hard to centrally analyze data from global factories
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```
 Sensor processing: InfluxDB limit (~100KHz)  →  APEX 5.52M/sec (50x)
 Anomaly detection: Batch 10-min delay        →  Real-time 272μs detection
@@ -192,7 +192,7 @@ Semiconductor fab example:
 ### Sales Message
 > "1 minute of semiconductor fab downtime = $1M loss.
 > Process 10KHz vibration sensors in real-time and use EMA + DELTA
-> to predict equipment failure 10 minutes ahead. APEX-DB does what InfluxDB can't."
+> to predict equipment failure 10 minutes ahead. ZeptoDB does what InfluxDB can't."
 
 ### Entry Strategy
 - **Target**: Head of Manufacturing IT, Plant Manager, CTO
@@ -219,7 +219,7 @@ Semiconductor fab example:
 - **Data scale**: 100 vehicles × 4TB/day = 400TB/day processing infrastructure
 - **ML pipeline**: Collect → label → train → deploy cycle is too slow
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```sql
 -- Multi-sensor real-time synchronization (ASOF JOIN)
 SELECT c.frame_id, l.scan_id,
@@ -242,7 +242,7 @@ AND gps.timestamp BETWEEN imu.timestamp - 50000000
 
 ### Sales Message
 > "The era of storing data in ROS bag files for later analysis is over.
-> Use APEX-DB to fuse LiDAR-camera in real-time and
+> Use ZeptoDB to fuse LiDAR-camera in real-time and
 > connect to Python ML pipeline with zero-copy. 10x faster training cycle."
 
 ### Entry Strategy
@@ -270,11 +270,11 @@ AND gps.timestamp BETWEEN imu.timestamp - 50000000
 - **Multi-robot**: Central DB bottleneck when operating 100+ units simultaneously
 - **Online learning**: Learning new experiences in real-time → DB must be fast for both reads and writes
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```python
-import apex, torch
+import zeptodb, torch
 
-db = apex.Pipeline()
+db = zeptodb.Pipeline()
 db.start()
 
 # Robot joint data → real-time feature calculation
@@ -293,7 +293,7 @@ action = policy_net(state_tensor)  # RL policy execution
 
 ### Sales Message
 > "The bottleneck in robot reinforcement learning is the Feature Store.
-> Connect joint sensors → EMA/DELTA → PyTorch in 522ns with APEX-DB Python zero-copy,
+> Connect joint sensors → EMA/DELTA → PyTorch in 522ns with ZeptoDB Python zero-copy,
 > and accelerate training speed 10x."
 
 ### Entry Strategy
@@ -321,20 +321,20 @@ action = policy_net(state_tensor)  # RL policy execution
 - **Edge computing**: Existing DBs too heavy to embed per drone
 - **Battery/routing**: Real-time battery data → route re-optimization
 
-### APEX-DB Distributed Architecture
+### ZeptoDB Distributed Architecture
 ```
 Ground Station (coordinator)
     ├── Edge Node 1 (drones 1~25)
     ├── Edge Node 2 (drones 26~50)
     └── Edge Node 3 (drones 51~75)
 
-Each edge: APEX-DB LocalQueryScheduler (low-power ARM)
+Each edge: ZeptoDB LocalQueryScheduler (low-power ARM)
 Inter-node: UCX Transport (later 5G/CXL)
 ```
 
 ### Sales Message
 > "Operate a swarm of 500 drones without a central server.
-> APEX-DB distributed cluster lets each edge process independently,
+> ZeptoDB distributed cluster lets each edge process independently,
 > routing collision avoidance queries in 2ns with Consistent Hashing."
 
 ---
@@ -353,7 +353,7 @@ Inter-node: UCX Transport (later 5G/CXL)
 - **Graph analysis integration**: Hard to combine transaction network (graph) + time-series data
 - **False positives**: Low accuracy because real-time processing is unavailable
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 ```sql
 -- Real-time anomalous transaction patterns
 SELECT account_id, timestamp, amount,
@@ -373,7 +373,7 @@ AND prev.timestamp BETWEEN t.timestamp - 300000000000 AND t.timestamp
 
 ### Sales Message
 > "Card fraud decisions happen within 0.1 seconds.
-> Detect real-time patterns with APEX-DB 272μs queries,
+> Detect real-time patterns with ZeptoDB 272μs queries,
 > and instantly calculate anomalous transaction counts in 5 minutes with Window JOIN."
 
 ---
@@ -392,7 +392,7 @@ AND prev.timestamp BETWEEN t.timestamp - 300000000000 AND t.timestamp
 - **Solar/wind output prediction**: Real-time analysis of weather data + generation output
 - **Power trading**: Day-ahead / Intraday markets — similar requirements to HFT
 
-### APEX-DB Value Proposition
+### ZeptoDB Value Proposition
 - Real-time processing of grid sensors (thousands of PMUs) at 10KHz
 - Solar panel output anomaly detection (EMA + DELTA)
 - Power trading: VWAP, Window functions for pricing strategy
@@ -440,7 +440,7 @@ AND prev.timestamp BETWEEN t.timestamp - 300000000000 AND t.timestamp
 
 ## Core Message (All Industries)
 
-> **"APEX-DB — wherever μs latency is needed."**
+> **"ZeptoDB — wherever μs latency is needed."**
 >
 > 5.52M events/sec, 272μs processing speed proven in HFT.
 > Now for factory sensors, autonomous vehicles, and robot joint data too.

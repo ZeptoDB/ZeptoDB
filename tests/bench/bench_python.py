@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-tests/bench/bench_python.py — APEX-DB Python 바인딩 벤치마크
+tests/bench/bench_python.py — ZeptoDB Python 바인딩 벤치마크
 
 비교 대상:
   - Polars (Rust 기반 DataFrame, Lazy API)
-  - APEX-DB C++ 벡터화 엔진
+  - ZeptoDB C++ 벡터화 엔진
 
 측정 항목:
   1. VWAP 계산 (N=100K 틱)
@@ -13,7 +13,7 @@ tests/bench/bench_python.py — APEX-DB Python 바인딩 벤치마크
   4. Zero-copy get_column vs Polars eager column access
 
 실행:
-    cd ~/apex-db
+    cd ~/zeptodb
     python3 tests/bench/bench_python.py
 """
 
@@ -27,11 +27,11 @@ import numpy as np
 BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "build")
 sys.path.insert(0, os.path.abspath(BUILD_DIR))
 
-import apex  # apex.so (pybind11)
+import zeptodb  # apex.so (pybind11)
 
 # DSL import
 sys.path.insert(0, os.path.abspath(BUILD_DIR))
-from apex_py.dsl import DataFrame as ApexDF
+from zepto_py.dsl import DataFrame as ZeptoDF
 
 try:
     import polars as pl
@@ -92,9 +92,9 @@ def print_speedup(label_a: str, a_ns: list, label_b: str, b_ns: list):
 # 데이터 준비
 # ============================================================================
 
-def setup_apex_db():
-    print(f"[Setup] APEX-DB 파이프라인 시작 + {N_TICKS:,} 틱 인제스트...")
-    db = apex.Pipeline()
+def setup_zeptodb():
+    print(f"[Setup] ZeptoDB 파이프라인 시작 + {N_TICKS:,} 틱 인제스트...")
+    db = zeptodb.Pipeline()
     db.start()
 
     syms   = np.full(N_TICKS, SYMBOL, dtype=np.int64)
@@ -139,10 +139,10 @@ def bench_vwap(db, polars_df, prices_np, vols_np):
     print(f"  벤치마크 1: VWAP  (N={N_TICKS:,} rows)")
     print(SEPARATOR)
 
-    # APEX VWAP
-    apex_times, apex_result = bench_fn(lambda: db.vwap(symbol=SYMBOL))
-    print_stats("APEX VWAP (C++ vectorized)", apex_times)
-    print(f"    → result: {apex_result.value:.4f}")
+    # ZEPTO VWAP
+    zepto_times, zepto_result = bench_fn(lambda: db.vwap(symbol=SYMBOL))
+    print_stats("ZEPTO VWAP (C++ vectorized)", zepto_times)
+    print(f"    → result: {zepto_result.value:.4f}")
 
     if POLARS_AVAILABLE and polars_df is not None:
         # Polars Lazy VWAP
@@ -162,7 +162,7 @@ def bench_vwap(db, polars_df, prices_np, vols_np):
         polars_vwap = pv_sum / vol_sum
         print_stats("Polars Lazy VWAP (Rust)", pol_times)
         print(f"    → result: {polars_vwap:.4f}")
-        print_speedup("Polars", pol_times, "APEX", apex_times)
+        print_speedup("Polars", pol_times, "ZEPTO", zepto_times)
 
         # Polars Eager VWAP (비교용)
         def polars_eager_vwap():
@@ -178,7 +178,7 @@ def bench_vwap(db, polars_df, prices_np, vols_np):
         np_times, np_result = bench_fn(numpy_vwap)
         print_stats("NumPy VWAP (fallback)", np_times)
         print(f"    → result: {np_result:.4f}")
-        print_speedup("NumPy", np_times, "APEX", apex_times)
+        print_speedup("NumPy", np_times, "ZEPTO", zepto_times)
 
 
 # ============================================================================
@@ -190,12 +190,12 @@ def bench_filter_sum(db, polars_df, prices_np, vols_np):
     print(f"  벤치마크 2: Filter + Sum  (price > {THRESHOLD:,})")
     print(SEPARATOR)
 
-    # APEX filter_sum
-    apex_times, apex_result = bench_fn(
+    # ZEPTO filter_sum
+    zepto_times, zepto_result = bench_fn(
         lambda: db.filter_sum(symbol=SYMBOL, column="price", threshold=THRESHOLD)
     )
-    print_stats("APEX filter_sum (C++ SIMD)", apex_times)
-    print(f"    → result: {apex_result.ivalue:,}")
+    print_stats("ZEPTO filter_sum (C++ SIMD)", zepto_times)
+    print(f"    → result: {zepto_result.ivalue:,}")
 
     if POLARS_AVAILABLE and polars_df is not None:
         # Polars Lazy filter+sum
@@ -211,7 +211,7 @@ def bench_filter_sum(db, polars_df, prices_np, vols_np):
         pol_times, pol_result = bench_fn(polars_lazy_filter_sum)
         print_stats("Polars Lazy filter+sum (Rust)", pol_times)
         print(f"    → result: {pol_result:,}")
-        print_speedup("Polars", pol_times, "APEX", apex_times)
+        print_speedup("Polars", pol_times, "ZEPTO", zepto_times)
     else:
         def numpy_filter_sum():
             mask = prices_np > THRESHOLD
@@ -220,7 +220,7 @@ def bench_filter_sum(db, polars_df, prices_np, vols_np):
         np_times, np_result = bench_fn(numpy_filter_sum)
         print_stats("NumPy filter+sum (fallback)", np_times)
         print(f"    → result: {np_result:,}")
-        print_speedup("NumPy", np_times, "APEX", apex_times)
+        print_speedup("NumPy", np_times, "ZEPTO", zepto_times)
 
 
 # ============================================================================
@@ -232,9 +232,9 @@ def bench_count(db, polars_df):
     print(f"  벤치마크 3: COUNT (full scan)")
     print(SEPARATOR)
 
-    apex_times, apex_result = bench_fn(lambda: db.count(symbol=SYMBOL))
-    print_stats("APEX count (C++ vectorized)", apex_times)
-    print(f"    → result: {apex_result.ivalue:,}")
+    zepto_times, zepto_result = bench_fn(lambda: db.count(symbol=SYMBOL))
+    print_stats("APEX count (C++ vectorized)", zepto_times)
+    print(f"    → result: {zepto_result.ivalue:,}")
 
     if POLARS_AVAILABLE and polars_df is not None:
         pol_times, pol_result = bench_fn(
@@ -242,7 +242,7 @@ def bench_count(db, polars_df):
         )
         print_stats("Polars count (Rust)", pol_times)
         print(f"    → result: {pol_result:,}")
-        print_speedup("Polars", pol_times, "APEX", apex_times)
+        print_speedup("Polars", pol_times, "ZEPTO", zepto_times)
 
 
 # ============================================================================
@@ -256,17 +256,17 @@ def bench_zero_copy(db, polars_df):
     print(f"  (numpy array 포인터만 반환 vs Polars Series)")
 
     # APEX get_column (zero-copy)
-    apex_times, apex_arr = bench_fn(
+    zepto_times, zepto_arr = bench_fn(
         lambda: db.get_column(symbol=SYMBOL, name="price")
     )
-    print_stats("APEX get_column (zero-copy)", apex_times)
-    print(f"    → len={len(apex_arr)}, ptr_owned={apex_arr.flags['OWNDATA']}")
+    print_stats("APEX get_column (zero-copy)", zepto_times)
+    print(f"    → len={len(zepto_arr)}, ptr_owned={zepto_arr.flags['OWNDATA']}")
 
     if POLARS_AVAILABLE and polars_df is not None:
         # Polars series access (내부적으로 Arrow)
         pol_times, _ = bench_fn(lambda: polars_df["price"])
         print_stats("Polars Series access (Rust)", pol_times)
-        print_speedup("Polars", pol_times, "APEX", apex_times)
+        print_speedup("Polars", pol_times, "ZEPTO", zepto_times)
 
 
 # ============================================================================
@@ -278,16 +278,16 @@ def bench_dsl(db, polars_df):
     print(f"  벤치마크 5: Lazy DSL — filter + sum chain")
     print(SEPARATOR)
 
-    apex_df = ApexDF(db, symbol=SYMBOL)
+    zepto_df = ZeptoDF(db, symbol=SYMBOL)
 
     # APEX DSL lazy chain
-    def apex_dsl_filter_sum():
-        lazy = apex_df[apex_df['price'] > THRESHOLD]['price'].sum()
+    def zepto_dsl_filter_sum():
+        lazy = zepto_df[zepto_df['price'] > THRESHOLD]['price'].sum()
         return lazy.collect()
 
-    apex_times, apex_val = bench_fn(apex_dsl_filter_sum)
-    print_stats("APEX DSL lazy chain", apex_times)
-    print(f"    → result: {apex_val:,}")
+    zepto_times, zepto_val = bench_fn(zepto_dsl_filter_sum)
+    print_stats("APEX DSL lazy chain", zepto_times)
+    print(f"    → result: {zepto_val:,}")
 
     if POLARS_AVAILABLE and polars_df is not None:
         def polars_lazy_chain():
@@ -302,7 +302,7 @@ def bench_dsl(db, polars_df):
         pol_times, pol_val = bench_fn(polars_lazy_chain)
         print_stats("Polars .lazy().filter().sum() (Rust)", pol_times)
         print(f"    → result: {pol_val:,}")
-        print_speedup("Polars", pol_times, "APEX", apex_times)
+        print_speedup("Polars", pol_times, "ZEPTO", zepto_times)
 
 
 # ============================================================================
@@ -316,7 +316,7 @@ def bench_ingest_throughput():
     print("  ※ drain() 시간 제외, 순수 ingest 호출 비용만 측정")
 
     # 단건 ingest 비용
-    db = apex.Pipeline()
+    db = zeptodb.Pipeline()
     db.start()
     N = 10_000
     t0 = time.perf_counter_ns()
@@ -338,7 +338,7 @@ def bench_ingest_throughput():
         prices = np.arange(10000, 10000 + bs, dtype=np.int64)
         vols   = np.ones(bs, dtype=np.int64)
 
-        db = apex.Pipeline()
+        db = zeptodb.Pipeline()
         db.start()
 
         times = []
@@ -363,15 +363,15 @@ def bench_ingest_throughput():
 def main():
     print()
     print("╔══════════════════════════════════════════════════════════════╗")
-    print("║         APEX-DB Python Bridge Benchmark                     ║")
+    print("║         ZeptoDB Python Bridge Benchmark                     ║")
     print(f"║  N={N_TICKS:,} ticks, {N_RUNS} runs, {N_WARMUP} warmup                         ║")
     if POLARS_AVAILABLE:
         import polars
-        print(f"║  Polars v{polars.__version__} (Rust) vs APEX-DB C++ SIMD           ║")
+        print(f"║  Polars v{polars.__version__} (Rust) vs ZeptoDB C++ SIMD           ║")
     print("╚══════════════════════════════════════════════════════════════╝")
 
     # 데이터 준비
-    db, prices_np, vols_np = setup_apex_db()
+    db, prices_np, vols_np = setup_zeptodb()
     polars_df = setup_polars(prices_np, vols_np)
 
     if POLARS_AVAILABLE:

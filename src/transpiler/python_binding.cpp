@@ -1,5 +1,5 @@
 // ============================================================================
-// APEX-DB Phase D: Python Binding (pybind11)
+// ZeptoDB Phase D: Python Binding (pybind11)
 // ============================================================================
 // Python ↔ C++ 브리지. Zero-copy numpy 뷰, 배치 인제스트, 쿼리 노출.
 //
@@ -14,9 +14,10 @@
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
 
-#include "apex/core/pipeline.h"
-#include "apex/ingestion/tick_plant.h"
-#include "apex/storage/column_store.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/ingestion/tick_plant.h"
+#include "zeptodb/storage/column_store.h"
+#include "zeptodb/sql/executor.h"
 
 #include <chrono>
 #include <stdexcept>
@@ -25,9 +26,9 @@
 #include <vector>
 
 namespace py = pybind11;
-using namespace apex::core;
-using namespace apex::ingestion;
-using namespace apex::storage;
+using namespace zeptodb::core;
+using namespace zeptodb::ingestion;
+using namespace zeptodb::storage;
 
 // ============================================================================
 // 내부 헬퍼
@@ -39,11 +40,11 @@ static inline int64_t now_ns() {
 }
 
 // ============================================================================
-// PyPipeline: ApexPipeline 래퍼
+// PyPipeline: ZeptoPipeline 래퍼
 // ============================================================================
 class PyPipeline {
 public:
-    PyPipeline() : pipeline_(std::make_unique<ApexPipeline>()) {}
+    PyPipeline() : pipeline_(std::make_unique<ZeptoPipeline>()) {}
 
     void start() { pipeline_->start(); }
     void stop()  { pipeline_->stop(); }
@@ -253,6 +254,93 @@ public:
     }
 
     // -------------------------------------------------------------------------
+    // SQL 실행: 전체 SQL 기능 접근 (SELECT, INSERT, UPDATE, DELETE, DDL)
+    // -------------------------------------------------------------------------
+    py::dict execute_sql(const std::string& sql) {
+        if (!executor_) {
+            executor_ = std::make_unique<zeptodb::sql::QueryExecutor>(*pipeline_);
+        }
+        auto result = executor_->execute(sql);
+
+        py::dict d;
+        d["ok"] = result.ok();
+        d["error"] = result.error;
+        d["time_us"] = result.execution_time_us;
+        d["rows_scanned"] = result.rows_scanned;
+
+        // Column names
+        py::list col_names;
+        for (auto& c : result.column_names) col_names.append(c);
+        d["columns"] = col_names;
+
+        // String rows (EXPLAIN, DDL messages)
+        if (!result.string_rows.empty()) {
+            py::list rows;
+            for (auto& s : result.string_rows) rows.append(s);
+            d["data"] = rows;
+            return d;
+        }
+
+        // Numeric rows → list of lists
+        py::list rows;
+        for (auto& row : result.rows) {
+            py::list py_row;
+            for (auto v : row) py_row.append(v);
+            rows.append(py_row);
+        }
+        d["data"] = rows;
+        return d;
+    }
+
+    // -------------------------------------------------------------------------
+    // 헬스체크
+    // -------------------------------------------------------------------------
+    bool is_healthy() const { return pipeline_ != nullptr; }
+    bool is_ready() const {
+        return pipeline_ != nullptr &&
+               pipeline_->stats().ticks_stored.load() > 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // 금융 함수 (SQL 경유 — native 성능 + 편의 API)
+    // -------------------------------------------------------------------------
+    py::dict xbar(uint32_t symbol, int64_t bucket_ns) {
+        return execute_sql(
+            "SELECT xbar(timestamp, " + std::to_string(bucket_ns) + ") AS bar, "
+            "first(price) AS open, max(price) AS high, "
+            "min(price) AS low, last(price) AS close, "
+            "sum(volume) AS vol "
+            "FROM trades WHERE symbol = " + std::to_string(symbol) +
+            " GROUP BY xbar(timestamp, " + std::to_string(bucket_ns) + ")");
+    }
+
+    py::dict ema(uint32_t symbol, int64_t period) {
+        return execute_sql(
+            "SELECT price, EMA(price, " + std::to_string(period) +
+            ") OVER (ORDER BY timestamp) AS ema "
+            "FROM trades WHERE symbol = " + std::to_string(symbol));
+    }
+
+    py::dict delta(uint32_t symbol) {
+        return execute_sql(
+            "SELECT price, DELTA(price) OVER (ORDER BY timestamp) AS delta "
+            "FROM trades WHERE symbol = " + std::to_string(symbol));
+    }
+
+    py::dict ratio(uint32_t symbol) {
+        return execute_sql(
+            "SELECT price, RATIO(price) OVER (ORDER BY timestamp) AS ratio "
+            "FROM trades WHERE symbol = " + std::to_string(symbol));
+    }
+
+    py::dict window_agg(uint32_t symbol, const std::string& func, int64_t rows_preceding) {
+        return execute_sql(
+            "SELECT price, " + func + "(price) OVER (ORDER BY timestamp ROWS " +
+            std::to_string(rows_preceding) + " PRECEDING) AS val "
+            "FROM trades WHERE symbol = " + std::to_string(symbol));
+    }
+
+    // -------------------------------------------------------------------------
     // 통계
     // -------------------------------------------------------------------------
     py::dict stats() {
@@ -315,7 +403,8 @@ private:
         return best;
     }
 
-    std::unique_ptr<ApexPipeline> pipeline_;
+    std::unique_ptr<ZeptoPipeline> pipeline_;
+    std::unique_ptr<zeptodb::sql::QueryExecutor> executor_;
 };
 
 // ============================================================================
@@ -334,8 +423,8 @@ struct PyStats {
 // ============================================================================
 // pybind11 모듈 정의
 // ============================================================================
-PYBIND11_MODULE(apex, m) {
-    m.doc() = "APEX-DB Python Binding — Ultra-Low Latency HFT In-Memory Database";
+PYBIND11_MODULE(zeptodb, m) {
+    m.doc() = "ZeptoDB Python Binding — Ultra-Low Latency HFT In-Memory Database";
 
     // -------------------------------------------------------------------------
     // QueryResult
@@ -362,7 +451,7 @@ PYBIND11_MODULE(apex, m) {
     // Pipeline
     // -------------------------------------------------------------------------
     py::class_<PyPipeline>(m, "Pipeline")
-        .def(py::init<>(), "APEX-DB 파이프라인 생성")
+        .def(py::init<>(), "ZeptoDB 파이프라인 생성")
 
         .def("start", &PyPipeline::start,
              "파이프라인 시작 (drain 스레드 기동)")
@@ -416,5 +505,35 @@ PYBIND11_MODULE(apex, m) {
 
         // 통계
         .def("stats", &PyPipeline::stats,
-             "파이프라인 통계 dict 반환");
+             "파이프라인 통계 dict 반환")
+
+        // SQL 실행
+        .def("execute", &PyPipeline::execute_sql,
+             py::arg("sql"),
+             "SQL 실행 (SELECT, INSERT, UPDATE, DELETE, DDL 전부 지원).\n"
+             "반환: dict {ok, error, columns, data, time_us, rows_scanned}")
+
+        // 헬스체크
+        .def("is_healthy", &PyPipeline::is_healthy,
+             "파이프라인 활성 여부 (liveness)")
+        .def("is_ready", &PyPipeline::is_ready,
+             "데이터 수신 완료 여부 (readiness)")
+
+        // 금융 함수
+        .def("xbar", &PyPipeline::xbar,
+             py::arg("symbol"), py::arg("bucket_ns"),
+             "OHLCV 캔들차트 (xbar time bucket).\n"
+             "bucket_ns: 버킷 크기 (나노초). 5분 = 300000000000")
+        .def("ema", &PyPipeline::ema,
+             py::arg("symbol"), py::arg("period"),
+             "지수이동평균 (EMA). period: 기간 (예: 20)")
+        .def("delta", &PyPipeline::delta,
+             py::arg("symbol"),
+             "행간 차이 (price[i] - price[i-1])")
+        .def("ratio", &PyPipeline::ratio,
+             py::arg("symbol"),
+             "행간 비율 (price[i] / price[i-1])")
+        .def("window_agg", &PyPipeline::window_agg,
+             py::arg("symbol"), py::arg("func"), py::arg("rows_preceding"),
+             "윈도우 집계 (SUM/AVG/MIN/MAX). func: 'SUM'|'AVG'|'MIN'|'MAX'");
 }

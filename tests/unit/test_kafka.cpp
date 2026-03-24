@@ -1,18 +1,18 @@
 // ============================================================================
-// APEX-DB: KafkaConsumer unit tests
+// ZeptoDB: KafkaConsumer unit tests
 // ============================================================================
 // Tests exercise decode / routing logic without a live Kafka broker.
 // Actual broker connectivity is tested via integration tests only.
 // ============================================================================
 
-#include "apex/feeds/kafka_consumer.h"
-#include "apex/core/pipeline.h"
+#include "zeptodb/feeds/kafka_consumer.h"
+#include "zeptodb/core/pipeline.h"
 
 #include <gtest/gtest.h>
 #include <cstring>
 
-using namespace apex::feeds;
-using apex::ingestion::TickMessage;
+using namespace zeptodb::feeds;
+using zeptodb::ingestion::TickMessage;
 
 // ============================================================================
 // KafkaConfig
@@ -23,7 +23,7 @@ TEST(KafkaConsumerTest, ConfigDefaults) {
     cfg.topic = "market_data";
 
     EXPECT_EQ(cfg.brokers, "localhost:9092");
-    EXPECT_EQ(cfg.group_id, "apex-consumer");
+    EXPECT_EQ(cfg.group_id, "zepto-consumer");
     EXPECT_EQ(cfg.auto_offset_reset, "latest");
     EXPECT_EQ(cfg.poll_timeout_ms, 100);
     EXPECT_EQ(cfg.format, MessageFormat::JSON);
@@ -119,7 +119,7 @@ TEST(KafkaConsumerTest, DecodeBinaryNull) {
 // ============================================================================
 
 TEST(KafkaConsumerTest, DecodeJsonHumanKnownSymbol) {
-    std::unordered_map<std::string, apex::SymbolId> sym_map{{"AAPL", 1}, {"MSFT", 2}};
+    std::unordered_map<std::string, zeptodb::SymbolId> sym_map{{"AAPL", 1}, {"MSFT", 2}};
 
     const char* json = R"({"symbol":"AAPL","price":150.50,"volume":300,"ts":111})";
     auto result = KafkaConsumer::decode_json_human(
@@ -133,7 +133,7 @@ TEST(KafkaConsumerTest, DecodeJsonHumanKnownSymbol) {
 }
 
 TEST(KafkaConsumerTest, DecodeJsonHumanUnknownSymbol) {
-    std::unordered_map<std::string, apex::SymbolId> sym_map{{"AAPL", 1}};
+    std::unordered_map<std::string, zeptodb::SymbolId> sym_map{{"AAPL", 1}};
     const char* json = R"({"symbol":"TSLA","price":200.0,"volume":50})";
     auto result = KafkaConsumer::decode_json_human(
         json, std::strlen(json), sym_map, 10000.0);
@@ -141,7 +141,7 @@ TEST(KafkaConsumerTest, DecodeJsonHumanUnknownSymbol) {
 }
 
 TEST(KafkaConsumerTest, DecodeJsonHumanMissingPrice) {
-    std::unordered_map<std::string, apex::SymbolId> sym_map{{"AAPL", 1}};
+    std::unordered_map<std::string, zeptodb::SymbolId> sym_map{{"AAPL", 1}};
     const char* json = R"({"symbol":"AAPL","volume":50})";
     auto result = KafkaConsumer::decode_json_human(
         json, std::strlen(json), sym_map, 10000.0);
@@ -171,7 +171,7 @@ TEST(KafkaConsumerTest, IngestDecodedSingleNode) {
     cfg.topic = "test";
     KafkaConsumer consumer(cfg);
 
-    apex::core::ApexPipeline pipeline;
+    zeptodb::core::ZeptoPipeline pipeline;
     consumer.set_pipeline(&pipeline);
     // Pipeline not started — ingest_tick() still enqueues into ring buffer.
 
@@ -199,7 +199,7 @@ TEST(KafkaConsumerTest, OnMessageUpdatesStats) {
     cfg.format = MessageFormat::JSON;
     KafkaConsumer consumer(cfg);
 
-    apex::core::ApexPipeline pipeline;
+    zeptodb::core::ZeptoPipeline pipeline;
     consumer.set_pipeline(&pipeline);
 
     const char* valid = R"({"symbol_id":1,"price":15000,"volume":100})";
@@ -264,7 +264,7 @@ TEST(KafkaConsumerTest, BackpressureSucceedsAfterRetry) {
     cfg.backpressure_sleep_us = 0;  // no sleep in tests
     KafkaConsumer consumer(cfg);
 
-    apex::core::ApexPipeline pipeline;
+    zeptodb::core::ZeptoPipeline pipeline;
     consumer.set_pipeline(&pipeline);
 
     TickMessage msg{};
@@ -292,21 +292,21 @@ TEST(KafkaConsumerTest, FormatPrometheusCounters) {
     const std::string out = KafkaConsumer::format_prometheus("trades", s);
 
     // Counter names must be present with correct label + value
-    EXPECT_NE(out.find("apex_kafka_messages_consumed_total{consumer=\"trades\"} 1000"), std::string::npos);
-    EXPECT_NE(out.find("apex_kafka_bytes_consumed_total{consumer=\"trades\"} 64000"), std::string::npos);
-    EXPECT_NE(out.find("apex_kafka_decode_errors_total{consumer=\"trades\"} 3"), std::string::npos);
-    EXPECT_NE(out.find("apex_kafka_route_local_total{consumer=\"trades\"} 900"), std::string::npos);
-    EXPECT_NE(out.find("apex_kafka_route_remote_total{consumer=\"trades\"} 100"), std::string::npos);
-    EXPECT_NE(out.find("apex_kafka_ingest_failures_total{consumer=\"trades\"} 2"), std::string::npos);
+    EXPECT_NE(out.find("zepto_kafka_messages_consumed_total{consumer=\"trades\"} 1000"), std::string::npos);
+    EXPECT_NE(out.find("zepto_kafka_bytes_consumed_total{consumer=\"trades\"} 64000"), std::string::npos);
+    EXPECT_NE(out.find("zepto_kafka_decode_errors_total{consumer=\"trades\"} 3"), std::string::npos);
+    EXPECT_NE(out.find("zepto_kafka_route_local_total{consumer=\"trades\"} 900"), std::string::npos);
+    EXPECT_NE(out.find("zepto_kafka_route_remote_total{consumer=\"trades\"} 100"), std::string::npos);
+    EXPECT_NE(out.find("zepto_kafka_ingest_failures_total{consumer=\"trades\"} 2"), std::string::npos);
 }
 
 TEST(KafkaConsumerTest, FormatPrometheusIncludesHelp) {
     KafkaStats s{};
     const std::string out = KafkaConsumer::format_prometheus("quotes", s);
 
-    EXPECT_NE(out.find("# HELP apex_kafka_messages_consumed_total"), std::string::npos);
-    EXPECT_NE(out.find("# TYPE apex_kafka_messages_consumed_total counter"), std::string::npos);
-    EXPECT_NE(out.find("# HELP apex_kafka_ingest_failures_total"), std::string::npos);
+    EXPECT_NE(out.find("# HELP zepto_kafka_messages_consumed_total"), std::string::npos);
+    EXPECT_NE(out.find("# TYPE zepto_kafka_messages_consumed_total counter"), std::string::npos);
+    EXPECT_NE(out.find("# HELP zepto_kafka_ingest_failures_total"), std::string::npos);
 }
 
 TEST(KafkaConsumerTest, FormatPrometheusZeroStats) {

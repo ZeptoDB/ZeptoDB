@@ -1,4 +1,4 @@
-# APEX-DB Python API Reference
+# ZeptoDB Python API Reference
 
 *Last updated: 2026-03-22*
 
@@ -6,20 +6,20 @@ Two Python interfaces are available:
 
 | Interface | Description | Use case |
 |-----------|-------------|----------|
-| `apex` | Low-level pybind11 C++ binding | In-process, maximum performance |
-| `apex_py` | High-level Python package | Pandas/Polars/Arrow interop, HTTP client |
+| `zeptodb` | Low-level pybind11 C++ binding | In-process, maximum performance |
+| `zepto_py` | High-level Python package | Pandas/Polars/Arrow interop, HTTP client |
 
 ---
 
 ## Table of Contents
 
-- [apex — pybind11 binding](#apex--pybind11-binding)
-  - [apex.Pipeline](#apexpipeline)
-  - [apex.sql.QueryExecutor](#apexsqlqueryexecutor)
-- [apex_py.connection — HTTP client](#apex_pyconnection--http-client)
-- [apex_py.dataframe — bulk ingest/export](#apex_pydataframe--bulk-ingestexport)
-- [apex_py.arrow — Arrow / DuckDB interop](#apex_pyarrow--arrow--duckdb-interop)
-- [apex_py.streaming — high-throughput ingest](#apex_pystreaming--high-throughput-ingest)
+- [zeptodb — pybind11 binding](#apex--pybind11-binding)
+  - [zeptodb.Pipeline](#zeptopipeline)
+  - [zeptodb.sql.QueryExecutor](#zeptosqlqueryexecutor)
+- [zepto_py.connection — HTTP client](#zepto_pyconnection--http-client)
+- [zepto_py.dataframe — bulk ingest/export](#zepto_pydataframe--bulk-ingestexport)
+- [zepto_py.arrow — Arrow / DuckDB interop](#zepto_pyarrow--arrow--duckdb-interop)
+- [zepto_py.streaming — high-throughput ingest](#zepto_pystreaming--high-throughput-ingest)
 - [Interoperability Matrix](#interoperability-matrix)
 
 ---
@@ -29,12 +29,12 @@ Two Python interfaces are available:
 ### End-to-end: ingest from polars, query via SQL, export to pandas
 
 ```python
-import apex
+import zeptodb
 import polars as pl
-from apex_py import from_polars, query_to_pandas
+from zepto_py import from_polars, query_to_pandas
 
 # 1. Start pipeline
-pipeline = apex.Pipeline()
+pipeline = zeptodb.Pipeline()
 pipeline.start()
 
 # 2. Build a polars DataFrame and ingest (zero-copy Arrow path)
@@ -69,10 +69,10 @@ pipeline.stop()
 ### HTTP client quick start
 
 ```python
-import apex_py as apex
+import zepto_py as apex
 
-# Connect to running apex_server
-db = apex.connect("localhost", 8123)
+# Connect to running zepto_server
+db = zeptodb.connect("localhost", 8123)
 
 # SQL → pandas
 df = db.query_pandas(
@@ -88,7 +88,7 @@ print(df)
 
 ```python
 import pandas as pd
-from apex_py import StreamingSession
+from zepto_py import StreamingSession
 
 sess = StreamingSession(pipeline, batch_size=50_000, error_mode="skip")
 
@@ -110,7 +110,7 @@ print(f"Ingested {stats.rows_ingested:,} rows at {stats.throughput:,.0f} rows/se
 
 ```python
 import pyarrow as pa
-from apex_py import ArrowSession
+from zepto_py import ArrowSession
 
 sess = ArrowSession(pipeline)
 
@@ -118,7 +118,7 @@ sess = ArrowSession(pipeline)
 table = sess.to_arrow(symbol=1)
 print(table.schema)  # timestamp: int64, price: int64, volume: int64
 
-# Query with DuckDB directly on APEX-DB data
+# Query with DuckDB directly on ZeptoDB data
 conn = sess.to_duckdb(symbol=1, table_name="trades")
 df = conn.execute(
     "SELECT avg(price), stddev(price) FROM trades"
@@ -128,28 +128,28 @@ print(df)
 
 ---
 
-## apex — pybind11 binding
+## zeptodb — pybind11 binding
 
-The `apex` module is the low-level C++ binding built with pybind11.
+The `zeptodb` module is the low-level C++ binding built with pybind11.
 Build with `cmake -DAPEX_BUILD_PYTHON=ON`.
 
-### apex.Pipeline
+### zeptodb.Pipeline
 
 #### Construction
 
 ```python
-import apex
+import zeptodb
 
 # Default config (pure in-memory, 32 MB arena per partition)
-pipeline = apex.Pipeline()
+pipeline = zeptodb.Pipeline()
 
 # Custom config
-pipeline = apex.Pipeline(config=apex.PipelineConfig(
+pipeline = zeptodb.Pipeline(config=zeptodb.PipelineConfig(
     arena_size=32 * 1024 * 1024,
     drain_batch_size=256,
-    storage_mode=apex.StorageMode.PURE_IN_MEMORY,
-    # storage_mode=apex.StorageMode.TIERED,
-    # storage_mode=apex.StorageMode.PURE_ON_DISK,
+    storage_mode=zeptodb.StorageMode.PURE_IN_MEMORY,
+    # storage_mode=zeptodb.StorageMode.TIERED,
+    # storage_mode=zeptodb.StorageMode.PURE_ON_DISK,
 ))
 ```
 
@@ -192,7 +192,7 @@ result = pipeline.sum(symbol=1, col="volume")      # → int
 
 #### Zero-copy column export
 
-Returns a numpy view into APEX-DB's internal column buffer — no copy, ~522ns.
+Returns a numpy view into ZeptoDB's internal column buffer — no copy, ~522ns.
 
 ```python
 prices     = pipeline.get_column(symbol=1, name="price")      # np.ndarray[int64]
@@ -218,10 +218,10 @@ stats.last_ingest_latency_ns  # int
 
 ---
 
-### apex.sql.QueryExecutor
+### zeptodb.sql.QueryExecutor
 
 ```python
-from apex.sql import QueryExecutor
+from zeptodb.sql import QueryExecutor
 
 executor = QueryExecutor(pipeline)
 
@@ -249,20 +249,20 @@ for row in result.rows:
 
 ---
 
-## apex_py.connection — HTTP client
+## zepto_py.connection — HTTP client
 
-Connects to a running `apex_server` on port 8123 (ClickHouse-compatible HTTP API).
+Connects to a running `zepto_server` on port 8123 (ClickHouse-compatible HTTP API).
 
 ```python
-import apex_py as apex
-from apex_py import ApexConnection
+import zepto_py as apex
+from zepto_py import ApexConnection
 
 # Connect
-db = apex.connect("localhost", 8123)
+db = zeptodb.connect("localhost", 8123)
 # or equivalently:
 db = ApexConnection(host="localhost", port=8123)
 db = ApexConnection(host="localhost", port=8123,
-                    api_key="apex_<64-hex>")  # with auth
+                    api_key="zepto_<64-hex>")  # with auth
 
 # Health check
 db.ping()   # → True if server is up
@@ -291,12 +291,12 @@ db.ingest_polars(df_polars)
 
 ---
 
-## apex_py.dataframe — bulk ingest/export
+## zepto_py.dataframe — bulk ingest/export
 
-Standalone converters. Requires a live `apex.Pipeline` (C++ binding) object — no HTTP.
+Standalone converters. Requires a live `zeptodb.Pipeline` (C++ binding) object — no HTTP.
 
 ```python
-from apex_py import (
+from zepto_py import (
     from_pandas, from_polars, from_arrow,
     to_pandas, to_polars,
     query_to_pandas, query_to_polars,
@@ -312,7 +312,7 @@ Vectorized — uses `df[col].to_numpy(copy=False)` then single `ingest_batch()` 
 ```python
 from_pandas(
     df,                          # pd.DataFrame
-    pipeline,                    # apex.Pipeline
+    pipeline,                    # zeptodb.Pipeline
     symbol_col="symbol",         # column name for symbol id
     price_col="price",           # column name for price
     volume_col="volume",         # column name for volume
@@ -377,12 +377,12 @@ df = query_to_polars(pipeline,
 
 ---
 
-## apex_py.arrow — Arrow / DuckDB interop
+## zepto_py.arrow — Arrow / DuckDB interop
 
 Zero-copy Arrow table exchange and DuckDB registration.
 
 ```python
-from apex_py import ArrowSession
+from zepto_py import ArrowSession
 import pyarrow as pa
 
 sess = ArrowSession(pipeline)
@@ -391,7 +391,7 @@ sess = ArrowSession(pipeline)
 ### Ingest
 
 ```python
-# Arrow Table → APEX-DB
+# Arrow Table → ZeptoDB
 sess.ingest_arrow(
     table,                       # pa.Table
     symbol_col="symbol",
@@ -399,10 +399,10 @@ sess.ingest_arrow(
     volume_col="volume",
 )
 
-# Arrow RecordBatch → APEX-DB
+# Arrow RecordBatch → ZeptoDB
 sess.ingest_record_batch(batch)  # pa.RecordBatch
 
-# Per-column Arrow arrays → APEX-DB (raw columnar)
+# Per-column Arrow arrays → ZeptoDB (raw columnar)
 sess.ingest_arrow_columnar(
     symbols=sym_array,           # pa.Array[int64]
     prices=px_array,             # pa.Array[int64]
@@ -413,20 +413,20 @@ sess.ingest_arrow_columnar(
 ### Export
 
 ```python
-# APEX-DB → Arrow Table (zero-copy)
+# ZeptoDB → Arrow Table (zero-copy)
 table = sess.to_arrow(symbol=1)
 # Returns: pa.Table with schema: timestamp: int64, price: int64, volume: int64
 
-# APEX-DB → Arrow RecordBatchReader (streaming/lazy)
+# ZeptoDB → Arrow RecordBatchReader (streaming/lazy)
 reader = sess.to_record_batch_reader(symbol=1)
 for batch in reader:
     print(batch.num_rows)
 
-# APEX-DB → polars (via Arrow buffer — true zero-copy)
+# ZeptoDB → polars (via Arrow buffer — true zero-copy)
 df = sess.to_polars_zero_copy(symbol=1)
 # Returns: pl.DataFrame sharing Arrow buffer — no copy
 
-# APEX-DB → DuckDB in-memory table
+# ZeptoDB → DuckDB in-memory table
 conn = sess.to_duckdb(symbol=1, table_name="trades")
 result = conn.execute("SELECT avg(price) FROM trades").fetchdf()
 ```
@@ -437,18 +437,18 @@ result = conn.execute("SELECT avg(price) FROM trades").fetchdf()
 # Schema
 arrow_schema = sess.get_schema()   # → pa.Schema
 
-from apex_py.arrow import apex_schema_to_arrow
-schema = apex_schema_to_arrow(["timestamp", "price", "volume"])
+from zepto_py.arrow import zeptodb_schema_to_arrow
+schema = zepto_schema_to_arrow(["timestamp", "price", "volume"])
 ```
 
 ---
 
-## apex_py.streaming — high-throughput ingest
+## zepto_py.streaming — high-throughput ingest
 
 Batch ingest from pandas/polars/generators with progress and error handling.
 
 ```python
-from apex_py import StreamingSession
+from zepto_py import StreamingSession
 
 sess = StreamingSession(
     pipeline,
@@ -514,8 +514,8 @@ stats.throughput       # float  (rows/sec)
 
 | From \ To | pandas | polars | numpy | Arrow | DuckDB | HTTP |
 |-----------|--------|--------|-------|-------|--------|------|
-| **APEX-DB (in-proc)** | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` | — |
-| **APEX-DB (HTTP)** | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — | `POST /` |
+| **ZeptoDB (in-proc)** | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` | — |
+| **ZeptoDB (HTTP)** | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — | `POST /` |
 | **pandas → APEX** | `from_pandas()` | — | — | — | — | `ingest_pandas()` |
 | **polars → APEX** | — | `from_polars()` | — | — | — | `ingest_polars()` |
 | **Arrow → APEX** | — | — | — | `ingest_arrow()` | — | — |

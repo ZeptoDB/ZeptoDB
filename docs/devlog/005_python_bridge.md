@@ -7,7 +7,7 @@
 
 ## Overview
 
-Phase D builds the bridge layer allowing quant researchers to manipulate APEX-DB directly from Python. All three core requirements specified in the design document (`layer4_transpiler_client.md`) were achieved:
+Phase D builds the bridge layer allowing quant researchers to manipulate ZeptoDB directly from Python. All three core requirements specified in the design document (`layer4_transpiler_client.md`) were achieved:
 
 1. **Zero-copy**: Expose C++ RDB memory as numpy arrays without copying
 2. **Lazy Evaluation**: `.collect()` paradigm in the style of Polars
@@ -35,7 +35,7 @@ return py::array_t<int64_t>(
 );
 ```
 
-Registered a no-op destructor in `py::capsule` to prevent numpy from freeing the memory. Actual memory ownership remains with `ApexPipeline` -> `ArenaAllocator`. Zero-copy is verified by `OWNDATA=False` on the result array.
+Registered a no-op destructor in `py::capsule` to prevent numpy from freeing the memory. Actual memory ownership remains with `ZeptoPipeline` -> `ArenaAllocator`. Zero-copy is verified by `OWNDATA=False` on the result array.
 
 **Resolving the drain() race condition**
 A race in `ColumnVector::append()` occurred when the background drain thread and `drain_sync()` ran concurrently. Fix:
@@ -52,7 +52,7 @@ Completely removed direct `drain_sync()` calls and delegated entirely to the bac
 
 ---
 
-### Part 2: Lazy DSL (`src/transpiler/apex_py/dsl.py`)
+### Part 2: Lazy DSL (`src/transpiler/zepto_py/dsl.py`)
 
 Reproduced the Polars `.lazy()` -> `.collect()` paradigm in pure Python.
 
@@ -113,7 +113,7 @@ All 31 Python tests passed. C++ tests 29/29 also maintained.
 
 ---
 
-### Part 5: Benchmark Results (Polars v1.36.1 vs APEX-DB, N=100K rows)
+### Part 5: Benchmark Results (Polars v1.36.1 vs ZeptoDB, N=100K rows)
 
 | Query | APEX | Polars Lazy | Speedup |
 |-------|------|-------------|---------|
@@ -159,8 +159,8 @@ Actual data stored correctly (no fallback on append failure). Workaround in benc
 
 ```
 src/transpiler/
-  python_binding.cpp       # pybind11 C++ module (apex.so)
-  apex_py/
+  python_binding.cpp       # pybind11 C++ module (zeptodb.so)
+  zepto_py/
     dsl.py                 # Polars-style Lazy DSL
 
 tests/

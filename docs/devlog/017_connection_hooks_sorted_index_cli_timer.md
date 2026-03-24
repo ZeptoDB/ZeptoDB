@@ -12,7 +12,7 @@ Implemented three kdb+ parity features that were flagged as production-critical:
 
 1. **Connection hooks** (`.z.po`/`.z.pc`) — session lifecycle callbacks in `HttpServer`
 2. **s# attribute hint** — sorted column binary-search index in `Partition`
-3. **`\t <sql>` one-shot timer** — interactive query timing in apex-cli
+3. **`\t <sql>` one-shot timer** — interactive query timing in zepto-cli
 
 ---
 
@@ -26,7 +26,7 @@ kdb+ users rely heavily on `.z.po`/`.z.pc` for:
 - Session-level resource cleanup
 - Operations dashboards
 
-APEX-DB had no equivalent — connections were anonymous.
+ZeptoDB had no equivalent — connections were anonymous.
 
 ### Design
 
@@ -85,7 +85,7 @@ The hook uses `svr_->set_logger(...)` — httplib's post-response callback — t
 
 ### Problem
 
-kdb+'s `s#` attribute marks a column as sorted, enabling binary search (`bin`) instead of linear scan for range queries. Without this, APEX-DB scanned all N rows even when the answer was in a narrow range.
+kdb+'s `s#` attribute marks a column as sorted, enabling binary search (`bin`) instead of linear scan for range queries. Without this, ZeptoDB scanned all N rows even when the answer was in a narrow range.
 
 For a quant running `WHERE price BETWEEN 15000 AND 16000` on a 1M-row partition with 1% selectivity, this meant scanning 1,000,000 rows to return 10,000.
 
@@ -133,7 +133,7 @@ This is in addition to the existing XBAR sorted-scan optimization (which reduced
 
 ### Problem
 
-kdb+ users type `\t select ...` to time a query without committing to a persistent toggle. In APEX-DB, `\t` only toggled timing ON/OFF — there was no one-shot syntax.
+kdb+ users type `\t select ...` to time a query without committing to a persistent toggle. In ZeptoDB, `\t` only toggled timing ON/OFF — there was no one-shot syntax.
 
 ### Implementation
 
@@ -159,14 +159,14 @@ The toggle state is saved before and restored after, so `\t <sql>` is truly non-
 
 | File | Change |
 |------|--------|
-| `include/apex/server/http_server.h` | `ConnectionInfo`, `set_on_connect`, `set_on_disconnect`, `list_sessions`, `evict_idle_sessions`, private session state |
+| `include/zeptodb/server/http_server.h` | `ConnectionInfo`, `set_on_connect`, `set_on_disconnect`, `list_sessions`, `evict_idle_sessions`, private session state |
 | `src/server/http_server.cpp` | `setup_session_tracking`, `track_session`, `list_sessions`, `evict_idle_sessions`, `/admin/sessions` route |
-| `include/apex/storage/partition_manager.h` | `set_sorted`, `is_sorted`, `sorted_range`, `sorted_columns_` |
-| `include/apex/sql/executor.h` | `extract_sorted_col_range` declaration |
+| `include/zeptodb/storage/partition_manager.h` | `set_sorted`, `is_sorted`, `sorted_range`, `sorted_columns_` |
+| `include/zeptodb/sql/executor.h` | `extract_sorted_col_range` declaration |
 | `src/sql/executor.cpp` | `extract_sorted_col_range` implementation, `exec_simple_select` integration |
-| `tools/apex-cli.cpp` | `\t <sql>` one-shot timer, updated help text |
+| `tools/zepto-cli.cpp` | `\t <sql>` one-shot timer, updated help text |
 | `tests/unit/test_features.cpp` | 20 new tests |
-| `tests/CMakeLists.txt` | added `test_features.cpp`, `apex_server` link |
+| `tests/CMakeLists.txt` | added `test_features.cpp`, `zepto_server` link |
 | `BACKLOG.md` | marked 3 items complete |
 
 ---

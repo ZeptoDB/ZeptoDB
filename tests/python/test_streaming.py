@@ -1,5 +1,5 @@
 """
-Tests for APEX-DB StreamingSession — batch ingest with progress tracking.
+Tests for ZeptoDB StreamingSession — batch ingest with progress tracking.
 """
 import pytest
 import sys
@@ -27,7 +27,7 @@ try:
 except ImportError:
     HAS_PYARROW = False
 
-from apex_py.streaming import StreamingSession
+from zepto_py.streaming import StreamingSession
 
 
 # ============================================================================

@@ -2,11 +2,11 @@
 // Layer 1: Column Store Implementation
 // ============================================================================
 
-#include "apex/storage/column_store.h"
+#include "zeptodb/storage/column_store.h"
 #include <cstring>
 #include <algorithm>
 
-namespace apex::storage {
+namespace zeptodb::storage {
 
 // Initial capacity: 1 DataBlock worth of rows
 static constexpr size_t INITIAL_CAPACITY = DATABLOCK_ROWS;
@@ -37,7 +37,7 @@ bool ColumnVector::ensure_capacity(size_t needed) {
     // Allocate new block from arena (cache-line aligned)
     void* new_data = arena_.allocate(new_capacity * elem_size_, CACHE_LINE_SIZE);
     if (!new_data) {
-        APEX_ERROR("ColumnVector '{}': arena allocation failed for {} elements",
+        ZEPTO_ERROR("ColumnVector '{}': arena allocation failed for {} elements",
                    name_, new_capacity);
         return false;
     }
@@ -91,4 +91,4 @@ template bool ColumnVector::append_batch<double>(const double*, size_t);
 template bool ColumnVector::append_batch<uint32_t>(const uint32_t*, size_t);
 template bool ColumnVector::append_batch<uint8_t>(const uint8_t*, size_t);
 
-} // namespace apex::storage
+} // namespace zeptodb::storage

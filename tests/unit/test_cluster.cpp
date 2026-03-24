@@ -12,10 +12,10 @@
 #include <gtest/gtest.h>
 
 // 클러스터 헤더들
-#include "apex/cluster/transport.h"
-#include "apex/cluster/partition_router.h"
-#include "apex/cluster/health_monitor.h"
-#include "apex/cluster/cluster_node.h"
+#include "zeptodb/cluster/transport.h"
+#include "zeptodb/cluster/partition_router.h"
+#include "zeptodb/cluster/health_monitor.h"
+#include "zeptodb/cluster/cluster_node.h"
 
 // SharedMem backend (src/cluster 디렉토리)
 #include "shm_backend.h"
@@ -28,8 +28,8 @@
 #include <thread>
 #include <set>
 
-using namespace apex;
-using namespace apex::cluster;
+using namespace zeptodb;
+using namespace zeptodb::cluster;
 using namespace std::chrono_literals;
 
 // ============================================================================
@@ -124,7 +124,7 @@ TEST(PartitionRouter, Distribution) {
     router.add_node(3);
 
     std::unordered_map<NodeId, int> counts;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         counts[router.route(s)]++;
     }
 
@@ -153,15 +153,15 @@ TEST(PartitionRouter, MinimalMigrationOnAdd) {
         EXPECT_NE(m.from, 3u);
     }
 
-    std::unordered_map<NodeId, std::vector<apex::SymbolId>> before;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    std::unordered_map<NodeId, std::vector<zeptodb::SymbolId>> before;
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         before[router.route(s)].push_back(s);
     }
 
     router.add_node(3);
 
-    std::unordered_map<NodeId, std::vector<apex::SymbolId>> after;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    std::unordered_map<NodeId, std::vector<zeptodb::SymbolId>> after;
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         after[router.route(s)].push_back(s);
     }
 
@@ -170,7 +170,7 @@ TEST(PartitionRouter, MinimalMigrationOnAdd) {
 
     // Consistent hashing: 노드 1→2 또는 2→1 이동 없어야 함
     size_t wrong_moves = 0;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         NodeId old_node = 0, new_node = 0;
         for (auto& [n, syms] : before) {
             if (std::find(syms.begin(), syms.end(), s) != syms.end()) old_node = n;
@@ -189,8 +189,8 @@ TEST(PartitionRouter, MinimalMigrationOnRemove) {
     router.add_node(2);
     router.add_node(3);
 
-    std::unordered_map<apex::SymbolId, NodeId> before_map;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    std::unordered_map<zeptodb::SymbolId, NodeId> before_map;
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         before_map[s] = router.route(s);
     }
 
@@ -204,14 +204,14 @@ TEST(PartitionRouter, MinimalMigrationOnRemove) {
 
     router.remove_node(3);
 
-    std::unordered_map<apex::SymbolId, NodeId> after_map;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    std::unordered_map<zeptodb::SymbolId, NodeId> after_map;
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         after_map[s] = router.route(s);
     }
 
     // 노드 3 담당 심볼만 이동
     size_t wrong_moves = 0;
-    for (apex::SymbolId s = 0; s < 1000; ++s) {
+    for (zeptodb::SymbolId s = 0; s < 1000; ++s) {
         NodeId old_n = before_map[s];
         NodeId new_n = after_map[s];
         if (old_n != 3 && old_n != new_n) wrong_moves++;
@@ -288,8 +288,8 @@ TEST(ClusterNode, TwoNodeLocalCluster) {
     cfg1.self = {"127.0.0.1", 9001, 1};
     cfg2.self = {"127.0.0.1", 9002, 2};
 
-    cfg1.pipeline.storage_mode = apex::core::StorageMode::PURE_IN_MEMORY;
-    cfg2.pipeline.storage_mode = apex::core::StorageMode::PURE_IN_MEMORY;
+    cfg1.pipeline.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    cfg2.pipeline.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
     cfg1.enable_remote_ingest = false;
     cfg2.enable_remote_ingest = false;
 
@@ -304,11 +304,11 @@ TEST(ClusterNode, TwoNodeLocalCluster) {
     EXPECT_EQ(node1->router().node_count(), 2u);
     EXPECT_EQ(node2->router().node_count(), 2u);
 
-    apex::SymbolId test_sym = 1000;
+    zeptodb::SymbolId test_sym = 1000;
     NodeId owner = node1->route(test_sym);
     EXPECT_TRUE(owner == 1 || owner == 2);
 
-    apex::ingestion::TickMessage msg{};
+    zeptodb::ingestion::TickMessage msg{};
     msg.symbol_id = test_sym;
     msg.price     = 15000000;  // 1500.0000
     msg.volume    = 100;
@@ -360,7 +360,7 @@ TEST(PartitionRouter, SingleNode) {
     PartitionRouter router;
     router.add_node(99);
 
-    for (apex::SymbolId s = 0; s < 100; ++s) {
+    for (zeptodb::SymbolId s = 0; s < 100; ++s) {
         EXPECT_EQ(router.route(s), 99u);
     }
 }
@@ -392,10 +392,10 @@ TEST(SharedMemTransport, ConnectionManagement) {
 // Hot Symbol Detection & Rebalancing
 // ============================================================================
 
-#include "apex/cluster/hot_symbol_detector.h"
+#include "zeptodb/cluster/hot_symbol_detector.h"
 
 TEST(HotSymbolDetector, DetectsHotSymbol) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     HotSymbolDetector det(3.0, 10);  // 3x average, min 10 ticks
 
     // Symbol 1: 100 ticks, Symbol 2: 10 ticks, Symbol 3: 10 ticks
@@ -413,7 +413,7 @@ TEST(HotSymbolDetector, DetectsHotSymbol) {
 }
 
 TEST(HotSymbolDetector, ClearHotSymbol) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     HotSymbolDetector det(2.0, 5);
 
     for (int i = 0; i < 100; ++i) det.record(1);
@@ -427,7 +427,7 @@ TEST(HotSymbolDetector, ClearHotSymbol) {
 }
 
 TEST(HotSymbolDetector, SnapshotDoesNotReset) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     HotSymbolDetector det(2.0, 5);
 
     for (int i = 0; i < 100; ++i) det.record(1);
@@ -446,7 +446,7 @@ TEST(HotSymbolDetector, SnapshotDoesNotReset) {
 }
 
 TEST(PartitionRouter, PinSymbolOverridesRoute) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     PartitionRouter router;
     router.add_node(1);
     router.add_node(2);
@@ -464,7 +464,7 @@ TEST(PartitionRouter, PinSymbolOverridesRoute) {
 }
 
 TEST(PartitionRouter, UnpinRestoresNormalRoute) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     PartitionRouter router;
     router.add_node(1);
     router.add_node(2);
@@ -481,7 +481,7 @@ TEST(PartitionRouter, UnpinRestoresNormalRoute) {
 }
 
 TEST(PartitionRouter, PinnedSymbolsList) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     PartitionRouter router;
     router.add_node(1);
     router.add_node(2);
@@ -499,10 +499,10 @@ TEST(PartitionRouter, PinnedSymbolsList) {
 // NodeRegistry — pluggable node membership
 // ============================================================================
 
-#include "apex/cluster/node_registry.h"
+#include "zeptodb/cluster/node_registry.h"
 
 TEST(NodeRegistry, GossipBasicLifecycle) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     GossipNodeRegistry reg(HealthConfig{.heartbeat_interval_ms = 100,
                                          .suspect_timeout_ms = 300,
                                          .dead_timeout_ms = 1000,
@@ -521,7 +521,7 @@ TEST(NodeRegistry, GossipBasicLifecycle) {
 }
 
 TEST(NodeRegistry, K8sRegisterDeregister) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     K8sNodeRegistry reg(K8sConfig{.poll_interval_ms = 50});
     NodeAddress self{"10.0.0.1", 8123, 1};
     reg.start(self);
@@ -542,7 +542,7 @@ TEST(NodeRegistry, K8sRegisterDeregister) {
 }
 
 TEST(NodeRegistry, K8sChangeCallback) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     K8sNodeRegistry reg(K8sConfig{.poll_interval_ms = 50});
     NodeAddress self{"10.0.0.1", 8123, 1};
 
@@ -569,7 +569,7 @@ TEST(NodeRegistry, K8sChangeCallback) {
 }
 
 TEST(NodeRegistry, FactoryCreatesCorrectType) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     auto gossip = make_node_registry(RegistryMode::GOSSIP);
     auto k8s    = make_node_registry(RegistryMode::K8S);
     EXPECT_NE(gossip, nullptr);
@@ -580,7 +580,7 @@ TEST(NodeRegistry, FactoryCreatesCorrectType) {
 }
 
 TEST(NodeRegistry, K8sGetNode) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     K8sNodeRegistry reg;
     NodeAddress self{"10.0.0.1", 8123, 1};
     reg.start(self);
@@ -600,10 +600,10 @@ TEST(NodeRegistry, K8sGetNode) {
 // K8s Lease + Fencing Token — split-brain prevention
 // ============================================================================
 
-#include "apex/cluster/k8s_lease.h"
+#include "zeptodb/cluster/k8s_lease.h"
 
 TEST(FencingToken, MonotonicallyIncreasing) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     FencingToken token;
     EXPECT_EQ(token.current(), 0u);
 
@@ -616,7 +616,7 @@ TEST(FencingToken, MonotonicallyIncreasing) {
 }
 
 TEST(FencingToken, ValidateRejectsStale) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     FencingToken gate;
 
     // Accept epoch 5
@@ -634,7 +634,7 @@ TEST(FencingToken, ValidateRejectsStale) {
 }
 
 TEST(FencingToken, ValidateAcceptsEqual) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     FencingToken gate;
     EXPECT_TRUE(gate.validate(10));
     EXPECT_TRUE(gate.validate(10));  // same epoch is fine (idempotent)
@@ -642,7 +642,7 @@ TEST(FencingToken, ValidateAcceptsEqual) {
 }
 
 TEST(K8sLease, AcquireAndRenew) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     K8sLease lease(LeaseConfig{.lease_duration_ms = 5000});
 
     bool elected = false;
@@ -662,7 +662,7 @@ TEST(K8sLease, AcquireAndRenew) {
 }
 
 TEST(K8sLease, SecondNodeCannotAcquire) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     // Lease held by node-1, node-2 cannot take it
     K8sLease lease(LeaseConfig{.lease_duration_ms = 60000});
     lease.start("node-1");
@@ -676,7 +676,7 @@ TEST(K8sLease, SecondNodeCannotAcquire) {
 }
 
 TEST(K8sLease, ForceHolderTriggersLostCallback) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     K8sLease lease(LeaseConfig{.lease_duration_ms = 60000});
 
     bool lost = false;
@@ -696,7 +696,7 @@ TEST(K8sLease, ForceHolderTriggersLostCallback) {
 }
 
 TEST(K8sLease, EpochIncreasesOnReElection) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     K8sLease lease(LeaseConfig{.lease_duration_ms = 100});
 
     lease.start("node-1");
@@ -717,7 +717,7 @@ TEST(K8sLease, EpochIncreasesOnReElection) {
 }
 
 TEST(SplitBrain, FencingPreventsStaleWrite) {
-    using namespace apex::cluster;
+    using namespace zeptodb::cluster;
     // Simulate split-brain scenario:
     // 1. Coordinator A is leader (epoch=1)
     // 2. Network partition → B becomes leader (epoch=2)

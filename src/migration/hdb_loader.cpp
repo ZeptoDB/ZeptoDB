@@ -1,7 +1,7 @@
 // ============================================================================
-// APEX-DB: kdb+ HDB Loader Implementation
+// ZeptoDB: kdb+ HDB Loader Implementation
 // ============================================================================
-#include "apex/migration/hdb_loader.h"
+#include "zeptodb/migration/hdb_loader.h"
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include <algorithm>
 
-namespace apex::migration {
+namespace zeptodb::migration {
 
 // ============================================================================
 // HDBLoader Implementation
@@ -284,7 +284,7 @@ bool HDBLoader::load_table(const std::string& table_name,
     return true;
 }
 
-bool HDBLoader::export_to_apex(const std::string& table_name,
+bool HDBLoader::export_to_zepto(const std::string& table_name,
                                const std::string& output_dir) {
     // Find table
     auto it = std::find_if(tables_.begin(), tables_.end(),
@@ -317,7 +317,7 @@ bool HDBLoader::export_to_apex(const std::string& table_name,
     return writer.finalize();
 }
 
-std::string HDBLoader::apex_type_from_ktype(KType ktype) {
+std::string HDBLoader::zepto_type_from_ktype(KType ktype) {
     switch (ktype) {
         case KType::BOOL: return "BOOLEAN";
         case KType::BYTE: return "TINYINT";
@@ -540,4 +540,4 @@ bool APEXColumnWriter::finalize() {
     return out.good();
 }
 
-} // namespace apex::migration
+} // namespace zeptodb::migration
