@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-03-22*
+*Last updated: 2026-03-25*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -16,6 +16,15 @@ using the ClickHouse data source plugin with no modification.
 - [/stats](#stats)
 - [/metrics (Prometheus)](#metrics-prometheus)
 - [Error Responses](#error-responses)
+- [Admin API](#admin-api)
+  - [API Keys](#admin-api-keys)
+  - [Active Queries](#admin-active-queries)
+  - [Audit Log](#admin-audit-log)
+  - [Sessions](#admin-sessions)
+  - [Cluster Nodes](#admin-cluster-nodes)
+  - [Cluster Overview](#admin-cluster-overview)
+  - [Metrics History](#admin-metrics-history)
+  - [Version](#admin-version)
 - [Roles & Permissions](#roles--permissions)
 
 ---
@@ -122,6 +131,8 @@ print(df)
 | `GET` | `/admin/queries` | admin | List running queries |
 | `DELETE` | `/admin/queries/:id` | admin | Kill a running query |
 | `GET` | `/admin/audit` | admin | Audit log (last N events) |
+| `GET` | `/admin/sessions` | admin | Active client sessions |
+| `GET` | `/admin/version` | admin | Server version info |
 | `GET` | `/admin/nodes` | admin | Cluster node status |
 | `POST` | `/admin/nodes` | admin | Add remote node to cluster |
 | `DELETE` | `/admin/nodes/:id` | admin | Remove node from cluster |
@@ -338,11 +349,230 @@ Common error strings:
 | `"Unauthorized"` | Missing or invalid credentials |
 | `"Forbidden"` | Valid credentials but insufficient role |
 
-HTTP status codes: `200` on success (even for SQL errors — check `error` field), `401` for auth failure, `403` for permission denied.
+HTTP status codes: `200` on success (even for SQL errors — check `error` field), `401` for auth failure, `403` for permission denied, `408` for query timeout/cancelled.
 
 ---
 
-## /admin/metrics/history
+## Admin API
+
+All admin endpoints require the `admin` role. Returns `401` without credentials, `403` with non-admin credentials.
+
+### Admin: API Keys
+
+#### `GET /admin/keys` — List all API keys
+
+```bash
+curl http://localhost:8123/admin/keys -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+[
+  {
+    "id": "ak_7f3k8a2b",
+    "name": "trading-desk-1",
+    "role": "writer",
+    "enabled": true,
+    "created_at_ns": 1711234567000000000,
+    "allowed_tables": ["trades", "quotes"]
+  }
+]
+```
+
+#### `POST /admin/keys` — Create API key
+
+```bash
+curl -X POST http://localhost:8123/admin/keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"name":"algo-service","role":"writer"}'
+```
+
+Optional fields: `"tables":["trades","quotes"]` for table-level ACL.
+
+```json
+{"key": "zepto_a1b2c3d4e5f6..."}
+```
+
+The full key is shown exactly once. Store it securely.
+
+#### `DELETE /admin/keys/:id` — Revoke API key
+
+```bash
+curl -X DELETE http://localhost:8123/admin/keys/ak_7f3k8a2b \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"revoked": true}
+```
+
+---
+
+### Admin: Active Queries
+
+#### `GET /admin/queries` — List running queries
+
+```bash
+curl http://localhost:8123/admin/queries -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+[
+  {
+    "id": "q_a1b2c3",
+    "subject": "ak_7f3k8a2b",
+    "sql": "SELECT * FROM trades WHERE...",
+    "started_at_ns": 1711234567000000000
+  }
+]
+```
+
+#### `DELETE /admin/queries/:id` — Kill a running query
+
+Cancels the query at the next partition scan boundary via `CancellationToken`.
+
+```bash
+curl -X DELETE http://localhost:8123/admin/queries/q_a1b2c3 \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"cancelled": true}
+```
+
+---
+
+### Admin: Audit Log
+
+#### `GET /admin/audit` — Recent audit events
+
+Query parameter: `?n=<count>` (default: 100).
+
+```bash
+curl "http://localhost:8123/admin/audit?n=50" -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+[
+  {
+    "ts": 1711234567000000000,
+    "subject": "ak_7f3k8a2b",
+    "role": "writer",
+    "action": "query",
+    "detail": "SELECT count(*) FROM trades",
+    "from": "10.0.1.5"
+  }
+]
+```
+
+---
+
+### Admin: Sessions
+
+#### `GET /admin/sessions` — Active client sessions
+
+Lists connected clients (equivalent to kdb+ `.z.po`).
+
+```bash
+curl http://localhost:8123/admin/sessions -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+[
+  {
+    "remote_addr": "10.0.1.5",
+    "user": "ak_7f3k8a2b",
+    "connected_at_ns": 1711234567000000000,
+    "last_active_ns": 1711234590000000000,
+    "query_count": 42
+  }
+]
+```
+
+---
+
+### Admin: Cluster Nodes
+
+#### `GET /admin/nodes` — List cluster nodes
+
+```bash
+curl http://localhost:8123/admin/nodes -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "nodes": [
+    {
+      "id": 1,
+      "host": "10.0.1.1",
+      "port": 8123,
+      "state": "ACTIVE",
+      "ticks_ingested": 5000000,
+      "ticks_stored": 4999800,
+      "queries_executed": 12345
+    }
+  ]
+}
+```
+
+Node states: `ACTIVE`, `SUSPECT`, `DEAD`, `JOINING`, `LEAVING`.
+
+#### `POST /admin/nodes` — Add remote node at runtime
+
+```bash
+curl -X POST http://localhost:8123/admin/nodes \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"id":4,"host":"10.0.1.4","port":8123}'
+```
+
+```json
+{"added": true, "id": 4, "host": "10.0.1.4", "port": 8123}
+```
+
+Requires cluster mode (`set_coordinator()` must be called). Idempotent — adding an existing node ID is a no-op.
+
+#### `DELETE /admin/nodes/:id` — Remove node from cluster
+
+```bash
+curl -X DELETE http://localhost:8123/admin/nodes/4 \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"removed": true, "id": 4}
+```
+
+The node is removed from the routing table immediately. Safe to call for non-existent IDs.
+
+---
+
+### Admin: Cluster Overview
+
+#### `GET /admin/cluster` — Cluster summary
+
+```bash
+curl http://localhost:8123/admin/cluster -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "mode": "standalone",
+  "node_count": 1,
+  "partitions_created": 10,
+  "partitions_evicted": 0,
+  "ticks_ingested": 5000000,
+  "ticks_stored": 4999800,
+  "ticks_dropped": 200,
+  "queries_executed": 12345,
+  "total_rows_scanned": 50000000,
+  "last_ingest_latency_ns": 181
+}
+```
+
+---
+
+### Admin: Metrics History
+
+#### `GET /admin/metrics/history` — Time-series metrics
 
 Returns time-series metrics snapshots captured by the server's internal `MetricsCollector` (3-second interval, 1-hour ring buffer). No external infrastructure required — ZeptoDB monitors itself.
 
@@ -399,6 +629,20 @@ curl "http://localhost:8123/admin/metrics/history?since=1711234567000&limit=100"
 
 Query parameter: `?since=<epoch_ms>` — returns only snapshots with `timestamp_ms >= since`.
 Query parameter: `?limit=<N>` — max snapshots to return (default: 600).
+
+---
+
+### Admin: Version
+
+#### `GET /admin/version` — Server version info
+
+```bash
+curl http://localhost:8123/admin/version -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"engine": "ZeptoDB", "version": "0.1.0", "build": "Mar 25 2026"}
+```
 
 ---
 
