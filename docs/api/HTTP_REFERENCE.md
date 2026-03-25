@@ -123,6 +123,8 @@ print(df)
 | `DELETE` | `/admin/queries/:id` | admin | Kill a running query |
 | `GET` | `/admin/audit` | admin | Audit log (last N events) |
 | `GET` | `/admin/nodes` | admin | Cluster node status |
+| `POST` | `/admin/nodes` | admin | Add remote node to cluster |
+| `DELETE` | `/admin/nodes/:id` | admin | Remove node from cluster |
 | `GET` | `/admin/cluster` | admin | Cluster overview |
 | `GET` | `/admin/metrics/history` | admin | Metrics time-series history |
 
@@ -410,6 +412,32 @@ Query parameter: `?limit=<N>` — max snapshots to return (default: 600).
 | `analyst` | ✅ | ❌ | ✅ | ✅ | ❌ |
 | `metrics` | ❌ | ❌ | ✅ | ✅ | ❌ |
 
+### Table-Level ACL
+
+API keys can be restricted to specific tables. When `allowed_tables` is set,
+queries against any other table return `403 Forbidden`.
+
+```bash
+# Create a key restricted to trades and quotes tables only
+curl -X POST https://zepto:8443/admin/keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"name":"desk-1","role":"reader","tables":["trades","quotes"]}'
+
+# This key can query trades and quotes, but not risk_positions
+```
+
+When `allowed_tables` is empty (default), the key has access to all tables.
+Table ACL is enforced at the HTTP layer before SQL execution — the SQL parser
+extracts the target table from the query and checks it against the key's whitelist.
+
+| ACL Type | Scope | Example |
+|----------|-------|---------|
+| Symbol ACL | Row-level filter by symbol | `allowed_symbols: ["AAPL","GOOGL"]` |
+| Table ACL | Table-level access control | `allowed_tables: ["trades","quotes"]` |
+
+Both can be combined: a key with `allowed_tables: ["trades"]` and
+`allowed_symbols: ["AAPL"]` can only query AAPL data from the trades table.
+
 ---
 
-*See also: [SQL Reference](SQL_REFERENCE.md) · [Python Reference](PYTHON_REFERENCE.md) · [C++ Reference](CPP_REFERENCE.md)*
+*See also: [SQL Reference](SQL_REFERENCE.md) · [Config Reference](CONFIG_REFERENCE.md) · [Python Reference](PYTHON_REFERENCE.md) · [C++ Reference](CPP_REFERENCE.md)*

@@ -143,6 +143,7 @@ AuthDecision AuthManager::check_api_key(const std::string& token) const {
     ctx.role            = entry->role;
     ctx.source          = "api_key";
     ctx.allowed_symbols = entry->allowed_symbols;
+    ctx.allowed_tables  = entry->allowed_tables;
 
     return {AuthStatus::OK, ctx, ""};
 }
@@ -171,10 +172,11 @@ AuthDecision AuthManager::check_jwt(const std::string& token) const {
 // ============================================================================
 std::string AuthManager::create_api_key(const std::string& name,
                                           Role role,
-                                          const std::vector<std::string>& symbols)
+                                          const std::vector<std::string>& symbols,
+                                          const std::vector<std::string>& tables)
 {
     if (!key_store_) throw std::runtime_error("No API key store configured");
-    return key_store_->create_key(name, role, symbols);
+    return key_store_->create_key(name, role, symbols, tables);
 }
 
 bool AuthManager::revoke_api_key(const std::string& key_id) {

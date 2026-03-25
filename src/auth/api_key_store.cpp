@@ -18,7 +18,7 @@ namespace zeptodb::auth {
 // ============================================================================
 // File format (one key per line, lines starting with '#' are comments):
 //
-//   id|name|key_hash|role|symbols|enabled|created_at_ns
+//   id|name|key_hash|role|symbols|enabled|created_at_ns[|tables]
 //
 // Fields:
 //   id            — short key id, e.g. "ak_7f3k"
@@ -28,6 +28,7 @@ namespace zeptodb::auth {
 //   symbols       — comma-separated symbol whitelist, empty = unrestricted
 //   enabled       — "1" or "0"
 //   created_at_ns — nanoseconds since Unix epoch
+//   tables        — comma-separated table whitelist, empty = unrestricted (optional)
 // ============================================================================
 
 static constexpr const char* FILE_HEADER = "# zeptodb-keys-v1\n";
@@ -47,7 +48,8 @@ ApiKeyStore::ApiKeyStore(std::string config_path)
 // ============================================================================
 std::string ApiKeyStore::create_key(const std::string& name,
                                      Role role,
-                                     const std::vector<std::string>& allowed_symbols)
+                                     const std::vector<std::string>& allowed_symbols,
+                                     const std::vector<std::string>& allowed_tables)
 {
     std::string full_key = generate_key();
 
@@ -57,6 +59,7 @@ std::string ApiKeyStore::create_key(const std::string& name,
     entry.key_hash       = sha256_hex(full_key);
     entry.role           = role;
     entry.allowed_symbols = allowed_symbols;
+    entry.allowed_tables  = allowed_tables;
     entry.enabled        = true;
     entry.created_at_ns  = now_ns();
 
@@ -156,6 +159,14 @@ void ApiKeyStore::load() {
         e.enabled       = (parts[5] == "1");
         try { e.created_at_ns = std::stoll(parts[6]); } catch (...) {}
 
+        // Parse comma-separated tables (field 7, optional)
+        if (parts.size() > 7 && !parts[7].empty()) {
+            std::istringstream ts(parts[7]);
+            std::string tbl;
+            while (std::getline(ts, tbl, ','))
+                if (!tbl.empty()) e.allowed_tables.push_back(tbl);
+        }
+
         entries_.push_back(std::move(e));
     }
 }
@@ -184,7 +195,15 @@ void ApiKeyStore::save() const {
 
         f << SEP
           << (e.enabled ? '1' : '0') << SEP
-          << e.created_at_ns << '\n';
+          << e.created_at_ns << SEP;
+
+        // Tables (comma-separated)
+        for (size_t i = 0; i < e.allowed_tables.size(); ++i) {
+            if (i > 0) f << ',';
+            f << e.allowed_tables[i];
+        }
+
+        f << '\n';
     }
 }
 

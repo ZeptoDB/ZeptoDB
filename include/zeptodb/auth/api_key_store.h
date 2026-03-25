@@ -29,6 +29,7 @@ struct ApiKeyEntry {
     std::string              key_hash;        // sha256 hex of the full key
     Role                     role = Role::READER;
     std::vector<std::string> allowed_symbols; // empty = unrestricted
+    std::vector<std::string> allowed_tables;  // empty = unrestricted
     std::string              tenant_id;       // empty = no tenant
     bool                     enabled = true;
     int64_t                  created_at_ns = 0;
@@ -47,7 +48,8 @@ public:
     // Persists to config_path immediately.
     std::string create_key(const std::string& name,
                            Role role,
-                           const std::vector<std::string>& allowed_symbols = {});
+                           const std::vector<std::string>& allowed_symbols = {},
+                           const std::vector<std::string>& allowed_tables = {});
 
     // Validate a full plaintext key. Returns the entry on success.
     std::optional<ApiKeyEntry> validate(const std::string& key) const;

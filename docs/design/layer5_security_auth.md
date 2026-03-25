@@ -19,7 +19,7 @@ institutions operating under EMIR, MiFID II, and SOC2 frameworks.
 |--------|---------------|--------|
 | **Transport Encryption (TLS)** | httplib::SSLServer, OpenSSL 3.2 | ✅ |
 | **Authentication** | API Key (Bearer) + JWT/OIDC | ✅ |
-| **Authorization (RBAC)** | 5-role model + symbol-level ACL | ✅ |
+| **Authorization (RBAC)** | 5-role model + symbol-level ACL + table-level ACL | ✅ |
 | **Rate Limiting** | Token bucket, per-identity + per-IP | ✅ |
 | **Admin REST API** | Key/query/audit/version management | ✅ |
 | **Query Timeout & Kill** | CancellationToken + QueryTracker | ✅ |

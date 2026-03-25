@@ -3703,3 +3703,34 @@ TEST(QueryCoordinator, ShowTables_SingleNode_Works) {
 
     p1->stop();
 }
+
+// ============================================================================
+// Admin API: POST /admin/nodes, DELETE /admin/nodes/:id
+// ============================================================================
+
+TEST(QueryCoordinator, AddRemoveNode_Runtime) {
+    auto p1 = make_pipeline();
+    p1->start();
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19910, 1}, *p1);
+    EXPECT_EQ(coord.node_count(), 1u);
+
+    // Simulate runtime add via the same API the HTTP endpoint calls
+    coord.add_remote_node({"10.0.1.2", 8123, 2});
+    EXPECT_EQ(coord.node_count(), 2u);
+
+    // Duplicate add is idempotent
+    coord.add_remote_node({"10.0.1.2", 8123, 2});
+    EXPECT_EQ(coord.node_count(), 2u);
+
+    // Remove
+    coord.remove_node(2);
+    EXPECT_EQ(coord.node_count(), 1u);
+
+    // Remove non-existent is safe
+    coord.remove_node(99);
+    EXPECT_EQ(coord.node_count(), 1u);
+
+    p1->stop();
+}

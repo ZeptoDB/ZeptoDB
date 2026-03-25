@@ -15,6 +15,7 @@
 #include "zeptodb/server/http_server.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/auth/cancellation_token.h"
+#include "zeptodb/sql/parser.h"
 #include "zeptodb/util/logger.h"
 
 #include <sstream>
@@ -156,6 +157,15 @@ void HttpServer::setup_auth_middleware() {
         if (decision.status == zeptodb::auth::AuthStatus::OK) {
             // Stash subject for access log
             mutable_req.set_header("X-Zepto-Subject", decision.context.subject);
+            // Stash allowed_tables for table-level ACL enforcement
+            if (!decision.context.allowed_tables.empty()) {
+                std::string tables;
+                for (size_t i = 0; i < decision.context.allowed_tables.size(); ++i) {
+                    if (i > 0) tables += ',';
+                    tables += decision.context.allowed_tables[i];
+                }
+                mutable_req.set_header("X-Zepto-Allowed-Tables", tables);
+            }
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
@@ -367,6 +377,40 @@ void HttpServer::setup_routes() {
             return;
         }
 
+        // Table-level ACL enforcement
+        if (req.has_header("X-Zepto-Allowed-Tables")) {
+            std::string allowed = req.get_header_value("X-Zepto-Allowed-Tables");
+            std::vector<std::string> allowed_tables;
+            std::istringstream ss(allowed);
+            std::string t;
+            while (std::getline(ss, t, ','))
+                if (!t.empty()) allowed_tables.push_back(t);
+
+            if (!allowed_tables.empty()) {
+                try {
+                    zeptodb::sql::Parser parser;
+                    auto ps = parser.parse_statement(req.body);
+                    std::string table;
+                    if (ps.select) table = ps.select->from_table;
+                    else if (ps.insert) table = ps.insert->table_name;
+                    else if (ps.update) table = ps.update->table_name;
+                    else if (ps.del) table = ps.del->table_name;
+                    if (!table.empty()) {
+                        bool ok = false;
+                        for (const auto& a : allowed_tables)
+                            if (a == table) { ok = true; break; }
+                        if (!ok) {
+                            res.status = 403;
+                            res.set_content(build_error_json(
+                                "Access denied: table '" + table + "' not in allowed list"),
+                                "application/json");
+                            return;
+                        }
+                    }
+                } catch (...) {} // parse failure → let executor handle it
+            }
+        }
+
         auto result = run_query_with_tracking(req.body, req.remote_addr);
 
         if (!result.ok()) {
@@ -546,7 +590,13 @@ void HttpServer::setup_admin_routes() {
                << "\"name\":\"" << k.name << "\","
                << "\"role\":\"" << zeptodb::auth::role_to_string(k.role) << "\","
                << "\"enabled\":" << (k.enabled ? "true" : "false") << ","
-               << "\"created_at_ns\":" << k.created_at_ns << "}";
+               << "\"created_at_ns\":" << k.created_at_ns << ","
+               << "\"allowed_tables\":[";
+            for (size_t ti = 0; ti < k.allowed_tables.size(); ++ti) {
+                if (ti > 0) os << ",";
+                os << "\"" << k.allowed_tables[ti] << "\"";
+            }
+            os << "]}";
         }
         os << "]";
         res.set_content(os.str(), "application/json");
@@ -752,6 +802,82 @@ void HttpServer::setup_admin_routes() {
            << ",\"last_ingest_latency_ns\":" << stats.last_ingest_latency_ns.load()
            << "}";
         res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/nodes — add a remote node to the cluster
+    // Body: {"id":2,"host":"10.0.1.2","port":8123}
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/nodes", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!coordinator_) {
+            res.status = 400;
+            res.set_content(build_error_json("Not in cluster mode — set_coordinator() first"),
+                            "application/json");
+            return;
+        }
+        // Minimal JSON parsing
+        auto extract_str = [&](const std::string& field) -> std::string {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return "";
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return "";
+            auto q1 = req.body.find('"', colon + 1);
+            if (q1 == std::string::npos) return "";
+            auto q2 = req.body.find('"', q1 + 1);
+            if (q2 == std::string::npos) return "";
+            return req.body.substr(q1 + 1, q2 - q1 - 1);
+        };
+        auto extract_int = [&](const std::string& field) -> int64_t {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return 0;
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return 0;
+            try { return std::stoll(req.body.substr(colon + 1)); } catch (...) { return 0; }
+        };
+
+        std::string host = extract_str("host");
+        auto id   = static_cast<uint32_t>(extract_int("id"));
+        auto port = static_cast<uint16_t>(extract_int("port"));
+        if (host.empty() || id == 0 || port == 0) {
+            res.status = 400;
+            res.set_content(build_error_json("Missing id, host, or port"), "application/json");
+            return;
+        }
+
+        zeptodb::cluster::NodeAddress addr{host, port, id};
+        coordinator_->add_remote_node(addr);
+        res.set_content("{\"added\":true,\"id\":" + std::to_string(id) +
+                        ",\"host\":\"" + host + "\",\"port\":" + std::to_string(port) + "}",
+                        "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // DELETE /admin/nodes/:id — remove a node from the cluster
+    // -------------------------------------------------------------------------
+    svr_->Delete(R"(/admin/nodes/(\d+))", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!coordinator_) {
+            res.status = 400;
+            res.set_content(build_error_json("Not in cluster mode"), "application/json");
+            return;
+        }
+        uint32_t node_id = 0;
+        try { node_id = static_cast<uint32_t>(std::stoul(std::string(req.matches[1]))); }
+        catch (...) {
+            res.status = 400;
+            res.set_content(build_error_json("Invalid node ID"), "application/json");
+            return;
+        }
+        coordinator_->remove_node(node_id);
+        res.set_content("{\"removed\":true,\"id\":" + std::to_string(node_id) + "}",
+                        "application/json");
     });
 
     // -------------------------------------------------------------------------

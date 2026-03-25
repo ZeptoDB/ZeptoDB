@@ -35,6 +35,7 @@ struct AuthContext {
     std::string              source;           // "api_key" | "jwt" | "anonymous"
     std::vector<std::string> allowed_symbols;  // empty = unrestricted
     std::string              tenant_id;        // empty = no tenant (unrestricted)
+    std::vector<std::string> allowed_tables;   // empty = unrestricted
 
     bool has_permission(Permission p) const {
         return role_permissions(role) & p;
@@ -46,6 +47,13 @@ struct AuthContext {
         if (allowed_symbols.empty()) return true;
         for (const auto& s : allowed_symbols)
             if (s == sym) return true;
+        return false;
+    }
+
+    bool can_access_table(const std::string& table) const {
+        if (allowed_tables.empty()) return true;
+        for (const auto& t : allowed_tables)
+            if (t == table) return true;
         return false;
     }
 };
@@ -113,7 +121,8 @@ public:
     // Returns the full plaintext key (shown once).
     std::string create_api_key(const std::string& name,
                                 Role role,
-                                const std::vector<std::string>& symbols = {});
+                                const std::vector<std::string>& symbols = {},
+                                const std::vector<std::string>& tables = {});
 
     bool revoke_api_key(const std::string& key_id);
 

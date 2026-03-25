@@ -95,6 +95,7 @@ nav:
       - Python Reference: api/PYTHON_REFERENCE.md
       - C++ Reference: api/CPP_REFERENCE.md
       - HTTP Reference: api/HTTP_REFERENCE.md
+      - Config Reference: api/CONFIG_REFERENCE.md
   - Architecture:
       - Overview: design/high_level_architecture.md
       - Storage Engine: design/layer1_storage_memory.md

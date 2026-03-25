@@ -494,3 +494,70 @@ TEST_F(ConnectionHooksTest, ResponseContainsRequestId) {
     EXPECT_NE(raw.find("X-Request-Id: r"), std::string::npos)
         << "Response missing X-Request-Id header. Raw:\n" << raw.substr(0, 500);
 }
+
+// ============================================================================
+// Table-level ACL tests
+// ============================================================================
+
+#include "zeptodb/auth/auth_manager.h"
+
+TEST(TableACL, CanAccessTable_EmptyAllowAll) {
+    zeptodb::auth::AuthContext ctx;
+    ctx.role = zeptodb::auth::Role::READER;
+    // empty allowed_tables = unrestricted
+    EXPECT_TRUE(ctx.can_access_table("trades"));
+    EXPECT_TRUE(ctx.can_access_table("quotes"));
+}
+
+TEST(TableACL, CanAccessTable_Restricted) {
+    zeptodb::auth::AuthContext ctx;
+    ctx.role = zeptodb::auth::Role::ANALYST;
+    ctx.allowed_tables = {"trades", "orders"};
+
+    EXPECT_TRUE(ctx.can_access_table("trades"));
+    EXPECT_TRUE(ctx.can_access_table("orders"));
+    EXPECT_FALSE(ctx.can_access_table("risk_positions"));
+    EXPECT_FALSE(ctx.can_access_table("quotes"));
+}
+
+TEST(TableACL, ApiKeyStore_CreateWithTables) {
+    // Use a temp file
+    std::string path = "/tmp/zepto_test_keys_table_acl.txt";
+    std::remove(path.c_str());
+
+    zeptodb::auth::ApiKeyStore store(path);
+    std::string key = store.create_key("desk-1", zeptodb::auth::Role::READER,
+                                        {}, {"trades", "quotes"});
+    ASSERT_FALSE(key.empty());
+
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->allowed_tables.size(), 2u);
+    EXPECT_EQ(entry->allowed_tables[0], "trades");
+    EXPECT_EQ(entry->allowed_tables[1], "quotes");
+
+    // Reload from disk and verify persistence
+    zeptodb::auth::ApiKeyStore store2(path);
+    auto entries = store2.list();
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].allowed_tables.size(), 2u);
+    EXPECT_EQ(entries[0].allowed_tables[0], "trades");
+    EXPECT_EQ(entries[0].allowed_tables[1], "quotes");
+
+    std::remove(path.c_str());
+}
+
+TEST(TableACL, ApiKeyStore_BackwardCompatible_NoTables) {
+    std::string path = "/tmp/zepto_test_keys_compat.txt";
+    std::remove(path.c_str());
+
+    // Create key without tables
+    zeptodb::auth::ApiKeyStore store(path);
+    std::string key = store.create_key("legacy", zeptodb::auth::Role::WRITER);
+
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_TRUE(entry->allowed_tables.empty());
+
+    std::remove(path.c_str());
+}
