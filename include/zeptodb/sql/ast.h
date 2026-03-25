@@ -445,7 +445,7 @@ struct DropMVStmt {
 // ============================================================================
 struct ParsedStatement {
     enum class Kind { SELECT, CREATE_TABLE, DROP_TABLE, ALTER_TABLE, INSERT, UPDATE, DELETE,
-                      CREATE_MV, DROP_MV };
+                      CREATE_MV, DROP_MV, SHOW_TABLES, DESCRIBE_TABLE };
 
     Kind kind = Kind::SELECT;
     std::optional<SelectStmt>       select;
@@ -457,6 +457,7 @@ struct ParsedStatement {
     std::optional<DeleteStmt>       del;
     std::optional<CreateMVStmt>     create_mv;
     std::optional<DropMVStmt>       drop_mv;
+    std::string                     describe_table_name; // DESCRIBE <table>
 };
 
 } // namespace zeptodb::sql

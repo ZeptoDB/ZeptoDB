@@ -821,6 +821,50 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
             r.execution_time_us = now_us() - t0;
             return r;
         }
+        if (ps.kind == ParsedStatement::Kind::SHOW_TABLES) {
+            QueryResultSet r;
+            r.column_names = {"name", "rows"};
+            r.column_types = {ColumnType::SYMBOL, ColumnType::INT64};
+            auto tables = pipeline_.schema_registry().list_tables();
+            std::sort(tables.begin(), tables.end());
+            auto all_parts = pipeline_.partition_manager().get_all_partitions();
+            for (auto& tbl : tables) {
+                size_t cnt = 0;
+                for (auto* p : all_parts) cnt += p->num_rows();
+                r.string_rows.push_back(tbl);
+                r.rows.push_back({static_cast<int64_t>(cnt)});
+            }
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
+        if (ps.kind == ParsedStatement::Kind::DESCRIBE_TABLE) {
+            QueryResultSet r;
+            auto schema = pipeline_.schema_registry().get(ps.describe_table_name);
+            if (!schema) {
+                r.error = "Table not found: " + ps.describe_table_name;
+                return r;
+            }
+            r.column_names = {"column", "type"};
+            r.column_types = {ColumnType::SYMBOL, ColumnType::SYMBOL};
+            for (auto& col : schema->columns) {
+                const char* ts;
+                switch (col.type) {
+                    case ColumnType::INT64:     ts = "INT64"; break;
+                    case ColumnType::INT32:     ts = "INT32"; break;
+                    case ColumnType::FLOAT64:   ts = "FLOAT64"; break;
+                    case ColumnType::FLOAT32:   ts = "FLOAT32"; break;
+                    case ColumnType::TIMESTAMP_NS: ts = "TIMESTAMP"; break;
+                    case ColumnType::SYMBOL:    ts = "SYMBOL"; break;
+                    case ColumnType::BOOL:      ts = "BOOL"; break;
+                    default:                    ts = "UNKNOWN"; break;
+                }
+                r.string_rows.push_back(col.name);
+                r.string_rows.push_back(ts);
+                r.rows.push_back({});  // one row per column
+            }
+            r.execution_time_us = now_us() - t0;
+            return r;
+        }
 
         // SELECT path
         const SelectStmt& stmt = *ps.select;

@@ -1,12 +1,38 @@
 "use client";
 import { useState, useCallback, useEffect } from "react";
-import { Box, Button, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, Chip, Alert, List, ListItemButton, ListItemText } from "@mui/material";
+import { Box, Button, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, Chip, Alert, List, ListItemButton, ListItemText, IconButton, Tooltip, Snackbar, Menu, MenuItem, ListItemIcon } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import HistoryIcon from "@mui/icons-material/History";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import TableChartIcon from "@mui/icons-material/TableChart";
+import DataObjectIcon from "@mui/icons-material/DataObject";
 import CodeMirror from "@uiw/react-codemirror";
 import { sql } from "@codemirror/lang-sql";
 import { querySQL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+
+function downloadFile(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function toCSV(columns: string[], data: (string | number)[][]) {
+  const escape = (v: string | number) => {
+    const s = String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [columns.map(escape).join(","), ...data.map((r) => r.map(escape).join(","))].join("\n");
+}
+
+function toJSON(columns: string[], data: (string | number)[][]) {
+  return JSON.stringify(data.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
+}
 
 const HISTORY_KEY = "zepto_query_history";
 const MAX_HISTORY = 50;
@@ -27,8 +53,28 @@ export default function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<string[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [snackMsg, setSnackMsg] = useState<string | null>(null);
+  const [exportAnchor, setExportAnchor] = useState<null | HTMLElement>(null);
 
   useEffect(() => { setHistory(loadHistory()); }, []);
+
+  const copyToClipboard = useCallback(() => {
+    if (!result) return;
+    const tsv = [result.columns.join("\t"), ...result.data.map((r) => r.map(String).join("\t"))].join("\n");
+    navigator.clipboard.writeText(tsv).then(() => setSnackMsg("Copied to clipboard"));
+  }, [result]);
+
+  const exportCSV = useCallback(() => {
+    if (!result) return;
+    downloadFile(toCSV(result.columns, result.data), "query_result.csv", "text/csv");
+    setExportAnchor(null);
+  }, [result]);
+
+  const exportJSON = useCallback(() => {
+    if (!result) return;
+    downloadFile(toJSON(result.columns, result.data), "query_result.json", "application/json");
+    setExportAnchor(null);
+  }, [result]);
 
   const run = useCallback(async () => {
     setLoading(true);
@@ -91,6 +137,18 @@ export default function QueryPage() {
           <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", gap: 2, alignItems: "center" }}>
             <Chip label={`${result.rows} rows`} size="small" variant="outlined" />
             <Chip label={`${result.execution_time_us} μs`} size="small" color="primary" variant="outlined" />
+            <Chip label={`${result.columns.length} cols`} size="small" variant="outlined" />
+            <Box sx={{ flex: 1 }} />
+            <Tooltip title="Copy as TSV">
+              <IconButton size="small" onClick={copyToClipboard}><ContentCopyIcon fontSize="small" /></IconButton>
+            </Tooltip>
+            <Tooltip title="Export">
+              <IconButton size="small" onClick={(e) => setExportAnchor(e.currentTarget)}><FileDownloadIcon fontSize="small" /></IconButton>
+            </Tooltip>
+            <Menu anchorEl={exportAnchor} open={Boolean(exportAnchor)} onClose={() => setExportAnchor(null)}>
+              <MenuItem onClick={exportCSV}><ListItemIcon><TableChartIcon fontSize="small" /></ListItemIcon>Export CSV</MenuItem>
+              <MenuItem onClick={exportJSON}><ListItemIcon><DataObjectIcon fontSize="small" /></ListItemIcon>Export JSON</MenuItem>
+            </Menu>
           </Box>
           <TableContainer sx={{ flex: 1 }}>
             <Table size="small" stickyHeader>
@@ -114,6 +172,8 @@ export default function QueryPage() {
           </TableContainer>
         </Paper>
       )}
+
+      <Snackbar open={Boolean(snackMsg)} autoHideDuration={2000} onClose={() => setSnackMsg(null)} message={snackMsg} />
     </Box>
   );
 }

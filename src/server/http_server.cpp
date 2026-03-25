@@ -938,6 +938,40 @@ std::string HttpServer::build_json_response(
     }
 
     os << "\"data\":[";
+
+    // ── String-result path (SHOW TABLES / DESCRIBE) ──
+    // When string_rows is populated and rows exist, interleave string values
+    // with integer values based on column_types (SYMBOL → string, else int).
+    if (!result.string_rows.empty() && !result.rows.empty()) {
+        size_t str_idx = 0;
+        for (size_t r = 0; r < result.rows.size(); ++r) {
+            if (r > 0) os << ",";
+            os << "[";
+            size_t int_idx = 0;
+            for (size_t c = 0; c < result.column_names.size(); ++c) {
+                if (c > 0) os << ",";
+                if (c < result.column_types.size() &&
+                    result.column_types[c] == storage::ColumnType::SYMBOL &&
+                    str_idx < result.string_rows.size()) {
+                    // JSON-escape the string
+                    os << "\"";
+                    for (char ch : result.string_rows[str_idx]) {
+                        if (ch == '"') os << "\\\"";
+                        else if (ch == '\\') os << "\\\\";
+                        else os << ch;
+                    }
+                    os << "\"";
+                    ++str_idx;
+                } else if (int_idx < result.rows[r].size()) {
+                    os << result.rows[r][int_idx++];
+                } else {
+                    os << "0";
+                }
+            }
+            os << "]";
+        }
+    } else {
+    // ── Normal numeric path ──
     for (size_t r = 0; r < result.rows.size(); ++r) {
         if (r > 0) os << ",";
         os << "[";
@@ -968,6 +1002,7 @@ std::string HttpServer::build_json_response(
         }
         os << "]";
     }
+    } // end else (normal numeric path)
     os << "],";
 
     // 메타데이터

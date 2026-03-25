@@ -82,6 +82,27 @@ ParsedStatement Parser::parse_statement(const std::string& sql) {
         if (up == "CREATE" || up == "DROP" || up == "ALTER") {
             return dispatch_ddl();
         }
+        if (up == "SHOW") {
+            advance(); // consume SHOW
+            // expect TABLES
+            if (!at_end() && current().type == TokenType::IDENT &&
+                to_upper_str(current().value) == "TABLES") {
+                advance(); // consume TABLES
+            }
+            ParsedStatement ps;
+            ps.kind = ParsedStatement::Kind::SHOW_TABLES;
+            return ps;
+        }
+        if (up == "DESCRIBE" || up == "DESC") {
+            advance(); // consume DESCRIBE/DESC
+            ParsedStatement ps;
+            ps.kind = ParsedStatement::Kind::DESCRIBE_TABLE;
+            if (!at_end()) {
+                ps.describe_table_name = current().value;
+                advance();
+            }
+            return ps;
+        }
     }
     if (first.type == TokenType::INSERT) {
         ParsedStatement ps;
