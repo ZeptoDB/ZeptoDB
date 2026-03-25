@@ -15,6 +15,7 @@
 
 #include "zeptodb/cluster/transport.h"
 #include <arpa/inet.h>
+#include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>

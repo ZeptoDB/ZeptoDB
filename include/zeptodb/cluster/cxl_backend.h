@@ -9,6 +9,9 @@
 #include "zeptodb/common/logger.h"
 
 #include <sys/mman.h>
+#ifndef MAP_POPULATE
+#define MAP_POPULATE 0
+#endif
 #include <cstring>
 #include <unordered_map>
 #include <atomic>

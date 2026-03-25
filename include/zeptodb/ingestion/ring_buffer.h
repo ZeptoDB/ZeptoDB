@@ -39,7 +39,12 @@ class MPMCRingBuffer {
     static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
 
 public:
-    MPMCRingBuffer() = default;
+    MPMCRingBuffer() : slots_(new Slot<T>[Capacity]) {}
+    ~MPMCRingBuffer() { delete[] slots_; }
+
+    // Non-copyable, movable
+    MPMCRingBuffer(const MPMCRingBuffer&) = delete;
+    MPMCRingBuffer& operator=(const MPMCRingBuffer&) = delete;
 
     /// 생산자: 데이터 enqueue (non-blocking)
     /// @return true if successfully enqueued
@@ -103,7 +108,7 @@ private:
     // 캐시라인 분리로 false sharing 방지
     APEX_CACHE_ALIGNED std::atomic<size_t> write_pos_{0};
     APEX_CACHE_ALIGNED std::atomic<size_t> read_pos_{0};
-    Slot<T> slots_[Capacity];
+    Slot<T>* slots_;
 };
 
 } // namespace zeptodb::ingestion

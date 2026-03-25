@@ -4,11 +4,21 @@
 
 #include "zeptodb/storage/arena_allocator.h"
 
-#include <sys/mman.h>    // mmap, munmap, MAP_HUGETLB
-#include <numa.h>        // numa_alloc_onnode
+#include <sys/mman.h>    // mmap, munmap
+#ifdef __linux__
+#include <numa.h>        // numa_alloc_onnode (Linux only)
+#endif
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
+
+// macOS lacks MAP_HUGETLB and MAP_POPULATE
+#ifndef MAP_HUGETLB
+#define MAP_HUGETLB 0
+#endif
+#ifndef MAP_POPULATE
+#define MAP_POPULATE 0
+#endif
 
 namespace zeptodb::storage {
 
@@ -38,7 +48,8 @@ ArenaAllocator::ArenaAllocator(const ArenaConfig& config)
         }
     }
 
-    // 2차 시도: NUMA-aware 일반 할당
+#ifdef __linux__
+    // 2차 시도: NUMA-aware 일반 할당 (Linux only)
     if (!base_ && config.numa_node >= 0 && numa_available() >= 0) {
         base_ = numa_alloc_onnode(total_size_, config.numa_node);
         if (!base_) {
@@ -46,6 +57,7 @@ ArenaAllocator::ArenaAllocator(const ArenaConfig& config)
                       config.numa_node);
         }
     }
+#endif
 
     // 3차 시도: 일반 mmap (MAP_POPULATE로 사전 폴트)
     if (!base_) {

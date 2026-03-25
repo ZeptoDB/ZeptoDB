@@ -618,8 +618,10 @@ public:
         }
 
 #if HAVE_READLINE
-        std::string hist = expand_home(cfg_.history_file);
-        write_history(hist.c_str());
+        {
+            std::string hist_save = expand_home(cfg_.history_file);
+            write_history(hist_save.c_str());
+        }
 #endif
         std::cout << "Bye.\n";
     }

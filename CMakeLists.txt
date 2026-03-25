@@ -42,13 +42,35 @@ option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
 
 # ============================================================================
+# macOS Homebrew — expose installed packages to find_package()
+# ============================================================================
+if(APPLE)
+    execute_process(
+        COMMAND brew --prefix
+        OUTPUT_VARIABLE HOMEBREW_PREFIX OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(HOMEBREW_PREFIX)
+        list(APPEND CMAKE_PREFIX_PATH
+            "${HOMEBREW_PREFIX}/opt/llvm"
+            "${HOMEBREW_PREFIX}/opt/apache-arrow"
+            "${HOMEBREW_PREFIX}/opt/aws-sdk-cpp"
+            "${HOMEBREW_PREFIX}/opt/lz4"
+            "${HOMEBREW_PREFIX}/opt/openssl@3"
+        )
+    endif()
+endif()
+
+# ============================================================================
 # Compiler Flags
 # ============================================================================
 add_compile_options(-Wall -Wextra -Wpedantic -fno-omit-frame-pointer)
 
 # clang이 GCC 11 sysroot의 오래된 libstdc++ (6.0.29)를 먼저 찾는 문제 회피
 # GCC 14의 libstdc++ (6.0.33, GLIBCXX_3.4.30+) 경로를 우선 지정
-link_directories(BEFORE /usr/lib64)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    link_directories(BEFORE /usr/lib64)
+endif()
 
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG   "-g -O0 -fsanitize=address,undefined")
@@ -129,8 +151,12 @@ if(APEX_BUILD_TESTS)
     enable_testing()
 endif()
 
-# --- NUMA ---
-find_library(NUMA_LIB numa REQUIRED)
+# --- NUMA (Linux only) ---
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(NUMA_LIB numa REQUIRED)
+else()
+    set(NUMA_LIB "")
+endif()
 
 # --- Apache Arrow + Parquet (optional) ---
 find_package(PkgConfig QUIET)
@@ -193,23 +219,43 @@ if(ZEPTO_USE_HIGHWAY)
     message(STATUS "Highway SIMD: ${HWY_VERSION}")
 endif()
 
-# --- UCX (RDMA/CXL communication) ---
+# --- UCX (RDMA/CXL communication, Linux only) ---
 if(ZEPTO_USE_UCX)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(UCX REQUIRED IMPORTED_TARGET ucx)
-    message(STATUS "UCX: ${UCX_VERSION}")
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(STATUS "UCX: disabled on ${CMAKE_SYSTEM_NAME} (Linux only)")
+        set(ZEPTO_USE_UCX OFF)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(UCX REQUIRED IMPORTED_TARGET ucx)
+        message(STATUS "UCX: ${UCX_VERSION}")
+    endif()
 endif()
 
 # --- LLVM (JIT) ---
 if(ZEPTO_USE_JIT)
-    find_package(LLVM REQUIRED CONFIG
-        PATHS /usr/lib64/llvm19/lib/cmake/llvm
-        NO_DEFAULT_PATH
-    )
-    message(STATUS "LLVM ${LLVM_VERSION}: ${LLVM_DIR}")
-    include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
-    separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
-    add_definitions(${LLVM_DEFINITIONS_LIST})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(LLVM REQUIRED CONFIG
+            PATHS /usr/lib64/llvm19/lib/cmake/llvm
+            NO_DEFAULT_PATH
+        )
+    else()
+        find_package(LLVM CONFIG QUIET)
+        if(NOT LLVM_FOUND AND HOMEBREW_PREFIX)
+            find_package(LLVM CONFIG QUIET
+                PATHS "${HOMEBREW_PREFIX}/opt/llvm/lib/cmake/llvm"
+                NO_DEFAULT_PATH)
+        endif()
+        if(NOT LLVM_FOUND)
+            message(STATUS "LLVM: not found — JIT disabled on ${CMAKE_SYSTEM_NAME}")
+            set(ZEPTO_USE_JIT OFF)
+        endif()
+    endif()
+    if(ZEPTO_USE_JIT)
+        message(STATUS "LLVM ${LLVM_VERSION}: ${LLVM_DIR}")
+        include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+        separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+        add_definitions(${LLVM_DEFINITIONS_LIST})
+    endif()
 endif()
 
 # ============================================================================
@@ -247,8 +293,10 @@ target_include_directories(zepto_storage PUBLIC
 )
 target_link_libraries(zepto_storage PUBLIC
     zepto_common
-    ${NUMA_LIB}
 )
+if(NUMA_LIB)
+    target_link_libraries(zepto_storage PUBLIC ${NUMA_LIB})
+endif()
 if(ZEPTO_USE_HIGHWAY)
     target_link_libraries(zepto_storage PUBLIC PkgConfig::HWY)
 endif()
@@ -314,15 +362,20 @@ if(ZEPTO_USE_HIGHWAY)
     target_link_libraries(zepto_execution PUBLIC PkgConfig::HWY)
 endif()
 if(ZEPTO_USE_JIT)
-    # LLVM-19 shared lib + GCC libstdc++ 경로 (아키텍처 자동 감지)
-    execute_process(
-        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
-        OUTPUT_VARIABLE STDCXX_PATH OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    target_link_libraries(zepto_execution PUBLIC
-        /usr/lib64/llvm19/lib/libLLVM-19.so
-        ${STDCXX_PATH}
-    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # LLVM-19 shared lib + GCC libstdc++ 경로 (아키텍처 자동 감지)
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
+            OUTPUT_VARIABLE STDCXX_PATH OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        target_link_libraries(zepto_execution PUBLIC
+            /usr/lib64/llvm19/lib/libLLVM-19.so
+            ${STDCXX_PATH}
+        )
+    else()
+        llvm_map_components_to_libnames(LLVM_LIBS core orcjit native)
+        target_link_libraries(zepto_execution PUBLIC ${LLVM_LIBS})
+    endif()
 endif()
 
 # --- Core Pipeline (Layer 1+2+3 통합) ---
@@ -569,6 +622,9 @@ if(APEX_BUILD_BENCH)
     target_compile_options(bench_simd_jit PRIVATE
         -O3 -march=native
     )
+    if(NOT ZEPTO_USE_JIT)
+        set_target_properties(bench_simd_jit PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
 
     add_executable(bench_hdb
         tests/bench/bench_hdb.cpp

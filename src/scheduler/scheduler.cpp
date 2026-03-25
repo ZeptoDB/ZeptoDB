@@ -194,7 +194,8 @@ void Scheduler::run() {
         if (fire_ns > now) {
             // Sleep until the next job's fire time (or until woken early)
             auto wake = std::chrono::system_clock::time_point{
-                std::chrono::nanoseconds{fire_ns}};
+                std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                    std::chrono::nanoseconds{fire_ns})};
             cv_.wait_until(lk, wake, [this, fire_ns]() {
                 return !running_.load(std::memory_order_relaxed) ||
                        (!pq_.empty() && pq_.top()->next_fire_ns < fire_ns);
