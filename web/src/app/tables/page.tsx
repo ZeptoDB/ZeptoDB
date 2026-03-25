@@ -7,6 +7,10 @@ import {
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SearchIcon from "@mui/icons-material/Search";
+import FirstPageIcon from "@mui/icons-material/FirstPage";
+import LastPageIcon from "@mui/icons-material/LastPage";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import StorageIcon from "@mui/icons-material/Storage";
 import { querySQL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -27,6 +31,10 @@ export default function TablesPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewTotal, setPreviewTotal] = useState(0);
+  const previewPageSize = 50;
+
   const loadTables = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -45,18 +53,29 @@ export default function TablesPage() {
   useEffect(() => { loadTables(); }, [loadTables]);
 
   useEffect(() => {
-    if (!selected) { setSchema([]); setPreview(null); return; }
+    if (!selected) { setSchema([]); setPreview(null); setPreviewTotal(0); setPreviewPage(0); return; }
     setDetailLoading(true);
+    setPreviewPage(0);
     Promise.all([
       querySQL(`DESCRIBE ${selected}`, auth?.apiKey).catch(() => ({ data: [] })),
-      querySQL(`SELECT * FROM ${selected} LIMIT 50`, auth?.apiKey).catch(() => null),
-    ]).then(([schemaRes, previewRes]) => {
+      querySQL(`SELECT count(*) FROM ${selected}`, auth?.apiKey).catch(() => ({ data: [[0]] })),
+    ]).then(([schemaRes, countRes]) => {
       setSchema((schemaRes.data ?? []).map((row: (string | number)[]) => ({
         column: String(row[0]), type: String(row[1] ?? "unknown"),
       })));
-      setPreview(previewRes);
+      setPreviewTotal(Number(countRes.data?.[0]?.[0] ?? 0));
     }).finally(() => setDetailLoading(false));
   }, [selected, auth]);
+
+  // Server-side paginated preview
+  useEffect(() => {
+    if (!selected) return;
+    setDetailLoading(true);
+    querySQL(`SELECT * FROM ${selected} LIMIT ${previewPageSize} OFFSET ${previewPage * previewPageSize}`, auth?.apiKey)
+      .then(setPreview)
+      .catch(() => setPreview(null))
+      .finally(() => setDetailLoading(false));
+  }, [selected, auth, previewPage]);
 
   const filtered = tables.filter((t) => t.name.toLowerCase().includes(filter.toLowerCase()));
 
@@ -159,9 +178,20 @@ export default function TablesPage() {
         <Paper sx={{ border: "1px solid #1E293B" }}>
           <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <Typography variant="caption" color="text.secondary">
-              Data Preview
+              Data Preview — {previewTotal.toLocaleString()} rows
               {preview.execution_time_us != null && ` · ${preview.execution_time_us.toLocaleString()}μs`}
             </Typography>
+            {previewTotal > previewPageSize && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {previewPage * previewPageSize + 1}–{Math.min((previewPage + 1) * previewPageSize, previewTotal)} of {previewTotal.toLocaleString()}
+                </Typography>
+                <IconButton size="small" disabled={previewPage === 0} onClick={() => setPreviewPage(0)}><FirstPageIcon fontSize="small" /></IconButton>
+                <IconButton size="small" disabled={previewPage === 0} onClick={() => setPreviewPage(previewPage - 1)}><ChevronLeftIcon fontSize="small" /></IconButton>
+                <IconButton size="small" disabled={(previewPage + 1) * previewPageSize >= previewTotal} onClick={() => setPreviewPage(previewPage + 1)}><ChevronRightIcon fontSize="small" /></IconButton>
+                <IconButton size="small" disabled={(previewPage + 1) * previewPageSize >= previewTotal} onClick={() => setPreviewPage(Math.ceil(previewTotal / previewPageSize) - 1)}><LastPageIcon fontSize="small" /></IconButton>
+              </Box>
+            )}
           </Box>
           <PaginatedTable columns={preview.columns} data={preview.data} maxHeight={400} />
         </Paper>

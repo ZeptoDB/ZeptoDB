@@ -41,6 +41,26 @@ static inline bool is_cancelled() {
 // Makes CTEs visible to recursive exec_select() calls (set operations, subqueries).
 static thread_local std::unordered_map<std::string, QueryResultSet> tl_cte_map;
 
+// ── OFFSET + LIMIT helper ──────────────────────────────────────────────────
+// Apply OFFSET then LIMIT to result rows (works on both rows and typed_rows).
+static void apply_offset_limit(QueryResultSet& r, const SelectStmt& stmt) {
+    if (!stmt.offset && !stmt.limit) return;
+    size_t off = stmt.offset.value_or(0);
+    if (off > 0 && off < r.rows.size()) {
+        r.rows.erase(r.rows.begin(), r.rows.begin() + static_cast<ptrdiff_t>(off));
+        if (r.typed_rows.size() > off)
+            r.typed_rows.erase(r.typed_rows.begin(), r.typed_rows.begin() + static_cast<ptrdiff_t>(off));
+    } else if (off >= r.rows.size()) {
+        r.rows.clear();
+        r.typed_rows.clear();
+    }
+    if (stmt.limit && r.rows.size() > static_cast<size_t>(*stmt.limit)) {
+        r.rows.resize(static_cast<size_t>(*stmt.limit));
+        if (r.typed_rows.size() > static_cast<size_t>(*stmt.limit))
+            r.typed_rows.resize(static_cast<size_t>(*stmt.limit));
+    }
+}
+
 // ── Template helpers for type-dispatched comparisons ────────────────────────
 template<typename T>
 static bool compare_val(T v, CompareOp op, T cmp) {
@@ -367,6 +387,8 @@ static QueryResultSet build_explain_plan(const SelectStmt& stmt,
         line("OrderBy:    (ORDER BY clause present)");
     if (stmt.limit.has_value())
         line("Limit:      " + std::to_string(stmt.limit.value()));
+    if (stmt.offset.has_value())
+        line("Offset:     " + std::to_string(stmt.offset.value()));
     line("Partitions: " + std::to_string(total_parts));
     line("TotalRows:  " + std::to_string(total_rows));
     if (stmt.group_by.has_value() && stmt.group_by->columns.size() == 1
@@ -1802,9 +1824,8 @@ QueryResultSet QueryExecutor::exec_select_virtual(
 
             result.rows_scanned = src.rows.size();
             apply_order_by(result, stmt);
-            if (!stmt.order_by.has_value() && stmt.limit.has_value())
-                if (result.rows.size() > static_cast<size_t>(*stmt.limit))
-                    result.rows.resize(static_cast<size_t>(*stmt.limit));
+            if (!stmt.order_by.has_value())
+                apply_offset_limit(result, stmt);
             return result;
         }
 
@@ -1966,9 +1987,8 @@ QueryResultSet QueryExecutor::exec_select_virtual(
         result = apply_having_filter(std::move(result), *stmt.having);
 
     apply_order_by(result, stmt);
-    if (!stmt.order_by.has_value() && stmt.limit.has_value())
-        if (result.rows.size() > static_cast<size_t>(*stmt.limit))
-            result.rows.resize(static_cast<size_t>(*stmt.limit));
+    if (!stmt.order_by.has_value())
+        apply_offset_limit(result, stmt);
     return result;
 }
 
@@ -2114,13 +2134,15 @@ void QueryExecutor::apply_order_by(QueryResultSet& result, const SelectStmt& stm
 
     if (sort_keys.empty()) return;
 
+    size_t offset = stmt.offset.value_or(0);
     size_t limit = stmt.limit.value_or(result.rows.size());
+    size_t need = std::min(offset + limit, result.rows.size());
 
-    if (limit < result.rows.size()) {
+    if (need < result.rows.size()) {
         // top-N partial sort: std::partial_sort (O(n log k))
         std::partial_sort(
             result.rows.begin(),
-            result.rows.begin() + static_cast<ptrdiff_t>(limit),
+            result.rows.begin() + static_cast<ptrdiff_t>(need),
             result.rows.end(),
             [&](const std::vector<int64_t>& a, const std::vector<int64_t>& b) {
                 for (auto [ci, asc] : sort_keys) {
@@ -2131,7 +2153,7 @@ void QueryExecutor::apply_order_by(QueryResultSet& result, const SelectStmt& stm
                 return false;
             }
         );
-        result.rows.resize(limit);
+        result.rows.resize(need);
     } else {
         // 전체 정렬 (std::sort)
         std::sort(
@@ -2146,6 +2168,17 @@ void QueryExecutor::apply_order_by(QueryResultSet& result, const SelectStmt& stm
                 return false;
             }
         );
+    }
+
+    // Apply OFFSET after sort
+    if (stmt.offset && *stmt.offset > 0) {
+        size_t off = static_cast<size_t>(*stmt.offset);
+        if (off < result.rows.size())
+            result.rows.erase(result.rows.begin(), result.rows.begin() + static_cast<ptrdiff_t>(off));
+        else
+            result.rows.clear();
+        if (stmt.limit && result.rows.size() > static_cast<size_t>(*stmt.limit))
+            result.rows.resize(static_cast<size_t>(*stmt.limit));
     }
 }
 
@@ -2239,10 +2272,11 @@ QueryResultSet QueryExecutor::exec_simple_select(
 
         // ORDER BY가 있으면 LIMIT은 apply_order_by에서 처리 → 여기서 제한 없이 수집
         bool has_order = stmt.order_by.has_value();
-        size_t limit = has_order ? SIZE_MAX : stmt.limit.value_or(SIZE_MAX);
+        size_t collect_limit = has_order ? SIZE_MAX : stmt.limit.value_or(SIZE_MAX);
+        if (!has_order && stmt.offset) collect_limit += static_cast<size_t>(*stmt.offset);
 
         for (uint32_t idx : sel_indices) {
-            if (result.rows.size() >= limit) break;
+            if (result.rows.size() >= collect_limit) break;
 
             std::vector<int64_t> row;
             std::vector<QueryResultSet::Value> trow;
@@ -2303,6 +2337,8 @@ QueryResultSet QueryExecutor::exec_simple_select(
 
     // ORDER BY + LIMIT: top-N partial sort
     apply_order_by(result, stmt);
+    if (!stmt.order_by.has_value())
+        apply_offset_limit(result, stmt);
 
     return result;
 }

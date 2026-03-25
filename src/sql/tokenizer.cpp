@@ -29,6 +29,7 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "BY")          return TokenType::BY;
     if (upper == "ORDER")       return TokenType::ORDER;
     if (upper == "LIMIT")       return TokenType::LIMIT;
+    if (upper == "OFFSET")      return TokenType::OFFSET;
     if (upper == "BETWEEN")     return TokenType::BETWEEN;
     if (upper == "HAVING")      return TokenType::HAVING;
     if (upper == "AS")          return TokenType::AS;

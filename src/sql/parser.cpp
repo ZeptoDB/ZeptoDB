@@ -492,6 +492,11 @@ SelectStmt Parser::parse_select() {
         stmt.limit = parse_integer_literal();
     }
 
+    // OFFSET
+    if (match(TokenType::OFFSET)) {
+        stmt.offset = parse_integer_literal();
+    }
+
     return stmt;
 }
 

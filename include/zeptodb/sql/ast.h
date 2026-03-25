@@ -325,6 +325,7 @@ struct SelectStmt {
     std::optional<GroupByClause> group_by;     // GROUP BY 절
     std::optional<OrderByClause> order_by;     // ORDER BY 절
     std::optional<int64_t>      limit;         // LIMIT n
+    std::optional<int64_t>      offset;        // OFFSET n
     std::optional<WhereClause>  having;        // HAVING 절 (GROUP BY 이후 집계 필터)
 
     // Set operations: UNION [ALL] / INTERSECT / EXCEPT

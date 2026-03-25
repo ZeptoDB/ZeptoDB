@@ -4287,3 +4287,80 @@ TEST(CatalogSQL, ShowTablesRowCountAfterInsert) {
     ASSERT_EQ(r.rows.size(), 1u);
     EXPECT_GE(r.rows[0][0], 2);  // at least 2 rows inserted
 }
+
+// ============================================================================
+// OFFSET tests
+// ============================================================================
+
+TEST(OffsetSQL, ParserOffset) {
+    Parser p;
+    auto stmt = p.parse("SELECT * FROM trades LIMIT 10 OFFSET 5");
+    ASSERT_TRUE(stmt.limit.has_value());
+    EXPECT_EQ(*stmt.limit, 10);
+    ASSERT_TRUE(stmt.offset.has_value());
+    EXPECT_EQ(*stmt.offset, 5);
+}
+
+TEST(OffsetSQL, ParserLimitOnly) {
+    Parser p;
+    auto stmt = p.parse("SELECT * FROM trades LIMIT 10");
+    ASSERT_TRUE(stmt.limit.has_value());
+    EXPECT_EQ(*stmt.limit, 10);
+    EXPECT_FALSE(stmt.offset.has_value());
+}
+
+TEST(OffsetSQL, ExecutorOffset) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp INT64)");
+    for (int i = 0; i < 20; ++i) {
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES (1, " +
+                   std::to_string(1000 + i) + ", 100)");
+    }
+
+    // LIMIT 5 OFFSET 0 → first 5
+    auto r1 = ex.execute("SELECT price FROM trades WHERE symbol = 1 LIMIT 5 OFFSET 0");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    EXPECT_EQ(r1.rows.size(), 5u);
+
+    // LIMIT 5 OFFSET 5 → next 5
+    auto r2 = ex.execute("SELECT price FROM trades WHERE symbol = 1 LIMIT 5 OFFSET 5");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_EQ(r2.rows.size(), 5u);
+    // Should not overlap with first page
+    EXPECT_NE(r1.rows[0][0], r2.rows[0][0]);
+
+    // LIMIT 5 OFFSET 18 → only 2 rows left
+    auto r3 = ex.execute("SELECT price FROM trades WHERE symbol = 1 LIMIT 5 OFFSET 18");
+    ASSERT_TRUE(r3.ok()) << r3.error;
+    EXPECT_EQ(r3.rows.size(), 2u);
+
+    // OFFSET beyond data → empty
+    auto r4 = ex.execute("SELECT price FROM trades WHERE symbol = 1 LIMIT 5 OFFSET 100");
+    ASSERT_TRUE(r4.ok()) << r4.error;
+    EXPECT_EQ(r4.rows.size(), 0u);
+}
+
+TEST(OffsetSQL, OffsetWithOrderBy) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp INT64)");
+    for (int i = 0; i < 10; ++i) {
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES (1, " +
+                   std::to_string(1000 + i) + ", 100)");
+    }
+
+    // ORDER BY price ASC LIMIT 3 OFFSET 2 → prices 1002, 1003, 1004
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 1 ORDER BY price ASC LIMIT 3 OFFSET 2");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 3u);
+    EXPECT_EQ(r.rows[0][0], 1002);
+    EXPECT_EQ(r.rows[1][0], 1003);
+    EXPECT_EQ(r.rows[2][0], 1004);
+}

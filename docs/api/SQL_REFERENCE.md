@@ -450,13 +450,21 @@ FROM trades GROUP BY symbol
 HAVING avg_price > 15000 AND avg_price < 20000
 ```
 
-### ORDER BY / LIMIT
+### ORDER BY / LIMIT / OFFSET
 
 ```sql
 SELECT symbol, SUM(volume) AS total_vol
 FROM trades GROUP BY symbol
 ORDER BY total_vol DESC
 LIMIT 10
+
+-- Pagination with OFFSET
+SELECT * FROM trades WHERE symbol = 1
+ORDER BY timestamp DESC
+LIMIT 50 OFFSET 100
+
+-- OFFSET without ORDER BY (stable row order within partitions)
+SELECT * FROM trades LIMIT 50 OFFSET 200
 
 -- Multi-column ORDER BY
 ORDER BY symbol ASC, price DESC
