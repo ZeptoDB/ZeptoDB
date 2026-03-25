@@ -1086,6 +1086,9 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | Window functions | ✅ Full | Fetches all data, executes locally |
 | CTE / Subquery | ✅ Full | Fetches all data, executes locally |
 | `STDDEV/VARIANCE/MEDIAN/PERCENTILE` | ✅ Full | Fetches all data, executes locally |
+| `SHOW TABLES` | ✅ Full | Scatter to all nodes, sum row counts |
+| `DESCRIBE` | ✅ Full | Execute on any node (schema replicated via DDL broadcast) |
+| `CREATE/DROP/ALTER TABLE` | ✅ Full | DDL broadcast to all nodes |
 
 ---
 

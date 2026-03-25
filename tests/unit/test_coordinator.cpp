@@ -3601,3 +3601,105 @@ TEST(QueryCoordinator, CollectRemoteMetrics_TwoNodes) {
     srv1.stop();
     srv2.stop();
 }
+
+// ============================================================================
+// Catalog queries: DDL broadcast + SHOW TABLES + DESCRIBE (multi-node)
+// ============================================================================
+
+TEST(QueryCoordinator, DDLBroadcast_CreateTable_BothNodesHaveSchema) {
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+    p1->start();
+    p2->start();
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19901, 1}, *p1);
+    coord.add_local_node({"127.0.0.1", 19902, 2}, *p2);
+
+    auto r = coord.execute_sql(
+        "CREATE TABLE orders (symbol INT64, price INT64, qty INT64)");
+    ASSERT_TRUE(r.ok()) << r.error;
+
+    // Both nodes should have the schema
+    EXPECT_TRUE(p1->schema_registry().exists("orders"));
+    EXPECT_TRUE(p2->schema_registry().exists("orders"));
+
+    p1->stop();
+    p2->stop();
+}
+
+TEST(QueryCoordinator, ShowTables_AggregatesRowCounts) {
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+    p1->start();
+    p2->start();
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19903, 1}, *p1);
+    coord.add_local_node({"127.0.0.1", 19904, 2}, *p2);
+
+    // Create table on both nodes via broadcast
+    coord.execute_sql("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp INT64)");
+
+    // Insert data into each node directly
+    {
+        QueryExecutor ex1(*p1);
+        ex1.execute("INSERT INTO trades (symbol, price, volume) VALUES (1, 100, 10)");
+        ex1.execute("INSERT INTO trades (symbol, price, volume) VALUES (1, 200, 20)");
+    }
+    {
+        QueryExecutor ex2(*p2);
+        ex2.execute("INSERT INTO trades (symbol, price, volume) VALUES (2, 300, 30)");
+    }
+
+    auto r = coord.execute_sql("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_GE(r.rows.size(), 1u);
+    // Row count should be sum from both nodes (2 + 1 = 3)
+    EXPECT_EQ(r.rows[0][0], 3);
+
+    p1->stop();
+    p2->stop();
+}
+
+TEST(QueryCoordinator, Describe_ReturnsSchemaFromAnyNode) {
+    auto p1 = make_pipeline();
+    auto p2 = make_pipeline();
+    p1->start();
+    p2->start();
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19905, 1}, *p1);
+    coord.add_local_node({"127.0.0.1", 19906, 2}, *p2);
+
+    coord.execute_sql("CREATE TABLE quotes (symbol INT64, bid FLOAT64, ask FLOAT64)");
+
+    auto r = coord.execute_sql("DESCRIBE quotes");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 3u);  // 3 columns
+    ASSERT_GE(r.string_rows.size(), 6u);
+    EXPECT_EQ(r.string_rows[0], "symbol");
+    EXPECT_EQ(r.string_rows[2], "bid");
+    EXPECT_EQ(r.string_rows[3], "FLOAT64");
+
+    p1->stop();
+    p2->stop();
+}
+
+TEST(QueryCoordinator, ShowTables_SingleNode_Works) {
+    auto p1 = make_pipeline();
+    p1->start();
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19907, 1}, *p1);
+
+    coord.execute_sql("CREATE TABLE metrics (ts INT64, value INT64)");
+
+    auto r = coord.execute_sql("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_GE(r.rows.size(), 1u);
+    ASSERT_FALSE(r.string_rows.empty());
+    EXPECT_EQ(r.string_rows[0], "metrics");
+
+    p1->stop();
+}

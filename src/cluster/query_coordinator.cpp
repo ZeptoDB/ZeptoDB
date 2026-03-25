@@ -614,6 +614,37 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
             }
             return results.empty() ? zeptodb::sql::QueryResultSet{} : results[0];
         }
+        if (upper.rfind("SHOW", 0) == 0 || upper.rfind("DESC", 0) == 0) {
+            // Catalog queries: schema is replicated via DDL broadcast.
+            // SHOW TABLES: scatter to all nodes, sum row counts.
+            // DESCRIBE: execute on first node only (schema is identical).
+            if (upper.rfind("SHOW", 0) == 0) {
+                auto results = scatter(sql);
+                if (results.empty()) return zeptodb::sql::QueryResultSet{};
+                // Use first result as base, sum row counts from others
+                auto merged = std::move(results[0]);
+                if (!merged.ok()) return merged;
+                for (size_t n = 1; n < results.size(); ++n) {
+                    if (!results[n].ok()) continue;
+                    for (size_t i = 0; i < merged.rows.size() && i < results[n].rows.size(); ++i) {
+                        for (size_t c = 0; c < merged.rows[i].size() && c < results[n].rows[i].size(); ++c) {
+                            merged.rows[i][c] += results[n].rows[i][c];
+                        }
+                    }
+                }
+                return merged;
+            }
+            // DESCRIBE: any single node suffices
+            std::shared_lock lock(mutex_);
+            if (endpoints_.empty()) {
+                zeptodb::sql::QueryResultSet err;
+                err.error = "QueryCoordinator: no nodes registered";
+                return err;
+            }
+            auto first = endpoints_[0];
+            lock.unlock();
+            return exec_on(*first, sql);
+        }
     }
 
     // ---- SELECT path (existing logic) ----
