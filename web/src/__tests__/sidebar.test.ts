@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { getVisibleNav } from "@/components/Sidebar";
 
 describe("getVisibleNav (role-based menu filtering)", () => {
-  it("admin sees all menus including Cluster", () => {
+  it("admin sees all menus including Cluster and Admin", () => {
     const labels = getVisibleNav("admin").map((n) => n.label);
-    expect(labels).toEqual(["Query", "Dashboard", "Tables", "Cluster"]);
+    expect(labels).toEqual(["Query", "Dashboard", "Tables", "Cluster", "Admin"]);
   });
 
   it("writer sees Query, Dashboard, Tables", () => {
@@ -22,9 +22,9 @@ describe("getVisibleNav (role-based menu filtering)", () => {
     expect(labels).toEqual(["Query", "Tables"]);
   });
 
-  it("metrics sees only Dashboard", () => {
+  it("metrics sees Dashboard and Cluster", () => {
     const labels = getVisibleNav("metrics").map((n) => n.label);
-    expect(labels).toEqual(["Dashboard"]);
+    expect(labels).toEqual(["Dashboard", "Cluster"]);
   });
 
   it("unknown role sees nothing", () => {

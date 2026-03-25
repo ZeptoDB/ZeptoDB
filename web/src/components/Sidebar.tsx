@@ -8,6 +8,7 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import StorageIcon from "@mui/icons-material/Storage";
 import HubIcon from "@mui/icons-material/Hub";
+import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import LogoutIcon from "@mui/icons-material/Logout";
 import { useAuth } from "@/lib/auth";
 
@@ -20,6 +21,7 @@ const nav: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: <DashboardIcon />, roles: ["admin", "writer", "reader", "metrics"] },
   { label: "Tables", href: "/tables", icon: <StorageIcon />, roles: ["admin", "writer", "reader", "analyst"] },
   { label: "Cluster", href: "/cluster", icon: <HubIcon />, roles: ["admin", "metrics"] },
+  { label: "Admin", href: "/admin", icon: <AdminPanelSettingsIcon />, roles: ["admin"] },
 ];
 
 export function getVisibleNav(role: string): NavItem[] {

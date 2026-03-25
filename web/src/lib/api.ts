@@ -45,3 +45,58 @@ export async function fetchMetricsHistory(apiKey?: string, sinceMs?: number, lim
   if (!res.ok) return null;
   return res.json();
 }
+
+// ── Admin: API Keys ─────────────────────────────────────────────────────────
+
+export async function fetchKeys(apiKey?: string) {
+  const res = await fetch("/api/admin/keys", { headers: headers(apiKey) });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function createKey(name: string, role: string, apiKey?: string) {
+  const res = await fetch("/api/admin/keys", {
+    method: "POST",
+    headers: { ...headers(apiKey), "Content-Type": "application/json" },
+    body: JSON.stringify({ name, role }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function revokeKey(keyId: string, apiKey?: string) {
+  const res = await fetch(`/api/admin/keys/${keyId}`, { method: "DELETE", headers: headers(apiKey) });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ── Admin: Queries ──────────────────────────────────────────────────────────
+
+export async function fetchQueries(apiKey?: string) {
+  const res = await fetch("/api/admin/queries", { headers: headers(apiKey) });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function killQuery(queryId: string, apiKey?: string) {
+  const res = await fetch(`/api/admin/queries/${queryId}`, { method: "DELETE", headers: headers(apiKey) });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ── Admin: Audit ────────────────────────────────────────────────────────────
+
+export async function fetchAudit(apiKey?: string, n = 100) {
+  const res = await fetch(`/api/admin/audit?n=${n}`, { headers: headers(apiKey) });
+  if (!res.ok) return null;
+  return res.json();
+}
