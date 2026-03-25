@@ -76,6 +76,10 @@ int main(int argc, char* argv[]) {
     cfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
     zeptodb::core::ZeptoPipeline pipeline(cfg);
 
+    // Register default trades schema so SHOW TABLES / DESCRIBE work
+    zeptodb::sql::QueryExecutor bootstrap_ex(pipeline);
+    bootstrap_ex.execute("CREATE TABLE IF NOT EXISTS trades (symbol SYMBOL, price INT64, volume INT64, timestamp INT64)");
+
     // Seed sample data
     for (int i = 0; i < num_ticks; ++i) {
         zeptodb::ingestion::TickMessage msg{};
@@ -89,7 +93,7 @@ int main(int argc, char* argv[]) {
 
     // Auth setup
     zeptodb::auth::AuthManager::Config auth_cfg;
-    auth_cfg.enabled = true;
+    auth_cfg.enabled = !no_auth;
     auth_cfg.api_keys_file = "dev_keys.txt";
     auth_cfg.jwt_enabled = false;
     auth_cfg.rate_limit_enabled = false;

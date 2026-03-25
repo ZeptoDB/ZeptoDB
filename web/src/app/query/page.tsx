@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect } from "react";
-import { Box, Button, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, Chip, Alert, List, ListItemButton, ListItemText, IconButton, Tooltip, Snackbar, Menu, MenuItem, ListItemIcon } from "@mui/material";
+import { Box, Button, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Chip, Alert, List, ListItemButton, ListItemText, IconButton, Tooltip, Snackbar, Menu, MenuItem, ListItemIcon } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import HistoryIcon from "@mui/icons-material/History";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
@@ -11,6 +11,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { sql } from "@codemirror/lang-sql";
 import { querySQL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import PaginatedTable from "@/components/PaginatedTable";
 
 function downloadFile(content: string, filename: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -150,26 +151,7 @@ export default function QueryPage() {
               <MenuItem onClick={exportJSON}><ListItemIcon><DataObjectIcon fontSize="small" /></ListItemIcon>Export JSON</MenuItem>
             </Menu>
           </Box>
-          <TableContainer sx={{ flex: 1 }}>
-            <Table size="small" stickyHeader>
-              <TableHead>
-                <TableRow>
-                  {result.columns.map((c) => (
-                    <TableCell key={c} sx={{ fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, bgcolor: "#0D1220" }}>{c}</TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {result.data.map((row, i) => (
-                  <TableRow key={i} hover>
-                    {row.map((cell, j) => (
-                      <TableCell key={j} sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{String(cell)}</TableCell>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <PaginatedTable columns={result.columns} data={result.data} />
         </Paper>
       )}
 

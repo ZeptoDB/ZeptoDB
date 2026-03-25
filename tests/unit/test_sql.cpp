@@ -4230,3 +4230,60 @@ TEST(CatalogSQL, ParserDescribe) {
     EXPECT_EQ(ps.kind, ParsedStatement::Kind::DESCRIBE_TABLE);
     EXPECT_EQ(ps.describe_table_name, "trades");
 }
+
+TEST(CatalogSQL, ShowTablesEmptyWhenNoCreate) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    auto r = ex.execute("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 0u);
+    EXPECT_TRUE(r.string_rows.empty());
+}
+
+TEST(CatalogSQL, ShowTablesMultipleTables) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price INT64)");
+    ex.execute("CREATE TABLE quotes (symbol INT64, bid INT64)");
+    auto r = ex.execute("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 2u);
+    // sorted alphabetically
+    EXPECT_EQ(r.string_rows[0], "quotes");
+    EXPECT_EQ(r.string_rows[1], "trades");
+}
+
+TEST(CatalogSQL, ShowTablesIfNotExistsNoDouble) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price INT64)");
+    ex.execute("CREATE TABLE IF NOT EXISTS trades (symbol INT64, price INT64)");
+    auto r = ex.execute("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.string_rows[0], "trades");
+}
+
+TEST(CatalogSQL, ShowTablesRowCountAfterInsert) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp INT64)");
+    ex.execute("INSERT INTO trades VALUES (1, 100, 10, 1000000000000000000)");
+    ex.execute("INSERT INTO trades VALUES (1, 200, 20, 1000000001000000000)");
+    auto r = ex.execute("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_GE(r.rows[0][0], 2);  // at least 2 rows inserted
+}
