@@ -18,3 +18,4 @@ KIRO.md
 # Python build artifacts
 dist/
 *.egg-info/
+package-lock.json

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Table, TableHead, TableRow, TableCell, TableBody, TableContainer,
   Box, IconButton, Typography, Select, MenuItem, type SelectChangeEvent,
@@ -19,14 +19,18 @@ interface Props {
   maxHeight?: number | string;
 }
 
-export default function PaginatedTable({ columns, data, stickyHeader = true, maxHeight = "100%" }: Props) {
+export default function PaginatedTable({ columns, data, stickyHeader = true, maxHeight }: Props) {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(50);
+
+  // Reset page when data changes
+  useEffect(() => { setPage(0); }, [data]);
 
   const totalPages = Math.max(1, Math.ceil(data.length / rowsPerPage));
   const safePage = Math.min(page, totalPages - 1);
   const start = safePage * rowsPerPage;
   const pageData = data.slice(start, start + rowsPerPage);
+  const showPagination = data.length > PAGE_OPTIONS[0];
 
   const handleRpp = (e: SelectChangeEvent<number>) => {
     setRowsPerPage(Number(e.target.value));
@@ -34,8 +38,8 @@ export default function PaginatedTable({ columns, data, stickyHeader = true, max
   };
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      <TableContainer sx={{ flex: 1, maxHeight }}>
+    <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+      <TableContainer sx={{ flex: 1, overflow: "auto", ...(maxHeight != null && { maxHeight }) }}>
         <Table size="small" stickyHeader={stickyHeader}>
           <TableHead>
             <TableRow>
@@ -63,8 +67,8 @@ export default function PaginatedTable({ columns, data, stickyHeader = true, max
         </Table>
       </TableContainer>
 
-      {data.length > PAGE_OPTIONS[0] && (
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1, px: 2, py: 0.5, borderTop: "1px solid #1E293B" }}>
+      {showPagination && (
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1, px: 2, py: 0.5, borderTop: "1px solid #1E293B", flexShrink: 0 }}>
           <Typography variant="caption" color="text.secondary">Rows per page:</Typography>
           <Select size="small" value={rowsPerPage} onChange={handleRpp}
             sx={{ fontSize: 12, height: 28, "& .MuiSelect-select": { py: 0.25 } }}>
