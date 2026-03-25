@@ -81,6 +81,16 @@ ZeptoPipeline::~ZeptoPipeline() {
     if (running_.load(std::memory_order_acquire)) {
         stop();
     }
+
+    // Ensure deterministic teardown order regardless of whether start() was
+    // called: FlushManager references PartitionManager & HDBWriter, so it
+    // must be destroyed before them.  Clearing partition_index_ avoids
+    // dangling pointers during PartitionManager destruction.
+    flush_manager_.reset();
+    {
+        std::lock_guard<std::mutex> lk(partition_index_mu_);
+        partition_index_.clear();
+    }
 }
 
 // ============================================================================

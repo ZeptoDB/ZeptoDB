@@ -1283,8 +1283,26 @@ CompareOp Parser::parse_compare_op() {
 std::string Parser::parse_qualified_name(std::string& out_alias,
                                           std::string& out_col) {
     out_alias.clear();
+
+    // Helper: treat certain keywords as identifiers when used as
+    // column names or aliases (e.g. ORDER BY offset, AS offset).
+    auto is_ident_like = [&]() {
+        if (check(TokenType::IDENT)) return true;
+        switch (current().type) {
+            case TokenType::OFFSET:
+            case TokenType::FIRST:
+            case TokenType::LAST:
+            case TokenType::ASC:
+            case TokenType::DESC:
+            case TokenType::ROWS:
+                return true;
+            default:
+                return false;
+        }
+    };
+
     // IDENT [DOT IDENT]
-    if (check(TokenType::IDENT)) {
+    if (is_ident_like()) {
         std::string first = current().value;
         advance();
         if (match(TokenType::DOT)) {
@@ -1292,6 +1310,9 @@ std::string Parser::parse_qualified_name(std::string& out_alias,
             out_alias = first;
             if (check(TokenType::STAR)) {
                 out_col = "*";
+                advance();
+            } else if (is_ident_like()) {
+                out_col = current().value;
                 advance();
             } else {
                 out_col = expect(TokenType::IDENT, "column name").value;

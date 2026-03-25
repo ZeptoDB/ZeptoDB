@@ -3,7 +3,8 @@ build/
 *.a
 *.so
 *.pem
-__pycache__/
+__pycache__
+*.pyc
 .pytest_cache/
 site/
 

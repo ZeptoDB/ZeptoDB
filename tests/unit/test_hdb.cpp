@@ -381,7 +381,7 @@ TEST_F(HDBTest, TieredQuery_RdbAndHdb) {
         .hdb_base_path = temp_dir_,
         .flush_config  = FlushConfig{.enable_compression = false},
     };
-    ZeptoPipeline pipeline(cfg);
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
 
     // 현재 시간 파티션에 RDB 데이터 삽입
     const int64_t  rdb_hour  = 3 * ns_hour;
@@ -394,12 +394,12 @@ TEST_F(HDBTest, TieredQuery_RdbAndHdb) {
         msg.price     = 20000'0000LL + static_cast<int64_t>(i);
         msg.volume    = 200LL;
         msg.msg_type  = 0;  // TRADE
-        pipeline.ingest_tick(msg);
+        pipeline->ingest_tick(msg);
     }
-    pipeline.drain_sync();
+    pipeline->drain_sync();
 
     // HDB에서만 조회 (old_hour 파티션)
-    const auto hdb_result = pipeline.query_count(
+    const auto hdb_result = pipeline->query_count(
         symbol, old_hour, old_hour + ns_hour - 1
     );
     EXPECT_EQ(hdb_result.ivalue, static_cast<int64_t>(hdb_rows))
@@ -407,7 +407,7 @@ TEST_F(HDBTest, TieredQuery_RdbAndHdb) {
 
     // RDB에서만 조회 — recv_ts는 TickPlant에서 현재 시각으로 덮어씌워짐
     // 따라서 full_scan으로 조회 (from=0, to=INT64_MAX)
-    const auto rdb_result = pipeline.query_count(symbol, 0, INT64_MAX);
+    const auto rdb_result = pipeline->query_count(symbol, 0, INT64_MAX);
     // HDB + RDB 합산 결과 확인
     EXPECT_GE(rdb_result.ivalue, static_cast<int64_t>(rdb_rows))
         << "RDB + HDB 전체 카운트가 rdb_rows보다 작음";
@@ -456,7 +456,7 @@ TEST_F(HDBTest, AutoSnapshot_CreatesFiles) {
     cfg.flush_config.snapshot_path         = snap_dir.string();
     cfg.flush_config.auto_seal_age_hours   = 999;     // keep partitions ACTIVE
 
-    ZeptoPipeline pipeline(cfg);
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
 
     const int64_t base_ts = 1'700'000'000LL * 1'000'000'000LL;
     for (int i = 0; i < 100; ++i) {
@@ -465,15 +465,15 @@ TEST_F(HDBTest, AutoSnapshot_CreatesFiles) {
         msg.recv_ts   = base_ts + i * 1'000'000LL;
         msg.price     = 100'0000LL + i;
         msg.volume    = 1000LL + i;
-        pipeline.drain_sync(0);  // ensure store_tick path
-        pipeline.store_tick_direct(msg);
+        pipeline->drain_sync(0);  // ensure store_tick path
+        pipeline->store_tick_direct(msg);
     }
 
-    ASSERT_EQ(pipeline.total_stored_rows(), 100u);
+    ASSERT_EQ(pipeline->total_stored_rows(), 100u);
 
     // Trigger snapshot manually — must include ACTIVE partition
-    ASSERT_NE(pipeline.flush_manager(), nullptr);
-    const size_t snapped = pipeline.flush_manager()->snapshot_now();
+    ASSERT_NE(pipeline->flush_manager(), nullptr);
+    const size_t snapped = pipeline->flush_manager()->snapshot_now();
     EXPECT_GE(snapped, 1u) << "at least one partition should be snapshotted";
 
     // Verify binary column files exist in snapshot dir
@@ -498,7 +498,7 @@ TEST_F(HDBTest, Recovery_ReloadsData) {
         cfg.flush_config.snapshot_path       = snap_dir.string();
         cfg.flush_config.auto_seal_age_hours = 999;
 
-        ZeptoPipeline pipeline(cfg);
+        auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
 
         const int64_t base_ts = 1'700'000'000LL * 1'000'000'000LL;
         const size_t N = 50;
@@ -508,13 +508,13 @@ TEST_F(HDBTest, Recovery_ReloadsData) {
             msg.recv_ts   = base_ts + static_cast<int64_t>(i) * 1'000'000LL;
             msg.price     = 200'0000LL + static_cast<int64_t>(i);
             msg.volume    = 500LL;
-            pipeline.store_tick_direct(msg);
+            pipeline->store_tick_direct(msg);
         }
-        ASSERT_EQ(pipeline.total_stored_rows(), N);
+        ASSERT_EQ(pipeline->total_stored_rows(), N);
 
         // Snapshot while still ACTIVE
-        ASSERT_NE(pipeline.flush_manager(), nullptr);
-        pipeline.flush_manager()->snapshot_now();
+        ASSERT_NE(pipeline->flush_manager(), nullptr);
+        pipeline->flush_manager()->snapshot_now();
     }
 
     // --- Phase 2: new pipeline, recover from snapshot ---
@@ -524,13 +524,13 @@ TEST_F(HDBTest, Recovery_ReloadsData) {
         cfg.enable_recovery           = true;
         cfg.recovery_snapshot_path    = snap_dir.string();
 
-        ZeptoPipeline pipeline(cfg);
-        pipeline.start();  // triggers recovery
+        auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+        pipeline->start();  // triggers recovery
 
-        EXPECT_EQ(pipeline.total_stored_rows(), 50u)
+        EXPECT_EQ(pipeline->total_stored_rows(), 50u)
             << "recovered pipeline should have all 50 rows";
 
-        pipeline.stop();
+        pipeline->stop();
     }
 }
 
