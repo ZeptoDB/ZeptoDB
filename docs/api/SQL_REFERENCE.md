@@ -27,6 +27,7 @@ All integer columns are `int64`. Floating-point values are stored as fixed-point
 - [DML (INSERT / UPDATE / DELETE)](#dml-data-manipulation-language)
 - [Index Attributes (s# / g# / p#)](#index-attributes-s--g--p)
 - [EXPLAIN](#explain)
+- [Catalog Queries (SHOW TABLES / DESCRIBE)](#catalog-queries-show-tables--describe)
 - [Data Types & Timestamp Arithmetic](#data-types--timestamp-arithmetic)
 - [Distributed Query Behavior](#distributed-query-behavior)
 - [Known Limitations](#known-limitations)
@@ -1012,6 +1013,38 @@ EXPLAIN SELECT count(*) FROM trades WHERE symbol = 1 AND price > 15000
 ```
 
 Output includes: scan type (full/indexed/parallel), index used, estimated rows, partition count.
+
+---
+
+## Catalog Queries (SHOW TABLES / DESCRIBE)
+
+### SHOW TABLES
+
+Lists all tables registered in the schema registry.
+
+```sql
+SHOW TABLES
+```
+
+Response columns: `name` (string), `rows` (int64 — total row count across all partitions).
+
+```json
+{"columns":["name","rows"],"data":[["trades",50000],["quotes",30000]],"rows":2}
+```
+
+### DESCRIBE
+
+Returns the column definitions for a table.
+
+```sql
+DESCRIBE trades
+```
+
+Response columns: `column` (string), `type` (string — INT64, FLOAT64, TIMESTAMP, SYMBOL, etc.).
+
+```json
+{"columns":["column","type"],"data":[["symbol","SYMBOL"],["price","INT64"],["volume","INT64"],["timestamp","TIMESTAMP"]],"rows":4}
+```
 
 ---
 

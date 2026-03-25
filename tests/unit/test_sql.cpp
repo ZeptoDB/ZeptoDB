@@ -4162,3 +4162,71 @@ TEST(StringSupport, ManySymbols) {
     ASSERT_EQ(r.rows.size(), 1u);
     EXPECT_EQ(r.rows[0][0], 10025);
 }
+
+// ============================================================================
+// SHOW TABLES / DESCRIBE tests
+// ============================================================================
+
+TEST(CatalogSQL, ShowTablesReturnsCreatedTable) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp INT64)");
+    auto r = ex.execute("SHOW TABLES");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.column_names.size(), 2u);
+    EXPECT_EQ(r.column_names[0], "name");
+    EXPECT_EQ(r.column_names[1], "rows");
+    ASSERT_GE(r.rows.size(), 1u);
+    ASSERT_FALSE(r.string_rows.empty());
+    EXPECT_EQ(r.string_rows[0], "trades");
+}
+
+TEST(CatalogSQL, DescribeReturnsColumns) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("CREATE TABLE trades (symbol INT64, price FLOAT64, volume INT32)");
+    auto r = ex.execute("DESCRIBE trades");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.column_names.size(), 2u);
+    EXPECT_EQ(r.column_names[0], "column");
+    EXPECT_EQ(r.column_names[1], "type");
+    // 3 columns → 3 rows, 6 string_rows (name, type pairs)
+    EXPECT_EQ(r.rows.size(), 3u);
+    ASSERT_GE(r.string_rows.size(), 6u);
+    EXPECT_EQ(r.string_rows[0], "symbol");
+    EXPECT_EQ(r.string_rows[1], "INT64");
+    EXPECT_EQ(r.string_rows[2], "price");
+    EXPECT_EQ(r.string_rows[3], "FLOAT64");
+    EXPECT_EQ(r.string_rows[4], "volume");
+    EXPECT_EQ(r.string_rows[5], "INT32");
+}
+
+TEST(CatalogSQL, DescribeUnknownTableReturnsError) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    auto r = ex.execute("DESCRIBE nonexistent");
+    EXPECT_FALSE(r.ok());
+    EXPECT_NE(r.error.find("not found"), std::string::npos);
+}
+
+TEST(CatalogSQL, ParserShowTables) {
+    Parser p;
+    auto ps = p.parse_statement("SHOW TABLES");
+    EXPECT_EQ(ps.kind, ParsedStatement::Kind::SHOW_TABLES);
+}
+
+TEST(CatalogSQL, ParserDescribe) {
+    Parser p;
+    auto ps = p.parse_statement("DESCRIBE trades");
+    EXPECT_EQ(ps.kind, ParsedStatement::Kind::DESCRIBE_TABLE);
+    EXPECT_EQ(ps.describe_table_name, "trades");
+}
