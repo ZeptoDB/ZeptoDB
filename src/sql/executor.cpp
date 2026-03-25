@@ -54,7 +54,6 @@ static bool compare_val(T v, CompareOp op, T cmp) {
     }
     return false;
 }
-static inline double read_as_double(int64_t v) { return std::bit_cast<double>(v); }
 static inline int64_t store_double(double v) { return std::bit_cast<int64_t>(v); }
 
 // ============================================================================
@@ -72,6 +71,21 @@ static inline int64_t vt_col_val(
     auto it = col_idx.find(col);
     if (it == col_idx.end()) return 0;
     return src.rows[row_idx][it->second];
+}
+
+// Float-aware: read native double from typed_rows if available
+static inline double vt_col_dval(
+    const std::string& col,
+    const QueryResultSet& src,
+    const std::unordered_map<std::string, size_t>& col_idx,
+    size_t row_idx)
+{
+    auto it = col_idx.find(col);
+    if (it == col_idx.end()) return 0.0;
+    size_t ci = it->second;
+    if (row_idx < src.typed_rows.size())
+        return src.typed_rows[row_idx][ci].f;
+    return static_cast<double>(src.rows[row_idx][ci]);
 }
 
 // Evaluate an ArithExpr against a virtual-table row.
@@ -133,9 +147,10 @@ static bool eval_expr_vt(const std::shared_ptr<Expr>& expr,
         case Expr::Kind::NOT:
             return !eval_expr_vt(expr->left, src, col_idx, row_idx);
         case Expr::Kind::COMPARE: {
-            int64_t v   = vt_col_val(expr->column, src, col_idx, row_idx);
             if (expr->is_float)
-                return compare_val(read_as_double(v), expr->op, expr->value_f);
+                return compare_val(vt_col_dval(expr->column, src, col_idx, row_idx),
+                                   expr->op, expr->value_f);
+            int64_t v = vt_col_val(expr->column, src, col_idx, row_idx);
             return compare_val(v, expr->op, expr->value);
         }
         case Expr::Kind::BETWEEN: {
@@ -372,6 +387,7 @@ static storage::ColumnType ddl_type_from_str(const std::string& t) {
     if (t == "FLOAT32"|| t == "FLOAT"  || t == "REAL")   return storage::ColumnType::FLOAT32;
     if (t == "TIMESTAMP" || t == "TIMESTAMP_NS")         return storage::ColumnType::TIMESTAMP_NS;
     if (t == "SYMBOL")                                   return storage::ColumnType::SYMBOL;
+    if (t == "STRING" || t == "VARCHAR" || t == "TEXT")   return storage::ColumnType::STRING;
     if (t == "BOOL"   || t == "BOOLEAN")                 return storage::ColumnType::BOOL;
     throw std::runtime_error("Unknown DDL column type: " + t);
 }
@@ -623,16 +639,18 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
             auto it = col_idx.find(name);
             if (it == col_idx.end()) return def;
             auto& v = row[it->second];
-            return v.is_float ? static_cast<int64_t>(v.f) : v.i;
+            if (v.type == InsertValue::STRING)
+                return static_cast<int64_t>(pipeline_.symbol_dict().intern(v.s));
+            return v.type == InsertValue::FLOAT ? static_cast<int64_t>(v.f) : v.i;
         };
 
         // Check if price is float
         auto price_it = col_idx.find("price");
-        bool price_float = (price_it != col_idx.end()) && row[price_it->second].is_float;
+        bool price_float = (price_it != col_idx.end()) && row[price_it->second].type == InsertValue::FLOAT;
 
         msg.symbol_id = static_cast<int32_t>(get_i("symbol", 0));
         if (price_float) {
-            msg.price = std::bit_cast<int64_t>(row[price_it->second].f);
+            msg.price_f = row[price_it->second].f;
             msg.price_is_float = 1;
         } else {
             msg.price = get_i("price", 0);
@@ -823,6 +841,7 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
 
         auto result = exec_select(stmt);
         result.execution_time_us = now_us() - t0;
+        result.symbol_dict = &pipeline_.symbol_dict();
         tl_cte_map.clear();
         return result;
     } catch (const std::exception& e) {
@@ -1921,17 +1940,17 @@ QueryResultSet QueryExecutor::apply_having_filter(
 
     // Evaluate one HAVING condition against a result row
     std::function<bool(const std::shared_ptr<Expr>&,
-                       const std::vector<int64_t>&)> eval_row;
+                       const std::vector<int64_t>&, size_t)> eval_row;
     eval_row = [&](const std::shared_ptr<Expr>& expr,
-                   const std::vector<int64_t>& row) -> bool {
+                   const std::vector<int64_t>& row, size_t ri) -> bool {
         if (!expr) return true;
         switch (expr->kind) {
             case Expr::Kind::AND:
-                return eval_row(expr->left, row) && eval_row(expr->right, row);
+                return eval_row(expr->left, row, ri) && eval_row(expr->right, row, ri);
             case Expr::Kind::OR:
-                return eval_row(expr->left, row) || eval_row(expr->right, row);
+                return eval_row(expr->left, row, ri) || eval_row(expr->right, row, ri);
             case Expr::Kind::NOT:
-                return !eval_row(expr->left, row);
+                return !eval_row(expr->left, row, ri);
             case Expr::Kind::COMPARE: {
                 // Match by column alias or name
                 int col_idx = -1;
@@ -1944,8 +1963,12 @@ QueryResultSet QueryExecutor::apply_having_filter(
                 if (col_idx < 0 || col_idx >= static_cast<int>(row.size()))
                     return false;
                 int64_t v   = row[col_idx];
-                if (expr->is_float)
-                    return compare_val(read_as_double(v), expr->op, expr->value_f);
+                if (expr->is_float) {
+                    double fv = (ri < result.typed_rows.size())
+                        ? result.typed_rows[ri][col_idx].f
+                        : static_cast<double>(v);
+                    return compare_val(fv, expr->op, expr->value_f);
+                }
                 return compare_val(v, expr->op, expr->value);
             }
             case Expr::Kind::BETWEEN: {
@@ -2011,9 +2034,12 @@ QueryResultSet QueryExecutor::apply_having_filter(
     filtered.rows_scanned    = result.rows_scanned;
     filtered.rows.reserve(result.rows.size());
 
-    for (auto& row : result.rows) {
-        if (eval_row(having.expr, row))
-            filtered.rows.push_back(std::move(row));
+    for (size_t ri = 0; ri < result.rows.size(); ++ri) {
+        if (eval_row(having.expr, result.rows[ri], ri)) {
+            filtered.rows.push_back(std::move(result.rows[ri]));
+            if (ri < result.typed_rows.size())
+                filtered.typed_rows.push_back(std::move(result.typed_rows[ri]));
+        }
     }
     return filtered;
 }
@@ -2175,10 +2201,22 @@ QueryResultSet QueryExecutor::exec_simple_select(
             if (result.rows.size() >= limit) break;
 
             std::vector<int64_t> row;
+            std::vector<QueryResultSet::Value> trow;
+            bool need_typed = false;
             if (is_star) {
                 for (const auto& cv : part->columns()) {
-                    const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
-                    row.push_back(d ? d[idx] : 0);
+                    if (cv->type() == ColumnType::FLOAT64 || cv->type() == ColumnType::FLOAT32) {
+                        const double* d = static_cast<const double*>(cv->raw_data());
+                        double fv = d ? d[idx] : 0.0;
+                        row.push_back(store_double(fv));
+                        trow.emplace_back(fv);
+                        need_typed = true;
+                    } else {
+                        const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
+                        int64_t iv = d ? d[idx] : 0;
+                        row.push_back(iv);
+                        trow.emplace_back(iv);
+                    }
                 }
             } else {
                 for (const auto& sel : stmt.columns) {
@@ -2186,25 +2224,34 @@ QueryResultSet QueryExecutor::exec_simple_select(
                     int64_t val;
                     if (sel.case_when) {
                         val = eval_case_when(*sel.case_when, *part, idx);
+                        trow.emplace_back(val);
                     } else if (sel.arith_expr) {
                         val = eval_arith(*sel.arith_expr, *part, idx);
+                        trow.emplace_back(val);
                     } else if (sel.column == "symbol") {
                         val = static_cast<int64_t>(part->key().symbol_id);
+                        trow.emplace_back(val);
                     } else {
                         const auto* cv = part->get_column(sel.column);
                         if (cv && (cv->type() == ColumnType::FLOAT64 ||
                                    cv->type() == ColumnType::FLOAT32)) {
                             const double* d = static_cast<const double*>(cv->raw_data());
-                            val = d ? store_double(d[idx]) : 0;
+                            double fv = d ? d[idx] : 0.0;
+                            val = store_double(fv);
+                            trow.emplace_back(fv);
+                            need_typed = true;
                         } else {
                             const int64_t* d = get_col_data(*part, sel.column);
                             val = d ? d[idx] : 0;
+                            trow.emplace_back(val);
                         }
                     }
                     row.push_back(val);
                 }
             }
             result.rows.push_back(std::move(row));
+            if (need_typed)
+                result.typed_rows.push_back(std::move(trow));
         }
     }
 
@@ -3675,7 +3722,13 @@ bool QueryExecutor::has_where_symbol(
         if (!expr) return false;
         if (expr->kind == Expr::Kind::COMPARE) {
             if (expr->column == "symbol" && expr->op == CompareOp::EQ) {
-                out_sym = expr->value;
+                if (expr->is_string) {
+                    int64_t code = pipeline_.symbol_dict().find(expr->value_str);
+                    if (code < 0) { out_sym = -2; return true; } // not found → empty result
+                    out_sym = code;
+                } else {
+                    out_sym = expr->value;
+                }
                 return true;
             }
         }

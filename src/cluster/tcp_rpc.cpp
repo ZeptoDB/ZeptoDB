@@ -253,6 +253,40 @@ void TcpRpcServer::handle_connection(int cfd) {
             continue;
         }
 
+        if (type == RpcType::STATS_REQUEST) {
+            std::string json = "{}";
+            if (stats_callback_) {
+                try { json = stats_callback_(); } catch (...) {}
+            }
+            RpcHeader resp;
+            resp.type        = static_cast<uint32_t>(RpcType::STATS_RESULT);
+            resp.request_id  = hdr.request_id;
+            resp.payload_len = static_cast<uint32_t>(json.size());
+            if (!send_all(cfd, &resp, sizeof(resp)) ||
+                !send_all(cfd, json.data(), json.size()))
+                break;
+            continue;
+        }
+
+        if (type == RpcType::METRICS_REQUEST) {
+            std::string json = "[]";
+            if (metrics_callback_ && payload.size() >= 12) {
+                int64_t since_ms = 0;
+                uint32_t limit = 0;
+                deserialize_metrics_request(payload.data(), payload.size(),
+                                            since_ms, limit);
+                try { json = metrics_callback_(since_ms, limit); } catch (...) {}
+            }
+            RpcHeader resp;
+            resp.type        = static_cast<uint32_t>(RpcType::METRICS_RESULT);
+            resp.request_id  = hdr.request_id;
+            resp.payload_len = static_cast<uint32_t>(json.size());
+            if (!send_all(cfd, &resp, sizeof(resp)) ||
+                !send_all(cfd, json.data(), json.size()))
+                break;
+            continue;
+        }
+
         break;  // Unknown type
     }
 }
@@ -483,6 +517,67 @@ bool TcpRpcClient::replicate_wal(
     }
     release(fd, true);
     return static_cast<RpcType>(resp.type) == RpcType::WAL_ACK && status == 1u;
+}
+
+std::string TcpRpcClient::request_stats() {
+    int fd = acquire();
+    if (fd < 0) return "";
+
+    RpcHeader hdr{};
+    hdr.type        = static_cast<uint32_t>(RpcType::STATS_REQUEST);
+    hdr.request_id  = 1;
+    hdr.payload_len = 0;
+    if (!send_all(fd, &hdr, sizeof(hdr))) {
+        release(fd, false);
+        return "";
+    }
+
+    RpcHeader resp{};
+    if (!recv_all(fd, &resp, sizeof(resp)) ||
+        static_cast<RpcType>(resp.type) != RpcType::STATS_RESULT) {
+        release(fd, false);
+        return "";
+    }
+
+    std::string json(resp.payload_len, '\0');
+    if (resp.payload_len > 0 && !recv_all(fd, json.data(), resp.payload_len)) {
+        release(fd, false);
+        return "";
+    }
+    release(fd, true);
+    return json;
+}
+
+std::string TcpRpcClient::request_metrics(int64_t since_ms, uint32_t limit) {
+    int fd = acquire();
+    if (fd < 0) return "";
+
+    auto payload = serialize_metrics_request(since_ms, limit);
+
+    RpcHeader hdr{};
+    hdr.type        = static_cast<uint32_t>(RpcType::METRICS_REQUEST);
+    hdr.request_id  = 1;
+    hdr.payload_len = static_cast<uint32_t>(payload.size());
+    if (!send_all(fd, &hdr, sizeof(hdr)) ||
+        !send_all(fd, payload.data(), payload.size())) {
+        release(fd, false);
+        return "";
+    }
+
+    RpcHeader resp{};
+    if (!recv_all(fd, &resp, sizeof(resp)) ||
+        static_cast<RpcType>(resp.type) != RpcType::METRICS_RESULT) {
+        release(fd, false);
+        return "";
+    }
+
+    std::string json(resp.payload_len, '\0');
+    if (resp.payload_len > 0 && !recv_all(fd, json.data(), resp.payload_len)) {
+        release(fd, false);
+        return "";
+    }
+    release(fd, true);
+    return json;
 }
 
 bool TcpRpcClient::ping() {

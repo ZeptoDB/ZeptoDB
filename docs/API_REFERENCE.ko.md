@@ -31,7 +31,10 @@
 ### SQL — 자주 사용하는 패턴
 
 ```sql
--- VWAP + 카운트
+-- VWAP + 카운트 (문자열 심볼)
+SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 'AAPL'
+
+-- 정수 심볼 ID도 지원 (레거시)
 SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 1
 
 -- 5분 OHLCV 바 (kdb+ xbar 스타일)
@@ -39,7 +42,7 @@ SELECT xbar(timestamp, 300000000000) AS bar,
        first(price) AS open, max(price) AS high,
        min(price) AS low,   last(price) AS close,
        sum(volume) AS vol
-FROM trades WHERE symbol = 1
+FROM trades WHERE symbol = 'AAPL'
 GROUP BY xbar(timestamp, 300000000000)
 
 -- 이동 평균

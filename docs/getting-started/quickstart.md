@@ -6,9 +6,9 @@
 # Start server
 ./zepto_server --port 8123
 
-# Query via curl
+# Query via curl (string symbols supported)
 curl -X POST http://localhost:8123/ \
-  -d 'SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 1'
+  -d "SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 'AAPL'"
 ```
 
 Grafana can connect directly as a ClickHouse data source.

@@ -114,7 +114,7 @@ cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
 ninja -j$(nproc)
 
 # Tune (on data nodes)
-sudo ../scripts/tune_bare_metal.sh
+sudo ../deploy/scripts/tune_bare_metal.sh
 ```
 
 ---
@@ -335,7 +335,7 @@ Sub-linear due to scatter-gather overhead + merge cost.
 
 ```bash
 #!/bin/bash
-# scripts/bench_multinode.sh — run from load gen instance
+# deploy/scripts/bench_multinode.sh — run from load gen instance
 set -euo pipefail
 
 COORD="10.0.1.20:8123"

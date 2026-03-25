@@ -31,7 +31,10 @@ Korean translations:
 ### SQL — most common patterns
 
 ```sql
--- VWAP + count
+-- VWAP + count (string symbol)
+SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 'AAPL'
+
+-- Integer symbol ID also supported (legacy)
 SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 1
 
 -- 5-minute OHLCV bar (kdb+ xbar style)
@@ -39,7 +42,7 @@ SELECT xbar(timestamp, 300000000000) AS bar,
        first(price) AS open, max(price) AS high,
        min(price) AS low,   last(price) AS close,
        sum(volume) AS vol
-FROM trades WHERE symbol = 1
+FROM trades WHERE symbol = 'AAPL'
 GROUP BY xbar(timestamp, 300000000000)
 
 -- Moving average

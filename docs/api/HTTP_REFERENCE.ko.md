@@ -42,10 +42,14 @@ cd build && ninja -j$(nproc)
 curl http://localhost:8123/ping
 # Ok
 
-# 기본 집계 쿼리
+# 기본 집계 쿼리 (문자열 심볼)
+curl -s -X POST http://localhost:8123/ \
+  -d "SELECT vwap(price, volume) AS vwap, count(*) AS n FROM trades WHERE symbol = 'AAPL'"
+# {"columns":["vwap","n"],"data":[[15037.2,1000]],"rows":1,"execution_time_us":52.3}
+
+# 정수 심볼 ID도 지원
 curl -s -X POST http://localhost:8123/ \
   -d 'SELECT vwap(price, volume) AS vwap, count(*) AS n FROM trades WHERE symbol = 1'
-# {"columns":["vwap","n"],"data":[[15037.2,1000]],"rows":1,"execution_time_us":52.3}
 ```
 
 ### 자주 사용하는 쿼리 패턴

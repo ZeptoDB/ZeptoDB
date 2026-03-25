@@ -1,14 +1,14 @@
 # 015 — Bare-Metal Performance Tuning
 
 **Date:** 2026-03-22
-**Author:** Claude Sonnet 4.6 (AI-assisted via `scripts/ai_tune_bare_metal.py`)
+**Author:** Claude Sonnet 4.6 (AI-assisted via `deploy/scripts/ai_tune_bare_metal.py`)
 **Hardware:** Intel Xeon 6975P-C, 8 cores, 31GB RAM, single NUMA node, Amazon Linux 2023
 
 ---
 
 ## Summary
 
-This devlog records the iterative bare-metal performance tuning of ZeptoDB using an AI-driven tuner (`scripts/ai_tune_bare_metal.py`) powered by Claude Opus 4.6 with extended thinking, combined with manual profiling and compiler optimization experiments.
+This devlog records the iterative bare-metal performance tuning of ZeptoDB using an AI-driven tuner (`deploy/scripts/ai_tune_bare_metal.py`) powered by Claude Opus 4.6 with extended thinking, combined with manual profiling and compiler optimization experiments.
 
 **Final Results vs. Original Baseline:**
 
@@ -24,7 +24,7 @@ This devlog records the iterative bare-metal performance tuning of ZeptoDB using
 
 ## Methodology
 
-### AI Tuner (`scripts/ai_tune_bare_metal.py`)
+### AI Tuner (`deploy/scripts/ai_tune_bare_metal.py`)
 
 The tuner uses `claude-opus-4-6` (via AWS Bedrock) with extended thinking (`budget_tokens=8000`) to:
 1. Profile the system (CPU governor, hugepages, THP, C-states, NUMA, sysctl)

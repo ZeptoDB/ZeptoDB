@@ -23,7 +23,7 @@ make -j$(nproc)
 
 # 2. Install production service (requires root)
 cd ..
-sudo ./scripts/install_service.sh
+sudo ./deploy/scripts/install_service.sh
 ```
 
 Installation includes:

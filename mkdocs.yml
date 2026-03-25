@@ -162,3 +162,5 @@ nav:
       - "021: DDL Schema": devlog/021_ddl_schema_management.md
       - "022: Helm Rolling Upgrade": devlog/022_helm_rolling_upgrade.md
       - "023: ARM Graviton": devlog/023_arm_graviton_verification.md
+      - "027: String Column": devlog/027_string_column_support.md
+      - "028: Repo Cleanup": devlog/028_repo_structure_cleanup.md

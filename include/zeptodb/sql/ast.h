@@ -224,6 +224,8 @@ struct Expr {
     int64_t     value = 0;         // 숫자 리터럴 (정수 기준)
     double      value_f = 0.0;     // 실수 리터럴
     bool        is_float = false;
+    std::string value_str;         // 문자열 리터럴
+    bool        is_string = false;
 
     // BETWEEN 필드
     int64_t     lo = 0;
@@ -387,10 +389,12 @@ struct AlterTableStmt {
 struct InsertValue {
     int64_t i = 0;
     double  f = 0.0;
-    bool    is_float = false;
+    std::string s;
+    enum Type : uint8_t { INT, FLOAT, STRING } type = INT;
     InsertValue() = default;
     InsertValue(int64_t v) : i(v) {}
-    InsertValue(double v) : f(v), is_float(true) {}
+    InsertValue(double v) : f(v), type(FLOAT) {}
+    InsertValue(std::string v) : s(std::move(v)), type(STRING) {}
 };
 
 struct InsertStmt {

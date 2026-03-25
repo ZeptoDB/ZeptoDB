@@ -43,7 +43,7 @@ Guides for deploying ZeptoDB in production environments.
 ```bash
 # 1. Run tuning script
 cd zeptodb
-sudo ./scripts/tune_bare_metal.sh
+sudo ./deploy/scripts/tune_bare_metal.sh
 
 # 2. Build
 mkdir build && cd build
@@ -63,14 +63,14 @@ sudo numactl --cpunodebind=0 --membind=0 \
 docker build -t zeptodb:latest .
 
 # 2. Deploy via Helm (recommended)
-helm install zeptodb ./helm/zeptodb -n zeptodb --create-namespace
+helm install zeptodb ./deploy/helm/zeptodb -n zeptodb --create-namespace
 
 # 3. Verify
 kubectl get pods -n zeptodb
 curl -s http://<LB>:8123/health
 
 # Upgrade
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb --set image.tag=1.1.0 --wait
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=1.1.0 --wait
 ```
 
 ---

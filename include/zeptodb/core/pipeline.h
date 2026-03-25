@@ -212,6 +212,9 @@ public:
     /// MaterializedViewManager 접근
     [[nodiscard]] MaterializedViewManager& mat_view_manager() { return mat_view_mgr_; }
 
+    /// Global symbol dictionary (string symbol name ↔ int32 symbol_id)
+    [[nodiscard]] storage::StringDictionary& symbol_dict() { return symbol_dict_; }
+
     /// Evict all partitions whose hour_epoch is older than cutoff_ns,
     /// then rebuild partition_index_ to remove stale raw pointers.
     /// Used by ALTER TABLE SET TTL.
@@ -278,6 +281,7 @@ private:
     // Schema registry (all storage modes)
     SchemaRegistry schema_registry_;
     MaterializedViewManager mat_view_mgr_;
+    storage::StringDictionary symbol_dict_;
 
     // HDB 컴포넌트 (Tiered / Pure On-Disk 모드에서만 생성)
     std::unique_ptr<HDBWriter>    hdb_writer_;

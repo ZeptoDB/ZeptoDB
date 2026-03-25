@@ -10,6 +10,7 @@
 #include "zeptodb/common/types.h"
 #include "zeptodb/storage/arena_allocator.h"
 #include "zeptodb/storage/column_store.h"
+#include "zeptodb/storage/string_dictionary.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -218,12 +219,16 @@ public:
         return span.front() <= hi && span.back() >= lo;
     }
 
+    StringDictionary& string_dict() { return string_dict_; }
+    const StringDictionary& string_dict() const { return string_dict_; }
+
 private:
     PartitionKey                              key_;
     State                                     state_ = State::ACTIVE;
     std::unique_ptr<ArenaAllocator>           arena_;
     std::vector<std::unique_ptr<ColumnVector>> columns_;
     std::unordered_set<std::string>           sorted_columns_;
+    StringDictionary                          string_dict_;
 
     // g# index: col_name → { value → [row_indices] }
     std::unordered_map<std::string,

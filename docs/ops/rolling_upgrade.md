@@ -40,7 +40,7 @@ kubectl get pods -n zeptodb -o wide
 curl -s http://<LB>:8123/health
 
 # 2. Upgrade
-helm upgrade zeptodb ./helm/zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb \
   -n zeptodb \
   --set image.tag=1.1.0 \
   --wait --timeout 5m
@@ -59,7 +59,7 @@ curl -X POST http://<LB>:8123/ -d 'SELECT 1'
 ConfigMap changes trigger a rollout automatically via the `checksum/config` annotation.
 
 ```bash
-helm upgrade zeptodb ./helm/zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb \
   -n zeptodb \
   --set config.workerThreads=16 \
   --wait
@@ -71,7 +71,7 @@ For major version bumps or schema changes, use a canary approach:
 
 ```bash
 # 1. Deploy canary (1 replica with new version)
-helm install zeptodb-canary ./helm/zeptodb \
+helm install zeptodb-canary ./deploy/helm/zeptodb \
   -n zeptodb \
   --set replicaCount=1 \
   --set image.tag=2.0.0 \
@@ -84,7 +84,7 @@ kubectl port-forward svc/zeptodb-canary 8124:8123 -n zeptodb
 curl -X POST http://localhost:8124/ -d 'SELECT vwap(price, volume) FROM trades WHERE symbol = 1'
 
 # 3. If OK, promote
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb --set image.tag=2.0.0 --wait
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=2.0.0 --wait
 helm uninstall zeptodb-canary -n zeptodb
 
 # 3b. If NOT OK, rollback canary
@@ -121,7 +121,7 @@ curl -s http://<LB>:8123/health | jq .
 #    Or rely on WAL replay for consistency
 
 # 3. Upgrade with extended grace period
-helm upgrade zeptodb ./helm/zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb \
   -n zeptodb \
   --set image.tag=1.1.0 \
   --set gracefulShutdown.preStopSleepSeconds=30 \
@@ -146,7 +146,7 @@ curl -s http://<LB>:8123/health
 
 ```bash
 # Optional: preview changes
-helm diff upgrade zeptodb ./helm/zeptodb -n zeptodb --set image.tag=1.1.0
+helm diff upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=1.1.0
 ```
 
 ## Troubleshooting

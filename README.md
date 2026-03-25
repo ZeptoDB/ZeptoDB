@@ -9,7 +9,7 @@
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![LLVM 19](https://img.shields.io/badge/LLVM-19-orange)
 ![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)
-![Tests](https://img.shields.io/badge/tests-766%2B%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-726%2B%20passing-brightgreen)
 ![kdb+ replacement](https://img.shields.io/badge/kdb%2B%20replacement-95%25-success)
 
 </div>
@@ -48,7 +48,7 @@ trading to factory sensor floors. One database for the full lifecycle.
 | Ingestion | **5.52M ticks/sec** |
 | filter 1M rows | **272μs** (within kdb+ range) |
 | VWAP 1M rows | **532μs** |
-| **xbar (time bar)** | **24ms** (1M → 3,334 bars) |
+| **xbar (time bar)** | **11ms** (1M → 3,334 bars) |
 | **EMA 1M rows** | **2.2ms** |
 | Window SUM 1M | **1.36ms** (O(n) prefix sum) |
 | **Parallel GROUP BY 8T** | **248μs** (3.48x vs 1T) |
@@ -125,9 +125,9 @@ trading to factory sensor floors. One database for the full lifecycle.
 # Start server
 ./zepto_server --port 8123
 
-# Query via curl
+# Query via curl (string symbols supported)
 curl -X POST http://localhost:8123/ \
-  -d 'SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 1'
+  -d "SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 'AAPL'"
 
 # Grafana: connect directly as a ClickHouse data source
 ```
@@ -259,6 +259,16 @@ INSERT INTO trades VALUES (1, 15050, 200, 1711234568000000000),
 -- INSERT (column list — timestamp auto-generated)
 INSERT INTO trades (symbol, price, volume) VALUES (1, 15100, 150)
 
+-- INSERT with string symbol (dictionary-encoded)
+INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 150.25, 100)
+INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 151.50, 200),
+                                                  ('GOOGL', 2800.00, 50)
+
+-- SELECT with string symbol
+SELECT price, volume FROM trades WHERE symbol = 'AAPL'
+SELECT VWAP(price, volume) FROM trades WHERE symbol = 'GOOGL'
+SELECT symbol, SUM(volume) FROM trades GROUP BY symbol
+
 -- UPDATE
 UPDATE trades SET price = 15200 WHERE symbol = 1 AND price > 15100
 
@@ -333,13 +343,12 @@ zeptodb/
 │   ├── migration/      # Migration toolkit tests (70 tests)
 │   ├── python/         # Python ecosystem tests (208 tests)
 │   └── bench/          # Benchmarks
-├── scripts/
-│   ├── tune_bare_metal.sh  # Bare-metal auto-tuning
-│   ├── backup.sh       # Backup automation
-│   └── install_service.sh  # systemd service installation
-├── k8s/                # Kubernetes deployment YAML (legacy)
-├── helm/zeptodb/       # Helm chart (production)
-├── monitoring/         # Grafana dashboard + Prometheus alerts
+├── deploy/
+│   ├── docker/         # Dockerfile
+│   ├── k8s/            # Kubernetes deployment YAML
+│   ├── helm/zeptodb/   # Helm chart (production)
+│   ├── monitoring/     # Grafana dashboard + Prometheus alerts
+│   └── scripts/        # tune_bare_metal, backup, restore, systemd
 ├── tools/
 │   └── zepto-migrate.cpp  # Migration CLI
 └── docs/
@@ -429,19 +438,23 @@ curl -X DELETE https://zepto:8443/admin/queries/q_a1b2c3 \
 ## Production Ready
 
 ### Deployment Options
-- **Bare-metal (recommended)**: HFT latency consistency, `scripts/tune_bare_metal.sh` auto-tuning
+- **Bare-metal (recommended)**: HFT latency consistency, `deploy/scripts/tune_bare_metal.sh` auto-tuning
 - **Cloud**: Docker + Kubernetes, AWS Graviton4 optimized
-- **Helm chart**: `helm install zeptodb ./helm/zeptodb` — PDB, HPA, rolling upgrades
+- **Helm chart**: `helm install zeptodb ./deploy/helm/zeptodb` — PDB, HPA, rolling upgrades
 
-### Monitoring
+### Monitoring & Observability
 - Prometheus `/metrics` (OpenMetrics format)
 - Grafana dashboard + 9 alert rules
 - `/health`, `/ready`, `/metrics` endpoints
+- Structured JSON access log (every request) with `X-Request-Id` correlation
+- Slow query log (>100ms) with query_id tracing
+- Audit log (SOC2/EMIR/MiFID II) — 7-year retention
+- Design: `docs/design/logging_observability.md`
 
 ### Operations Automation
-- `scripts/backup.sh` — HDB/WAL/Config backup + S3
-- `scripts/restore.sh` — Disaster recovery
-- `scripts/install_service.sh` — One-step systemd service installation
+- `deploy/scripts/backup.sh` — HDB/WAL/Config backup + S3
+- `deploy/scripts/restore.sh` — Disaster recovery
+- `deploy/scripts/install_service.sh` — One-step systemd service installation
 
 **Detailed guides:**
 - Deployment: `docs/deployment/PRODUCTION_DEPLOYMENT.md`
@@ -462,7 +475,7 @@ See [`COMPLETED.md`](COMPLETED.md) for the full list of 35+ completed features w
 - [ ] Distributed query scheduler (DistributedQueryScheduler + UCX)
 
 ### Backlog
-See [`BACKLOG.md`](BACKLOG.md) for the full backlog.
+See [`BACKLOG.md`](docs/BACKLOG.md) for the full backlog.
 
 ## License
 

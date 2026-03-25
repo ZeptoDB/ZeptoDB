@@ -296,6 +296,47 @@ TEST(TcpRpc, ServerNotRunning_ReturnsError) {
     EXPECT_NE(result.error.find("cannot connect"), std::string::npos);
 }
 
+TEST(TcpRpc, StatsRequestRoundTrip) {
+    TcpRpcServer server;
+    server.set_stats_callback([]() {
+        return R"({"node_id":1,"ticks_ingested":5000,"state":"ACTIVE"})";
+    });
+    server.start(RPC_TEST_PORT_BASE + 10, [](const std::string&) {
+        return QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 10);
+    auto json = client.request_stats();
+    EXPECT_FALSE(json.empty());
+    EXPECT_NE(json.find("\"node_id\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"ticks_ingested\":5000"), std::string::npos);
+    EXPECT_NE(json.find("\"state\":\"ACTIVE\""), std::string::npos);
+
+    server.stop();
+}
+
+TEST(TcpRpc, StatsRequest_NoCallback_ReturnsEmptyJson) {
+    TcpRpcServer server;
+    // No stats callback set
+    server.start(RPC_TEST_PORT_BASE + 11, [](const std::string&) {
+        return QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 11);
+    auto json = client.request_stats();
+    EXPECT_EQ(json, "{}");
+
+    server.stop();
+}
+
+TEST(TcpRpc, StatsRequest_ServerDown_ReturnsEmpty) {
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 12);
+    auto json = client.request_stats();
+    EXPECT_TRUE(json.empty());
+}
+
 TEST(TcpRpc, MultipleSequentialQueries) {
     TcpRpcServer server;
     std::atomic<int> call_count{0};
@@ -3161,4 +3202,402 @@ TEST(DistributedP0, SumCaseWhen_Plus_WhereIn) {
     // sym=3 should NOT appear (filtered by IN)
 
     srv1.stop(); srv2.stop(); srv3.stop();
+}
+
+// ============================================================================
+// Distributed String Symbol Tests
+// ============================================================================
+
+TEST(DistributedString, TwoNode_ScatterGather_Count) {
+    auto pipeline1 = make_pipeline();
+    auto pipeline2 = make_pipeline();
+
+    // Node 1: insert via SQL with string symbol
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+    }
+    // Node 2: insert via SQL with string symbol
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28500, 75)");
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 29000, 60)");
+    }
+
+    TcpRpcServer srv1, srv2;
+    uint16_t port1 = 19900, port2 = 19901;
+    srv1.start(port1, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        return ex.execute(sql);
+    });
+    srv2.start(port2, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 1});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    // Scatter-gather COUNT across both nodes
+    auto r = coord.execute_sql("SELECT count(*) FROM trades");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 5);  // 2 + 3
+
+    srv1.stop();
+    srv2.stop();
+}
+
+TEST(DistributedString, TwoNode_StringWhere_ScatterGather) {
+    auto pipeline1 = make_pipeline();
+    auto pipeline2 = make_pipeline();
+
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('TSLA', 80000, 50)");
+    }
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 75)");
+    }
+
+    TcpRpcServer srv1, srv2;
+    uint16_t port1 = 19902, port2 = 19903;
+    srv1.start(port1, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        return ex.execute(sql);
+    });
+    srv2.start(port2, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 1});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    // WHERE symbol = 'AAPL' → scatter to both, each filters locally
+    auto r = coord.execute_sql("SELECT count(*) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 2);  // 1 from node1 + 1 from node2
+
+    srv1.stop();
+    srv2.stop();
+}
+
+TEST(DistributedString, TwoNode_StringWhere_Sum) {
+    auto pipeline1 = make_pipeline();
+    auto pipeline2 = make_pipeline();
+
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    }
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+    }
+
+    TcpRpcServer srv1, srv2;
+    uint16_t port1 = 19904, port2 = 19905;
+    srv1.start(port1, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        return ex.execute(sql);
+    });
+    srv2.start(port2, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 1});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    auto r = coord.execute_sql("SELECT SUM(volume) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 300);  // 100 + 200
+
+    srv1.stop();
+    srv2.stop();
+}
+
+TEST(DistributedString, TwoNode_StringWhere_Vwap) {
+    auto pipeline1 = make_pipeline();
+    auto pipeline2 = make_pipeline();
+
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    }
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15300, 200)");
+    }
+
+    TcpRpcServer srv1, srv2;
+    uint16_t port1 = 19906, port2 = 19907;
+    srv1.start(port1, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        return ex.execute(sql);
+    });
+    srv2.start(port2, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 1});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    // VWAP = (15000*100 + 15300*200) / (100+200) = 4560000/300 = 15200
+    auto r = coord.execute_sql("SELECT VWAP(price, volume) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 15200);
+
+    srv1.stop();
+    srv2.stop();
+}
+
+TEST(DistributedString, TwoNode_StringNotFound) {
+    auto pipeline1 = make_pipeline();
+    auto pipeline2 = make_pipeline();
+
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    }
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+    }
+
+    TcpRpcServer srv1, srv2;
+    uint16_t port1 = 19908, port2 = 19909;
+    srv1.start(port1, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        return ex.execute(sql);
+    });
+    srv2.start(port2, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 1});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    // Symbol not on any node → count = 0
+    auto r = coord.execute_sql("SELECT count(*) FROM trades WHERE symbol = 'TSLA'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 0);
+
+    srv1.stop();
+    srv2.stop();
+}
+
+TEST(DistributedString, TwoNode_MixedIntAndString) {
+    auto pipeline1 = make_pipeline();
+    auto pipeline2 = make_pipeline();
+
+    // Node 1: int symbol (legacy)
+    {
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = 99;
+        msg.price = 50000;
+        msg.volume = 100;
+        msg.recv_ts = 1000000000LL;
+        pipeline1->ingest_tick(msg);
+    }
+    pipeline1->drain_sync(100);
+
+    // Node 2: string symbol
+    {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 200)");
+    }
+
+    TcpRpcServer srv1, srv2;
+    uint16_t port1 = 19910, port2 = 19911;
+    srv1.start(port1, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline1);
+        return ex.execute(sql);
+    });
+    srv2.start(port2, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*pipeline2);
+        return ex.execute(sql);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 99});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    // Total count across both
+    auto r = coord.execute_sql("SELECT count(*) FROM trades");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 2);
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// Multi-Node Metrics Collection Tests (METRICS_REQUEST / METRICS_RESULT)
+// ============================================================================
+
+TEST(TcpRpc, MetricsRequestRoundTrip) {
+    TcpRpcServer server;
+    server.set_metrics_callback([](int64_t since_ms, uint32_t limit) {
+        (void)since_ms; (void)limit;
+        return R"([{"timestamp_ms":1000,"node_id":2,"ticks_ingested":500,"ticks_stored":490,"ticks_dropped":10,"queries_executed":5,"total_rows_scanned":1000,"partitions_created":1,"last_ingest_latency_ns":100}])";
+    });
+    server.start(RPC_TEST_PORT_BASE + 20, [](const std::string&) {
+        return QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 20);
+    auto json = client.request_metrics(0, 100);
+    EXPECT_FALSE(json.empty());
+    EXPECT_NE(json.find("\"node_id\":2"), std::string::npos);
+    EXPECT_NE(json.find("\"ticks_ingested\":500"), std::string::npos);
+    EXPECT_NE(json.find("\"timestamp_ms\":1000"), std::string::npos);
+
+    server.stop();
+}
+
+TEST(TcpRpc, MetricsRequest_NoCallback_ReturnsEmptyArray) {
+    TcpRpcServer server;
+    server.start(RPC_TEST_PORT_BASE + 21, [](const std::string&) {
+        return QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 21);
+    auto json = client.request_metrics(0, 0);
+    EXPECT_EQ(json, "[]");
+
+    server.stop();
+}
+
+TEST(TcpRpc, MetricsRequest_ServerDown_ReturnsEmpty) {
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 22);
+    auto json = client.request_metrics(0, 10);
+    EXPECT_TRUE(json.empty());
+}
+
+TEST(TcpRpc, MetricsRequest_PassesSinceAndLimit) {
+    int64_t received_since = -1;
+    uint32_t received_limit = 999;
+
+    TcpRpcServer server;
+    server.set_metrics_callback([&](int64_t since_ms, uint32_t limit) {
+        received_since = since_ms;
+        received_limit = limit;
+        return "[]";
+    });
+    server.start(RPC_TEST_PORT_BASE + 23, [](const std::string&) {
+        return QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 23);
+    auto json = client.request_metrics(42000, 50);
+    EXPECT_EQ(json, "[]");
+    EXPECT_EQ(received_since, 42000);
+    EXPECT_EQ(received_limit, 50u);
+
+    server.stop();
+}
+
+// ── RPC Protocol: MetricsRequest serialization ──────────────────────────────
+
+TEST(RpcProtocol, MetricsRequestSerializeDeserialize) {
+    auto buf = serialize_metrics_request(123456789LL, 42);
+    ASSERT_EQ(buf.size(), 12u);
+
+    int64_t since_ms = 0;
+    uint32_t limit = 0;
+    ASSERT_TRUE(deserialize_metrics_request(buf.data(), buf.size(),
+                                             since_ms, limit));
+    EXPECT_EQ(since_ms, 123456789LL);
+    EXPECT_EQ(limit, 42u);
+}
+
+TEST(RpcProtocol, MetricsRequestDeserialize_TooShort) {
+    std::vector<uint8_t> buf(8, 0);  // only 8 bytes, need 12
+    int64_t since_ms = 0;
+    uint32_t limit = 0;
+    EXPECT_FALSE(deserialize_metrics_request(buf.data(), buf.size(),
+                                              since_ms, limit));
+}
+
+// ── QueryCoordinator: collect_remote_metrics ────────────────────────────────
+
+TEST(QueryCoordinator, CollectRemoteMetrics_SingleNode) {
+    // Set up a remote node with metrics callback
+    TcpRpcServer server;
+    server.set_metrics_callback([](int64_t, uint32_t) {
+        return R"([{"timestamp_ms":2000,"node_id":1,"ticks_ingested":100,"ticks_stored":100,"ticks_dropped":0,"queries_executed":10,"total_rows_scanned":500,"partitions_created":2,"last_ingest_latency_ns":50}])";
+    });
+    server.start(RPC_TEST_PORT_BASE + 24, [](const std::string&) {
+        return QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", static_cast<uint16_t>(RPC_TEST_PORT_BASE + 24), 1});
+
+    auto results = coord.collect_remote_metrics(0, 100);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_NE(results[0].find("\"node_id\":1"), std::string::npos);
+    EXPECT_NE(results[0].find("\"ticks_ingested\":100"), std::string::npos);
+
+    server.stop();
+}
+
+TEST(QueryCoordinator, CollectRemoteMetrics_TwoNodes) {
+    TcpRpcServer srv1, srv2;
+    srv1.set_metrics_callback([](int64_t, uint32_t) {
+        return R"([{"timestamp_ms":1000,"node_id":1,"ticks_ingested":100,"ticks_stored":100,"ticks_dropped":0,"queries_executed":5,"total_rows_scanned":200,"partitions_created":1,"last_ingest_latency_ns":30}])";
+    });
+    srv2.set_metrics_callback([](int64_t, uint32_t) {
+        return R"([{"timestamp_ms":1000,"node_id":2,"ticks_ingested":200,"ticks_stored":200,"ticks_dropped":0,"queries_executed":8,"total_rows_scanned":400,"partitions_created":2,"last_ingest_latency_ns":40}])";
+    });
+
+    uint16_t port1 = RPC_TEST_PORT_BASE + 25;
+    uint16_t port2 = RPC_TEST_PORT_BASE + 26;
+    srv1.start(port1, [](const std::string&) { return QueryResultSet{}; });
+    srv2.start(port2, [](const std::string&) { return QueryResultSet{}; });
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coord;
+    coord.add_remote_node({"127.0.0.1", port1, 1});
+    coord.add_remote_node({"127.0.0.1", port2, 2});
+
+    auto results = coord.collect_remote_metrics(0, 100);
+    ASSERT_EQ(results.size(), 2u);
+
+    // Both nodes returned metrics
+    std::string all = results[0] + results[1];
+    EXPECT_NE(all.find("\"node_id\":1"), std::string::npos);
+    EXPECT_NE(all.find("\"node_id\":2"), std::string::npos);
+
+    srv1.stop();
+    srv2.stop();
 }

@@ -10,8 +10,17 @@
 //   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe
 //   GET  /ready   — Kubernetes readiness probe
+//   GET  /whoami  — Return authenticated role and subject
 //   GET  /stats   — Pipeline statistics
 //   GET  /metrics — Prometheus metrics (OpenMetrics format)
+//
+// Observability:
+//   - Structured JSON access log (every request): request_id, method, path,
+//     status, duration_us, request/response bytes, remote_addr, subject
+//   - Slow query log (>100ms): query_id, SQL (truncated), duration, rows, error
+//   - X-Request-Id response header for client-side correlation
+//   - Prometheus: zepto_http_requests_total, zepto_http_active_sessions
+//   - Server lifecycle events: start, stop (with port, TLS, auth config)
 //
 // Security:
 //   TLS/HTTPS     — Enabled via TlsConfig (cert + key PEM paths)
@@ -23,6 +32,8 @@
 #include "zeptodb/auth/auth_manager.h"
 #include "zeptodb/auth/query_tracker.h"
 #include "zeptodb/auth/tenant_manager.h"
+#include "zeptodb/server/metrics_collector.h"
+#include "zeptodb/cluster/query_coordinator.h"
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -126,6 +137,19 @@ public:
     /// Thread-safe: providers are called while holding an internal mutex.
     void add_metrics_provider(std::function<std::string()> provider);
 
+    /// Access the internal metrics collector (for testing or custom queries).
+    MetricsCollector* metrics_collector() { return metrics_collector_.get(); }
+
+    /// Set query coordinator for cluster mode.
+    /// When set, /admin/nodes and /admin/metrics/history aggregate from all nodes.
+    /// @param node_id  This node's ID (used to tag local metrics snapshots).
+    void set_coordinator(zeptodb::cluster::QueryCoordinator* coord,
+                         uint16_t node_id = 0) {
+        coordinator_ = coord;
+        if (metrics_collector_ && node_id > 0)
+            metrics_collector_->set_node_id(node_id);
+    }
+
 private:
     void setup_routes();
     void setup_auth_middleware();
@@ -147,6 +171,10 @@ private:
     static std::string build_stats_json(
         const zeptodb::core::PipelineStats& stats);
     std::string build_prometheus_metrics() const;
+
+    // Cluster helpers: scatter stats/metrics requests to all nodes
+    std::vector<std::string> coordinator_scatter_stats();
+    std::string coordinator_scatter_metrics(int64_t since_ms, size_t limit);
 
     zeptodb::sql::QueryExecutor&                executor_;
     uint16_t                                 port_;
@@ -171,6 +199,12 @@ private:
     // Extensible /metrics providers
     mutable std::mutex                                     providers_mu_;
     std::vector<std::function<std::string()>>              metrics_providers_;
+
+    // Self-metrics history collector
+    std::unique_ptr<MetricsCollector>                       metrics_collector_;
+
+    // Cluster coordinator (null = standalone mode)
+    zeptodb::cluster::QueryCoordinator*                     coordinator_ = nullptr;
 };
 
 } // namespace zeptodb::server

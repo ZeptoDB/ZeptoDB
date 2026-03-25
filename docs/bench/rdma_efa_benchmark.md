@@ -181,7 +181,7 @@ ldd zepto_server | grep ucx
 
 ```bash
 # On data nodes
-sudo ../scripts/tune_bare_metal.sh
+sudo ../deploy/scripts/tune_bare_metal.sh
 
 # Additional EFA tuning
 # Increase locked memory limit (required for RDMA memory registration)

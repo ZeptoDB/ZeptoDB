@@ -87,7 +87,7 @@ kubectl get nodes
 kubectl create namespace zeptodb
 
 # Install
-helm install zeptodb ./helm/zeptodb \
+helm install zeptodb ./deploy/helm/zeptodb \
   -n zeptodb \
   --set image.repository=your-registry/zeptodb \
   --set image.tag=1.0.0
@@ -140,7 +140,7 @@ nodeSelector:
 ```
 
 ```bash
-helm install zeptodb ./helm/zeptodb \
+helm install zeptodb ./deploy/helm/zeptodb \
   -n zeptodb \
   -f values-prod.yaml \
   --wait --timeout 5m
@@ -201,12 +201,12 @@ When a ConfigMap is changed, the `checksum/config` annotation automatically trig
 
 ```bash
 # Change worker threads
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set config.workerThreads=16 \
   --wait
 
 # Change multiple settings at once
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   -f values-prod.yaml \
   --set config.workerThreads=16 \
   --set config.queryCacheSize=2000 \
@@ -247,7 +247,7 @@ kubectl delete pod <pod-name> -n zeptodb
 
 ```bash
 # Enable ServiceMonitor (requires Prometheus Operator)
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.interval=15s
 ```
@@ -324,7 +324,7 @@ kubectl describe hpa zeptodb -n zeptodb
 kubectl scale deployment zeptodb -n zeptodb --replicas=5
 
 # Change HPA settings
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set autoscaling.minReplicas=5 \
   --set autoscaling.maxReplicas=20 \
   --set autoscaling.targetCPU=60
@@ -344,7 +344,7 @@ autoscaling:
 ### Vertical Scaling
 
 ```bash
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set resources.requests.cpu=8 \
   --set resources.requests.memory=32Gi \
   --set resources.limits.cpu=16 \
@@ -356,11 +356,11 @@ helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
 
 ```bash
 # Graviton (ARM) nodes
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set nodeSelector."kubernetes\.io/arch"=arm64
 
 # Dedicated instance type
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set nodeSelector."node\.kubernetes\.io/instance-type"=c7g.4xlarge
 ```
 
@@ -371,7 +371,7 @@ helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
 ### In-Cluster Backup (CronJob)
 
 ```yaml
-# k8s/backup-cronjob.yaml
+# deploy/k8s/backup-cronjob.yaml
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -414,7 +414,7 @@ spec:
 ```
 
 ```bash
-kubectl apply -f k8s/backup-cronjob.yaml
+kubectl apply -f deploy/k8s/backup-cronjob.yaml
 
 # Trigger manual backup
 kubectl create job --from=cronjob/zeptodb-backup zeptodb-backup-manual -n zeptodb
@@ -467,7 +467,7 @@ spec:
 EOF
 
 # Replace PVC in Deployment
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set persistence.existingClaim=zeptodb-data-restored \
   --wait
 ```
@@ -486,7 +486,7 @@ kubectl get pods -n zeptodb -o wide
 curl -s http://$LB:8123/health
 
 # 2. Upgrade
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set image.tag=1.1.0 \
   --wait --timeout 5m
 
@@ -526,7 +526,7 @@ kubectl rollout undo deployment/zeptodb -n zeptodb
 
 ```bash
 # 1. Canary deployment (1 replica)
-helm install zeptodb-canary ./helm/zeptodb -n zeptodb \
+helm install zeptodb-canary ./deploy/helm/zeptodb -n zeptodb \
   --set replicaCount=1 \
   --set image.tag=2.0.0 \
   --set service.type=ClusterIP \
@@ -538,7 +538,7 @@ kubectl port-forward svc/zeptodb-canary 8124:8123 -n zeptodb
 curl -X POST http://localhost:8124/ -d 'SELECT vwap(price, volume) FROM trades WHERE symbol = 1'
 
 # 3a. Success → promote
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb --set image.tag=2.0.0 --wait
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=2.0.0 --wait
 helm uninstall zeptodb-canary -n zeptodb
 
 # 3b. Failure → remove
@@ -657,7 +657,7 @@ For operating a ZeptoDB distributed cluster on Kubernetes.
 ### Enable Cluster
 
 ```bash
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set cluster.enabled=true \
   --set cluster.rpcPortOffset=100 \
   --set cluster.heartbeatPort=9100 \
@@ -686,7 +686,7 @@ done
 - Increase `gracefulShutdown` time during upgrades to ensure WAL flush
 
 ```bash
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set image.tag=1.1.0 \
   --set gracefulShutdown.preStopSleepSeconds=30 \
   --set gracefulShutdown.terminationGracePeriodSeconds=60 \
@@ -735,7 +735,7 @@ kubectl get sc
 kubectl top pods -n zeptodb
 
 # Increase limits
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set resources.limits.memory=64Gi \
   --wait
 ```
@@ -820,7 +820,7 @@ helm uninstall zeptodb -n zeptodb
 # PVC is preserved (not deleted by helm uninstall)
 
 # 3. Redeploy
-helm install zeptodb ./helm/zeptodb -n zeptodb -f values-prod.yaml --wait
+helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f values-prod.yaml --wait
 
 # 4. Verify
 curl -s http://$LB:8123/health
@@ -852,7 +852,7 @@ helm history zeptodb -n zeptodb
 helm get values zeptodb -n zeptodb
 
 # === Upgrade ===
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb --set image.tag=X.Y.Z --wait
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=X.Y.Z --wait
 helm rollback zeptodb -n zeptodb
 
 # === Scale ===

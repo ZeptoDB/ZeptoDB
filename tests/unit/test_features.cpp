@@ -451,3 +451,46 @@ TEST_F(MetricsProviderTest, KafkaStatsProviderIntegration) {
     EXPECT_NE(body.find("zepto_kafka_ingest_failures_total{consumer=\"market-data\"} 0"),
               std::string::npos);
 }
+
+// ============================================================================
+// Part 5: /whoami endpoint — role detection
+// ============================================================================
+
+TEST_F(ConnectionHooksTest, WhoamiReturnsAdminWhenNoAuth) {
+    // No auth configured → /whoami returns admin role
+    auto body = http_get(test_port_, "/whoami");
+    EXPECT_NE(body.find("\"role\":\"admin\""), std::string::npos);
+    EXPECT_NE(body.find("\"subject\":\"anonymous\""), std::string::npos);
+}
+
+// ============================================================================
+// Part 6: Access logging — request ID and structured log
+// ============================================================================
+
+TEST_F(ConnectionHooksTest, ResponseContainsRequestId) {
+    // Make a raw HTTP request and check X-Request-Id in response headers
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0);
+
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(test_port_);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)), 0);
+
+    std::string req = "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    ::send(fd, req.c_str(), req.size(), 0);
+
+    std::string raw;
+    char buf[4096];
+    struct timeval tv{ 2, 0 };
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ssize_t n;
+    while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0)
+        raw.append(buf, static_cast<size_t>(n));
+    ::close(fd);
+
+    // Response should contain X-Request-Id header
+    EXPECT_NE(raw.find("X-Request-Id: r"), std::string::npos)
+        << "Response missing X-Request-Id header. Raw:\n" << raw.substr(0, 500);
+}

@@ -32,7 +32,7 @@ docker run -p 8123:8123 zeptodb/zeptodb:latest
 ## Helm (Kubernetes)
 
 ```bash
-helm install zeptodb ./helm/zeptodb
+helm install zeptodb ./deploy/helm/zeptodb
 ```
 
 For production deployment details, see [Production Deployment](../deployment/PRODUCTION_DEPLOYMENT.md).

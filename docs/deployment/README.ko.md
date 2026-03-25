@@ -37,7 +37,7 @@
 ```bash
 # 1. 튜닝 스크립트 실행
 cd zeptodb
-sudo ./scripts/tune_bare_metal.sh
+sudo ./deploy/scripts/tune_bare_metal.sh
 
 # 2. 빌드
 mkdir build && cd build
@@ -57,7 +57,7 @@ sudo numactl --cpunodebind=0 --membind=0 \
 docker build -t zeptodb:latest .
 
 # 2. Kubernetes 배포
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f deploy/k8s/deployment.yaml
 
 # 3. 확인
 kubectl get pods -n zeptodb

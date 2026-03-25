@@ -523,10 +523,16 @@ std::optional<SymbolId> QueryCoordinator::extract_symbol_filter(
         // Expr::Kind::COMPARE node stores column name + value directly
         if (w->kind   == zeptodb::sql::Expr::Kind::COMPARE &&
             w->op     == zeptodb::sql::CompareOp::EQ       &&
-            w->column == "symbol"                       &&
-            !w->is_float)
+            w->column == "symbol")
         {
-            return static_cast<SymbolId>(w->value);
+            if (w->is_string) {
+                // Resolve string symbol via each node's local executor
+                // For now, fall through to Tier B (scatter-gather)
+                // The per-node executor will resolve the string locally
+                return std::nullopt;
+            }
+            if (!w->is_float)
+                return static_cast<SymbolId>(w->value);
         }
     } catch (...) {
         // Parse error — fall through to Tier B

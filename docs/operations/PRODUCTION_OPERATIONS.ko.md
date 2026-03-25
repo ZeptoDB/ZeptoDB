@@ -23,7 +23,7 @@ make -j$(nproc)
 
 # 2. 프로덕션 서비스 설치 (root 필요)
 cd ..
-sudo ./scripts/install_service.sh
+sudo ./deploy/scripts/install_service.sh
 ```
 
 설치 포함 내용:

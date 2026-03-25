@@ -359,6 +359,22 @@ std::string FIXMessageBuilder::build_heartbeat() {
     return build('0');
 }
 
+std::string FIXMessageBuilder::build_market_data_request(const std::vector<std::string>& symbols) {
+    // 263=1 (SubscriptionRequestType: Snapshot + Updates)
+    add_field(263, int64_t{1});
+    // 264=0 (MarketDepth: Full book)
+    add_field(264, int64_t{0});
+    // 267=2 (NoMDEntryTypes: Bid + Offer)
+    add_field(267, int64_t{2});
+    add_field(269, "0");  // MDEntryType: Bid
+    add_field(269, "1");  // MDEntryType: Offer
+    // 146=N (NoRelatedSym)
+    add_field(146, static_cast<int64_t>(symbols.size()));
+    for (const auto& sym : symbols)
+        add_field(55, sym);  // Symbol
+    return build('V');
+}
+
 uint8_t FIXMessageBuilder::calculate_checksum(const std::string& msg) const {
     uint32_t sum = 0;
     for (char c : msg) {

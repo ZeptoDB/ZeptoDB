@@ -20,6 +20,7 @@
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/ingestion/tick_plant.h"
+#include "zeptodb/server/metrics_collector.h"
 #include "zeptodb/sql/executor.h"
 
 #include <atomic>
@@ -126,6 +127,41 @@ public:
             [this](const zeptodb::ingestion::TickMessage& msg) {
                 return local_pipeline_.ingest_tick(msg);
             });
+
+        // Register stats/metrics callbacks for remote collection
+        rpc_server_.set_stats_callback([this]() {
+            const auto& s = local_pipeline_.stats();
+            return std::string("{\"node_id\":") + std::to_string(config_.self.id)
+                + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+                + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+                + ",\"state\":\"ACTIVE\"}";
+        });
+
+        rpc_server_.set_metrics_callback(
+            [this](int64_t since_ms, uint32_t limit) -> std::string {
+                // If this node has a MetricsCollector, use it; otherwise build
+                // a single-snapshot response from current PipelineStats.
+                if (metrics_collector_) {
+                    auto snaps = metrics_collector_->get_history(since_ms,
+                                     limit > 0 ? limit : 0);
+                    return zeptodb::server::MetricsCollector::to_json(snaps);
+                }
+                // Fallback: single snapshot from live stats
+                const auto& s = local_pipeline_.stats();
+                auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                return std::string("[{\"timestamp_ms\":") + std::to_string(now)
+                    + ",\"node_id\":" + std::to_string(config_.self.id)
+                    + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+                    + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+                    + ",\"ticks_dropped\":" + std::to_string(s.ticks_dropped.load())
+                    + ",\"queries_executed\":" + std::to_string(s.queries_executed.load())
+                    + ",\"total_rows_scanned\":" + std::to_string(s.total_rows_scanned.load())
+                    + ",\"partitions_created\":" + std::to_string(s.partitions_created.load())
+                    + ",\"last_ingest_latency_ns\":" + std::to_string(s.last_ingest_latency_ns.load())
+                    + "}]";
+            });
+
         rpc_port_ = rport;
 
         joined_.store(true);
@@ -337,6 +373,15 @@ private:
 
     // 원격 ingest용 RDMA 영역 (target NodeId → RemoteRegion, future UCX path)
     std::unordered_map<NodeId, RemoteRegion>              remote_ingest_regions_;
+
+    // Optional: MetricsCollector for this node (set externally)
+    zeptodb::server::MetricsCollector*                    metrics_collector_ = nullptr;
+
+public:
+    /// Attach a MetricsCollector so METRICS_REQUEST returns history.
+    void set_metrics_collector(zeptodb::server::MetricsCollector* mc) {
+        metrics_collector_ = mc;
+    }
 };
 
 // ----------------------------------------------------------------

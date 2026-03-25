@@ -46,12 +46,12 @@ ZeptoDB는 **초저지연 인메모리 데이터베이스**로, 금융 특화로
   - **Intel Xeon 8462Y+ (Sapphire Rapids)**: AVX-512, AMX, DDR5-4800, CXL 1.1
   - **AMD EPYC 9754 (Bergamo)**: 128코어 밀도, DDR5-4800
   - **Supermicro AS-4125GS-TNRT**: PCIe 5.0, 16x NVMe, 4TB RAM
-* **배포:** `scripts/tune_bare_metal.sh` — 원스텝 자동 튜닝 (CPU pinning, NUMA, io_uring)
+* **배포:** `deploy/scripts/tune_bare_metal.sh` — 원스텝 자동 튜닝 (CPU pinning, NUMA, io_uring)
 
 #### **클라우드 (AWS 우선)**
 * **인스턴스:** r8g.16xlarge (Graviton4, 512GB), c7gn.16xlarge (EFA, HFT 네트워크)
 * **최적화:** Highway SIMD (ARM SVE 자동), Nitro 오프로드, EFA RDMA
-* **컨테이너:** Docker + Kubernetes (HPA, PVC, LoadBalancer) — `k8s/deployment.yaml`
+* **컨테이너:** Docker + Kubernetes (HPA, PVC, LoadBalancer) — `deploy/k8s/deployment.yaml`
 * **모니터링:** Prometheus + Grafana — `/metrics` OpenMetrics, 9가지 알림 규칙
 
 #### **Microsoft Azure (향후)**

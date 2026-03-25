@@ -742,3 +742,38 @@ TEST(SplitBrain, FencingPreventsStaleWrite) {
     // B continues writing with epoch 2 → OK
     EXPECT_TRUE(data_node_gate.validate(epoch_b));
 }
+
+// ============================================================================
+// ClusterNode: metrics/stats callback registration
+// ============================================================================
+
+TEST(ClusterNodeCallbacks, RpcServerRegistersMetricsCallback) {
+    // Verify that after join_cluster, the RPC server responds to
+    // METRICS_REQUEST with a non-empty JSON array (fallback path).
+    ClusterConfig cfg;
+    cfg.self = {"127.0.0.1", 19800, 50};
+    cfg.rpc_port = 19900;
+    cfg.pipeline.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+
+    ClusterNode<ShmTransport> node(cfg);
+    node.join_cluster();
+
+    // Give RPC server time to start
+    std::this_thread::sleep_for(20ms);
+
+    // Connect as a client and request metrics
+    TcpRpcClient client("127.0.0.1", 19900);
+    auto json = client.request_metrics(0, 10);
+    EXPECT_FALSE(json.empty());
+    EXPECT_EQ(json.front(), '[');
+    EXPECT_EQ(json.back(), ']');
+    // Should contain node_id:50
+    EXPECT_NE(json.find("\"node_id\":50"), std::string::npos);
+
+    // Also verify stats callback
+    auto stats = client.request_stats();
+    EXPECT_FALSE(stats.empty());
+    EXPECT_NE(stats.find("\"node_id\":50"), std::string::npos);
+
+    node.leave_cluster();
+}

@@ -60,6 +60,7 @@ public:
         // spdlog 레벨 매핑
         logger_->set_level(to_spdlog_level(level));
 
+        spdlog::drop("zeptodb");
         spdlog::register_logger(logger_);
     }
 

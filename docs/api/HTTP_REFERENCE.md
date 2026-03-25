@@ -42,10 +42,14 @@ cd build && ninja -j$(nproc)
 curl http://localhost:8123/ping
 # Ok
 
-# Simple aggregation
+# Simple aggregation (string symbol)
+curl -s -X POST http://localhost:8123/ \
+  -d "SELECT vwap(price, volume) AS vwap, count(*) AS n FROM trades WHERE symbol = 'AAPL'"
+# {"columns":["vwap","n"],"data":[[15037.2,1000]],"rows":1,"execution_time_us":52.3}
+
+# Integer symbol ID also supported
 curl -s -X POST http://localhost:8123/ \
   -d 'SELECT vwap(price, volume) AS vwap, count(*) AS n FROM trades WHERE symbol = 1'
-# {"columns":["vwap","n"],"data":[[15037.2,1000]],"rows":1,"execution_time_us":52.3}
 ```
 
 ### Common query patterns
@@ -105,13 +109,26 @@ print(df)
 | Method | Path | Auth required | Description |
 |--------|------|:---:|-------------|
 | `POST` | `/` | yes | Execute SQL query |
+| `GET` | `/` | yes | Execute SQL via `?query=` param |
 | `GET` | `/ping` | no | Health check — returns `"Ok\n"` |
 | `GET` | `/health` | no | Kubernetes liveness probe |
 | `GET` | `/ready` | no | Kubernetes readiness probe |
+| `GET` | `/whoami` | yes | Return authenticated role and subject |
 | `GET` | `/stats` | yes | Pipeline statistics (JSON) |
-| `GET` | `/metrics` | yes | Prometheus OpenMetrics |
+| `GET` | `/metrics` | no | Prometheus OpenMetrics |
+| `GET` | `/admin/keys` | admin | List API keys |
+| `POST` | `/admin/keys` | admin | Create API key |
+| `DELETE` | `/admin/keys/:id` | admin | Revoke API key |
+| `GET` | `/admin/queries` | admin | List running queries |
+| `DELETE` | `/admin/queries/:id` | admin | Kill a running query |
+| `GET` | `/admin/audit` | admin | Audit log (last N events) |
+| `GET` | `/admin/nodes` | admin | Cluster node status |
+| `GET` | `/admin/cluster` | admin | Cluster overview |
+| `GET` | `/admin/metrics/history` | admin | Metrics time-series history |
 
 Public paths (`/ping`, `/health`, `/ready`) are always exempt from authentication.
+
+Every response includes an `X-Request-Id` header for tracing (e.g., `X-Request-Id: r0001a3`).
 
 ---
 
@@ -320,6 +337,66 @@ Common error strings:
 | `"Forbidden"` | Valid credentials but insufficient role |
 
 HTTP status codes: `200` on success (even for SQL errors — check `error` field), `401` for auth failure, `403` for permission denied.
+
+---
+
+## /admin/metrics/history
+
+Returns time-series metrics snapshots captured by the server's internal `MetricsCollector` (3-second interval, 1-hour ring buffer). No external infrastructure required — ZeptoDB monitors itself.
+
+### Resource Protection
+
+The metrics collector is designed to never impact the main trading workload:
+
+| Protection | Detail |
+|-----------|--------|
+| Memory hard limit | 256 KB default (`max_memory_bytes`), ~3500 snapshots max |
+| Fixed circular buffer | O(1) write, zero allocation after init, no `erase()` |
+| Lock-free capture | Atomic write index, `memory_order_relaxed` reads of stats |
+| SCHED_IDLE thread | Linux: only runs when no other thread wants CPU |
+| Response limit | Max 600 snapshots per API response (30 min at 3s interval) |
+| Client-side bound | Web UI requests `?since=<30min_ago>&limit=600` |
+
+```bash
+# All history (capped by response_limit=600)
+curl http://localhost:8123/admin/metrics/history \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Since a specific epoch-ms, with explicit limit
+curl "http://localhost:8123/admin/metrics/history?since=1711234567000&limit=100" \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+[
+  {
+    "timestamp_ms": 1711234567000,
+    "node_id": 0,
+    "ticks_ingested": 5000000,
+    "ticks_stored": 4999800,
+    "ticks_dropped": 200,
+    "queries_executed": 12345,
+    "total_rows_scanned": 50000000,
+    "partitions_created": 10,
+    "last_ingest_latency_ns": 181
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp_ms` | `int64` | Epoch milliseconds when snapshot was taken |
+| `node_id` | `uint16` | Node identifier (0 for standalone) |
+| `ticks_ingested` | `uint64` | Cumulative ticks ingested at snapshot time |
+| `ticks_stored` | `uint64` | Cumulative ticks stored |
+| `ticks_dropped` | `uint64` | Cumulative ticks dropped |
+| `queries_executed` | `uint64` | Cumulative queries executed |
+| `total_rows_scanned` | `uint64` | Cumulative rows scanned |
+| `partitions_created` | `uint64` | Cumulative partitions created |
+| `last_ingest_latency_ns` | `int64` | Most recent ingest latency (ns) |
+
+Query parameter: `?since=<epoch_ms>` — returns only snapshots with `timestamp_ms >= since`.
+Query parameter: `?limit=<N>` — max snapshots to return (default: 600).
 
 ---
 

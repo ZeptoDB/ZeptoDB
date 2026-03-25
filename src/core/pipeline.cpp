@@ -22,7 +22,6 @@
 #include "zeptodb/common/logger.h"
 
 #include <algorithm>
-#include <bit>
 #include <chrono>
 #include <filesystem>
 
@@ -250,7 +249,7 @@ void ZeptoPipeline::store_tick(const TickMessage& msg) {
     // 컬럼에 데이터 append (타입 디스패치)
     partition.get_column(COL_TIMESTAMP)->append<int64_t>(msg.recv_ts);
     if (partition.get_column(COL_PRICE)->type() == ColumnType::FLOAT64)
-        partition.get_column(COL_PRICE)->append<double>(std::bit_cast<double>(msg.price));
+        partition.get_column(COL_PRICE)->append<double>(msg.price_f);
     else
         partition.get_column(COL_PRICE)->append<int64_t>(msg.price);
     partition.get_column(COL_VOLUME   )->append<int64_t>(msg.volume);

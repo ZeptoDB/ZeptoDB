@@ -10,7 +10,7 @@
 
 ### Helm Chart (`helm/zeptodb/`)
 
-Converted the existing `k8s/deployment.yaml` monolith into a proper Helm v3 chart with parameterized values.
+Converted the existing `deploy/k8s/deployment.yaml` monolith into a proper Helm v3 chart with parameterized values.
 
 **Templates:**
 - `deployment.yaml` — Rolling update strategy, pod anti-affinity, config checksum annotation
@@ -62,7 +62,7 @@ Plus rollback procedures, pre-upgrade checklist, and troubleshooting.
 
 ## Lessons Learned
 
-1. The existing `k8s/deployment.yaml` had good bones (probes, preStop, anti-affinity) — Helm-ifying it was mostly structural, not redesign
+1. The existing `deploy/k8s/deployment.yaml` had good bones (probes, preStop, anti-affinity) — Helm-ifying it was mostly structural, not redesign
 2. PDB is critical for in-memory databases — without it, `kubectl drain` can kill quorum
 3. Canary pattern needs a separate Helm release, not just a label selector trick
 

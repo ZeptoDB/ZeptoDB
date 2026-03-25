@@ -316,7 +316,8 @@ Client Query(VWAP, symbol=AAPL, range=24h)
 
 ### Phase C-3 MVP: QueryCoordinator + TCP RPC ✅ Completed (2026-03-22)
 - `QueryCoordinator` — two-tier routing:
-  - Tier A: `WHERE symbol = N` → consistent-hash direct route to owning node
+  - Tier A: `WHERE symbol = N` (integer) → consistent-hash direct route to owning node
+  - Tier A: `WHERE symbol = 'AAPL'` (string) → currently falls through to Tier B (scatter-gather); each node resolves string via local dictionary
   - Tier B: scatter-gather to all nodes → partial aggregation merge
 - `TcpRpcServer` / `TcpRpcClient` — POSIX socket transport
   - 24-byte `RpcHeader` (magic, type, request_id, payload_len, epoch)

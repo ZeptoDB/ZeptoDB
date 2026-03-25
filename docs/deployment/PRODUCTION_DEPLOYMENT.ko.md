@@ -154,7 +154,7 @@ cmake .. \
 ninja -j$(nproc)
 
 # 튜닝 스크립트 실행
-sudo ../scripts/tune_bare_metal.sh
+sudo ../deploy/scripts/tune_bare_metal.sh
 ```
 
 #### 4. 실행 (NUMA 인식)
@@ -258,7 +258,7 @@ watch -n 1 'cat /proc/$(pidof zepto_server)/status | grep VmHWM'
 
 #### 1. Docker 이미지 빌드
 
-`Dockerfile`:
+`deploy/docker/Dockerfile`:
 
 ```dockerfile
 # Multi-stage build
@@ -322,7 +322,7 @@ docker push your-registry/zeptodb:v1.0.0
 
 #### 2. Kubernetes 배포
 
-`k8s/deployment.yaml`:
+`deploy/k8s/deployment.yaml`:
 
 ```yaml
 apiVersion: v1
@@ -471,7 +471,7 @@ spec:
 배포:
 
 ```bash
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f deploy/k8s/deployment.yaml
 
 # 확인
 kubectl get pods -n zeptodb
@@ -528,7 +528,7 @@ monitoring:
 설치:
 
 ```bash
-helm install zeptodb ./helm/zeptodb \
+helm install zeptodb ./deploy/helm/zeptodb \
     --namespace zeptodb \
     --create-namespace \
     --values values-prod.yaml
@@ -536,7 +536,7 @@ helm install zeptodb ./helm/zeptodb \
 
 #### 4. 모니터링 (Prometheus + Grafana)
 
-`k8s/monitoring.yaml`:
+`deploy/k8s/monitoring.yaml`:
 
 ```yaml
 apiVersion: v1

@@ -95,7 +95,8 @@ bool FIXFeedHandler::subscribe(const std::vector<std::string>& symbols) {
 
 bool FIXFeedHandler::unsubscribe(const std::vector<std::string>& symbols) {
     std::lock_guard<std::mutex> lock(symbols_mutex_);
-    // TODO: 구독 취소 구현
+    for (const auto& sym : symbols)
+        subscribed_symbols_.erase(sym);
     return true;
 }
 
@@ -173,9 +174,9 @@ bool FIXFeedHandler::send_heartbeat() {
 }
 
 bool FIXFeedHandler::send_market_data_request(const std::vector<std::string>& symbols) {
-    // TODO: Market Data Request (35=V) 구현
-    // 간단한 버전: 서버가 자동으로 데이터를 보내주는 경우
-    return true;
+    std::string msg = builder_.build_market_data_request(symbols);
+    ssize_t sent = ::send(sockfd_, msg.c_str(), msg.length(), 0);
+    return sent == static_cast<ssize_t>(msg.length());
 }
 
 void FIXFeedHandler::recv_loop() {

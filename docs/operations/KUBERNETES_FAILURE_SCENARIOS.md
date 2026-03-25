@@ -104,7 +104,7 @@ kubectl get pods -n zeptodb -o wide
 kubectl describe pod <crashed-pod> -n zeptodb
 
 # 2. OOMKilledcase Increase memory
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set resources.limits.memory=64Gi --wait
 
 # 3. cluster Status Check
@@ -306,7 +306,7 @@ spec:
 EOF
 
 # 4. Switch to new PVC
-helm upgrade zeptodb ./helm/zeptodb -n zeptodb \
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set persistence.existingClaim=zeptodb-data-restored --wait
 ```
 
@@ -397,7 +397,7 @@ kubectl run restore --image=amazon/aws-cli -n zeptodb \
   }'
 
 # 4. ZeptoDB Deploy
-helm install zeptodb ./helm/zeptodb -n zeptodb -f values-prod.yaml --wait
+helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f values-prod.yaml --wait
 
 # 5. Verify data
 curl -X POST http://$LB:8123/ \

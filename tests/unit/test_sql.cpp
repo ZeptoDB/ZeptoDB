@@ -3758,3 +3758,407 @@ TEST(FloatSupport, MultipleFloatInsertInOneStatement) {
     EXPECT_DOUBLE_EQ(std::bit_cast<double>(r.rows[1][0]), 2.2);
     EXPECT_DOUBLE_EQ(std::bit_cast<double>(r.rows[2][0]), 3.3);
 }
+
+// ============================================================================
+// String/Symbol Dictionary Tests
+// ============================================================================
+
+TEST(StringSupport, InsertWithStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    auto r1 = ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+
+    auto r2 = ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+
+    // Verify dictionary has entries
+    EXPECT_GE(pipeline->symbol_dict().size(), 2u);
+}
+
+TEST(StringSupport, WhereStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 2u);
+    EXPECT_EQ(r.rows[0][0], 15000);
+    EXPECT_EQ(r.rows[1][0], 15100);
+}
+
+TEST(StringSupport, WhereStringNotFound) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 'TSLA'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 0u);
+}
+
+TEST(StringSupport, SelectSymbolResolvesToString) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+
+    auto r = ex.execute("SELECT symbol, price FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    // symbol_dict should be set
+    ASSERT_NE(r.symbol_dict, nullptr);
+    // symbol code should resolve to "AAPL"
+    auto sym_str = r.symbol_dict->lookup(static_cast<uint32_t>(r.rows[0][0]));
+    EXPECT_EQ(sym_str, "AAPL");
+}
+
+TEST(StringSupport, MultipleStringSymbols) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('TSLA', 80000, 75)");
+
+    // Count all
+    auto r = ex.execute("SELECT count(*) FROM trades");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 3);
+
+    // Filter each
+    auto r1 = ex.execute("SELECT price FROM trades WHERE symbol = 'GOOGL'");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    ASSERT_EQ(r1.rows.size(), 1u);
+    EXPECT_EQ(r1.rows[0][0], 28000);
+}
+
+TEST(StringSupport, CountWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+
+    auto r = ex.execute("SELECT count(*) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 2);
+}
+
+TEST(StringSupport, SumWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+
+    auto r = ex.execute("SELECT SUM(volume) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 300);
+}
+
+TEST(StringSupport, AvgWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+
+    auto r = ex.execute("SELECT AVG(price) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 15050);
+}
+
+TEST(StringSupport, MinMaxWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('TSLA', 80000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('TSLA', 82000, 200)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('TSLA', 79000, 150)");
+
+    auto r = ex.execute("SELECT MIN(price), MAX(price) FROM trades WHERE symbol = 'TSLA'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 79000);
+    EXPECT_EQ(r.rows[0][1], 82000);
+}
+
+TEST(StringSupport, VwapWithStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+
+    auto r = ex.execute("SELECT VWAP(price, volume) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    // VWAP = (15000*100 + 15100*200) / (100+200) = 4520000/300 = 15066
+    EXPECT_EQ(r.rows[0][0], 15066);
+}
+
+TEST(StringSupport, GroupByWithStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28000, 50)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('GOOGL', 28500, 75)");
+
+    auto r = ex.execute("SELECT symbol, SUM(volume) FROM trades GROUP BY symbol ORDER BY symbol");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 2u);
+    // symbol_dict resolves codes
+    ASSERT_NE(r.symbol_dict, nullptr);
+    auto sym0 = r.symbol_dict->lookup(static_cast<uint32_t>(r.rows[0][0]));
+    auto sym1 = r.symbol_dict->lookup(static_cast<uint32_t>(r.rows[1][0]));
+    // ORDER BY symbol (int code) — AAPL=0, GOOGL=1
+    EXPECT_EQ(sym0, "AAPL");
+    EXPECT_EQ(sym1, "GOOGL");
+    EXPECT_EQ(r.rows[0][1], 300);  // AAPL volume
+    EXPECT_EQ(r.rows[1][1], 125);  // GOOGL volume
+}
+
+TEST(StringSupport, OrderByPriceWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15200, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 200)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 150)");
+
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 'AAPL' ORDER BY price ASC");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 3u);
+    EXPECT_EQ(r.rows[0][0], 15000);
+    EXPECT_EQ(r.rows[1][0], 15100);
+    EXPECT_EQ(r.rows[2][0], 15200);
+}
+
+TEST(StringSupport, LimitWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15100, 200)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15200, 300)");
+
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 'AAPL' LIMIT 2");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows.size(), 2u);
+}
+
+TEST(StringSupport, FloatPriceWithStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 150.25, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 151.50, 200)");
+
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 2u);
+    EXPECT_DOUBLE_EQ(std::bit_cast<double>(r.rows[0][0]), 150.25);
+    EXPECT_DOUBLE_EQ(std::bit_cast<double>(r.rows[1][0]), 151.50);
+}
+
+TEST(StringSupport, SelectStarWithStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('TSLA', 80000, 100)");
+
+    auto r = ex.execute("SELECT * FROM trades WHERE symbol = 'TSLA'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    // SELECT * returns partition columns (price, volume, timestamp)
+    // symbol is partition key, accessed via explicit SELECT symbol
+    EXPECT_GE(r.column_names.size(), 3u);  // at least price, volume, timestamp
+}
+
+TEST(StringSupport, MixedIntAndStringInsert) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    // Insert with int symbol (legacy)
+    ex.execute("INSERT INTO trades VALUES (1, 15000, 100, 1000000000)");
+    // Insert with string symbol
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 16000, 200)");
+
+    // Int symbol query still works
+    auto r1 = ex.execute("SELECT price FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    EXPECT_EQ(r1.rows.size(), 1u);
+    EXPECT_EQ(r1.rows[0][0], 15000);
+
+    // String symbol query works
+    auto r2 = ex.execute("SELECT price FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_EQ(r2.rows.size(), 1u);
+    EXPECT_EQ(r2.rows[0][0], 16000);
+}
+
+TEST(StringSupport, MultiRowInsertWithString) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    auto r = ex.execute(
+        "INSERT INTO trades (symbol, price, volume) VALUES "
+        "('AAPL', 15000, 100), ('GOOGL', 28000, 50), ('TSLA', 80000, 75)");
+    ASSERT_TRUE(r.ok()) << r.error;
+
+    auto r2 = ex.execute("SELECT count(*) FROM trades");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_EQ(r2.rows[0][0], 3);
+}
+
+TEST(StringSupport, DictionaryConsistency) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    // Insert same symbol many times — should all get same code
+    for (int i = 0; i < 10; ++i)
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+
+    auto r = ex.execute("SELECT count(*) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 10);
+
+    // Dictionary should have exactly 1 entry
+    EXPECT_EQ(pipeline->symbol_dict().size(), 1u);
+}
+
+TEST(StringSupport, ArithmeticWithStringWhere) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+
+    auto r = ex.execute(
+        "SELECT price * volume AS notional FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 1500000);
+}
+
+TEST(StringSupport, FirstLastWithStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume, timestamp) VALUES ('AAPL', 15000, 100, 1000000000)");
+    ex.execute("INSERT INTO trades (symbol, price, volume, timestamp) VALUES ('AAPL', 15100, 200, 2000000000)");
+    ex.execute("INSERT INTO trades (symbol, price, volume, timestamp) VALUES ('AAPL', 15200, 300, 3000000000)");
+
+    auto r = ex.execute(
+        "SELECT FIRST(price), LAST(price) FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_EQ(r.rows[0][0], 15000);
+    EXPECT_EQ(r.rows[0][1], 15200);
+}
+
+TEST(StringSupport, EmptyStringSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    // Empty string is a valid symbol
+    auto r = ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('', 15000, 100)");
+    ASSERT_TRUE(r.ok()) << r.error;
+
+    auto r2 = ex.execute("SELECT count(*) FROM trades WHERE symbol = ''");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_EQ(r2.rows[0][0], 1);
+}
+
+TEST(StringSupport, CaseSensitiveSymbol) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 15000, 100)");
+    ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('aapl', 16000, 200)");
+
+    // Should be case-sensitive — different symbols
+    auto r1 = ex.execute("SELECT price FROM trades WHERE symbol = 'AAPL'");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    EXPECT_EQ(r1.rows.size(), 1u);
+    EXPECT_EQ(r1.rows[0][0], 15000);
+
+    auto r2 = ex.execute("SELECT price FROM trades WHERE symbol = 'aapl'");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_EQ(r2.rows.size(), 1u);
+    EXPECT_EQ(r2.rows[0][0], 16000);
+}
+
+TEST(StringSupport, ManySymbols) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    // Insert 50 different symbols
+    for (int i = 0; i < 50; ++i) {
+        std::string sym = "SYM" + std::to_string(i);
+        ex.execute("INSERT INTO trades (symbol, price, volume) VALUES ('" +
+                   sym + "', " + std::to_string(10000 + i) + ", 100)");
+    }
+
+    EXPECT_EQ(pipeline->symbol_dict().size(), 50u);
+
+    // Query specific one
+    auto r = ex.execute("SELECT price FROM trades WHERE symbol = 'SYM25'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 10025);
+}

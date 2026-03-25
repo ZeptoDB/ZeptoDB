@@ -21,6 +21,7 @@ add_executable(zepto_tests
     unit/test_scheduler.cpp
     unit/test_features.cpp
     unit/test_kafka.cpp
+    unit/test_metrics_collector.cpp
 )
 target_include_directories(zepto_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h access

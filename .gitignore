@@ -1,22 +1,20 @@
 build/
-build_clang/
 *.o
 *.a
 *.so
-.openclaw/
-.kiro/
 *.pem
 __pycache__/
+.pytest_cache/
+site/
 
-# Kiro / agent config
-AGENTS.md
-SOUL.md
-USER.md
-IDENTITY.md
-TOOLS.md
-HEARTBEAT.md
+# AI agent configs
+.ai/
+.claude/
+.kiro/
+.openclaw/
+CLAUDE.md
 KIRO.md
 
 # Python build artifacts
 dist/
-*.egg-info/site/
+*.egg-info/

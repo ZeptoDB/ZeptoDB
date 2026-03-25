@@ -28,6 +28,8 @@ namespace zeptodb::cluster {
 using SqlQueryCallback   = std::function<zeptodb::sql::QueryResultSet(const std::string&)>;
 using TickIngestCallback = std::function<bool(const zeptodb::ingestion::TickMessage&)>;
 using WalReplayCallback  = std::function<size_t(const std::vector<zeptodb::ingestion::TickMessage>&)>;
+using StatsCallback      = std::function<std::string()>;  // returns JSON
+using MetricsCallback    = std::function<std::string(int64_t /*since_ms*/, uint32_t /*limit*/)>;
 
 // ============================================================================
 // TcpRpcServer
@@ -57,6 +59,13 @@ public:
     /// epoch=0 in the header bypasses fencing (backward compatible).
     void set_fencing_token(FencingToken* token) { fencing_token_ = token; }
 
+    /// Set stats callback — invoked for STATS_REQUEST messages.
+    void set_stats_callback(StatsCallback cb) { stats_callback_ = std::move(cb); }
+
+    /// Set metrics callback — invoked for METRICS_REQUEST messages.
+    /// Returns JSON array of MetricsSnapshot for the given time range.
+    void set_metrics_callback(MetricsCallback cb) { metrics_callback_ = std::move(cb); }
+
     bool     is_running() const { return running_.load(); }
     uint16_t port()       const { return port_; }
 
@@ -72,6 +81,8 @@ private:
     SqlQueryCallback   sql_callback_;
     TickIngestCallback tick_callback_;
     WalReplayCallback  wal_callback_;
+    StatsCallback      stats_callback_;
+    MetricsCallback    metrics_callback_;
     FencingToken*      fencing_token_ = nullptr;
 
     // Track active connection fds for clean shutdown
@@ -112,6 +123,14 @@ public:
 
     /// Send a batch of WAL entries to the replica node.
     bool replicate_wal(const std::vector<zeptodb::ingestion::TickMessage>& batch);
+
+    /// Request stats + metrics history from the remote node.
+    /// Returns raw JSON string, or empty string on failure.
+    std::string request_stats();
+
+    /// Request metrics history from the remote node.
+    /// Returns JSON array string, or empty string on failure.
+    std::string request_metrics(int64_t since_ms = 0, uint32_t limit = 0);
 
     const std::string& host() const { return host_; }
     uint16_t           port() const { return port_; }

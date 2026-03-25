@@ -8,6 +8,7 @@
 
 #include "zeptodb/feeds/tick.h"
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <cstring>
 
@@ -120,6 +121,9 @@ public:
 
     // Heartbeat 메시지
     std::string build_heartbeat();
+
+    // Market Data Request (35=V)
+    std::string build_market_data_request(const std::vector<std::string>& symbols);
 
 private:
     std::string sender_comp_id_;

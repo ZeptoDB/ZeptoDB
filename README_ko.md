@@ -222,12 +222,12 @@ zeptodb/
 │   ├── feeds/          # Feed handler tests (37 tests)
 │   ├── migration/      # Migration toolkit tests (70 tests)
 │   └── bench/          # Benchmarks
-├── scripts/
-│   ├── tune_bare_metal.sh  # 베어메탈 자동 튜닝
-│   ├── backup.sh       # 백업 자동화
-│   └── install_service.sh  # systemd 서비스 설치
-├── k8s/                # Kubernetes 배포 YAML
-├── monitoring/         # Grafana 대시보드 + Prometheus 알림
+├── deploy/
+│   ├── docker/         # Dockerfile
+│   ├── k8s/            # Kubernetes 배포 YAML
+│   ├── helm/zeptodb/   # Helm 차트 (프로덕션)
+│   ├── monitoring/     # Grafana 대시보드 + Prometheus 알림
+│   └── scripts/        # tune_bare_metal, backup, restore, systemd
 ├── tools/
 │   └── zepto-migrate.cpp  # Migration CLI
 └── docs/
@@ -259,7 +259,7 @@ zeptodb/
 ## Production Ready
 
 ### 배포 옵션
-- **베어메탈 (권장)**: HFT 레이턴시 일관성, `scripts/tune_bare_metal.sh` 자동 튜닝
+- **베어메탈 (권장)**: HFT 레이턴시 일관성, `deploy/scripts/tune_bare_metal.sh` 자동 튜닝
 - **클라우드**: Docker + Kubernetes, AWS Graviton4 최적화
 
 ### 모니터링
@@ -268,9 +268,9 @@ zeptodb/
 - `/health`, `/ready`, `/metrics` 엔드포인트
 
 ### 운영 자동화
-- `scripts/backup.sh` — HDB/WAL/Config 백업 + S3
-- `scripts/restore.sh` — 재해 복구
-- `scripts/install_service.sh` — systemd 서비스 원스텝 설치
+- `deploy/scripts/backup.sh` — HDB/WAL/Config 백업 + S3
+- `deploy/scripts/restore.sh` — 재해 복구
+- `deploy/scripts/install_service.sh` — systemd 서비스 원스텝 설치
 
 📖 **상세 가이드:**
 - 배포: `docs/deployment/PRODUCTION_DEPLOYMENT.md`

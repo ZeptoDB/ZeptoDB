@@ -24,6 +24,7 @@
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/sql/executor.h"
+#include <future>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
@@ -73,6 +74,64 @@ public:
     size_t node_count() const {
         std::shared_lock lock(mutex_);
         return endpoints_.size();
+    }
+
+    /// Collect stats JSON from all remote nodes (parallel fan-out).
+    /// Returns a vector of JSON strings, one per remote node.
+    /// Local node is NOT included — caller adds it separately.
+    std::vector<std::string> collect_remote_stats() {
+        std::shared_lock lock(mutex_);
+        std::vector<std::shared_ptr<NodeEndpoint>> remotes;
+        for (auto& ep : endpoints_) {
+            if (!ep->is_local && ep->rpc) remotes.push_back(ep);
+        }
+        lock.unlock();
+
+        // Fan out in parallel
+        std::vector<std::future<std::string>> futures;
+        futures.reserve(remotes.size());
+        for (auto& ep : remotes) {
+            futures.push_back(std::async(std::launch::async, [&ep]() {
+                return ep->rpc->request_stats();
+            }));
+        }
+
+        std::vector<std::string> results;
+        results.reserve(futures.size());
+        for (auto& f : futures) {
+            auto json = f.get();
+            if (!json.empty()) results.push_back(json);
+        }
+        return results;
+    }
+
+    /// Collect metrics history from all remote nodes (parallel fan-out).
+    /// Returns a vector of JSON array strings, one per remote node.
+    std::vector<std::string> collect_remote_metrics(int64_t since_ms = 0,
+                                                     uint32_t limit = 0) {
+        std::shared_lock lock(mutex_);
+        std::vector<std::shared_ptr<NodeEndpoint>> remotes;
+        for (auto& ep : endpoints_) {
+            if (!ep->is_local && ep->rpc) remotes.push_back(ep);
+        }
+        lock.unlock();
+
+        std::vector<std::future<std::string>> futures;
+        futures.reserve(remotes.size());
+        for (auto& ep : remotes) {
+            futures.push_back(std::async(std::launch::async,
+                [&ep, since_ms, limit]() {
+                    return ep->rpc->request_metrics(since_ms, limit);
+                }));
+        }
+
+        std::vector<std::string> results;
+        results.reserve(futures.size());
+        for (auto& f : futures) {
+            auto json = f.get();
+            if (!json.empty()) results.push_back(json);
+        }
+        return results;
     }
 
     /// Wire this coordinator into a HealthMonitor so that DEAD nodes are

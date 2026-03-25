@@ -92,7 +92,7 @@ docker push $REPO:bench
 ### 2.1 Benchmark values override
 
 ```yaml
-# helm/bench-values.yaml
+# deploy/helm/bench-values.yaml
 replicaCount: 3
 
 image:
@@ -136,9 +136,9 @@ config:
 
 ```bash
 # Deploy data nodes
-helm install zepto ./helm/zeptodb \
+helm install zepto ./deploy/helm/zeptodb \
   -n zeptodb --create-namespace \
-  -f helm/bench-values.yaml
+  -f deploy/helm/bench-values.yaml
 
 # Wait for all pods ready
 kubectl rollout status deployment/zepto-zeptodb -n zeptodb --timeout=5m
@@ -152,7 +152,7 @@ kubectl exec -n zeptodb deploy/zepto-zeptodb -- \
 ### 2.3 Deploy Load Generator
 
 ```yaml
-# k8s/bench-loadgen.yaml
+# deploy/k8s/bench-loadgen.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -173,7 +173,7 @@ spec:
 ```
 
 ```bash
-kubectl apply -f k8s/bench-loadgen.yaml
+kubectl apply -f deploy/k8s/bench-loadgen.yaml
 kubectl wait --for=condition=Ready pod/bench-loadgen -n zeptodb --timeout=120s
 ```
 

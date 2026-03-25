@@ -174,9 +174,7 @@ std::string AwsSecretsProvider::get(const std::string& key,
     //   Option C: Implement SigV4 signing manually with OpenSSL HMAC
     //
     // For now, fall through to env/file providers.
-    // TODO: Implement AWS SigV4 request signing for full AWS SM support.
-    //
-    // Workaround for K8s deployments: mount secrets via ExternalSecrets Operator
+    // NOTE: AWS SigV4 signing deferred — K8s deployments use ExternalSecrets Operator
     // which writes AWS SM secrets to K8s Secret objects → FileSecretsProvider reads them.
     (void)key;
     return default_val;

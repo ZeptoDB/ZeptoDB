@@ -32,6 +32,7 @@ enum class ColumnType : uint8_t {
     TIMESTAMP_NS,   // int64 nanosecond epoch
     SYMBOL,          // uint32 interned string id
     BOOL,
+    STRING,          // dictionary-encoded, stored as uint32 codes
 };
 
 /// 타입별 바이트 크기
@@ -44,6 +45,7 @@ constexpr size_t column_type_size(ColumnType type) {
         case ColumnType::TIMESTAMP_NS:  return 8;
         case ColumnType::SYMBOL:        return 4;
         case ColumnType::BOOL:          return 1;
+        case ColumnType::STRING:        return 4;  // dictionary code (uint32)
     }
     return 0;
 }

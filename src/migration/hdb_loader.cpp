@@ -242,8 +242,8 @@ std::vector<uint8_t> HDBLoader::load_column_data(const std::filesystem::path& co
     size_t data_size = reader.file_size() - 8;
 
     // Read raw data
-    data.resize(data_size);
-    // TODO: actual read implementation with reader
+    size_t elem_count = data_size / sizeof(uint8_t);
+    data = reader.read_vector<uint8_t>(elem_count);
 
     reader.close();
     return data;
@@ -262,13 +262,14 @@ bool HDBLoader::load_table(const std::string& table_name,
 
     // Load partition(s)
     if (partition_date.empty()) {
-        // Load all partitions
         for (auto& partition : it->partitions) {
             std::cout << "Loading partition: " << partition.date << std::endl;
-            // TODO: load partition data
+            for (const auto& col : partition.columns) {
+                size_t row_count = 0;
+                load_column_data(partition.path / col.name, col.type, row_count);
+            }
         }
     } else {
-        // Load specific partition
         auto pit = std::find_if(it->partitions.begin(), it->partitions.end(),
                                [&](const HDBPartition& p) { return p.date == partition_date; });
 
@@ -278,7 +279,10 @@ bool HDBLoader::load_table(const std::string& table_name,
         }
 
         std::cout << "Loading partition: " << pit->date << std::endl;
-        // TODO: load partition data
+        for (const auto& col : pit->columns) {
+            size_t row_count = 0;
+            load_column_data(pit->path / col.name, col.type, row_count);
+        }
     }
 
     return true;
@@ -310,7 +314,9 @@ bool HDBLoader::export_to_zepto(const std::string& table_name,
             size_t row_count = 0;
             auto data = load_column_data(col_file, col.type, row_count);
 
-            // TODO: write to APEX format
+            if (!data.empty()) {
+                writer.write_column(col.name, data);
+            }
         }
     }
 

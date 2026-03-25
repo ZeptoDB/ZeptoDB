@@ -10,6 +10,8 @@ namespace zeptodb {
 std::shared_ptr<spdlog::logger> Logger::s_logger;
 
 void Logger::init(const std::string& name, spdlog::level::level_enum level) {
+    auto existing = spdlog::get(name);
+    if (existing) { s_logger = existing; return; }
     s_logger = spdlog::stdout_color_mt(name);
     s_logger->set_level(level);
     s_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f] [%^%l%$] [%s:%#] %v");

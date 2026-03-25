@@ -1157,11 +1157,9 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
             node->value = std::stoll(s);
         }
     } else if (check(TokenType::STRING)) {
-        // 문자열 → 숫자 변환 시도 (심볼 ID 등)
-        std::string s = current().value;
+        node->value_str = current().value;
+        node->is_string = true;
         advance();
-        try { node->value = std::stoll(s); }
-        catch (...) { node->value = 0; }
     } else if (check(TokenType::IDENT) || check(TokenType::STAR)) {
         // 다른 컬럼과 비교 (조인 조건 등 — WHERE에서는 드물지만)
         node->value = 0;
@@ -1519,14 +1517,20 @@ InsertStmt Parser::parse_insert() {
         expect(TokenType::LPAREN, "(");
         std::vector<InsertValue> row;
         do {
-            bool neg = match(TokenType::MINUS);
-            std::string s = expect(TokenType::NUMBER, "number").value;
-            if (s.find('.') != std::string::npos) {
-                double d = std::stod(s);
-                row.push_back(InsertValue(neg ? -d : d));
+            if (check(TokenType::STRING)) {
+                std::string sv = current().value;
+                advance();
+                row.push_back(InsertValue(std::move(sv)));
             } else {
-                int64_t v = std::stoll(s);
-                row.push_back(InsertValue(neg ? -v : v));
+                bool neg = match(TokenType::MINUS);
+                std::string s = expect(TokenType::NUMBER, "number or string").value;
+                if (s.find('.') != std::string::npos) {
+                    double d = std::stod(s);
+                    row.push_back(InsertValue(neg ? -d : d));
+                } else {
+                    int64_t v = std::stoll(s);
+                    row.push_back(InsertValue(neg ? -v : v));
+                }
             }
         } while (match(TokenType::COMMA));
         expect(TokenType::RPAREN, ")");

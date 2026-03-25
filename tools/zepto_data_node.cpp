@@ -8,6 +8,7 @@
 
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/server/metrics_collector.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/ingestion/tick_plant.h"
 
@@ -56,6 +57,24 @@ int main(int argc, char* argv[]) {
 
     // Start RPC server
     zeptodb::cluster::TcpRpcServer srv;
+
+    // Metrics collector for this data node
+    zeptodb::server::MetricsCollector mc(pipeline.stats());
+    mc.start();
+
+    srv.set_stats_callback([&]() {
+        const auto& s = pipeline.stats();
+        return std::string("{\"node_id\":0")
+            + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+            + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+            + ",\"state\":\"ACTIVE\"}";
+    });
+
+    srv.set_metrics_callback([&](int64_t since_ms, uint32_t limit) {
+        auto snaps = mc.get_history(since_ms, limit > 0 ? limit : 0);
+        return zeptodb::server::MetricsCollector::to_json(snaps);
+    });
+
     srv.start(port, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(pipeline);
         return ex.execute(sql);

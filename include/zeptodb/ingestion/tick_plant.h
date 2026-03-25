@@ -21,10 +21,13 @@ struct APEX_CACHE_ALIGNED TickMessage {
     SeqNum    seq_num;      // 글로벌 순번
     Timestamp recv_ts;      // 수신 타임스탬프 (nanosecond)
     SymbolId  symbol_id;    // 종목 ID
-    Price     price;        // 체결가 (int64 or bit_cast'd double)
+    union {
+        Price   price;      // 체결가 (int64, default)
+        double  price_f;    // 체결가 (double, when price_is_float=1)
+    };
     Volume    volume;       // 체결량
     uint8_t   msg_type;     // 0=Trade, 1=BidUpdate, 2=AskUpdate
-    uint8_t   price_is_float; // 1 if price is native double (bit_cast'd into int64)
+    uint8_t   price_is_float; // 1 if price stores double via price_f
     uint8_t   _pad[6];      // Alignment padding
 };
 static_assert(sizeof(TickMessage) == 64, "TickMessage must be exactly 1 cache line");

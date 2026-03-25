@@ -46,12 +46,12 @@ ZeptoDB is an **ultra-low latency in-memory database** that started as a finance
   - **Intel Xeon 8462Y+ (Sapphire Rapids)**: AVX-512, AMX, DDR5-4800, CXL 1.1
   - **AMD EPYC 9754 (Bergamo)**: 128-core density, DDR5-4800
   - **Supermicro AS-4125GS-TNRT**: PCIe 5.0, 16x NVMe, 4TB RAM
-* **Deployment:** `scripts/tune_bare_metal.sh` — one-step auto-tuning (CPU pinning, NUMA, io_uring)
+* **Deployment:** `deploy/scripts/tune_bare_metal.sh` — one-step auto-tuning (CPU pinning, NUMA, io_uring)
 
 #### **Cloud (AWS First)**
 * **Instances:** r8g.16xlarge (Graviton4, 512GB), c7gn.16xlarge (EFA, HFT networking)
 * **Optimization:** Highway SIMD (ARM SVE auto), Nitro offload, EFA RDMA
-* **Containers:** Docker + Kubernetes (HPA, PVC, LoadBalancer) — `k8s/deployment.yaml`
+* **Containers:** Docker + Kubernetes (HPA, PVC, LoadBalancer) — `deploy/k8s/deployment.yaml`
 * **Monitoring:** Prometheus + Grafana — `/metrics` OpenMetrics, 9 alert rules
 
 #### **Microsoft Azure (Future)**

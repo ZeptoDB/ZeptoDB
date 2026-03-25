@@ -219,6 +219,7 @@ endif()
 # --- Common utilities ---
 add_library(zepto_common STATIC
     src/common/logger.cpp
+    src/util/logger.cpp
 )
 target_include_directories(zepto_common PUBLIC
     ${CMAKE_SOURCE_DIR}/include
@@ -386,6 +387,7 @@ target_include_directories(zepto_server PUBLIC
 target_link_libraries(zepto_server PUBLIC
     zepto_sql
     zepto_auth
+    zepto_cluster
 )
 # httplib requires POSIX threads
 find_package(Threads REQUIRED)
@@ -520,6 +522,12 @@ target_compile_options(zepto-cli PRIVATE -O2)
 
 # Standalone data node (for multi-process integration testing)
 add_executable(zepto_data_node tools/zepto_data_node.cpp)
+
+# HTTP server (Web UI + API)
+add_executable(zepto_http_server tools/zepto_http_server.cpp)
+target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(zepto_http_server PRIVATE
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster)
 target_include_directories(zepto_data_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_data_node PRIVATE
     zepto_cluster zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion)

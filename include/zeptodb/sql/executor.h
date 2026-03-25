@@ -8,6 +8,7 @@
 
 #include "zeptodb/sql/ast.h"
 #include "zeptodb/storage/column_store.h"
+#include "zeptodb/storage/string_dictionary.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/execution/query_scheduler.h"
 #include "zeptodb/execution/worker_pool.h"
@@ -44,6 +45,9 @@ struct QueryResultSet {
     // When non-empty, each entry corresponds to one plan/text row.
     // column_names = {"plan"}, string_rows[i] = plan line i.
     std::vector<std::string>             string_rows;
+
+    // Symbol dictionary for resolving STRING column codes to strings
+    const storage::StringDictionary*     symbol_dict = nullptr;
 
     double  execution_time_us = 0.0;
     size_t  rows_scanned      = 0;

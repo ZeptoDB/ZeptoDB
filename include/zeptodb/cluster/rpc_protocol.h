@@ -44,6 +44,10 @@ enum class RpcType : uint32_t {
     TICK_ACK    = 6,  // 1-byte status response (0x01 = accepted)
     WAL_REPLICATE = 7,  // Batch of TickMessages for WAL replication
     WAL_ACK       = 8,  // 1-byte ack (0x01 = all applied)
+    STATS_REQUEST = 9,  // Request PipelineStats + MetricsHistory from node
+    STATS_RESULT  = 10, // Response with node stats JSON
+    METRICS_REQUEST = 11, // Request metrics history (payload: since_ms:i64 + limit:u32)
+    METRICS_RESULT  = 12, // Response with metrics history JSON array
 };
 
 // ============================================================================
@@ -247,6 +251,27 @@ inline bool deserialize_wal_batch(const uint8_t* data, size_t len,
     if (count > 0)
         std::memcpy(out.data(), data + 4,
                     count * sizeof(zeptodb::ingestion::TickMessage));
+    return true;
+}
+
+// ============================================================================
+// Serialize / Deserialize METRICS_REQUEST payload
+// Layout: int64 since_ms + uint32 limit
+// ============================================================================
+
+inline std::vector<uint8_t> serialize_metrics_request(int64_t since_ms, uint32_t limit) {
+    std::vector<uint8_t> buf;
+    buf.reserve(12);
+    proto_write_i64(buf, since_ms);
+    proto_write_u32(buf, limit);
+    return buf;
+}
+
+inline bool deserialize_metrics_request(const uint8_t* data, size_t len,
+                                         int64_t& since_ms, uint32_t& limit) {
+    if (len < 12) return false;
+    since_ms = proto_read_i64(data);
+    limit    = proto_read_u32(data + 8);
     return true;
 }
 

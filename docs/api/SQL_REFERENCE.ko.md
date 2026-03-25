@@ -510,15 +510,33 @@ FROM trades WHERE symbol = 1
 
 ## 데이터 타입 및 타임스탬프 산술
 
-모든 컬럼은 스토리지 수준에서 `int64`입니다.
+ZeptoDB는 고정 크기 숫자 컬럼과 딕셔너리 인코딩 문자열을 지원합니다.
 
-| 논리 타입 | 스토리지 | 비고 |
-|-----------|----------|------|
-| 정수 | `int64` | 직접 저장 |
-| 가격 (float) | `int64` | 스케일: 150.25 → scale 100일 때 15025 |
-| 타임스탬프 | `int64` | 유닉스 에포크 이후 나노초 |
-| 심볼 ID | `int64` | 숫자형 심볼 식별자 |
-| NULL | `INT64_MIN` | IS NULL 체크에 사용 |
+| 논리 타입 | 스토리지 | DDL 키워드 | 비고 |
+|-----------|----------|-----------|------|
+| 정수 | `int64` | `INT64`, `BIGINT` | 직접 저장 |
+| 정수 (32비트) | `int32` | `INT32`, `INT` | 직접 저장 |
+| 부동소수점 | `double` | `FLOAT64`, `DOUBLE` | IEEE 754 |
+| 부동소수점 (32비트) | `float` | `FLOAT32`, `FLOAT` | IEEE 754 |
+| 타임스탬프 | `int64` | `TIMESTAMP`, `TIMESTAMP_NS` | 유닉스 에포크 이후 나노초 |
+| 심볼 ID | `uint32` | `SYMBOL` | 숫자형 심볼 식별자 (레거시) |
+| 문자열 | `uint32` (딕셔너리 코드) | `STRING`, `VARCHAR`, `TEXT` | 딕셔너리 인코딩 (LowCardinality) |
+| 불리언 | `uint8` | `BOOL`, `BOOLEAN` | 0 또는 1 |
+| NULL | `INT64_MIN` | — | IS NULL 체크에 사용 |
+
+### 문자열 (딕셔너리 인코딩)
+
+문자열 컬럼은 내부적으로 딕셔너리 인코딩을 사용합니다 — 각 고유 문자열에 `uint32` 코드가 할당됩니다.
+저카디널리티 컬럼(symbol, exchange, side, currency)에 최적입니다.
+
+```sql
+-- 문자열 심볼로 INSERT
+INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 150.25, 100)
+
+-- 문자열 심볼로 쿼리
+SELECT price FROM trades WHERE symbol = 'AAPL'
+SELECT symbol, SUM(volume) FROM trades GROUP BY symbol
+```
 
 ### 타임스탬프 산술
 

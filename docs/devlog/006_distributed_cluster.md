@@ -247,6 +247,75 @@ Will be implemented with gRPC or RDMA one-sided in C-3.
 
 ---
 
+## Phase C-5: Multi-Node Metrics Collection
+
+> Date: 2026-03-25
+> Status: Complete — 8 new tests PASS
+
+### Problem
+
+`coordinator_scatter_metrics()` was using `STATS_REQUEST` RPC (current stats only)
+instead of fetching actual metrics history from remote nodes. Multi-node `/admin/metrics`
+returned incomplete data.
+
+### Solution
+
+Added dedicated `METRICS_REQUEST`/`METRICS_RESULT` RPC message types that carry
+`since_ms` and `limit` parameters, enabling the coordinator to fan out metrics
+history requests to all remote nodes in parallel.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `include/zeptodb/cluster/rpc_protocol.h` | `METRICS_REQUEST=11`, `METRICS_RESULT=12` + serialize/deserialize helpers |
+| `include/zeptodb/cluster/tcp_rpc.h` | `MetricsCallback` type, `set_metrics_callback()`, `request_metrics()` |
+| `src/cluster/tcp_rpc.cpp` | Server-side `METRICS_REQUEST` handler + client `request_metrics()` |
+| `include/zeptodb/cluster/query_coordinator.h` | `collect_remote_metrics(since_ms, limit)` parallel fan-out |
+| `src/server/http_server.cpp` | `coordinator_scatter_metrics()` now uses `METRICS_REQUEST` RPC + comma bug fix |
+| `include/zeptodb/cluster/cluster_node.h` | Register stats/metrics callbacks on RPC server in `join_cluster()` |
+| `include/zeptodb/server/metrics_collector.h` | `set_node_id()` for cluster mode |
+| `include/zeptodb/server/http_server.h` | `set_coordinator()` now accepts `node_id` parameter |
+| `tools/zepto_data_node.cpp` | Register stats/metrics callbacks + start MetricsCollector |
+
+### Wire Protocol
+
+```
+METRICS_REQUEST payload (12 bytes):
+  int64  since_ms   — filter: only return snapshots after this timestamp
+  uint32 limit      — max entries to return (0 = use server default)
+
+METRICS_RESULT payload:
+  JSON array string — same format as MetricsCollector::to_json()
+```
+
+### Tests (10 new)
+
+| Test | Verifies |
+|------|----------|
+| `RpcProtocol.MetricsRequestSerializeDeserialize` | Wire format round-trip |
+| `RpcProtocol.MetricsRequestDeserialize_TooShort` | Truncated payload rejection |
+| `TcpRpc.MetricsRequestRoundTrip` | Full server↔client metrics exchange |
+| `TcpRpc.MetricsRequest_NoCallback_ReturnsEmptyArray` | Graceful fallback |
+| `TcpRpc.MetricsRequest_ServerDown_ReturnsEmpty` | Connection failure handling |
+| `TcpRpc.MetricsRequest_PassesSinceAndLimit` | Parameters forwarded correctly |
+| `QueryCoordinator.CollectRemoteMetrics_SingleNode` | Single remote node fan-out |
+| `QueryCoordinator.CollectRemoteMetrics_TwoNodes` | Multi-node parallel fan-out |
+| `ClusterNodeCallbacks.RpcServerRegistersMetricsCallback` | ClusterNode auto-registers callbacks |
+| `MetricsCollectorTest.SetNodeId_UpdatesFutureCaptures` | Dynamic node_id update |
+
+### Bugs Fixed (review pass)
+
+1. **ClusterNode missing callbacks** — `join_cluster()` didn't register stats/metrics
+   callbacks on the RPC server → remote nodes always returned `"[]"` / `"{}"`
+2. **zepto_data_node missing callbacks** — same issue in standalone data node binary
+3. **JSON comma bug** — `coordinator_scatter_metrics()` used pointer comparison for
+   comma insertion; replaced with `has_entry` flag
+4. **node_id always 0** — `HttpServer::MetricsCollector` created with default node_id;
+   added `set_node_id()` + `set_coordinator(coord, node_id)` propagation
+
+---
+
 ## File List
 
 ```

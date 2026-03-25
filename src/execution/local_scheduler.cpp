@@ -72,13 +72,10 @@ void PartialAggResult::merge(const PartialAggResult& other) {
     }
 }
 
-// 직렬화: 기본 구현 (분산 스케줄러 구현 시 확장 예정)
+// 직렬화: placeholder (분산 경로는 rpc_protocol.h의 serialize_result() 사용)
 std::vector<uint8_t> PartialAggResult::serialize() const {
-    // TODO(distributed): 실제 직렬화 구현
-    // 현재는 데이터 크기만 인코딩하는 placeholder
     std::vector<uint8_t> buf;
     buf.reserve(64);
-    // magic + ncols
     uint32_t ncols = static_cast<uint32_t>(sum.size());
     const uint8_t* p = reinterpret_cast<const uint8_t*>(&ncols);
     buf.insert(buf.end(), p, p + sizeof(ncols));
@@ -86,7 +83,7 @@ std::vector<uint8_t> PartialAggResult::serialize() const {
 }
 
 PartialAggResult PartialAggResult::deserialize(const uint8_t* /*buf*/, size_t /*len*/) {
-    // TODO(distributed): 실제 역직렬화 구현
+    // Distributed path uses rpc_protocol.h deserialize_result() instead
     return {};
 }
 

@@ -839,15 +839,42 @@ SELECT SUBSTR(price, 4, 2) AS price_suffix FROM trades
 
 ## Data Types & Timestamp Arithmetic
 
-All columns in ZeptoDB are `int64` at the storage level.
+ZeptoDB supports fixed-size numeric columns and dictionary-encoded strings.
 
-| Logical type | Storage | Notes |
-|---|---|---|
-| Integer | `int64` | Direct |
-| Price (float) | `int64` | Scaled: 150.25 → 15025 at scale 100 |
-| Timestamp | `int64` | Nanoseconds since Unix epoch |
-| Symbol ID | `int64` | Numeric symbol identifier |
-| NULL | `INT64_MIN` | Used for IS NULL checks |
+| Logical type | Storage | DDL keyword | Notes |
+|---|---|---|---|
+| Integer | `int64` | `INT64`, `BIGINT` | Direct |
+| Integer (32-bit) | `int32` | `INT32`, `INT` | Direct |
+| Float | `double` | `FLOAT64`, `DOUBLE` | Native IEEE 754 |
+| Float (32-bit) | `float` | `FLOAT32`, `FLOAT` | Native IEEE 754 |
+| Timestamp | `int64` | `TIMESTAMP`, `TIMESTAMP_NS` | Nanoseconds since Unix epoch |
+| Symbol ID | `uint32` | `SYMBOL` | Numeric symbol identifier (legacy) |
+| String | `uint32` (dict code) | `STRING`, `VARCHAR`, `TEXT` | Dictionary-encoded (LowCardinality) |
+| Boolean | `uint8` | `BOOL`, `BOOLEAN` | 0 or 1 |
+| NULL | `INT64_MIN` | — | Used for IS NULL checks |
+
+### String (Dictionary-Encoded)
+
+String columns use dictionary encoding internally — each unique string is assigned a `uint32` code.
+This is optimal for low-cardinality columns (symbol, exchange, side, currency).
+
+```sql
+-- Insert with string symbol
+INSERT INTO trades (symbol, price, volume) VALUES ('AAPL', 150.25, 100)
+
+-- Query with string symbol
+SELECT price FROM trades WHERE symbol = 'AAPL'
+SELECT symbol, SUM(volume) FROM trades GROUP BY symbol
+
+-- Works with all operations: aggregation, JOIN, ORDER BY, LIMIT, etc.
+SELECT VWAP(price, volume) FROM trades WHERE symbol = 'GOOGL'
+```
+
+Integer symbol IDs (legacy) remain fully supported:
+```sql
+INSERT INTO trades VALUES (1, 15000, 100, 1711234567000000000)
+SELECT price FROM trades WHERE symbol = 1
+```
 
 ### Timestamp arithmetic
 
