@@ -1,17 +1,24 @@
 "use client";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   Box, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody,
   TableContainer, Chip, Button, TextField, Select, MenuItem, IconButton,
   Tooltip, Alert, Tabs, Tab, Dialog, DialogTitle, DialogContent, DialogActions,
+  InputAdornment, Stack,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import StopIcon from "@mui/icons-material/Stop";
+import SearchIcon from "@mui/icons-material/Search";
+import VisibilityIcon from "@mui/icons-material/Visibility";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchKeys, createKey, revokeKey, fetchQueries, killQuery, fetchAudit } from "@/lib/api";
+import {
+  fetchKeys, createKey, revokeKey, fetchQueries, killQuery, fetchAudit,
+  fetchTenants, createTenant, deleteTenant, fetchSessions, fetchKeyUsage
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 const MONO = { fontFamily: "'JetBrains Mono', monospace", fontSize: 13 };
@@ -46,6 +53,21 @@ export default function AdminPage() {
   const [newRole, setNewRole] = useState("reader");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
+  // ── Key Usage Dialog ──
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+
+  // ── Create Tenant Dialog ──
+  const [tenantDlgOpen, setTenantDlgOpen] = useState(false);
+  const [tId, setTId] = useState("");
+  const [tName, setTName] = useState("");
+  const [tMcq, setTMcq] = useState("10");
+  const [tNs, setTNs] = useState("");
+
+  // ── Audit Filters ──
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditRoleFilter, setAuditRoleFilter] = useState("ALL");
+
   const { data: keys, refetch: refetchKeys } = useQuery({
     queryKey: ["admin-keys"], queryFn: () => fetchKeys(auth?.apiKey), refetchInterval: 10000,
   });
@@ -53,7 +75,19 @@ export default function AdminPage() {
     queryKey: ["admin-queries"], queryFn: () => fetchQueries(auth?.apiKey), refetchInterval: 3000,
   });
   const { data: audit, refetch: refetchAudit } = useQuery({
-    queryKey: ["admin-audit"], queryFn: () => fetchAudit(auth?.apiKey), refetchInterval: 5000,
+    queryKey: ["admin-audit"], queryFn: () => fetchAudit(auth?.apiKey, 500), refetchInterval: 5000,
+  });
+  const { data: tenants, refetch: refetchTenants } = useQuery({
+    queryKey: ["admin-tenants"], queryFn: () => fetchTenants(auth?.apiKey), refetchInterval: 10000,
+  });
+  const { data: sessions, refetch: refetchSessions } = useQuery({
+    queryKey: ["admin-sessions"], queryFn: () => fetchSessions(auth?.apiKey), refetchInterval: 5000,
+  });
+
+  const { data: keyUsage } = useQuery({
+    queryKey: ["admin-key-usage", selectedKeyId],
+    queryFn: () => selectedKeyId ? fetchKeyUsage(selectedKeyId, auth?.apiKey) : null,
+    enabled: !!selectedKeyId,
   });
 
   const handleCreate = useCallback(async () => {
@@ -90,7 +124,64 @@ export default function AdminPage() {
     }
   }, [auth, refetchQueries]);
 
-  // Clear success after 3s
+  const handleCreateTenant = useCallback(async () => {
+    setError(null);
+    try {
+      await createTenant(tId, tName, parseInt(tMcq) || 0, tNs, auth?.apiKey);
+      setSuccess("Tenant created");
+      setTenantDlgOpen(false);
+      setTId(""); setTName(""); setTNs(""); setTMcq("10");
+      refetchTenants();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to create tenant");
+    }
+  }, [tId, tName, tMcq, tNs, auth, refetchTenants]);
+
+  const handleDeleteTenant = useCallback(async (id: string) => {
+    setError(null);
+    try {
+      await deleteTenant(id, auth?.apiKey);
+      setSuccess("Tenant deleted");
+      refetchTenants();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to delete tenant");
+    }
+  }, [auth, refetchTenants]);
+
+  // Derived filtered audit
+  const filteredAudit = useMemo(() => {
+    if (!audit) return [];
+    let list = audit;
+    if (auditRoleFilter !== "ALL") {
+      list = list.filter((e: any) => e.role === auditRoleFilter);
+    }
+    if (auditSearch.trim()) {
+      const q = auditSearch.toLowerCase();
+      list = list.filter((e: any) =>
+        e.subject.toLowerCase().includes(q) ||
+        e.action.toLowerCase().includes(q) ||
+        e.detail.toLowerCase().includes(q) ||
+        e.from.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [audit, auditSearch, auditRoleFilter]);
+
+  const handleDownloadCsv = () => {
+    if (!filteredAudit.length) return;
+    const header = "Time,Subject,Role,Action,Detail,From\n";
+    const csv = filteredAudit.map((e: any) =>
+      `${e.ts},"${e.subject}","${e.role}","${e.action}","${e.detail.replace(/"/g, '""')}","${e.from}"`
+    ).join("\n");
+    const blob = new Blob([header + csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.download = `audit_${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   useEffect(() => {
     if (!success) return;
     const t = setTimeout(() => setSuccess(null), 3000);
@@ -98,26 +189,29 @@ export default function AdminPage() {
   }, [success]);
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Typography variant="h6">Admin</Typography>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 3, maxWidth: 1200, mx: "auto" }}>
+      <Typography variant="h5" fontWeight={600} color="text.primary">Admin & Governance</Typography>
 
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
       {success && <Alert severity="success" onClose={() => setSuccess(null)}>{success}</Alert>}
 
-      <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-        <Tab label={`API Keys${keys ? ` (${keys.length})` : ""}`} sx={{ textTransform: "none" }} />
-        <Tab label={`Queries${queries ? ` (${queries.length})` : ""}`} sx={{ textTransform: "none" }} />
+      <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto">
+        <Tab label={keys ? `API Keys (${keys.length})` : "API Keys"} sx={{ textTransform: "none" }} />
+        <Tab label={queries ? `Queries (${queries.length})` : "Queries"} sx={{ textTransform: "none" }} />
         <Tab label="Audit Log" sx={{ textTransform: "none" }} />
+        <Tab label="Roles & Permissions" sx={{ textTransform: "none" }} />
+        <Tab label={tenants ? `Tenants (${tenants.length})` : "Tenants"} sx={{ textTransform: "none" }} />
+        <Tab label={sessions ? `Sessions (${sessions.length})` : "Sessions"} sx={{ textTransform: "none" }} />
       </Tabs>
 
       {/* ── API Keys Tab ── */}
       {tab === 0 && (
-        <Paper sx={{ border: "1px solid #1E293B" }}>
-          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <Paper>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <Typography variant="body2" color="text.secondary">API Keys</Typography>
             <Box sx={{ display: "flex", gap: 1 }}>
               <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetchKeys()}><RefreshIcon fontSize="small" /></IconButton></Tooltip>
-              <Button size="small" startIcon={<AddIcon />} onClick={() => { setDlgOpen(true); setCreatedKey(null); }} sx={{ textTransform: "none" }}>
+              <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => { setDlgOpen(true); setCreatedKey(null); }} sx={{ textTransform: "none" }}>
                 Create Key
               </Button>
             </Box>
@@ -135,7 +229,7 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(keys ?? []).map((k: { id: string; name: string; role: string; enabled: boolean; created_at_ns: number }) => (
+                {(keys ?? []).map((k: any) => (
                   <TableRow key={k.id} hover>
                     <TableCell sx={MONO}>{k.name}</TableCell>
                     <TableCell sx={{ ...MONO, color: "text.secondary" }}>{k.id.slice(0, 12)}…</TableCell>
@@ -144,9 +238,14 @@ export default function AdminPage() {
                     <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{k.created_at_ns ? timeAgo(k.created_at_ns) : "—"}</TableCell>
                     <TableCell align="right">
                       {k.enabled && (
-                        <Tooltip title="Revoke">
-                          <IconButton size="small" color="error" onClick={() => handleRevoke(k.id)}><DeleteIcon fontSize="small" /></IconButton>
-                        </Tooltip>
+                        <>
+                          <Tooltip title="View Usage">
+                            <IconButton size="small" color="primary" onClick={() => { setSelectedKeyId(k.id); setUsageOpen(true); }}><VisibilityIcon fontSize="small" /></IconButton>
+                          </Tooltip>
+                          <Tooltip title="Revoke">
+                            <IconButton size="small" color="error" onClick={() => handleRevoke(k.id)}><DeleteIcon fontSize="small" /></IconButton>
+                          </Tooltip>
+                        </>
                       )}
                     </TableCell>
                   </TableRow>
@@ -164,8 +263,8 @@ export default function AdminPage() {
 
       {/* ── Active Queries Tab ── */}
       {tab === 1 && (
-        <Paper sx={{ border: "1px solid #1E293B" }}>
-          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <Paper>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <Typography variant="body2" color="text.secondary">Active Queries</Typography>
             <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetchQueries()}><RefreshIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
@@ -181,7 +280,7 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(queries ?? []).map((q: { id: string; subject: string; sql: string; started_at_ns: number }) => (
+                {(queries ?? []).map((q: any) => (
                   <TableRow key={q.id} hover>
                     <TableCell sx={{ ...MONO, color: "text.secondary" }}>{q.id}</TableCell>
                     <TableCell sx={MONO}>{q.subject}</TableCell>
@@ -207,10 +306,29 @@ export default function AdminPage() {
 
       {/* ── Audit Log Tab ── */}
       {tab === 2 && (
-        <Paper sx={{ border: "1px solid #1E293B" }}>
-          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <Typography variant="body2" color="text.secondary">Audit Log (last 100)</Typography>
-            <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetchAudit()}><RefreshIcon fontSize="small" /></IconButton></Tooltip>
+        <Paper>
+          <Box sx={{ p: 2, borderBottom: "1px solid", borderColor: "divider", display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 2 }}>
+            <Stack direction="row" spacing={2} sx={{ flex: 1, minWidth: 300 }}>
+              <TextField 
+                size="small" 
+                placeholder="Search subject, action, detail..." 
+                value={auditSearch} 
+                onChange={(e) => setAuditSearch(e.target.value)}
+                autoComplete="off"
+                sx={{ flex: 1, maxWidth: 400 }}
+                InputProps={{
+                  startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment>,
+                }}
+              />
+              <Select size="small" value={auditRoleFilter} onChange={(e) => setAuditRoleFilter(e.target.value)} sx={{ minWidth: 120 }}>
+                <MenuItem value="ALL">All Roles</MenuItem>
+                {ROLES.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
+              </Select>
+            </Stack>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <Button size="small" variant="outlined" startIcon={<FileDownloadIcon />} onClick={handleDownloadCsv}>Export CSV</Button>
+              <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetchAudit()}><RefreshIcon fontSize="small" /></IconButton></Tooltip>
+            </Box>
           </Box>
           <TableContainer sx={{ maxHeight: 500 }}>
             <Table size="small" stickyHeader>
@@ -225,7 +343,7 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(audit ?? []).map((e: { ts: number; subject: string; role: string; action: string; detail: string; from: string }, i: number) => (
+                {filteredAudit.map((e: any, i: number) => (
                   <TableRow key={i} hover>
                     <TableCell sx={{ fontSize: 11, color: "text.secondary", whiteSpace: "nowrap" }}>{e.ts ? timeAgo(e.ts) : "—"}</TableCell>
                     <TableCell sx={MONO}>{e.subject}</TableCell>
@@ -235,9 +353,144 @@ export default function AdminPage() {
                     <TableCell sx={{ ...MONO, color: "text.secondary" }}>{e.from}</TableCell>
                   </TableRow>
                 ))}
-                {(!audit || audit.length === 0) && (
+                {filteredAudit.length === 0 && (
                   <TableRow><TableCell colSpan={6} sx={{ textAlign: "center", color: "text.secondary", py: 4 }}>
-                    {audit === null ? "Admin access required" : "No audit events"}
+                    {audit === null ? "Admin access required" : "No audit events matching criteria"}
+                  </TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
+
+      {/* ── Roles & Permissions Tab ── */}
+      {tab === 3 && (
+        <Paper>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider" }}>
+             <Typography variant="body2" color="text.secondary">Default Role Permissions Matrix</Typography>
+          </Box>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={HEADER}>Role</TableCell>
+                  <TableCell sx={HEADER}>Read (SELECT)</TableCell>
+                  <TableCell sx={HEADER}>Write (INSERT/DELETE)</TableCell>
+                  <TableCell sx={HEADER}>DDL (CREATE/DROP)</TableCell>
+                  <TableCell sx={HEADER}>Admin</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                <TableRow hover>
+                  <TableCell><Chip label="admin" size="small" color="error" variant="outlined" /></TableCell>
+                  <TableCell>✅</TableCell><TableCell>✅</TableCell><TableCell>✅</TableCell><TableCell>✅ (Keys, Tenants, Clusters)</TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><Chip label="writer" size="small" color="warning" variant="outlined" /></TableCell>
+                  <TableCell>✅</TableCell><TableCell>✅</TableCell><TableCell>✅</TableCell><TableCell>❌</TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><Chip label="reader" size="small" color="info" variant="outlined" /></TableCell>
+                  <TableCell>✅</TableCell><TableCell>❌</TableCell><TableCell>❌</TableCell><TableCell>❌</TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><Chip label="analyst" size="small" color="default" variant="outlined" /></TableCell>
+                  <TableCell>✅</TableCell><TableCell>❌</TableCell><TableCell>❌</TableCell><TableCell>❌</TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><Chip label="metrics" size="small" color="default" variant="outlined" /></TableCell>
+                  <TableCell>❌</TableCell><TableCell>❌</TableCell><TableCell>❌</TableCell><TableCell>❌ (System stats only)</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
+
+      {/* ── Tenants Tab ── */}
+      {tab === 4 && (
+        <Paper>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Typography variant="body2" color="text.secondary">Tenants & Resource Quotas</Typography>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetchTenants()}><RefreshIcon fontSize="small" /></IconButton></Tooltip>
+              <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => setTenantDlgOpen(true)} sx={{ textTransform: "none" }}>
+                Create Tenant
+              </Button>
+            </Box>
+          </Box>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={HEADER}>Tenant ID</TableCell>
+                  <TableCell sx={HEADER}>Name</TableCell>
+                  <TableCell sx={HEADER}>Namespace</TableCell>
+                  <TableCell sx={HEADER}>Concurrent Q</TableCell>
+                  <TableCell sx={HEADER}>Total/Active</TableCell>
+                  <TableCell sx={HEADER}>Rejected</TableCell>
+                  <TableCell sx={HEADER} align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {(tenants ?? []).map((t: any) => (
+                  <TableRow key={t.tenant_id} hover>
+                    <TableCell sx={MONO}>{t.tenant_id}</TableCell>
+                    <TableCell>{t.name}</TableCell>
+                    <TableCell sx={{ ...MONO, color: "text.secondary" }}>{t.table_namespace || "—"}</TableCell>
+                    <TableCell>{t.max_concurrent_queries || "∞"}</TableCell>
+                    <TableCell>{t.usage ? `${t.usage.total_queries} / ${t.usage.active_queries}` : "—"}</TableCell>
+                    <TableCell sx={{ color: t.usage?.rejected_queries > 0 ? "error.main" : "text.secondary" }}>{t.usage?.rejected_queries || 0}</TableCell>
+                    <TableCell align="right">
+                      <Tooltip title="Drop Tenant">
+                        <IconButton size="small" color="error" onClick={() => handleDeleteTenant(t.tenant_id)}><DeleteIcon fontSize="small" /></IconButton>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {(!tenants || tenants.length === 0) && (
+                  <TableRow><TableCell colSpan={7} sx={{ textAlign: "center", color: "text.secondary", py: 4 }}>
+                    {tenants === null ? "Admin access required" : "No tenants created"}
+                  </TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
+
+      {/* ── Sessions Tab ── */}
+      {tab === 5 && (
+        <Paper>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Typography variant="body2" color="text.secondary">Active Connections</Typography>
+            <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetchSessions()}><RefreshIcon fontSize="small" /></IconButton></Tooltip>
+          </Box>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={HEADER}>User / Subject</TableCell>
+                  <TableCell sx={HEADER}>Client IP</TableCell>
+                  <TableCell sx={HEADER}>Connected</TableCell>
+                  <TableCell sx={HEADER}>Last Active</TableCell>
+                  <TableCell sx={HEADER}>Operations</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {(sessions ?? []).map((s: any, i: number) => (
+                  <TableRow key={i} hover>
+                    <TableCell sx={MONO}>{s.user}</TableCell>
+                    <TableCell sx={{ ...MONO, color: "text.secondary" }}>{s.remote_addr}</TableCell>
+                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{timeAgo(s.connected_at_ns)}</TableCell>
+                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{timeAgo(s.last_active_ns)}</TableCell>
+                    <TableCell sx={MONO}>{s.query_count}</TableCell>
+                  </TableRow>
+                ))}
+                {(!sessions || sessions.length === 0) && (
+                  <TableRow><TableCell colSpan={5} sx={{ textAlign: "center", color: "text.secondary", py: 4 }}>
+                    {sessions === null ? "Admin access required" : "No active sessions"}
                   </TableCell></TableRow>
                 )}
               </TableBody>
@@ -253,7 +506,7 @@ export default function AdminPage() {
           {createdKey ? (
             <Box>
               <Alert severity="success" sx={{ mb: 2 }}>Key created — copy it now, it won't be shown again.</Alert>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, p: 1.5, bgcolor: "#111827", borderRadius: 1, border: "1px solid #1E293B" }}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, p: 1.5, bgcolor: "background.paper", borderRadius: 1, border: "1px solid", borderColor: "divider" }}>
                 <Typography sx={{ ...MONO, flex: 1, wordBreak: "break-all" }}>{createdKey}</Typography>
                 <Tooltip title="Copy">
                   <IconButton size="small" onClick={() => navigator.clipboard.writeText(createdKey)}>
@@ -281,6 +534,61 @@ export default function AdminPage() {
               Create
             </Button>
           )}
+        </DialogActions>
+      </Dialog>
+      
+      {/* ── Key Usage Dialog ── */}
+      <Dialog open={usageOpen} onClose={() => setUsageOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>API Key Details</DialogTitle>
+        <DialogContent dividers sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {keyUsage ? (
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Key ID</Typography>
+                <Typography sx={MONO}>{keyUsage.id}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Key Name</Typography>
+                <Typography sx={MONO}>{keyUsage.name}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Last Used</Typography>
+                <Typography sx={MONO}>{keyUsage.last_used_ns ? timeAgo(keyUsage.last_used_ns) : "Never used"}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Allowed Symbols (Filter)</Typography>
+                {keyUsage.allowed_symbols && keyUsage.allowed_symbols.length > 0 ? (
+                  <Stack direction="row" gap={1} flexWrap="wrap" mt={1}>
+                    {keyUsage.allowed_symbols.map((sym: string) => (
+                      <Chip key={sym} label={sym} size="small" variant="outlined" />
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography sx={{ ...MONO, color: "text.secondary" }}>Unrestricted (All symbols)</Typography>
+                )}
+              </Box>
+            </Stack>
+          ) : (
+            <Typography variant="body2" color="text.secondary" textAlign="center" py={4}>Loading usage info...</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setUsageOpen(false)} sx={{ textTransform: "none" }}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Create Tenant Dialog ── */}
+      <Dialog open={tenantDlgOpen} onClose={() => setTenantDlgOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Create Tenant</DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 3, pt: "16px !important" }}>
+          <TextField label="Tenant ID (no spaces)" size="small" value={tId} onChange={(e) => setTId(e.target.value)} placeholder="e.g. hft_desk_1" autoFocus />
+          <TextField label="Display Name" size="small" value={tName} onChange={(e) => setTName(e.target.value)} placeholder="e.g. High Frequency Desk" />
+          <TextField label="Table Namespace (Prefix)" size="small" value={tNs} onChange={(e) => setTNs(e.target.value)} placeholder="e.g. trading." helperText="Empty means unrestricted access to all tables" />
+          <TextField label="Max Concurrent Queries (0 = unlimited)" size="small" type="number" value={tMcq} onChange={(e) => setTMcq(e.target.value)} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTenantDlgOpen(false)} sx={{ textTransform: "none" }}>Cancel</Button>
+          <Button variant="contained" onClick={handleCreateTenant} disabled={!tId.trim()} sx={{ textTransform: "none" }}>Create Tenant</Button>
         </DialogActions>
       </Dialog>
     </Box>
