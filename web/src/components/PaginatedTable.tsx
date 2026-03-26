@@ -44,7 +44,7 @@ export default function PaginatedTable({ columns, data, stickyHeader = true, max
           <TableHead>
             <TableRow>
               {columns.map((c) => (
-                <TableCell key={c} sx={{ fontWeight: 600, ...MONO, bgcolor: "#0D1220" }}>{c}</TableCell>
+                <TableCell key={c} sx={{ fontWeight: 600, ...MONO, bgcolor: "background.paper" }}>{c}</TableCell>
               ))}
             </TableRow>
           </TableHead>
@@ -68,7 +68,7 @@ export default function PaginatedTable({ columns, data, stickyHeader = true, max
       </TableContainer>
 
       {showPagination && (
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1, px: 2, py: 0.5, borderTop: "1px solid #1E293B", flexShrink: 0 }}>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1, px: 2, py: 0.5, borderTop: "1px solid", borderColor: "divider", flexShrink: 0 }}>
           <Typography variant="caption" color="text.secondary">Rows per page:</Typography>
           <Select size="small" value={rowsPerPage} onChange={handleRpp}
             sx={{ fontSize: 12, height: 28, "& .MuiSelect-select": { py: 0.25 } }}>

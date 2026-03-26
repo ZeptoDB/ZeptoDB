@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import {
-  Box, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody,
+  Box, Card, Typography, Table, TableHead, TableRow, TableCell, TableBody,
   TableContainer, Chip, CircularProgress, Alert, IconButton, Tooltip, TextField,
   InputAdornment,
 } from "@mui/material";
@@ -88,8 +88,8 @@ export default function TablesPage() {
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <StorageIcon sx={{ color: "primary.main" }} />
-          <Typography variant="h6">Tables</Typography>
-          <Chip label={`${tables.length}`} size="small" variant="outlined" sx={{ ml: 1 }} />
+          <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: "-0.02em" }}>Tables</Typography>
+          <Chip label={`${tables.length}`} size="small" variant="outlined" sx={{ ml: 1, borderColor: "rgba(255, 255, 255, 0.12)" }} />
         </Box>
         <Tooltip title="Refresh">
           <IconButton onClick={loadTables} size="small"><RefreshIcon /></IconButton>
@@ -99,8 +99,8 @@ export default function TablesPage() {
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
 
       {/* Table List */}
-      <Paper sx={{ border: "1px solid #1E293B" }}>
-        <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid #1E293B" }}>
+      <Card>
+        <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <TextField
             size="small" fullWidth placeholder="Filter tables…" value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -139,12 +139,12 @@ export default function TablesPage() {
             </Table>
           </TableContainer>
         )}
-      </Paper>
+      </Card>
 
       {/* Schema */}
       {selected && (
-        <Paper sx={{ border: "1px solid #1E293B" }}>
-          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", gap: 1, alignItems: "center" }}>
+        <Card>
+          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid rgba(255, 255, 255, 0.08)", display: "flex", gap: 1, alignItems: "center" }}>
             <Chip label={selected} size="small" color="primary" variant="outlined" />
             <Typography variant="caption" color="text.secondary">Schema</Typography>
             {detailLoading && <CircularProgress size={14} sx={{ ml: 1 }} />}
@@ -170,13 +170,13 @@ export default function TablesPage() {
               </TableBody>
             </Table>
           </TableContainer>
-        </Paper>
+        </Card>
       )}
 
       {/* Preview */}
       {selected && preview && (
-        <Paper sx={{ border: "1px solid #1E293B" }}>
-          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <Card>
+          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid rgba(255, 255, 255, 0.08)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <Typography variant="caption" color="text.secondary">
               Data Preview — {previewTotal.toLocaleString()} rows
               {preview.execution_time_us != null && ` · ${preview.execution_time_us.toLocaleString()}μs`}
@@ -194,7 +194,7 @@ export default function TablesPage() {
             )}
           </Box>
           <PaginatedTable columns={preview.columns} data={preview.data} maxHeight={400} />
-        </Paper>
+        </Card>
       )}
     </Box>
   );

@@ -20,7 +20,7 @@ export default function ClientShell({ children }: { children: ReactNode }) {
             <Box sx={{ display: "flex" }}>
               <Sidebar />
               <TopBar />
-              <Box component="main" sx={{ flexGrow: 1, ml: `${SIDEBAR_WIDTH}px`, mt: "48px", p: 3, minHeight: "calc(100vh - 48px)" }}>
+              <Box component="main" sx={{ flexGrow: 1, ml: `${SIDEBAR_WIDTH}px`, mt: "60px", p: 4, minHeight: "calc(100vh - 60px)" }}>
                 {children}
               </Box>
             </Box>

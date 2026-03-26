@@ -1,2 +1,18 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #0A0E1A; color: #E2E8F0; }
+body { overflow-x: hidden; }
+
+/* Keep scrollbar styles but make them transparent to inherit gracefully */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.4);
+}

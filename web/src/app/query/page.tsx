@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect } from "react";
-import { Box, Button, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Chip, Alert, List, ListItemButton, ListItemText, IconButton, Tooltip, Snackbar, Menu, MenuItem, ListItemIcon } from "@mui/material";
+import { Box, Button, Card, Typography, Table, TableHead, TableRow, TableCell, TableBody, Chip, Alert, List, ListItemButton, ListItemText, IconButton, Tooltip, Snackbar, Menu, MenuItem, ListItemIcon } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import HistoryIcon from "@mui/icons-material/History";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
@@ -96,8 +96,8 @@ export default function QueryPage() {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2, height: "calc(100vh - 96px)" }}>
-      <Paper sx={{ p: 0, overflow: "hidden", border: "1px solid #1E293B" }}>
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", px: 2, py: 1, borderBottom: "1px solid #1E293B" }}>
+      <Card sx={{ p: 0, overflow: "hidden" }}>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", px: 2, py: 1, borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <Typography variant="body2" color="text.secondary">SQL Editor</Typography>
           <Box sx={{ display: "flex", gap: 1 }}>
             <Button size="small" startIcon={<HistoryIcon />} onClick={() => setShowHistory(!showHistory)} sx={{ textTransform: "none" }}>
@@ -109,7 +109,7 @@ export default function QueryPage() {
           </Box>
         </Box>
         {showHistory && history.length > 0 && (
-          <Box sx={{ maxHeight: 150, overflow: "auto", borderBottom: "1px solid #1E293B" }}>
+          <Box sx={{ maxHeight: 150, overflow: "auto", borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
             <List dense disablePadding>
               {history.map((h, i) => (
                 <ListItemButton key={i} onClick={() => { setCode(h); setShowHistory(false); }}>
@@ -129,13 +129,13 @@ export default function QueryPage() {
           basicSetup={{ lineNumbers: true, foldGutter: false }}
           style={{ fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }}
         />
-      </Paper>
+      </Card>
 
       {error && <Alert severity="error" variant="outlined">{error}</Alert>}
 
       {result && (
-        <Paper sx={{ flex: 1, overflow: "hidden", border: "1px solid #1E293B", display: "flex", flexDirection: "column" }}>
-          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid #1E293B", display: "flex", gap: 2, alignItems: "center" }}>
+        <Card sx={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <Box sx={{ px: 2, py: 1, borderBottom: "1px solid rgba(255, 255, 255, 0.08)", display: "flex", gap: 2, alignItems: "center" }}>
             <Chip label={`${result.rows} rows`} size="small" variant="outlined" />
             <Chip label={`${result.execution_time_us} μs`} size="small" color="primary" variant="outlined" />
             <Chip label={`${result.columns.length} cols`} size="small" variant="outlined" />
@@ -152,7 +152,7 @@ export default function QueryPage() {
             </Menu>
           </Box>
           <PaginatedTable columns={result.columns} data={result.data} />
-        </Paper>
+        </Card>
       )}
 
       <Snackbar open={Boolean(snackMsg)} autoHideDuration={2000} onClose={() => setSnackMsg(null)} message={snackMsg} />
