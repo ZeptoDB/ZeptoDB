@@ -15,6 +15,7 @@
 #include "zeptodb/server/http_server.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/auth/cancellation_token.h"
+#include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/sql/parser.h"
 #include "zeptodb/util/logger.h"
 
@@ -878,6 +879,176 @@ void HttpServer::setup_admin_routes() {
         coordinator_->remove_node(node_id);
         res.set_content("{\"removed\":true,\"id\":" + std::to_string(node_id) + "}",
                         "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/keys/:id/usage — API Key usage info
+    // -------------------------------------------------------------------------
+    svr_->Get(R"(/admin/keys/([^/]+)/usage)", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!auth_) {
+            res.status = 503;
+            res.set_content(build_error_json("Auth not configured"), "application/json");
+            return;
+        }
+        std::string key_id = req.matches[1];
+        auto keys = auth_->list_api_keys();
+        std::optional<zeptodb::auth::ApiKeyEntry> target;
+        for (const auto& k : keys) {
+            if (k.id == key_id) { target = k; break; }
+        }
+        if (!target) {
+            res.status = 404;
+            res.set_content(build_error_json("Key not found"), "application/json");
+            return;
+        }
+        std::ostringstream os;
+        os << "{\"id\":\"" << target->id << "\","
+           << "\"name\":\"" << target->name << "\","
+           << "\"last_used_ns\":" << target->last_used_ns << ","
+           << "\"allowed_symbols\":[";
+        for (size_t i = 0; i < target->allowed_symbols.size(); ++i) {
+            if (i > 0) os << ",";
+            os << "\"" << target->allowed_symbols[i] << "\"";
+        }
+        os << "]}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/tenants — list all tenants and their quotas
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/tenants", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!tenant_mgr_) {
+            res.set_content("[]", "application/json");
+            return;
+        }
+        auto tenants = tenant_mgr_->list_tenants();
+        std::ostringstream os;
+        os << "[";
+        for (size_t i = 0; i < tenants.size(); ++i) {
+            if (i > 0) os << ",";
+            const auto& t = tenants[i];
+            const auto* usage = tenant_mgr_->usage(t.tenant_id);
+            os << "{\"tenant_id\":\"" << t.tenant_id << "\","
+               << "\"name\":\"" << t.name << "\","
+               << "\"table_namespace\":\"" << t.table_namespace << "\","
+               << "\"max_concurrent_queries\":" << t.max_concurrent_queries << ",";
+            if (usage) {
+                os << "\"usage\":{\"active_queries\":" << usage->active_queries.load()
+                   << ",\"total_queries\":" << usage->total_queries.load()
+                   << ",\"rejected_queries\":" << usage->rejected_queries.load() << "}";
+            } else {
+                os << "\"usage\":null";
+            }
+            os << "}";
+        }
+        os << "]";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/tenants — create a new tenant
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/tenants", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!tenant_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("Tenant manager not configured"), "application/json");
+            return;
+        }
+
+        auto extract_str = [&](const std::string& field) -> std::string {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return "";
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return "";
+            auto q1 = req.body.find('"', colon + 1);
+            if (q1 == std::string::npos) return "";
+            auto q2 = req.body.find('"', q1 + 1);
+            if (q2 == std::string::npos) return "";
+            return req.body.substr(q1 + 1, q2 - q1 - 1);
+        };
+        auto extract_int = [&](const std::string& field) -> int64_t {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return 0;
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return 0;
+            try { return std::stoll(req.body.substr(colon + 1)); } catch (...) { return 0; }
+        };
+
+        std::string tenant_id = extract_str("tenant_id");
+        std::string name = extract_str("name");
+        std::string ns = extract_str("table_namespace");
+        uint32_t mcq = static_cast<uint32_t>(extract_int("max_concurrent_queries"));
+
+        if (tenant_id.empty()) {
+            res.status = 400;
+            res.set_content(build_error_json("Missing 'tenant_id'"), "application/json");
+            return;
+        }
+
+        zeptodb::auth::TenantConfig cfg;
+        cfg.tenant_id = tenant_id;
+        cfg.name = name.empty() ? tenant_id : name;
+        cfg.table_namespace = ns;
+        cfg.max_concurrent_queries = mcq;
+
+        if (tenant_mgr_->create_tenant(cfg)) {
+            res.set_content("{\"created\":true,\"tenant_id\":\"" + tenant_id + "\"}", "application/json");
+        } else {
+            res.status = 409;
+            res.set_content(build_error_json("Tenant ID already exists"), "application/json");
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // DELETE /admin/tenants/:id — remove a tenant
+    // -------------------------------------------------------------------------
+    svr_->Delete(R"(/admin/tenants/([^/]+))", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!tenant_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("Tenant manager not configured"), "application/json");
+            return;
+        }
+        std::string tid = req.matches[1];
+        if (tenant_mgr_->drop_tenant(tid)) {
+            res.set_content("{\"deleted\":true}", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(build_error_json("Tenant not found"), "application/json");
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/settings — server configuration
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/settings", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        std::ostringstream os;
+        os << "{"
+           << "\"port\":" << port_ << ","
+           << "\"tls_enabled\":" << (tls_.enabled ? "true" : "false") << ","
+           << "\"auth_enabled\":" << (auth_ ? "true" : "false") << ","
+           << "\"query_timeout_ms\":" << query_timeout_ms_ << ","
+           << "\"multi_tenancy_enabled\":" << (tenant_mgr_ ? "true" : "false") << ","
+           << "\"cluster_mode\":" << (coordinator_ ? "true" : "false")
+           << "}";
+        res.set_content(os.str(), "application/json");
     });
 
     // -------------------------------------------------------------------------

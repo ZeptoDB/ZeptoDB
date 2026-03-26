@@ -23,6 +23,7 @@
 #include "zeptodb/auth/query_tracker.h"
 #include "zeptodb/auth/secrets_provider.h"
 #include "zeptodb/auth/audit_buffer.h"
+#include "zeptodb/auth/tenant_manager.h"
 
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
@@ -1189,4 +1190,61 @@ TEST_F(AuthManagerTest, CreateKeyIncreasesListSize) {
 TEST_F(AuthManagerTest, RevokeNonexistentReturnsFalse) {
     AuthManager mgr = make_manager();
     EXPECT_FALSE(mgr.revoke_api_key("ak_nonexistent_id"));
+}
+
+// ============================================================================
+// TenantManager Tests
+// ============================================================================
+TEST(TenantManagerTest, CreateAndList) {
+    auto mgr = std::make_shared<TenantManager>();
+    TenantConfig cfg;
+    cfg.tenant_id = "test_1";
+    cfg.name = "Test Tenant";
+    cfg.max_concurrent_queries = 5;
+
+    EXPECT_TRUE(mgr->create_tenant(cfg));
+    EXPECT_FALSE(mgr->create_tenant(cfg)); // Duplicate ID fails
+
+    auto list = mgr->list_tenants();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list[0].tenant_id, "test_1");
+    EXPECT_EQ(list[0].name, "Test Tenant");
+}
+
+TEST(TenantManagerTest, DropTenant) {
+    auto mgr = std::make_shared<TenantManager>();
+    TenantConfig cfg; cfg.tenant_id = "d1";
+    mgr->create_tenant(cfg);
+    EXPECT_TRUE(mgr->drop_tenant("d1"));
+    EXPECT_FALSE(mgr->drop_tenant("d1"));
+}
+
+TEST(TenantManagerTest, QuotaEnforcement) {
+    auto mgr = std::make_shared<TenantManager>();
+    TenantConfig cfg;
+    cfg.tenant_id = "q1";
+    cfg.max_concurrent_queries = 2;
+    mgr->create_tenant(cfg);
+
+    EXPECT_TRUE(mgr->acquire_query_slot("q1"));
+    EXPECT_TRUE(mgr->acquire_query_slot("q1"));
+    EXPECT_FALSE(mgr->acquire_query_slot("q1")); // 3rd fails
+
+    mgr->release_query_slot("q1");
+    EXPECT_TRUE(mgr->acquire_query_slot("q1")); // Now succeeds
+
+    auto usage = mgr->usage("q1");
+    ASSERT_NE(usage, nullptr);
+    EXPECT_EQ(usage->active_queries.load(), 2u);
+}
+
+TEST(TenantManagerTest, TableNamespace) {
+    auto mgr = std::make_shared<TenantManager>();
+    TenantConfig cfg;
+    cfg.tenant_id = "ns1";
+    cfg.table_namespace = "deskA.";
+    mgr->create_tenant(cfg);
+
+    EXPECT_TRUE(mgr->can_access_table("ns1", "deskA.trades"));
+    EXPECT_FALSE(mgr->can_access_table("ns1", "public_trades"));
 }
