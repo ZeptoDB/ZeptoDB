@@ -20,15 +20,15 @@ ParquetReadResult ParquetReader::read_file(const std::string& path,
         return result;
     }
 
-    std::unique_ptr<parquet::arrow::FileReader> reader;
-    auto st = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool(), &reader);
-    if (!st.ok()) {
-        result.error = "Parquet open failed: " + st.ToString();
+    auto reader_result = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
+    if (!reader_result.ok()) {
+        result.error = "Parquet open failed: " + reader_result.status().ToString();
         return result;
     }
+    std::unique_ptr<parquet::arrow::FileReader> reader = std::move(*reader_result);
 
     std::shared_ptr<arrow::Table> table;
-    st = reader->ReadTable(&table);
+    auto st = reader->ReadTable(&table);
     if (!st.ok()) {
         result.error = "Parquet read failed: " + st.ToString();
         return result;

@@ -20,3 +20,5 @@ KIRO.md
 dist/
 *.egg-info/
 package-lock.json
+
+.cache
