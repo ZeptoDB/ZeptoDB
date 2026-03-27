@@ -16,12 +16,14 @@
 #include "zeptodb/common/types.h"
 #include "zeptodb/cluster/transport.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -41,14 +43,20 @@ public:
 
     // Copy constructor: copies ring and node_set; cache is not copied (rebuilt
     // on demand) and each instance gets its own fresh mutex.
-    PartitionRouter(const PartitionRouter& other)
-        : ring_(other.ring_), node_set_(other.node_set_) {}
+    PartitionRouter(const PartitionRouter& other) {
+        std::shared_lock lock(other.ring_mutex_);
+        ring_     = other.ring_;
+        node_set_ = other.node_set_;
+    }
 
     PartitionRouter& operator=(const PartitionRouter& other) {
         if (this != &other) {
+            std::unique_lock lock1(ring_mutex_, std::defer_lock);
+            std::shared_lock lock2(other.ring_mutex_, std::defer_lock);
+            std::lock(lock1, lock2);
             ring_      = other.ring_;
             node_set_  = other.node_set_;
-            std::lock_guard<std::mutex> lock(cache_mutex_);
+            std::lock_guard<std::mutex> cache_lock(cache_mutex_);
             cache_.clear();
         }
         return *this;
@@ -60,6 +68,7 @@ public:
 
     /// 클러스터에 노드 추가
     void add_node(NodeId node) {
+        std::unique_lock lock(ring_mutex_);
         if (node_set_.count(node)) return;  // 이미 존재
 
         node_set_.insert(node);
@@ -74,6 +83,7 @@ public:
 
     /// 클러스터에서 노드 제거
     void remove_node(NodeId node) {
+        std::unique_lock lock(ring_mutex_);
         if (!node_set_.count(node)) return;
 
         node_set_.erase(node);
@@ -86,10 +96,14 @@ public:
     }
 
     /// 현재 노드 수
-    size_t node_count() const { return node_set_.size(); }
+    size_t node_count() const {
+        std::shared_lock lock(ring_mutex_);
+        return node_set_.size();
+    }
 
     /// 모든 노드 목록
     std::vector<NodeId> all_nodes() const {
+        std::shared_lock lock(ring_mutex_);
         return std::vector<NodeId>(node_set_.begin(), node_set_.end());
     }
 
@@ -109,8 +123,11 @@ public:
             if (pin_it != pinned_.end()) return pin_it->second;
         }
 
-        if (ring_.empty()) {
-            throw std::runtime_error("PartitionRouter: no nodes in cluster");
+        {
+            std::shared_lock lock(ring_mutex_);
+            if (ring_.empty()) {
+                throw std::runtime_error("PartitionRouter: no nodes in cluster");
+            }
         }
 
         // Check cache
@@ -123,7 +140,11 @@ public:
         }
 
         uint64_t h = symbol_hash(symbol);
-        NodeId   n = find_node(h);
+        NodeId   n;
+        {
+            std::shared_lock lock(ring_mutex_);
+            n = find_node(h);
+        }
 
         // Store result in cache
         {
@@ -192,6 +213,7 @@ public:
     /// Symbol → replica NodeId (next distinct physical node on the ring).
     /// Returns INVALID_NODE_ID if only 1 physical node exists.
     NodeId route_replica(SymbolId symbol) const {
+        std::shared_lock lock(ring_mutex_);
         if (node_set_.size() < 2) return INVALID_NODE_ID;
 
         uint64_t h = symbol_hash(symbol);
@@ -229,6 +251,7 @@ public:
     /// 새 노드 추가 시 마이그레이션 계획 (실제 추가 전 계획만 반환)
     /// 최소 파티션만 이동: 1/N 비율
     MigrationPlan plan_add(NodeId new_node) const {
+        std::shared_lock lock(ring_mutex_);
         if (node_set_.count(new_node)) {
             return {};  // 이미 존재
         }
@@ -266,6 +289,7 @@ public:
 
     /// 노드 제거 시 마이그레이션 계획
     MigrationPlan plan_remove(NodeId leaving) const {
+        std::shared_lock lock(ring_mutex_);
         if (!node_set_.count(leaving)) {
             return {};
         }
@@ -361,6 +385,9 @@ private:
 
     // 물리 노드 집합
     std::set<NodeId>                    node_set_;
+
+    // Reader-writer lock for ring_ and node_set_
+    mutable std::shared_mutex           ring_mutex_;
 
     // Routing cache — protected by its own mutex so that concurrent route()
     // calls from multiple reader threads do not race on the unordered_map.
