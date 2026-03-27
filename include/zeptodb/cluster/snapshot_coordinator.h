@@ -1,15 +1,17 @@
 #pragma once
 // ============================================================================
-// SnapshotCoordinator — consistent distributed snapshot
+// SnapshotCoordinator — consistent distributed snapshot (2PC)
 // ============================================================================
-// Triggers a coordinated flush across all cluster nodes:
-//   1. Send SNAPSHOT command to each node (via SQL RPC)
-//   2. Each node seals active partitions and flushes to HDB
-//   3. Collect ack from all nodes
-//   4. Return snapshot metadata (timestamp, node results)
+// Two-phase commit for consistent point-in-time snapshots:
+//   Phase 1 (PREPARE): all nodes pause ingest + report LSN
+//   Phase 2 (COMMIT):  all nodes flush at agreed LSN cutoff
+//   ABORT:             if any node fails prepare, all resume ingest
 //
-// Uses existing TcpRpcClient — sends a special SQL command that the
-// server-side callback can intercept.
+// SQL commands sent via TcpRpcClient:
+//   "SNAPSHOT PREPARE <snapshot_id>"  → node pauses ingest, returns LSN
+//   "SNAPSHOT COMMIT <snapshot_id>"   → node flushes + resumes ingest
+//   "SNAPSHOT ABORT <snapshot_id>"    → node resumes ingest (no flush)
+//   "SNAPSHOT"                        → legacy single-phase (backward compat)
 // ============================================================================
 
 #include "zeptodb/cluster/tcp_rpc.h"
@@ -19,7 +21,6 @@
 #include <chrono>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace zeptodb::cluster {
@@ -33,6 +34,7 @@ struct SnapshotNodeResult {
 
 struct SnapshotResult {
     int64_t     snapshot_ts;  // nanosecond timestamp of snapshot
+    uint64_t    snapshot_id;  // unique snapshot identifier
     std::vector<SnapshotNodeResult> nodes;
 
     bool all_ok() const {
@@ -54,10 +56,17 @@ public:
 
     void add_node(NodeId id, const std::string& host, uint16_t port);
 
-    /// Trigger a coordinated snapshot across all nodes.
-    /// Sends "SNAPSHOT" SQL command to each node.
-    /// The node's SQL callback should handle this command.
+    /// Two-phase consistent snapshot across all nodes.
+    /// Phase 1: PREPARE (pause ingest on all nodes)
+    /// Phase 2: COMMIT (flush) or ABORT (resume without flush)
     SnapshotResult take_snapshot();
+
+    /// Legacy single-phase snapshot (backward compatible, no consistency guarantee).
+    SnapshotResult take_snapshot_legacy();
+
+    /// Set prepare timeout in milliseconds (default 10s).
+    /// If any node doesn't respond within this time, the snapshot is aborted.
+    void set_prepare_timeout_ms(int ms) { prepare_timeout_ms_ = ms; }
 
     size_t node_count() const { return nodes_.size(); }
 
@@ -66,7 +75,13 @@ private:
         NodeId id;
         std::unique_ptr<TcpRpcClient> rpc;
     };
+
+    uint64_t next_snapshot_id();
+    void send_abort(uint64_t snapshot_id);
+
     std::vector<NodeEntry> nodes_;
+    int prepare_timeout_ms_ = 10000;
+    uint64_t snapshot_seq_ = 0;
 };
 
 } // namespace zeptodb::cluster
