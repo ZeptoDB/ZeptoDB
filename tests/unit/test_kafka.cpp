@@ -342,7 +342,7 @@ TEST(KafkaConsumerTest, StartWithoutKafkaLibrary) {
     cfg.topic   = "test";
     KafkaConsumer consumer(cfg);
 
-#ifdef APEX_KAFKA_AVAILABLE
+#ifdef ZEPTO_KAFKA_AVAILABLE
     // When Kafka is available, start() may return true or false depending on
     // whether a broker is reachable.  We just check it doesn't crash.
     (void)consumer.start();

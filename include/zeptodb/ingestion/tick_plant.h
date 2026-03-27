@@ -17,7 +17,7 @@ namespace zeptodb::ingestion {
 // ============================================================================
 // TickMessage: 수신 틱 데이터 표준 구조체
 // ============================================================================
-struct APEX_CACHE_ALIGNED TickMessage {
+struct ZEPTO_CACHE_ALIGNED TickMessage {
     SeqNum    seq_num;      // 글로벌 순번
     Timestamp recv_ts;      // 수신 타임스탬프 (nanosecond)
     SymbolId  symbol_id;    // 종목 ID

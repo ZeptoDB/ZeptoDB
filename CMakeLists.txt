@@ -28,8 +28,8 @@ endif()
 # ============================================================================
 # Options
 # ============================================================================
-option(APEX_BUILD_TESTS    "Build unit tests"           ON)
-option(APEX_BUILD_BENCH    "Build benchmarks"           ON)
+option(ZEPTO_BUILD_TESTS    "Build unit tests"           ON)
+option(ZEPTO_BUILD_BENCH    "Build benchmarks"           ON)
 option(ZEPTO_USE_HUGEPAGES  "Enable HugePages support"   ON)
 option(ZEPTO_USE_UCX        "Enable UCX (RDMA/CXL)"      ON)
 option(ZEPTO_USE_JIT        "Enable LLVM JIT engine"      ON)
@@ -77,11 +77,21 @@ set(CMAKE_CXX_FLAGS_DEBUG   "-g -O0 -fsanitize=address,undefined")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
 set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
 
-# LTO: appended to release flags when ZEPTO_USE_LTO=ON
+# LTO: applied globally when enabled. Uses -flto=thin on Clang for faster
+# link times, falls back to -flto on GCC.
 if(ZEPTO_USE_LTO)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto")
-    set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -flto")
-    message(STATUS "LTO: enabled (-flto)")
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-flto=thin" HAS_LTO_THIN)
+    if(HAS_LTO_THIN)
+        set(ZEPTO_LTO_FLAG "-flto=thin")
+    else()
+        set(ZEPTO_LTO_FLAG "-flto")
+    endif()
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${ZEPTO_LTO_FLAG}")
+    set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} ${ZEPTO_LTO_FLAG}")
+    set(CMAKE_AR      "${CMAKE_CXX_COMPILER_AR}")
+    set(CMAKE_RANLIB  "${CMAKE_CXX_COMPILER_RANLIB}")
+    message(STATUS "LTO: enabled (${ZEPTO_LTO_FLAG})")
 endif()
 
 # tcmalloc: link tcmalloc_minimal for HFT workloads with many small allocations
@@ -146,7 +156,7 @@ FetchContent_Declare(
 set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(fmt spdlog)
 
-if(APEX_BUILD_TESTS)
+if(ZEPTO_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
     enable_testing()
 endif()
@@ -283,7 +293,7 @@ if(ZEPTO_USE_JIT)
 endif()
 
 # ============================================================================
-# APEX Libraries
+# ZeptoDB Libraries
 # ============================================================================
 
 # --- Common utilities ---
@@ -452,7 +462,7 @@ target_link_libraries(zepto_auth PUBLIC
 )
 if(ZEPTO_HAS_OPENSSL)
     target_link_libraries(zepto_auth PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-    target_compile_definitions(zepto_auth PUBLIC APEX_AUTH_OPENSSL=1)
+    target_compile_definitions(zepto_auth PUBLIC ZEPTO_AUTH_OPENSSL=1)
 endif()
 
 # --- Layer 6: HTTP API Server ---
@@ -473,7 +483,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(zepto_server PUBLIC Threads::Threads)
 if(ZEPTO_HAS_OPENSSL)
     target_link_libraries(zepto_server PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-    target_compile_definitions(zepto_server PUBLIC APEX_TLS_ENABLED=1)
+    target_compile_definitions(zepto_server PUBLIC ZEPTO_TLS_ENABLED=1)
 endif()
 if(ZEPTO_USE_TCMALLOC AND TCMALLOC_LIB)
     target_link_libraries(zepto_server PUBLIC ${TCMALLOC_LIB})
@@ -559,7 +569,7 @@ target_link_libraries(zepto_kafka PUBLIC
     zepto_cluster
 )
 if(ZEPTO_HAS_KAFKA)
-    target_compile_definitions(zepto_kafka PUBLIC APEX_KAFKA_AVAILABLE=1)
+    target_compile_definitions(zepto_kafka PUBLIC ZEPTO_KAFKA_AVAILABLE=1)
     target_link_libraries(zepto_kafka PUBLIC ${RDKAFKA_CPP_LIB} ${RDKAFKA_LIB})
     message(STATUS "zepto_kafka: Kafka polling enabled")
 else()
@@ -614,14 +624,14 @@ target_link_libraries(zepto_data_node PRIVATE
 # ============================================================================
 # Tests
 # ============================================================================
-if(APEX_BUILD_TESTS)
+if(ZEPTO_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
 # ============================================================================
 # Benchmarks
 # ============================================================================
-if(APEX_BUILD_BENCH)
+if(ZEPTO_BUILD_BENCH)
     add_executable(bench_pipeline
         tests/bench/bench_pipeline.cpp
     )
@@ -734,9 +744,9 @@ endif()
 # ============================================================================
 # Phase D: Python Binding (pybind11)
 # ============================================================================
-option(APEX_BUILD_PYTHON "Build Python binding module" ON)
+option(ZEPTO_BUILD_PYTHON "Build Python binding module" ON)
 
-if(APEX_BUILD_PYTHON)
+if(ZEPTO_BUILD_PYTHON)
     # Python 개발 헤더
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
     message(STATUS "Python3: ${Python3_VERSION} (${Python3_EXECUTABLE})")
@@ -829,5 +839,5 @@ message(STATUS "  LLVM JIT:      ${ZEPTO_USE_JIT}")
 message(STATUS "  LZ4:           ${ZEPTO_USE_LZ4}")
 message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
-message(STATUS "  Tests:         ${APEX_BUILD_TESTS}")
+message(STATUS "  Tests:         ${ZEPTO_BUILD_TESTS}")
 message(STATUS "=================================")

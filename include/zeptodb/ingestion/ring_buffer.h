@@ -106,8 +106,8 @@ public:
 
 private:
     // 캐시라인 분리로 false sharing 방지
-    APEX_CACHE_ALIGNED std::atomic<size_t> write_pos_{0};
-    APEX_CACHE_ALIGNED std::atomic<size_t> read_pos_{0};
+    ZEPTO_CACHE_ALIGNED std::atomic<size_t> write_pos_{0};
+    ZEPTO_CACHE_ALIGNED std::atomic<size_t> read_pos_{0};
     Slot<T>* slots_;
 };
 

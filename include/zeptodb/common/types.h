@@ -38,6 +38,6 @@ constexpr T align_up(T value, T alignment) {
 }
 
 // Cache-line aligned attribute
-#define APEX_CACHE_ALIGNED alignas(zeptodb::CACHE_LINE_SIZE)
+#define ZEPTO_CACHE_ALIGNED alignas(zeptodb::CACHE_LINE_SIZE)
 
 } // namespace zeptodb

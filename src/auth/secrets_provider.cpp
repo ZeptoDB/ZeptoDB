@@ -8,7 +8,7 @@
 #include <sstream>
 #include <sys/stat.h>
 
-#ifdef APEX_AUTH_OPENSSL
+#ifdef ZEPTO_AUTH_OPENSSL
 // Vault/AWS providers use HTTPS — only available when OpenSSL is linked
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
@@ -129,7 +129,7 @@ std::string VaultSecretsProvider::get(const std::string& key,
 
     httplib::Headers headers = {{"X-Vault-Token", cfg_.token}};
 
-#ifdef APEX_AUTH_OPENSSL
+#ifdef ZEPTO_AUTH_OPENSSL
     if (use_ssl) {
         httplib::SSLClient cli(host, port);
         cli.set_connection_timeout(cfg_.timeout_sec);

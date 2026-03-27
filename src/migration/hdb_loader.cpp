@@ -298,7 +298,7 @@ bool HDBLoader::export_to_zepto(const std::string& table_name,
         return false;
     }
 
-    APEXColumnWriter writer(output_dir, table_name);
+    ZeptoColumnWriter writer(output_dir, table_name);
     if (!writer.create_table(it->schema)) {
         return false;
     }
@@ -462,17 +462,17 @@ void KDBFileReader::ensure_endianness(void* data, size_t size) {
 }
 
 // ============================================================================
-// APEXColumnWriter Implementation
+// ZeptoColumnWriter Implementation
 // ============================================================================
 
-APEXColumnWriter::APEXColumnWriter(const std::filesystem::path& output_dir,
+ZeptoColumnWriter::ZeptoColumnWriter(const std::filesystem::path& output_dir,
                                    const std::string& table_name)
     : output_dir_(output_dir)
     , table_name_(table_name)
     , table_dir_(output_dir / table_name)
 {}
 
-bool APEXColumnWriter::create_table(const std::vector<HDBColumn>& schema) {
+bool ZeptoColumnWriter::create_table(const std::vector<HDBColumn>& schema) {
     // Create table directory
     std::filesystem::create_directories(table_dir_);
 
@@ -480,7 +480,7 @@ bool APEXColumnWriter::create_table(const std::vector<HDBColumn>& schema) {
     return write_metadata(schema);
 }
 
-bool APEXColumnWriter::write_metadata(const std::vector<HDBColumn>& schema) {
+bool ZeptoColumnWriter::write_metadata(const std::vector<HDBColumn>& schema) {
     auto meta_file = table_dir_ / "metadata.json";
     std::ofstream out(meta_file);
 
@@ -508,7 +508,7 @@ bool APEXColumnWriter::write_metadata(const std::vector<HDBColumn>& schema) {
 }
 
 template<typename T>
-bool APEXColumnWriter::write_column(const std::string& column_name,
+bool ZeptoColumnWriter::write_column(const std::string& column_name,
                                     const std::vector<T>& data) {
     auto col_file = table_dir_ / (column_name + ".col");
     std::ofstream out(col_file, std::ios::binary);
@@ -522,7 +522,7 @@ bool APEXColumnWriter::write_column(const std::string& column_name,
     return out.good();
 }
 
-bool APEXColumnWriter::write_string_column(const std::string& column_name,
+bool ZeptoColumnWriter::write_string_column(const std::string& column_name,
                                           const std::vector<std::string>& data) {
     auto col_file = table_dir_ / (column_name + ".col");
     std::ofstream out(col_file, std::ios::binary);
@@ -539,7 +539,7 @@ bool APEXColumnWriter::write_string_column(const std::string& column_name,
     return out.good();
 }
 
-bool APEXColumnWriter::finalize() {
+bool ZeptoColumnWriter::finalize() {
     // Write completion marker
     auto done_file = table_dir_ / ".done";
     std::ofstream out(done_file);

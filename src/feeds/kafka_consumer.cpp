@@ -14,7 +14,7 @@
 #include <thread>    // std::this_thread::sleep_for
 #include <chrono>
 
-#ifdef APEX_KAFKA_AVAILABLE
+#ifdef ZEPTO_KAFKA_AVAILABLE
 #include <librdkafka/rdkafkacpp.h>
 #endif
 
@@ -298,7 +298,7 @@ bool KafkaConsumer::on_message(const char* data, size_t len) {
 // ============================================================================
 
 bool KafkaConsumer::start() {
-#ifdef APEX_KAFKA_AVAILABLE
+#ifdef ZEPTO_KAFKA_AVAILABLE
     if (running_.exchange(true)) return true;  // already running
 
     std::string errstr;
@@ -350,11 +350,11 @@ bool KafkaConsumer::start() {
 }
 
 void KafkaConsumer::stop() {
-    (void)consumer_handle_;  // suppress unused-field warning when !APEX_KAFKA_AVAILABLE
+    (void)consumer_handle_;  // suppress unused-field warning when !ZEPTO_KAFKA_AVAILABLE
     if (!running_.exchange(false)) return;  // already stopped
     if (poll_thread_.joinable()) poll_thread_.join();
 
-#ifdef APEX_KAFKA_AVAILABLE
+#ifdef ZEPTO_KAFKA_AVAILABLE
     if (consumer_handle_) {
         auto* consumer = static_cast<RdKafka::KafkaConsumer*>(consumer_handle_);
         // close() is called inside poll_loop() after the run-loop exits;
@@ -370,7 +370,7 @@ void KafkaConsumer::stop() {
 // ============================================================================
 
 void KafkaConsumer::poll_loop() {
-#ifdef APEX_KAFKA_AVAILABLE
+#ifdef ZEPTO_KAFKA_AVAILABLE
     auto* consumer = static_cast<RdKafka::KafkaConsumer*>(consumer_handle_);
 
     while (running_.load(std::memory_order_relaxed)) {
@@ -404,7 +404,7 @@ void KafkaConsumer::poll_loop() {
 
     consumer->close();
 #endif
-    // Without APEX_KAFKA_AVAILABLE the poll_thread_ is never started,
+    // Without ZEPTO_KAFKA_AVAILABLE the poll_thread_ is never started,
     // so this function is never called.
 }
 

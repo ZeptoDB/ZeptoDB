@@ -5,7 +5,7 @@
 // Binary layout (all little-endian):
 //
 //   RpcHeader (24 bytes):
-//     magic:       uint32  = 0x41504558 ('APEX')
+//     magic:       uint32  = 0x41504558 (legacy wire compat)
 //     type:        uint32  (SQL_QUERY=1, SQL_RESULT=2, PING=3, PONG=4)
 //     request_id:  uint32
 //     payload_len: uint32
@@ -55,7 +55,7 @@ enum class RpcType : uint32_t {
 // ============================================================================
 #pragma pack(push, 1)
 struct RpcHeader {
-    uint32_t magic       = 0x41504558u;  // 'APEX'
+    uint32_t magic       = 0x41504558u;  // 'ZEPTO' (legacy wire compat: 0x41504558)
     uint32_t type        = 0;
     uint32_t request_id  = 0;
     uint32_t payload_len = 0;

@@ -174,9 +174,9 @@ private:
 // ============================================================================
 // ZeptoDB Column Writer
 // ============================================================================
-class APEXColumnWriter {
+class ZeptoColumnWriter {
 public:
-    APEXColumnWriter(const std::filesystem::path& output_dir,
+    ZeptoColumnWriter(const std::filesystem::path& output_dir,
                      const std::string& table_name);
 
     bool create_table(const std::vector<HDBColumn>& schema);

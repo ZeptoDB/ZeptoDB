@@ -69,7 +69,7 @@ struct QueryResult {
 // ============================================================================
 // PipelineStats: 파이프라인 운영 통계
 // ============================================================================
-struct APEX_CACHE_ALIGNED PipelineStats {
+struct ZEPTO_CACHE_ALIGNED PipelineStats {
     // 인제스션
     std::atomic<uint64_t> ticks_ingested{0};    // 총 수신 틱 수
     std::atomic<uint64_t> ticks_stored{0};      // 스토리지에 저장된 틱 수

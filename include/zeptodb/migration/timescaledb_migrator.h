@@ -98,7 +98,7 @@ struct TSDBTableSchema {
 };
 
 // ============================================================================
-// APEX → TimescaleDB Type Mapping
+// ZeptoDB → TimescaleDB Type Mapping
 // ============================================================================
 class ZeptoToTSDBTypeMapper {
 public:
@@ -130,7 +130,7 @@ public:
 };
 
 // ============================================================================
-// Query Translator: APEX SQL → TimescaleDB SQL
+// Query Translator: ZeptoDB SQL → TimescaleDB SQL
 // ============================================================================
 class TimescaleDBQueryTranslator {
 public:

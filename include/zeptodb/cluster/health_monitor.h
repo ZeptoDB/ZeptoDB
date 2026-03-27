@@ -69,7 +69,7 @@ struct HealthConfig {
 // ============================================================================
 #pragma pack(push, 1)
 struct HeartbeatPacket {
-    uint32_t magic    = 0x41504558;  // 'APEX'
+    uint32_t magic    = 0x41504558;  // 'ZEPTO' (legacy wire compat: 0x41504558)
     NodeId   node_id;
     uint64_t seq_num;
     uint64_t timestamp_ns;  // 발신 시각 (nanosecond)

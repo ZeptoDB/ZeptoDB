@@ -12,7 +12,7 @@
 //
 // Usage:
 //   auto secrets = SecretsProviderFactory::create_composite();
-//   std::string jwt_secret = secrets->get("APEX_JWT_SECRET");
+//   std::string jwt_secret = secrets->get("ZEPTO_JWT_SECRET");
 //
 // SOC2 note: Using this abstraction means no secrets are hardcoded or
 // stored in environment variables in production — they come from a

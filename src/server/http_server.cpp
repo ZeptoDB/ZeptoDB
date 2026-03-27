@@ -6,7 +6,7 @@
 // ============================================================================
 
 // Enable TLS support if OpenSSL is available
-#ifdef APEX_TLS_ENABLED
+#ifdef ZEPTO_TLS_ENABLED
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
 
@@ -103,7 +103,7 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
     , tls_(std::move(tls))
     , auth_(std::move(auth))
 {
-#ifdef APEX_TLS_ENABLED
+#ifdef ZEPTO_TLS_ENABLED
     if (tls_.enabled) {
         svr_ = std::make_unique<httplib::SSLServer>(
             tls_.cert_path.c_str(), tls_.key_path.c_str());
@@ -115,7 +115,7 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
     if (tls_.enabled) {
         // TLS requested but not compiled in — fall back to HTTP with a warning
         fprintf(stderr, "[ZeptoDB] WARNING: TLS requested but not compiled in "
-                        "(rebuild with APEX_TLS_ENABLED). Falling back to HTTP.\n");
+                        "(rebuild with ZEPTO_TLS_ENABLED). Falling back to HTTP.\n");
     }
     svr_ = std::make_unique<httplib::Server>();
 #endif

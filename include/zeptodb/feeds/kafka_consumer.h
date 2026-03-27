@@ -15,7 +15,7 @@
 //   JSON_HUMAN   {"symbol":"AAPL","price":150.25,"volume":100,"ts":...}
 //                requires a symbol_map in KafkaConfig
 //
-// Compile-time optional: define APEX_KAFKA_AVAILABLE and link -lrdkafka++
+// Compile-time optional: define ZEPTO_KAFKA_AVAILABLE and link -lrdkafka++
 // to enable actual Kafka polling.  Without it, start() returns false but
 // all decode / routing functions remain fully functional for testing.
 // ============================================================================
@@ -143,7 +143,7 @@ public:
     // ------------------------------------------------------------------
 
     /// Start background polling thread.
-    /// Returns false if Kafka support is not compiled in (APEX_KAFKA_AVAILABLE)
+    /// Returns false if Kafka support is not compiled in (ZEPTO_KAFKA_AVAILABLE)
     /// or if the broker / topic subscription fails.
     bool start();
 
@@ -220,7 +220,7 @@ private:
     mutable std::mutex stats_mu_;
     KafkaStats         stats_;
 
-    // Opaque Kafka handle (RdKafka::KafkaConsumer* when APEX_KAFKA_AVAILABLE)
+    // Opaque Kafka handle (RdKafka::KafkaConsumer* when ZEPTO_KAFKA_AVAILABLE)
     void* consumer_handle_ = nullptr;
 };
 

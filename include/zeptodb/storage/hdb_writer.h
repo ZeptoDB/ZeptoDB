@@ -37,7 +37,7 @@ namespace zeptodb::storage {
 //   [HDBFileHeader 32 bytes] [데이터 bytes (압축 or raw)]
 // ============================================================================
 struct HDBFileHeader {
-    uint8_t  magic[5];           // "APEXH" (0x41 0x50 0x45 0x58 0x48)
+    uint8_t  magic[5];           // "APEXH" (legacy HDB compat) (0x41 0x50 0x45 0x58 0x48)
     uint8_t  version;            // 현재 버전 = 1
     uint8_t  col_type;           // ColumnType (uint8_t cast)
     uint8_t  compression;        // 0=None, 1=LZ4 block

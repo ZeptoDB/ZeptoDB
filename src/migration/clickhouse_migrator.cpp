@@ -665,7 +665,7 @@ bool ClickHouseMigrator::step_create_schema() {
 
 bool ClickHouseMigrator::step_export_data(const std::string& output_dir) {
     std::filesystem::create_directories(output_dir);
-    // In a full implementation: scan APEX tables and export to CSV
+    // In a full implementation: scan ZeptoDB tables and export to CSV
     std::cout << "  Data export directory: " << output_dir << "\n";
     return true;
 }

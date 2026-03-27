@@ -76,7 +76,7 @@ struct CHTableSchema {
 };
 
 // ============================================================================
-// APEX → ClickHouse Type Mapping
+// ZeptoDB → ClickHouse Type Mapping
 // ============================================================================
 class ZeptoToClickHouseTypeMapper {
 public:
@@ -100,7 +100,7 @@ public:
     CHTableSchema generate_quotes_schema(const std::string& table_name = "quotes");
     CHTableSchema generate_orderbook_schema(const std::string& table_name = "orderbook");
 
-    // Generate from existing APEX table schema
+    // Generate from existing ZeptoDB table schema
     CHTableSchema from_zepto_schema(const std::string& table_name,
                                    const std::vector<std::pair<std::string, std::string>>& zepto_columns);
 
@@ -115,11 +115,11 @@ public:
 };
 
 // ============================================================================
-// Query Translator: APEX SQL → ClickHouse SQL
+// Query Translator: ZeptoDB SQL → ClickHouse SQL
 // ============================================================================
 class ClickHouseQueryTranslator {
 public:
-    // Translate APEX SQL to ClickHouse SQL
+    // Translate ZeptoDB SQL to ClickHouse SQL
     std::string translate(const std::string& zepto_sql);
 
     // Translate specific constructs
@@ -135,7 +135,7 @@ public:
                                     const std::string& time_col);
 
 private:
-    // Function mappings: APEX → ClickHouse
+    // Function mappings: ZeptoDB → ClickHouse
     std::unordered_map<std::string, std::string> function_map_;
 
     void init_function_map();
@@ -144,7 +144,7 @@ private:
 };
 
 // ============================================================================
-// Data Exporter: APEX → ClickHouse native format
+// Data Exporter: ZeptoDB → ClickHouse native format
 // ============================================================================
 class ClickHouseExporter {
 public:

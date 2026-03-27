@@ -48,7 +48,7 @@ struct ParquetSchema {
 };
 
 // ============================================================================
-// APEX → DuckDB Type Mapping
+// ZeptoDB → DuckDB Type Mapping
 // ============================================================================
 class ZeptoToDuckDBTypeMapper {
 public:
@@ -64,7 +64,7 @@ public:
 // ============================================================================
 class DuckDBQueryAdapter {
 public:
-    // Convert APEX SQL to DuckDB SQL
+    // Convert ZeptoDB SQL to DuckDB SQL
     // DuckDB is mostly ANSI SQL compliant, minimal changes needed
     std::string adapt(const std::string& zepto_sql);
 
@@ -147,7 +147,7 @@ public:
 
     explicit DuckDBIntegrator(const Config& config);
 
-    // Export APEX data to Parquet for DuckDB consumption
+    // Export ZeptoDB data to Parquet for DuckDB consumption
     bool export_to_parquet(const std::string& table_name,
                            const std::string& output_dir);
 
