@@ -373,6 +373,10 @@ curl http://localhost:8123/admin/keys -H "Authorization: Bearer $ADMIN_KEY"
     "role": "writer",
     "enabled": true,
     "created_at_ns": 1711234567000000000,
+    "last_used_ns": 1711234590000000000,
+    "expires_at_ns": 0,
+    "tenant_id": "hft_desk_1",
+    "allowed_symbols": ["AAPL", "MSFT"],
     "allowed_tables": ["trades", "quotes"]
   }
 ]
@@ -383,16 +387,47 @@ curl http://localhost:8123/admin/keys -H "Authorization: Bearer $ADMIN_KEY"
 ```bash
 curl -X POST http://localhost:8123/admin/keys \
   -H "Authorization: Bearer $ADMIN_KEY" \
-  -d '{"name":"algo-service","role":"writer"}'
+  -d '{"name":"algo-service","role":"writer","symbols":["AAPL"],"tables":["trades"],"tenant_id":"desk_1","expires_at_ns":1743465600000000000}'
 ```
 
-Optional fields: `"tables":["trades","quotes"]` for table-level ACL.
+All fields except `name` are optional:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | (required) | Human-readable label |
+| `role` | string | `"reader"` | `admin` / `writer` / `reader` / `analyst` / `metrics` |
+| `symbols` | string[] | `[]` | Symbol whitelist (empty = unrestricted) |
+| `tables` | string[] | `[]` | Table whitelist (empty = unrestricted) |
+| `tenant_id` | string | `""` | Bind key to a tenant |
+| `expires_at_ns` | int64 | `0` | Expiry timestamp in nanoseconds (0 = never) |
 
 ```json
 {"key": "zepto_a1b2c3d4e5f6..."}
 ```
 
 The full key is shown exactly once. Store it securely.
+
+#### `PATCH /admin/keys/:id` — Update API key
+
+Update mutable fields of an existing key. Only provided fields are modified.
+
+```bash
+curl -X PATCH http://localhost:8123/admin/keys/ak_7f3k8a2b \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"symbols":["AAPL","GOOG"],"enabled":true,"tenant_id":"desk_2","expires_at_ns":0}'
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `symbols` | string[] | Replace symbol whitelist |
+| `tables` | string[] | Replace table whitelist |
+| `enabled` | bool | Enable/disable key |
+| `tenant_id` | string | Change tenant binding |
+| `expires_at_ns` | int64 | Change expiry (0 = never) |
+
+```json
+{"updated": true}
+```
 
 #### `DELETE /admin/keys/:id` — Revoke API key
 
@@ -404,6 +439,25 @@ curl -X DELETE http://localhost:8123/admin/keys/ak_7f3k8a2b \
 ```json
 {"revoked": true}
 ```
+
+---
+
+### Admin: Auth / JWKS
+
+#### `POST /admin/auth/reload` — Force refresh JWKS keys
+
+Triggers an immediate re-fetch of the JWKS endpoint. Useful after IdP key rotation.
+
+```bash
+curl -X POST http://localhost:8123/admin/auth/reload \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"refreshed": true, "keys_loaded": 2}
+```
+
+Returns `502` if no JWKS URL is configured or the fetch fails.
 
 ---
 
