@@ -18,17 +18,19 @@ namespace zeptodb::auth {
 // ============================================================================
 // File format (one key per line, lines starting with '#' are comments):
 //
-//   id|name|key_hash|role|symbols|enabled|created_at_ns[|tables]
+//   id|name|key_hash|role|symbols|enabled|created_at_ns[|tables[|tenant_id[|expires_at_ns]]]
 //
 // Fields:
-//   id            — short key id, e.g. "ak_7f3k"
-//   name          — human label (no pipe characters)
-//   key_hash      — sha256 hex of full "zepto_<hex>" key
-//   role          — role string (admin/writer/reader/analyst/metrics)
-//   symbols       — comma-separated symbol whitelist, empty = unrestricted
-//   enabled       — "1" or "0"
-//   created_at_ns — nanoseconds since Unix epoch
-//   tables        — comma-separated table whitelist, empty = unrestricted (optional)
+//   id             — short key id, e.g. "ak_7f3k"
+//   name           — human label (no pipe characters)
+//   key_hash       — sha256 hex of full "zepto_<hex>" key
+//   role           — role string (admin/writer/reader/analyst/metrics)
+//   symbols        — comma-separated symbol whitelist, empty = unrestricted
+//   enabled        — "1" or "0"
+//   created_at_ns  — nanoseconds since Unix epoch
+//   tables         — comma-separated table whitelist, empty = unrestricted (optional)
+//   tenant_id      — tenant identifier, empty = no tenant (optional)
+//   expires_at_ns  — nanoseconds since Unix epoch, 0 = never (optional)
 // ============================================================================
 
 static constexpr const char* FILE_HEADER = "# zeptodb-keys-v1\n";
@@ -44,24 +46,39 @@ ApiKeyStore::ApiKeyStore(std::string config_path)
 }
 
 // ============================================================================
+// is_expired
+// ============================================================================
+bool ApiKeyEntry::is_expired() const {
+    if (expires_at_ns <= 0) return false;
+    using namespace std::chrono;
+    auto now = duration_cast<nanoseconds>(
+        system_clock::now().time_since_epoch()).count();
+    return now > expires_at_ns;
+}
+
+// ============================================================================
 // create_key
 // ============================================================================
 std::string ApiKeyStore::create_key(const std::string& name,
                                      Role role,
                                      const std::vector<std::string>& allowed_symbols,
-                                     const std::vector<std::string>& allowed_tables)
+                                     const std::vector<std::string>& allowed_tables,
+                                     const std::string& tenant_id,
+                                     int64_t expires_at_ns)
 {
     std::string full_key = generate_key();
 
     ApiKeyEntry entry;
-    entry.id             = generate_key_id();
-    entry.name           = name;
-    entry.key_hash       = sha256_hex(full_key);
-    entry.role           = role;
+    entry.id              = generate_key_id();
+    entry.name            = name;
+    entry.key_hash        = sha256_hex(full_key);
+    entry.role            = role;
     entry.allowed_symbols = allowed_symbols;
     entry.allowed_tables  = allowed_tables;
-    entry.enabled        = true;
-    entry.created_at_ns  = now_ns();
+    entry.tenant_id       = tenant_id;
+    entry.enabled         = true;
+    entry.created_at_ns   = now_ns();
+    entry.expires_at_ns   = expires_at_ns;
 
     std::lock_guard<std::mutex> lk(mutex_);
     entries_.push_back(std::move(entry));
@@ -80,7 +97,7 @@ std::optional<ApiKeyEntry> ApiKeyStore::validate(const std::string& key) const {
 
     std::lock_guard<std::mutex> lk(mutex_);
     for (const auto& e : entries_) {
-        if (e.enabled && e.key_hash == hash) {
+        if (e.enabled && !e.is_expired() && e.key_hash == hash) {
             e.last_used_ns = now_ns();
             return e;
         }
@@ -96,6 +113,31 @@ bool ApiKeyStore::revoke(const std::string& key_id) {
     for (auto& e : entries_) {
         if (e.id == key_id) {
             e.enabled = false;
+            save();
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
+// update_key
+// ============================================================================
+bool ApiKeyStore::update_key(const std::string& key_id,
+                              const std::optional<std::vector<std::string>>& symbols,
+                              const std::optional<std::vector<std::string>>& tables,
+                              const std::optional<bool>& enabled,
+                              const std::optional<std::string>& tenant_id,
+                              const std::optional<int64_t>& expires_at_ns)
+{
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& e : entries_) {
+        if (e.id == key_id) {
+            if (symbols)       e.allowed_symbols = *symbols;
+            if (tables)        e.allowed_tables  = *tables;
+            if (enabled)       e.enabled         = *enabled;
+            if (tenant_id)     e.tenant_id       = *tenant_id;
+            if (expires_at_ns) e.expires_at_ns   = *expires_at_ns;
             save();
             return true;
         }
@@ -167,6 +209,14 @@ void ApiKeyStore::load() {
                 if (!tbl.empty()) e.allowed_tables.push_back(tbl);
         }
 
+        // Parse tenant_id (field 8, optional)
+        if (parts.size() > 8) e.tenant_id = parts[8];
+
+        // Parse expires_at_ns (field 9, optional)
+        if (parts.size() > 9 && !parts[9].empty()) {
+            try { e.expires_at_ns = std::stoll(parts[9]); } catch (...) {}
+        }
+
         entries_.push_back(std::move(e));
     }
 }
@@ -203,7 +253,9 @@ void ApiKeyStore::save() const {
             f << e.allowed_tables[i];
         }
 
-        f << '\n';
+        f << SEP << e.tenant_id
+          << SEP << e.expires_at_ns
+          << '\n';
     }
 }
 

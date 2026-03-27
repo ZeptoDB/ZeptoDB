@@ -54,15 +54,52 @@ export async function fetchKeys(apiKey?: string) {
   return res.json();
 }
 
-export async function createKey(name: string, role: string, apiKey?: string) {
+export async function createKey(
+  name: string,
+  role: string,
+  apiKey?: string,
+  symbols?: string[],
+  tables?: string[],
+  tenantId?: string,
+  expiresAtNs?: number,
+) {
+  const body: Record<string, unknown> = { name, role };
+  if (symbols?.length) body.symbols = symbols;
+  if (tables?.length) body.tables = tables;
+  if (tenantId) body.tenant_id = tenantId;
+  if (expiresAtNs) body.expires_at_ns = expiresAtNs;
+
   const res = await fetch("/api/admin/keys", {
     method: "POST",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
-    body: JSON.stringify({ name, role }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error || `HTTP ${res.status}`);
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function updateKey(
+  keyId: string,
+  patch: {
+    symbols?: string[];
+    tables?: string[];
+    enabled?: boolean;
+    tenant_id?: string;
+    expires_at_ns?: number;
+  },
+  apiKey?: string,
+) {
+  const res = await fetch(`/api/admin/keys/${keyId}`, {
+    method: "PATCH",
+    headers: { ...headers(apiKey), "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error || `HTTP ${res.status}`);
   }
   return res.json();
 }

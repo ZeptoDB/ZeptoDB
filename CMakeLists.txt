@@ -446,6 +446,7 @@ target_link_libraries(zepto_sql PUBLIC
 add_library(zepto_auth STATIC
     src/auth/api_key_store.cpp
     src/auth/jwt_validator.cpp
+    src/auth/jwks_provider.cpp
     src/auth/auth_manager.cpp
     src/auth/rate_limiter.cpp
     src/auth/secrets_provider.cpp

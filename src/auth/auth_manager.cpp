@@ -42,6 +42,18 @@ AuthManager::AuthManager(Config config)
 
     if (config_.jwt_enabled) {
         jwt_validator_ = std::make_unique<JwtValidator>(config_.jwt);
+
+        // JWKS auto-fetch: create provider and wire key resolver
+        if (!config_.jwks_url.empty()) {
+            jwks_provider_ = std::make_unique<JwksProvider>(config_.jwks_url);
+            jwks_provider_->refresh();  // initial synchronous fetch
+            jwt_validator_->set_key_resolver([this](const std::string& kid) -> std::string {
+                if (!jwks_provider_) return "";
+                if (!kid.empty()) return jwks_provider_->get_pem(kid);
+                return jwks_provider_->get_default_pem();
+            });
+            jwks_provider_->start();  // background refresh
+        }
     }
 
     if (config_.rate_limit_enabled) {
@@ -173,10 +185,12 @@ AuthDecision AuthManager::check_jwt(const std::string& token) const {
 std::string AuthManager::create_api_key(const std::string& name,
                                           Role role,
                                           const std::vector<std::string>& symbols,
-                                          const std::vector<std::string>& tables)
+                                          const std::vector<std::string>& tables,
+                                          const std::string& tenant_id,
+                                          int64_t expires_at_ns)
 {
     if (!key_store_) throw std::runtime_error("No API key store configured");
-    return key_store_->create_key(name, role, symbols, tables);
+    return key_store_->create_key(name, role, symbols, tables, tenant_id, expires_at_ns);
 }
 
 bool AuthManager::revoke_api_key(const std::string& key_id) {
@@ -184,9 +198,28 @@ bool AuthManager::revoke_api_key(const std::string& key_id) {
     return key_store_->revoke(key_id);
 }
 
+bool AuthManager::update_api_key(const std::string& key_id,
+                                  const std::optional<std::vector<std::string>>& symbols,
+                                  const std::optional<std::vector<std::string>>& tables,
+                                  const std::optional<bool>& enabled,
+                                  const std::optional<std::string>& tenant_id,
+                                  const std::optional<int64_t>& expires_at_ns)
+{
+    if (!key_store_) return false;
+    return key_store_->update_key(key_id, symbols, tables, enabled, tenant_id, expires_at_ns);
+}
+
 std::vector<ApiKeyEntry> AuthManager::list_api_keys() const {
     if (!key_store_) return {};
     return key_store_->list();
+}
+
+// ============================================================================
+// JWKS refresh
+// ============================================================================
+bool AuthManager::refresh_jwks() {
+    if (!jwks_provider_) return false;
+    return jwks_provider_->refresh();
 }
 
 // ============================================================================

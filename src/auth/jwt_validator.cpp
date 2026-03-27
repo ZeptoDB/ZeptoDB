@@ -48,8 +48,22 @@ std::optional<JwtClaims> JwtValidator::validate(const std::string& token) const 
         if (config_.hs256_secret.empty()) return std::nullopt;
         sig_ok = verify_hs256(header_payload, b64_sig);
     } else if (alg == "RS256") {
-        if (config_.rs256_public_key_pem.empty()) return std::nullopt;
-        sig_ok = verify_rs256(header_payload, b64_sig);
+        // Try static PEM first, then dynamic key resolver (JWKS)
+        if (!config_.rs256_public_key_pem.empty()) {
+            sig_ok = verify_rs256(header_payload, b64_sig);
+        } else if (key_resolver_) {
+            std::string kid = get_json_string(header_json, "kid");
+            std::string pem = key_resolver_(kid);
+            if (!pem.empty()) {
+                // Temporarily set PEM for verification
+                std::string saved = config_.rs256_public_key_pem;
+                const_cast<Config&>(config_).rs256_public_key_pem = pem;
+                sig_ok = verify_rs256(header_payload, b64_sig);
+                const_cast<Config&>(config_).rs256_public_key_pem = saved;
+            }
+        } else {
+            return std::nullopt;
+        }
     } else {
         return std::nullopt;  // unsupported algorithm
     }

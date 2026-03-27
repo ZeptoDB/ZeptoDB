@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <atomic>
+#include <fstream>
 
 #ifdef __linux__
 #include <cstring>
@@ -58,6 +59,13 @@ int main(int argc, char* argv[]) {
     std::string ha_role_str;   // "active" or "standby"
     std::string peer_spec;     // "host:port"
 
+    // JWT / SSO settings
+    std::string jwt_issuer;
+    std::string jwt_audience;
+    std::string jwt_secret;       // HS256
+    std::string jwt_public_key;   // RS256 PEM file path
+    std::string jwks_url;         // JWKS endpoint URL
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "--port" || arg == "-p") && i + 1 < argc)
@@ -77,6 +85,16 @@ int main(int argc, char* argv[]) {
         else if (arg == "--peer" && i + 1 < argc)
             peer_spec = argv[++i];
         else if (arg == "--cluster") {}  // no-op (always enabled)
+        else if (arg == "--jwt-issuer" && i + 1 < argc)
+            jwt_issuer = argv[++i];
+        else if (arg == "--jwt-audience" && i + 1 < argc)
+            jwt_audience = argv[++i];
+        else if (arg == "--jwt-secret" && i + 1 < argc)
+            jwt_secret = argv[++i];
+        else if (arg == "--jwt-public-key" && i + 1 < argc)
+            jwt_public_key = argv[++i];
+        else if (arg == "--jwks-url" && i + 1 < argc)
+            jwks_url = argv[++i];
         else if (arg == "--add-node" && i + 1 < argc) {
             std::string spec = argv[++i];
             auto p1 = spec.find(':');
@@ -95,6 +113,12 @@ int main(int argc, char* argv[]) {
                       << "       [--node-id 0] [--add-node id:host:port ...]\n"
                       << "       [--log-level info|debug|warn|error]\n"
                       << "       [--ha active|standby] [--peer host:port] [--rpc-port PORT]\n\n"
+                      << "JWT / SSO:\n"
+                      << "  --jwt-issuer <url>       Expected issuer (iss claim)\n"
+                      << "  --jwt-audience <aud>     Expected audience (aud claim)\n"
+                      << "  --jwt-secret <secret>    HS256 shared secret\n"
+                      << "  --jwt-public-key <path>  RS256 PEM public key file\n"
+                      << "  --jwks-url <url>         JWKS endpoint (auto-fetch RS256 keys)\n\n"
                       << "HA mode:\n"
                       << "  --ha active  --peer standby-host:rpc-port  --rpc-port 9100\n"
                       << "  --ha standby --peer active-host:rpc-port   --rpc-port 9101\n\n"
@@ -102,7 +126,11 @@ int main(int argc, char* argv[]) {
                       << "  # Active coordinator\n"
                       << "  ./zepto_http_server --port 8123 --ha active --peer localhost:9101 --rpc-port 9100\n\n"
                       << "  # Standby coordinator\n"
-                      << "  ./zepto_http_server --port 8124 --ha standby --peer localhost:9100 --rpc-port 9101\n";
+                      << "  ./zepto_http_server --port 8124 --ha standby --peer localhost:9100 --rpc-port 9101\n\n"
+                      << "  # SSO with Okta (JWKS)\n"
+                      << "  ./zepto_http_server --jwks-url https://dev-123.okta.com/oauth2/default/v1/keys --jwt-issuer https://dev-123.okta.com/oauth2/default\n\n"
+                      << "  # SSO with HS256 secret\n"
+                      << "  ./zepto_http_server --jwt-secret my-shared-secret --jwt-issuer https://auth.example.com\n";
             return 0;
         }
     }
@@ -157,10 +185,36 @@ int main(int argc, char* argv[]) {
     zeptodb::auth::AuthManager::Config auth_cfg;
     auth_cfg.enabled = !no_auth;
     auth_cfg.api_keys_file = "dev_keys.txt";
-    auth_cfg.jwt_enabled = false;
     auth_cfg.rate_limit_enabled = false;
     auth_cfg.audit_enabled = false;
     auth_cfg.audit_buffer_enabled = false;
+
+    // JWT / SSO — enabled if any jwt flag is provided
+    bool jwt_requested = !jwt_secret.empty() || !jwt_public_key.empty() || !jwks_url.empty();
+    if (jwt_requested) {
+        if (!jwt_secret.empty() && (!jwt_public_key.empty() || !jwks_url.empty())) {
+            std::cerr << "Error: --jwt-secret (HS256) cannot be combined with --jwt-public-key or --jwks-url (RS256)\n";
+            return 1;
+        }
+        auth_cfg.jwt_enabled = true;
+        auth_cfg.jwt.expected_issuer  = jwt_issuer;
+        auth_cfg.jwt.expected_audience = jwt_audience;
+        if (!jwt_secret.empty()) {
+            auth_cfg.jwt.hs256_secret = jwt_secret;
+        } else if (!jwt_public_key.empty()) {
+            std::ifstream pem_file(jwt_public_key);
+            if (!pem_file.is_open()) {
+                std::cerr << "Error: cannot open PEM file: " << jwt_public_key << "\n";
+                return 1;
+            }
+            auth_cfg.jwt.rs256_public_key_pem = std::string(
+                std::istreambuf_iterator<char>(pem_file), std::istreambuf_iterator<char>());
+        }
+        // jwks_url is handled after JwksProvider is implemented (step 2)
+        auth_cfg.jwks_url = jwks_url;
+    } else {
+        auth_cfg.jwt_enabled = false;
+    }
 
     auto auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
 

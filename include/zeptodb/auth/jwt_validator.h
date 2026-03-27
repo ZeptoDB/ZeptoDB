@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <functional>
 
 namespace zeptodb::auth {
 
@@ -66,6 +67,11 @@ public:
 
     explicit JwtValidator(Config config);
 
+    /// Set a dynamic key resolver for JWKS-based validation.
+    /// Called with kid from JWT header; should return PEM public key.
+    using KeyResolver = std::function<std::string(const std::string& kid)>;
+    void set_key_resolver(KeyResolver resolver) { key_resolver_ = std::move(resolver); }
+
     // Validate token. Returns nullopt on any failure (expired, bad sig, etc).
     std::optional<JwtClaims> validate(const std::string& token) const;
 
@@ -74,6 +80,7 @@ public:
 
 private:
     Config config_;
+    KeyResolver key_resolver_;
 
     bool verify_hs256(const std::string& header_payload,
                       const std::string& b64sig) const;

@@ -17,6 +17,7 @@
 #include "zeptodb/auth/rbac.h"
 #include "zeptodb/auth/api_key_store.h"
 #include "zeptodb/auth/jwt_validator.h"
+#include "zeptodb/auth/jwks_provider.h"
 #include "zeptodb/auth/auth_manager.h"
 #include "zeptodb/auth/cancellation_token.h"
 #include "zeptodb/auth/rate_limiter.h"
@@ -235,6 +236,80 @@ TEST_F(ApiKeyTest, Sha256Hex) {
     EXPECT_NE(ApiKeyStore::sha256_hex(""),    ApiKeyStore::sha256_hex("abc"));
 }
 
+TEST_F(ApiKeyTest, ExpiryBlocksValidation) {
+    ApiKeyStore store(path_);
+    // Create key that expired 1 second ago
+    int64_t past_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() - 1'000'000'000LL;
+    std::string key = store.create_key("expired-svc", Role::READER, {}, {}, "", past_ns);
+    EXPECT_FALSE(store.validate(key).has_value());
+}
+
+TEST_F(ApiKeyTest, NonExpiredKeyValidates) {
+    ApiKeyStore store(path_);
+    int64_t future_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() + 86400'000'000'000LL;
+    std::string key = store.create_key("valid-svc", Role::READER, {}, {}, "", future_ns);
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->expires_at_ns, future_ns);
+}
+
+TEST_F(ApiKeyTest, TenantIdPreserved) {
+    ApiKeyStore store(path_);
+    std::string key = store.create_key("tenant-svc", Role::WRITER, {}, {}, "desk_1");
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->tenant_id, "desk_1");
+}
+
+TEST_F(ApiKeyTest, UpdateKeyFields) {
+    ApiKeyStore store(path_);
+    std::string key = store.create_key("update-test", Role::READER);
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+    std::string id = entry->id;
+
+    // Update symbols and tenant
+    bool ok = store.update_key(id,
+        std::vector<std::string>{"AAPL", "GOOG"},
+        std::nullopt, std::nullopt,
+        std::string("desk_2"), std::nullopt);
+    EXPECT_TRUE(ok);
+
+    auto updated = store.validate(key);
+    ASSERT_TRUE(updated.has_value());
+    ASSERT_EQ(updated->allowed_symbols.size(), 2u);
+    EXPECT_EQ(updated->allowed_symbols[0], "AAPL");
+    EXPECT_EQ(updated->tenant_id, "desk_2");
+}
+
+TEST_F(ApiKeyTest, UpdateKeyDisable) {
+    ApiKeyStore store(path_);
+    std::string key = store.create_key("disable-test", Role::READER);
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+
+    store.update_key(entry->id, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt);
+    EXPECT_FALSE(store.validate(key).has_value());
+}
+
+TEST_F(ApiKeyTest, TenantAndExpiryPersistence) {
+    std::string key;
+    int64_t exp_ns = 1234567890'000'000'000LL;
+    {
+        ApiKeyStore store(path_);
+        key = store.create_key("persist-test", Role::ADMIN, {"SYM1"}, {"TBL1"}, "tenant_x", exp_ns);
+    }
+    ApiKeyStore store2(path_);
+    auto list = store2.list();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list[0].tenant_id, "tenant_x");
+    EXPECT_EQ(list[0].expires_at_ns, exp_ns);
+    ASSERT_EQ(list[0].allowed_symbols.size(), 1u);
+    EXPECT_EQ(list[0].allowed_symbols[0], "SYM1");
+}
+
 // ============================================================================
 // JwtValidator Tests (HS256)
 // ============================================================================
@@ -430,6 +505,80 @@ TEST_F(JwtRs256Test, TamperedPayloadFails) {
     JwtValidator::Config cfg;
     cfg.rs256_public_key_pem = public_key_pem_;
     EXPECT_FALSE(JwtValidator(cfg).validate(token).has_value());
+}
+
+// ============================================================================
+// JWKS Provider Tests
+// ============================================================================
+TEST_F(JwtRs256Test, JwkToPemProducesValidKey) {
+    // Extract n and e from the generated public key to create a JWK
+    BIO* bio = BIO_new_mem_buf(public_key_pem_.data(),
+                                static_cast<int>(public_key_pem_.size()));
+    EVP_PKEY* pkey = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    ASSERT_NE(pkey, nullptr);
+
+    BIGNUM* bn_n = nullptr;
+    BIGNUM* bn_e = nullptr;
+    EVP_PKEY_get_bn_param(pkey, "n", &bn_n);
+    EVP_PKEY_get_bn_param(pkey, "e", &bn_e);
+    EVP_PKEY_free(pkey);
+    ASSERT_NE(bn_n, nullptr);
+    ASSERT_NE(bn_e, nullptr);
+
+    // Convert BIGNUMs to base64url
+    auto bn_to_b64url = [](const BIGNUM* bn) -> std::string {
+        int len = BN_num_bytes(bn);
+        std::vector<unsigned char> buf(len);
+        BN_bn2bin(bn, buf.data());
+        return base64url_encode(buf.data(), len);
+    };
+    std::string n_b64 = bn_to_b64url(bn_n);
+    std::string e_b64 = bn_to_b64url(bn_e);
+    BN_free(bn_n); BN_free(bn_e);
+
+    // Convert JWK → PEM
+    std::string converted_pem = JwksProvider::jwk_to_pem(n_b64, e_b64);
+    ASSERT_FALSE(converted_pem.empty());
+
+    // Verify a token signed with our private key validates with the converted PEM
+    std::string payload = R"({"sub":"jwks-user","zepto_role":"reader","exp":)"
+                        + std::to_string(unix_now(3600)) + "}";
+    std::string token = make_rs256_jwt(payload);
+
+    JwtValidator::Config cfg;
+    cfg.rs256_public_key_pem = converted_pem;
+    auto claims = JwtValidator(cfg).validate(token);
+    ASSERT_TRUE(claims.has_value());
+    EXPECT_EQ(claims->subject, "jwks-user");
+}
+
+TEST_F(JwtRs256Test, KeyResolverIntegration) {
+    // Test that JwtValidator uses key_resolver when no static PEM is set
+    std::string payload = R"({"sub":"resolver-user","zepto_role":"admin","exp":)"
+                        + std::to_string(unix_now(3600)) + "}";
+    std::string token = make_rs256_jwt(payload);
+
+    JwtValidator::Config cfg;
+    // No rs256_public_key_pem set — should use resolver
+    JwtValidator v(cfg);
+    v.set_key_resolver([this](const std::string&) { return public_key_pem_; });
+
+    auto claims = v.validate(token);
+    ASSERT_TRUE(claims.has_value());
+    EXPECT_EQ(claims->subject, "resolver-user");
+    EXPECT_EQ(claims->role, Role::ADMIN);
+}
+
+TEST_F(JwtRs256Test, KeyResolverEmptyPemFails) {
+    std::string payload = R"({"sub":"user","exp":)" + std::to_string(unix_now(3600)) + "}";
+    std::string token = make_rs256_jwt(payload);
+
+    JwtValidator::Config cfg;
+    JwtValidator v(cfg);
+    v.set_key_resolver([](const std::string&) { return ""; });
+
+    EXPECT_FALSE(v.validate(token).has_value());
 }
 
 // ============================================================================

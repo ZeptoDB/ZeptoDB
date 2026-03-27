@@ -539,7 +539,7 @@ void HttpServer::setup_admin_routes() {
 
     // -------------------------------------------------------------------------
     // POST /admin/keys — create API key
-    // Body: {"name":"<name>","role":"<role>","symbols":["SYM1",...]}
+    // Body: {"name":"<name>","role":"<role>","symbols":["SYM1",...],"tables":["T1",...],"tenant_id":"...","expires_at_ns":0}
     // -------------------------------------------------------------------------
     svr_->Post("/admin/keys", [this, require_admin](
         const httplib::Request& req, httplib::Response& res)
@@ -550,8 +550,8 @@ void HttpServer::setup_admin_routes() {
             res.set_content(build_error_json("Auth not configured"), "application/json");
             return;
         }
-        // Minimal JSON parsing for name + role fields
-        auto extract = [&](const std::string& field) -> std::string {
+        // Minimal JSON parsing for string fields
+        auto extract_str = [&](const std::string& field) -> std::string {
             std::string pat = "\"" + field + "\"";
             auto pos = req.body.find(pat);
             if (pos == std::string::npos) return "";
@@ -563,15 +563,55 @@ void HttpServer::setup_admin_routes() {
             if (q2 == std::string::npos) return "";
             return req.body.substr(q1 + 1, q2 - q1 - 1);
         };
-        std::string name = extract("name");
-        std::string role_str = extract("role");
+        // Parse JSON array of strings: "field":["a","b"]
+        auto extract_arr = [&](const std::string& field) -> std::vector<std::string> {
+            std::vector<std::string> result;
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return result;
+            auto bracket = req.body.find('[', pos + pat.size());
+            if (bracket == std::string::npos) return result;
+            auto end_bracket = req.body.find(']', bracket);
+            if (end_bracket == std::string::npos) return result;
+            std::string arr = req.body.substr(bracket + 1, end_bracket - bracket - 1);
+            size_t p = 0;
+            while (p < arr.size()) {
+                auto q1 = arr.find('"', p);
+                if (q1 == std::string::npos) break;
+                auto q2 = arr.find('"', q1 + 1);
+                if (q2 == std::string::npos) break;
+                auto val = arr.substr(q1 + 1, q2 - q1 - 1);
+                if (!val.empty()) result.push_back(val);
+                p = q2 + 1;
+            }
+            return result;
+        };
+        // Parse integer field
+        auto extract_int = [&](const std::string& field) -> int64_t {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return 0;
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return 0;
+            size_t start = colon + 1;
+            while (start < req.body.size() && (req.body[start] == ' ' || req.body[start] == '\t')) ++start;
+            try { return std::stoll(req.body.substr(start)); } catch (...) { return 0; }
+        };
+
+        std::string name = extract_str("name");
+        std::string role_str = extract_str("role");
         if (name.empty()) {
             res.status = 400;
             res.set_content(build_error_json("Missing 'name' field"), "application/json");
             return;
         }
         zeptodb::auth::Role role = zeptodb::auth::role_from_string(role_str);
-        std::string key = auth_->create_api_key(name, role, {});
+        auto symbols = extract_arr("symbols");
+        auto tables = extract_arr("tables");
+        std::string tenant_id = extract_str("tenant_id");
+        int64_t expires_at_ns = extract_int("expires_at_ns");
+
+        std::string key = auth_->create_api_key(name, role, symbols, tables, tenant_id, expires_at_ns);
         res.set_content("{\"key\":\"" + key + "\"}", "application/json");
     });
 
@@ -597,7 +637,15 @@ void HttpServer::setup_admin_routes() {
                << "\"role\":\"" << zeptodb::auth::role_to_string(k.role) << "\","
                << "\"enabled\":" << (k.enabled ? "true" : "false") << ","
                << "\"created_at_ns\":" << k.created_at_ns << ","
-               << "\"allowed_tables\":[";
+               << "\"last_used_ns\":" << k.last_used_ns << ","
+               << "\"expires_at_ns\":" << k.expires_at_ns << ","
+               << "\"tenant_id\":\"" << k.tenant_id << "\","
+               << "\"allowed_symbols\":[";
+            for (size_t si = 0; si < k.allowed_symbols.size(); ++si) {
+                if (si > 0) os << ",";
+                os << "\"" << k.allowed_symbols[si] << "\"";
+            }
+            os << "],\"allowed_tables\":[";
             for (size_t ti = 0; ti < k.allowed_tables.size(); ++ti) {
                 if (ti > 0) os << ",";
                 os << "\"" << k.allowed_tables[ti] << "\"";
@@ -624,6 +672,101 @@ void HttpServer::setup_admin_routes() {
         bool ok = auth_->revoke_api_key(key_id);
         if (ok) {
             res.set_content(R"({"revoked":true})", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(build_error_json("Key not found"), "application/json");
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // PATCH /admin/keys/:id — update API key fields
+    // Body: {"symbols":["S1"],"tables":["T1"],"enabled":true,"tenant_id":"x","expires_at_ns":0}
+    // All fields optional — only provided fields are updated.
+    // -------------------------------------------------------------------------
+    svr_->Patch(R"(/admin/keys/([^/]+))", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!auth_) {
+            res.status = 503;
+            res.set_content(build_error_json("Auth not configured"), "application/json");
+            return;
+        }
+        std::string key_id = req.matches[1];
+
+        // Parse optional fields from body
+        auto has_field = [&](const std::string& f) {
+            return req.body.find("\"" + f + "\"") != std::string::npos;
+        };
+        auto extract_str = [&](const std::string& field) -> std::string {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return "";
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return "";
+            auto q1 = req.body.find('"', colon + 1);
+            if (q1 == std::string::npos) return "";
+            auto q2 = req.body.find('"', q1 + 1);
+            if (q2 == std::string::npos) return "";
+            return req.body.substr(q1 + 1, q2 - q1 - 1);
+        };
+        auto extract_arr = [&](const std::string& field) -> std::vector<std::string> {
+            std::vector<std::string> result;
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return result;
+            auto bracket = req.body.find('[', pos + pat.size());
+            if (bracket == std::string::npos) return result;
+            auto end_bracket = req.body.find(']', bracket);
+            if (end_bracket == std::string::npos) return result;
+            std::string arr = req.body.substr(bracket + 1, end_bracket - bracket - 1);
+            size_t p = 0;
+            while (p < arr.size()) {
+                auto q1 = arr.find('"', p);
+                if (q1 == std::string::npos) break;
+                auto q2 = arr.find('"', q1 + 1);
+                if (q2 == std::string::npos) break;
+                auto val = arr.substr(q1 + 1, q2 - q1 - 1);
+                if (!val.empty()) result.push_back(val);
+                p = q2 + 1;
+            }
+            return result;
+        };
+        auto extract_bool = [&](const std::string& field) -> bool {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return false;
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return false;
+            auto rest = req.body.substr(colon + 1);
+            return rest.find("true") < rest.find("false");
+        };
+        auto extract_int = [&](const std::string& field) -> int64_t {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return 0;
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return 0;
+            size_t start = colon + 1;
+            while (start < req.body.size() && (req.body[start] == ' ' || req.body[start] == '\t')) ++start;
+            try { return std::stoll(req.body.substr(start)); } catch (...) { return 0; }
+        };
+
+        std::optional<std::vector<std::string>> symbols;
+        std::optional<std::vector<std::string>> tables;
+        std::optional<bool> enabled;
+        std::optional<std::string> tenant_id;
+        std::optional<int64_t> expires_at_ns;
+
+        if (has_field("symbols"))       symbols = extract_arr("symbols");
+        if (has_field("tables"))        tables = extract_arr("tables");
+        if (has_field("enabled"))       enabled = extract_bool("enabled");
+        if (has_field("tenant_id"))     tenant_id = extract_str("tenant_id");
+        if (has_field("expires_at_ns")) expires_at_ns = extract_int("expires_at_ns");
+
+        bool ok = auth_->update_api_key(key_id, symbols, tables, enabled, tenant_id, expires_at_ns);
+        if (ok) {
+            res.set_content(R"({"updated":true})", "application/json");
         } else {
             res.status = 404;
             res.set_content(build_error_json("Key not found"), "application/json");
@@ -1040,6 +1183,29 @@ void HttpServer::setup_admin_routes() {
         } else {
             res.status = 404;
             res.set_content(build_error_json("Tenant not found"), "application/json");
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/auth/reload — force refresh JWKS keys
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/auth/reload", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!auth_) {
+            res.status = 503;
+            res.set_content(build_error_json("Auth not configured"), "application/json");
+            return;
+        }
+        bool ok = auth_->refresh_jwks();
+        if (ok) {
+            auto* p = auth_->jwks_provider();
+            size_t n = p ? p->key_count() : 0;
+            res.set_content("{\"refreshed\":true,\"keys_loaded\":" + std::to_string(n) + "}", "application/json");
+        } else {
+            res.status = 502;
+            res.set_content(build_error_json("JWKS refresh failed (no JWKS URL configured or fetch error)"), "application/json");
         }
     });
 

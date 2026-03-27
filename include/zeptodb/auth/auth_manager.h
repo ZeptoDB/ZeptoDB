@@ -16,6 +16,7 @@
 #include "zeptodb/auth/rbac.h"
 #include "zeptodb/auth/api_key_store.h"
 #include "zeptodb/auth/jwt_validator.h"
+#include "zeptodb/auth/jwks_provider.h"
 #include "zeptodb/auth/rate_limiter.h"
 #include "zeptodb/auth/audit_buffer.h"
 #include <string>
@@ -87,6 +88,7 @@ public:
         // JWT / SSO settings
         bool                jwt_enabled = false;
         JwtValidator::Config jwt;
+        std::string         jwks_url;   // JWKS endpoint for auto-fetch RS256 keys
 
         // Rate limiting
         bool                rate_limit_enabled = true;
@@ -122,9 +124,19 @@ public:
     std::string create_api_key(const std::string& name,
                                 Role role,
                                 const std::vector<std::string>& symbols = {},
-                                const std::vector<std::string>& tables = {});
+                                const std::vector<std::string>& tables = {},
+                                const std::string& tenant_id = "",
+                                int64_t expires_at_ns = 0);
 
     bool revoke_api_key(const std::string& key_id);
+
+    // Update mutable fields of an existing key.
+    bool update_api_key(const std::string& key_id,
+                        const std::optional<std::vector<std::string>>& symbols,
+                        const std::optional<std::vector<std::string>>& tables,
+                        const std::optional<bool>& enabled,
+                        const std::optional<std::string>& tenant_id,
+                        const std::optional<int64_t>& expires_at_ns);
 
     std::vector<ApiKeyEntry> list_api_keys() const;
 
@@ -139,10 +151,20 @@ public:
     // Access to the in-memory audit ring buffer (for /admin/audit endpoint)
     const AuditBuffer& audit_buffer() const { return audit_buffer_; }
 
+    // ---------------------------------------------------------------------------
+    // JWKS
+    // ---------------------------------------------------------------------------
+    /// Force refresh JWKS keys. Returns true if keys were loaded.
+    bool refresh_jwks();
+
+    /// Access JWKS provider (may be null if not configured).
+    JwksProvider* jwks_provider() { return jwks_provider_.get(); }
+
 private:
     Config                         config_;
     std::unique_ptr<ApiKeyStore>   key_store_;
     std::unique_ptr<JwtValidator>  jwt_validator_;
+    std::unique_ptr<JwksProvider>  jwks_provider_;
     std::unique_ptr<RateLimiter>   rate_limiter_;
     mutable AuditBuffer            audit_buffer_;
 

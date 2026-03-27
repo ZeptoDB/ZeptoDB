@@ -13,10 +13,11 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import StopIcon from "@mui/icons-material/Stop";
 import SearchIcon from "@mui/icons-material/Search";
 import VisibilityIcon from "@mui/icons-material/Visibility";
+import EditIcon from "@mui/icons-material/Edit";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  fetchKeys, createKey, revokeKey, fetchQueries, killQuery, fetchAudit,
+  fetchKeys, createKey, revokeKey, updateKey, fetchQueries, killQuery, fetchAudit,
   fetchTenants, createTenant, deleteTenant, fetchSessions, fetchKeyUsage
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -51,7 +52,20 @@ export default function AdminPage() {
   const [dlgOpen, setDlgOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState("reader");
+  const [newSymbols, setNewSymbols] = useState("");
+  const [newTables, setNewTables] = useState("");
+  const [newTenantId, setNewTenantId] = useState("");
+  const [newExpiryDays, setNewExpiryDays] = useState("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
+
+  // ── Edit Key Dialog ──
+  const [editOpen, setEditOpen] = useState(false);
+  const [editKey, setEditKey] = useState<any>(null);
+  const [editSymbols, setEditSymbols] = useState("");
+  const [editTables, setEditTables] = useState("");
+  const [editTenantId, setEditTenantId] = useState("");
+  const [editExpiryDays, setEditExpiryDays] = useState("");
+  const [editEnabled, setEditEnabled] = useState(true);
 
   // ── Key Usage Dialog ──
   const [usageOpen, setUsageOpen] = useState(false);
@@ -93,14 +107,51 @@ export default function AdminPage() {
   const handleCreate = useCallback(async () => {
     setError(null);
     try {
-      const r = await createKey(newName, newRole, auth?.apiKey);
+      const symbols = newSymbols.trim() ? newSymbols.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+      const tables = newTables.trim() ? newTables.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+      const tenantId = newTenantId.trim() || undefined;
+      const expiresAtNs = newExpiryDays.trim()
+        ? Date.now() * 1e6 + parseInt(newExpiryDays) * 86400 * 1e9
+        : undefined;
+      const r = await createKey(newName, newRole, auth?.apiKey, symbols, tables, tenantId, expiresAtNs);
       setCreatedKey(r.key);
-      setNewName("");
+      setNewName(""); setNewSymbols(""); setNewTables(""); setNewTenantId(""); setNewExpiryDays("");
       refetchKeys();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to create key");
     }
-  }, [newName, newRole, auth, refetchKeys]);
+  }, [newName, newRole, newSymbols, newTables, newTenantId, newExpiryDays, auth, refetchKeys]);
+
+  const handleEdit = useCallback(async () => {
+    if (!editKey) return;
+    setError(null);
+    try {
+      const patch: Record<string, unknown> = {};
+      patch.symbols = editSymbols.trim() ? editSymbols.split(",").map(s => s.trim()).filter(Boolean) : [];
+      patch.tables = editTables.trim() ? editTables.split(",").map(s => s.trim()).filter(Boolean) : [];
+      patch.tenant_id = editTenantId.trim();
+      patch.enabled = editEnabled;
+      patch.expires_at_ns = editExpiryDays.trim()
+        ? Date.now() * 1e6 + parseInt(editExpiryDays) * 86400 * 1e9
+        : 0;
+      await updateKey(editKey.id, patch, auth?.apiKey);
+      setSuccess("Key updated");
+      setEditOpen(false);
+      refetchKeys();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to update key");
+    }
+  }, [editKey, editSymbols, editTables, editTenantId, editEnabled, editExpiryDays, auth, refetchKeys]);
+
+  const openEdit = useCallback((k: any) => {
+    setEditKey(k);
+    setEditSymbols((k.allowed_symbols ?? []).join(", "));
+    setEditTables((k.allowed_tables ?? []).join(", "));
+    setEditTenantId(k.tenant_id ?? "");
+    setEditEnabled(k.enabled);
+    setEditExpiryDays(k.expires_at_ns > 0 ? String(Math.max(1, Math.round((k.expires_at_ns - Date.now() * 1e6) / 86400e9))) : "");
+    setEditOpen(true);
+  }, []);
 
   const handleRevoke = useCallback(async (id: string) => {
     setError(null);
@@ -224,34 +275,67 @@ export default function AdminPage() {
                   <TableCell sx={HEADER}>ID</TableCell>
                   <TableCell sx={HEADER}>Role</TableCell>
                   <TableCell sx={HEADER}>Status</TableCell>
-                  <TableCell sx={HEADER}>Created</TableCell>
+                  <TableCell sx={HEADER}>Scope</TableCell>
+                  <TableCell sx={HEADER}>Tenant</TableCell>
+                  <TableCell sx={HEADER}>Expires</TableCell>
+                  <TableCell sx={HEADER}>Last Used</TableCell>
                   <TableCell sx={HEADER} align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(keys ?? []).map((k: any) => (
-                  <TableRow key={k.id} hover>
-                    <TableCell sx={MONO}>{k.name}</TableCell>
-                    <TableCell sx={{ ...MONO, color: "text.secondary" }}>{k.id.slice(0, 12)}…</TableCell>
-                    <TableCell><Chip label={k.role} size="small" color={roleColor(k.role)} variant="outlined" /></TableCell>
-                    <TableCell><Chip label={k.enabled ? "Active" : "Revoked"} size="small" color={k.enabled ? "success" : "default"} variant="outlined" /></TableCell>
-                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{k.created_at_ns ? timeAgo(k.created_at_ns) : "—"}</TableCell>
-                    <TableCell align="right">
-                      {k.enabled && (
-                        <>
-                          <Tooltip title="View Usage">
-                            <IconButton size="small" color="primary" onClick={() => { setSelectedKeyId(k.id); setUsageOpen(true); }}><VisibilityIcon fontSize="small" /></IconButton>
+                {(keys ?? []).map((k: any) => {
+                  const expired = k.expires_at_ns > 0 && Date.now() * 1e6 > k.expires_at_ns;
+                  const scopeCount = (k.allowed_symbols?.length ?? 0) + (k.allowed_tables?.length ?? 0);
+                  return (
+                    <TableRow key={k.id} hover sx={expired ? { opacity: 0.5 } : undefined}>
+                      <TableCell sx={MONO}>{k.name}</TableCell>
+                      <TableCell sx={{ ...MONO, color: "text.secondary" }}>{k.id}</TableCell>
+                      <TableCell><Chip label={k.role} size="small" color={roleColor(k.role)} variant="outlined" /></TableCell>
+                      <TableCell>
+                        <Chip
+                          label={expired ? "Expired" : k.enabled ? "Active" : "Revoked"}
+                          size="small"
+                          color={expired ? "warning" : k.enabled ? "success" : "default"}
+                          variant="outlined"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {scopeCount > 0 ? (
+                          <Tooltip title={[
+                            ...(k.allowed_symbols?.length ? [`Symbols: ${k.allowed_symbols.join(", ")}`] : []),
+                            ...(k.allowed_tables?.length ? [`Tables: ${k.allowed_tables.join(", ")}`] : []),
+                          ].join("\n")}>
+                            <Chip label={`${scopeCount} restriction${scopeCount > 1 ? "s" : ""}`} size="small" variant="outlined" />
                           </Tooltip>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">Unrestricted</Typography>
+                        )}
+                      </TableCell>
+                      <TableCell sx={{ ...MONO, color: "text.secondary", fontSize: 12 }}>{k.tenant_id || "—"}</TableCell>
+                      <TableCell sx={{ fontSize: 12, color: expired ? "error.main" : "text.secondary" }}>
+                        {k.expires_at_ns > 0 ? timeAgo(k.expires_at_ns).replace(" ago", " left").replace("-", "") : "Never"}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{k.last_used_ns ? timeAgo(k.last_used_ns) : "Never"}</TableCell>
+                      <TableCell align="right">
+                        <Tooltip title="View Usage">
+                          <IconButton size="small" color="primary" onClick={() => { setSelectedKeyId(k.id); setUsageOpen(true); }}><VisibilityIcon fontSize="small" /></IconButton>
+                        </Tooltip>
+                        {k.enabled && !expired && (
+                          <Tooltip title="Edit">
+                            <IconButton size="small" color="info" onClick={() => openEdit(k)}><EditIcon fontSize="small" /></IconButton>
+                          </Tooltip>
+                        )}
+                        {k.enabled && (
                           <Tooltip title="Revoke">
                             <IconButton size="small" color="error" onClick={() => handleRevoke(k.id)}><DeleteIcon fontSize="small" /></IconButton>
                           </Tooltip>
-                        </>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
                 {(!keys || keys.length === 0) && (
-                  <TableRow><TableCell colSpan={6} sx={{ textAlign: "center", color: "text.secondary", py: 4 }}>
+                  <TableRow><TableCell colSpan={9} sx={{ textAlign: "center", color: "text.secondary", py: 4 }}>
                     {keys === null ? "Admin access required" : "No API keys"}
                   </TableCell></TableRow>
                 )}
@@ -522,6 +606,14 @@ export default function AdminPage() {
               <Select size="small" value={newRole} onChange={(e) => setNewRole(e.target.value)}>
                 {ROLES.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
               </Select>
+              <TextField label="Allowed Symbols (comma-separated)" size="small" value={newSymbols}
+                onChange={(e) => setNewSymbols(e.target.value)} placeholder="e.g. AAPL, MSFT (empty = all)" />
+              <TextField label="Allowed Tables (comma-separated)" size="small" value={newTables}
+                onChange={(e) => setNewTables(e.target.value)} placeholder="e.g. trades, quotes (empty = all)" />
+              <TextField label="Tenant ID" size="small" value={newTenantId}
+                onChange={(e) => setNewTenantId(e.target.value)} placeholder="e.g. hft_desk_1 (empty = no tenant)" />
+              <TextField label="Expires in (days)" size="small" type="number" value={newExpiryDays}
+                onChange={(e) => setNewExpiryDays(e.target.value)} placeholder="e.g. 90 (empty = never)" />
             </>
           )}
         </DialogContent>
@@ -534,6 +626,40 @@ export default function AdminPage() {
               Create
             </Button>
           )}
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Edit Key Dialog ── */}
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Edit API Key — {editKey?.name}</DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "16px !important" }}>
+          <Box>
+            <Typography variant="caption" color="text.secondary">Key ID</Typography>
+            <Typography sx={MONO}>{editKey?.id}</Typography>
+          </Box>
+          <TextField label="Allowed Symbols (comma-separated)" size="small" value={editSymbols}
+            onChange={(e) => setEditSymbols(e.target.value)} placeholder="empty = unrestricted" />
+          <TextField label="Allowed Tables (comma-separated)" size="small" value={editTables}
+            onChange={(e) => setEditTables(e.target.value)} placeholder="empty = unrestricted" />
+          <TextField label="Tenant ID" size="small" value={editTenantId}
+            onChange={(e) => setEditTenantId(e.target.value)} placeholder="empty = no tenant" />
+          <TextField label="Extend expiry (days from now)" size="small" type="number" value={editExpiryDays}
+            onChange={(e) => setEditExpiryDays(e.target.value)} placeholder="empty = never expires" />
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Typography variant="body2">Enabled:</Typography>
+            <Chip
+              label={editEnabled ? "Active" : "Disabled"}
+              size="small"
+              color={editEnabled ? "success" : "default"}
+              variant="outlined"
+              onClick={() => setEditEnabled(!editEnabled)}
+              sx={{ cursor: "pointer" }}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditOpen(false)} sx={{ textTransform: "none" }}>Cancel</Button>
+          <Button variant="contained" onClick={handleEdit} sx={{ textTransform: "none" }}>Save Changes</Button>
         </DialogActions>
       </Dialog>
       
