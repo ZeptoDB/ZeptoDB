@@ -13,12 +13,15 @@
 // ============================================================================
 
 #include "zeptodb/cluster/rpc_protocol.h"
+#include "zeptodb/cluster/rpc_security.h"
 #include "zeptodb/cluster/k8s_lease.h"
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/sql/executor.h"
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,6 +33,7 @@ using TickIngestCallback = std::function<bool(const zeptodb::ingestion::TickMess
 using WalReplayCallback  = std::function<size_t(const std::vector<zeptodb::ingestion::TickMessage>&)>;
 using StatsCallback      = std::function<std::string()>;  // returns JSON
 using MetricsCallback    = std::function<std::string(int64_t /*since_ms*/, uint32_t /*limit*/)>;
+using RingUpdateCallback = std::function<bool(const uint8_t* data, size_t len)>;
 
 // ============================================================================
 // TcpRpcServer
@@ -66,12 +70,43 @@ public:
     /// Returns JSON array of MetricsSnapshot for the given time range.
     void set_metrics_callback(MetricsCallback cb) { metrics_callback_ = std::move(cb); }
 
+    /// Set ring update callback — invoked for RING_UPDATE messages.
+    /// Returns true if the update was applied (epoch valid).
+    void set_ring_update_callback(RingUpdateCallback cb) { ring_update_callback_ = std::move(cb); }
+
+    /// Set security config for internal RPC authentication.
+    /// When enabled, clients must send AUTH_HANDSHAKE before any other message.
+    void set_security(RpcSecurityConfig cfg) { security_ = std::move(cfg); }
+
+    /// Set maximum allowed payload size in bytes (default 64MB).
+    /// Messages exceeding this limit are rejected and the connection is closed.
+    void set_max_payload_size(uint32_t bytes) { max_payload_size_ = bytes; }
+    uint32_t max_payload_size() const { return max_payload_size_; }
+
+    /// Set maximum concurrent connections (default 1024).
+    /// New connections beyond this limit are immediately closed.
+    void set_max_connections(int max_conn) { max_connections_ = max_conn; }
+    int  max_connections() const { return max_connections_; }
+
+    /// Set thread pool size (default: hardware_concurrency).
+    /// Must be called before start(). 0 = hardware_concurrency.
+    void set_thread_pool_size(size_t n) { pool_size_ = n; }
+    size_t thread_pool_size() const { return pool_size_; }
+
+    /// Set graceful drain timeout in milliseconds (default 30000 = 30s).
+    /// During stop(), in-flight requests are given this long to complete
+    /// before connections are forcibly closed.
+    void set_drain_timeout_ms(int ms) { drain_timeout_ms_ = ms; }
+    int  drain_timeout_ms() const { return drain_timeout_ms_; }
+
     bool     is_running() const { return running_.load(); }
     uint16_t port()       const { return port_; }
+    int      active_connections() const { return active_conns_.load(); }
 
 private:
     void accept_loop();
     void handle_connection(int client_fd);
+    void worker_loop();
 
     int                listen_fd_ = -1;
     uint16_t           port_      = 0;
@@ -83,7 +118,19 @@ private:
     WalReplayCallback  wal_callback_;
     StatsCallback      stats_callback_;
     MetricsCallback    metrics_callback_;
+    RingUpdateCallback ring_update_callback_;
     FencingToken*      fencing_token_ = nullptr;
+    RpcSecurityConfig  security_;
+    uint32_t           max_payload_size_ = 64u * 1024u * 1024u;  // 64MB default
+    int                max_connections_ = 1024;
+    size_t             pool_size_ = 0;  // 0 = hardware_concurrency
+    int                drain_timeout_ms_ = 30000;  // 30s default
+
+    // Thread pool for connection handling
+    std::vector<std::thread>    workers_;
+    std::mutex                  queue_mu_;
+    std::condition_variable     queue_cv_;
+    std::queue<int>             conn_queue_;  // pending client fds
 
     // Track active connection fds for clean shutdown
     std::mutex              conn_fds_mu_;
@@ -139,6 +186,9 @@ public:
     void set_epoch(uint64_t e) { epoch_ = e; }
     uint64_t epoch() const { return epoch_; }
 
+    /// Set security config for internal RPC authentication.
+    void set_security(RpcSecurityConfig cfg) { security_ = std::move(cfg); }
+
     /// Number of idle connections currently in the pool.
     size_t pool_idle_count() const;
 
@@ -156,6 +206,7 @@ private:
     size_t      max_pool_size_;
     int         query_timeout_ms_;
     uint64_t    epoch_ = 0;
+    RpcSecurityConfig security_;
 
     mutable std::mutex pool_mu_;
     std::vector<int>   pool_;  // idle fds

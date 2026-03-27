@@ -15,6 +15,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "zeptodb/common/logger.h"
+
 namespace zeptodb::cluster {
 
 // ============================================================================
@@ -94,12 +96,22 @@ void TcpRpcServer::start(uint16_t port, SqlQueryCallback   sql_cb,
     }
 
     running_.store(true);
+
+    // Start worker thread pool
+    size_t n = pool_size_ > 0 ? pool_size_ : std::thread::hardware_concurrency();
+    if (n == 0) n = 4;
+    workers_.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        workers_.emplace_back([this]() { worker_loop(); });
+    }
+
     accept_thread_ = std::thread([this]() { accept_loop(); });
 }
 
 void TcpRpcServer::stop() {
     if (!running_.exchange(false)) return;
 
+    // 1. Stop accepting new connections
     if (listen_fd_ >= 0) {
         ::shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
@@ -107,16 +119,55 @@ void TcpRpcServer::stop() {
     }
     if (accept_thread_.joinable()) accept_thread_.join();
 
-    // Shutdown all active keep-alive connections to unblock recv
+    // 2. Drain pending queue (no worker will pick these up after running_=false)
     {
+        std::lock_guard<std::mutex> lock(queue_mu_);
+        while (!conn_queue_.empty()) {
+            ::close(conn_queue_.front());
+            conn_queue_.pop();
+            active_conns_.fetch_sub(1);
+        }
+    }
+    // Wake workers — they will finish current connection then exit
+    queue_cv_.notify_all();
+
+    // 3. Wait for in-flight requests to complete (graceful drain)
+    auto deadline = std::chrono::steady_clock::now()
+                  + std::chrono::milliseconds(drain_timeout_ms_);
+    while (active_conns_.load() > 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // 4. Force-close remaining connections if drain timed out
+    bool force = active_conns_.load() > 0;
+    if (force) {
+        ZEPTO_WARN("TcpRpcServer: drain timeout ({}ms), force-closing {} connections",
+                   drain_timeout_ms_, active_conns_.load());
         std::lock_guard<std::mutex> lock(conn_fds_mu_);
         for (int fd : conn_fds_) ::shutdown(fd, SHUT_RDWR);
     }
 
-    int spins = 0;
-    while (active_conns_.load() > 0 && spins++ < 200) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // 5. Join or detach worker threads
+    //    If drain completed normally, join (clean). If force-closed, wait briefly
+    //    then detach stragglers so stop() doesn't block on stuck handlers.
+    for (auto& w : workers_) {
+        if (!w.joinable()) continue;
+        if (!force) {
+            w.join();
+        } else {
+            // Give worker a short grace period after force-close
+            auto join_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+            bool joined = false;
+            while (std::chrono::steady_clock::now() < join_deadline) {
+                // Try a timed check — no native timed join, so poll
+                if (active_conns_.load() == 0) { w.join(); joined = true; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            if (!joined) w.detach();
+        }
     }
+    workers_.clear();
 }
 
 void TcpRpcServer::accept_loop() {
@@ -131,20 +182,45 @@ void TcpRpcServer::accept_loop() {
         }
 
         active_conns_.fetch_add(1);
-        std::thread([this, cfd]() {
-            {
-                std::lock_guard<std::mutex> lock(conn_fds_mu_);
-                conn_fds_.push_back(cfd);
-            }
-            handle_connection(cfd);
-            {
-                std::lock_guard<std::mutex> lock(conn_fds_mu_);
-                conn_fds_.erase(std::remove(conn_fds_.begin(), conn_fds_.end(), cfd),
-                                conn_fds_.end());
-            }
+        if (active_conns_.load() > max_connections_) {
+            ZEPTO_WARN("TcpRpcServer: max connections reached ({}/{}), rejecting",
+                       active_conns_.load(), max_connections_);
             ::close(cfd);
             active_conns_.fetch_sub(1);
-        }).detach();
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(queue_mu_);
+            conn_queue_.push(cfd);
+        }
+        queue_cv_.notify_one();
+    }
+}
+
+void TcpRpcServer::worker_loop() {
+    while (true) {
+        int cfd;
+        {
+            std::unique_lock<std::mutex> lock(queue_mu_);
+            queue_cv_.wait(lock, [this]() {
+                return !conn_queue_.empty() || !running_.load();
+            });
+            if (!running_.load() && conn_queue_.empty()) return;
+            cfd = conn_queue_.front();
+            conn_queue_.pop();
+        }
+        {
+            std::lock_guard<std::mutex> lock(conn_fds_mu_);
+            conn_fds_.push_back(cfd);
+        }
+        handle_connection(cfd);
+        {
+            std::lock_guard<std::mutex> lock(conn_fds_mu_);
+            conn_fds_.erase(std::remove(conn_fds_.begin(), conn_fds_.end(), cfd),
+                            conn_fds_.end());
+        }
+        ::close(cfd);
+        active_conns_.fetch_sub(1);
     }
 }
 
@@ -155,10 +231,49 @@ void TcpRpcServer::handle_connection(int cfd) {
     tv.tv_usec = 0;
     ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
+    // Auth handshake: if security enabled, first message must be AUTH_HANDSHAKE
+    if (security_.enabled) {
+        RpcHeader auth_hdr;
+        if (!recv_all(cfd, &auth_hdr, sizeof(auth_hdr))) return;
+        if (auth_hdr.magic != 0x41504558u ||
+            static_cast<RpcType>(auth_hdr.type) != RpcType::AUTH_HANDSHAKE ||
+            auth_hdr.payload_len < RPC_AUTH_PAYLOAD_SIZE ||
+            auth_hdr.payload_len > max_payload_size_) {
+            // Not an auth message — reject
+            RpcHeader rej{};
+            rej.type = static_cast<uint32_t>(RpcType::AUTH_REJECT);
+            send_all(cfd, &rej, sizeof(rej));
+            return;
+        }
+        std::vector<uint8_t> auth_payload(auth_hdr.payload_len);
+        if (!recv_all(cfd, auth_payload.data(), auth_hdr.payload_len)) return;
+
+        if (!rpc_validate_auth(security_.shared_secret,
+                               auth_payload.data(), auth_payload.size())) {
+            ZEPTO_WARN("TcpRpcServer: auth handshake failed from client");
+            RpcHeader rej{};
+            rej.type = static_cast<uint32_t>(RpcType::AUTH_REJECT);
+            send_all(cfd, &rej, sizeof(rej));
+            return;
+        }
+
+        // Auth OK
+        RpcHeader ok_hdr{};
+        ok_hdr.type = static_cast<uint32_t>(RpcType::AUTH_OK);
+        if (!send_all(cfd, &ok_hdr, sizeof(ok_hdr))) return;
+    }
+
     RpcHeader hdr;
     while (running_.load()) {
         if (!recv_all(cfd, &hdr, sizeof(hdr))) break;
         if (hdr.magic != 0x41504558u) break;
+
+        // Reject oversized payloads to prevent OOM
+        if (hdr.payload_len > max_payload_size_) {
+            ZEPTO_WARN("TcpRpcServer: payload too large ({} > {} bytes), closing connection",
+                       hdr.payload_len, max_payload_size_);
+            break;
+        }
 
         std::vector<uint8_t> payload(hdr.payload_len);
         if (hdr.payload_len > 0 && !recv_all(cfd, payload.data(), hdr.payload_len)) break;
@@ -288,6 +403,22 @@ void TcpRpcServer::handle_connection(int cfd) {
             continue;
         }
 
+        if (type == RpcType::RING_UPDATE) {
+            bool applied = false;
+            if (ring_update_callback_) {
+                try {
+                    applied = ring_update_callback_(payload.data(), payload.size());
+                } catch (...) {}
+            }
+            RpcHeader ack{};
+            ack.type        = static_cast<uint32_t>(RpcType::RING_ACK);
+            ack.request_id  = hdr.request_id;
+            ack.payload_len = 0;
+            if (!send_all(cfd, &ack, sizeof(ack)))
+                break;
+            continue;
+        }
+
         break;  // Unknown type
     }
 }
@@ -323,7 +454,30 @@ int TcpRpcClient::acquire() {
             return fd;
         }
     }
-    return connect_to_server();
+    int fd = connect_to_server();
+    if (fd < 0) return -1;
+
+    // Auth handshake on new connections
+    if (security_.enabled && !security_.shared_secret.empty()) {
+        auto auth_payload = rpc_build_auth(security_.shared_secret);
+        RpcHeader auth_hdr{};
+        auth_hdr.type        = static_cast<uint32_t>(RpcType::AUTH_HANDSHAKE);
+        auth_hdr.payload_len = static_cast<uint32_t>(auth_payload.size());
+        if (!send_all(fd, &auth_hdr, sizeof(auth_hdr)) ||
+            !send_all(fd, auth_payload.data(), auth_payload.size())) {
+            ::close(fd);
+            return -1;
+        }
+        // Wait for AUTH_OK
+        RpcHeader resp{};
+        if (!recv_all(fd, &resp, sizeof(resp)) ||
+            static_cast<RpcType>(resp.type) != RpcType::AUTH_OK) {
+            ::close(fd);
+            return -1;
+        }
+    }
+
+    return fd;
 }
 
 void TcpRpcClient::release(int fd, bool healthy) {
@@ -591,7 +745,7 @@ std::string TcpRpcClient::request_metrics(int64_t since_ms, uint32_t limit) {
 }
 
 bool TcpRpcClient::ping() {
-    int fd = connect_to_server();
+    int fd = acquire();
     if (fd < 0) return false;
 
     RpcHeader hdr;
@@ -600,13 +754,13 @@ bool TcpRpcClient::ping() {
     hdr.payload_len = 0;
 
     if (!send_all(fd, &hdr, sizeof(hdr))) {
-        ::close(fd);
+        release(fd, false);
         return false;
     }
 
     RpcHeader resp{};
     bool ok = recv_all(fd, &resp, sizeof(resp));
-    ::close(fd);
+    release(fd, ok);
     return ok && static_cast<RpcType>(resp.type) == RpcType::PONG;
 }
 
