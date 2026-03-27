@@ -221,6 +221,11 @@ void HttpServer::setup_session_tracking() {
             logger.error(log_line, "http");
         } else if (res.status >= 400) {
             logger.warn(log_line, "http");
+        } else if (req.path == "/health" || req.path == "/ready" ||
+                   req.path == "/ping" || req.path == "/stats" ||
+                   req.path == "/metrics" ||
+                   req.path.rfind("/admin/", 0) == 0) {
+            logger.debug(log_line, "http");
         } else {
             logger.info(log_line, "http");
         }
@@ -791,9 +796,15 @@ void HttpServer::setup_admin_routes() {
         if (!require_admin(req, res)) return;
         const auto& stats = executor_.stats();
         std::ostringstream os;
-        os << "{\"mode\":\"standalone\""
-           << ",\"node_count\":1"
-           << ",\"partitions_created\":" << stats.partitions_created.load()
+        if (coordinator_) {
+            auto nc = coordinator_->node_count();
+            os << "{\"mode\":\"" << (nc > 1 ? "cluster" : "standalone") << "\""
+               << ",\"node_count\":" << nc;
+        } else {
+            os << "{\"mode\":\"standalone\""
+               << ",\"node_count\":1";
+        }
+        os << ",\"partitions_created\":" << stats.partitions_created.load()
            << ",\"partitions_evicted\":" << stats.partitions_evicted.load()
            << ",\"ticks_ingested\":" << stats.ticks_ingested.load()
            << ",\"ticks_stored\":" << stats.ticks_stored.load()

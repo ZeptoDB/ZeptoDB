@@ -777,3 +777,774 @@ TEST(ClusterNodeCallbacks, RpcServerRegistersMetricsCallback) {
 
     node.leave_cluster();
 }
+
+// ============================================================================
+// Multi-Node HTTP Cluster Tests
+// Verifies: set_coordinator → /admin/cluster returns cluster mode,
+//           /admin/nodes returns multiple nodes via scatter-gather.
+// ============================================================================
+
+#include "zeptodb/server/http_server.h"
+#include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/auth/auth_manager.h"
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/ingestion/tick_plant.h"
+#include <fstream>
+
+namespace {
+
+// Helper: create pipeline + seed ticks
+struct TestNode {
+    zeptodb::core::PipelineConfig cfg;
+    std::unique_ptr<zeptodb::core::ZeptoPipeline> pipeline;
+    std::unique_ptr<zeptodb::sql::QueryExecutor> executor;
+
+    TestNode() {
+        cfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+        pipeline = std::make_unique<zeptodb::core::ZeptoPipeline>(cfg);
+        executor = std::make_unique<zeptodb::sql::QueryExecutor>(*pipeline);
+    }
+
+    void ingest(int n, uint32_t sym = 1) {
+        for (int i = 0; i < n; ++i) {
+            zeptodb::ingestion::TickMessage msg{};
+            msg.symbol_id = sym;
+            msg.price = (10000 + i) * 1'000'000LL;
+            msg.volume = 100;
+            msg.recv_ts = static_cast<int64_t>(i) * 1'000'000'000LL;
+            pipeline->ingest_tick(msg);
+        }
+        pipeline->drain_sync(static_cast<size_t>(n) + 100);
+    }
+};
+
+// Simple HTTP GET helper
+std::string http_get(const std::string& host, uint16_t port,
+                     const std::string& path, const std::string& auth = "") {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return "";
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        close(fd);
+        return "";
+    }
+    std::string req = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\n";
+    if (!auth.empty()) req += "Authorization: Bearer " + auth + "\r\n";
+    req += "Connection: close\r\n\r\n";
+    send(fd, req.data(), req.size(), 0);
+
+    std::string response;
+    char buf[4096];
+    ssize_t n;
+    while ((n = recv(fd, buf, sizeof(buf), 0)) > 0)
+        response.append(buf, static_cast<size_t>(n));
+    close(fd);
+
+    // Extract body after \r\n\r\n
+    auto pos = response.find("\r\n\r\n");
+    return pos != std::string::npos ? response.substr(pos + 4) : response;
+}
+
+// Helper: create AuthManager with a temp key file
+struct TestAuth {
+    std::string key_path;
+    std::shared_ptr<zeptodb::auth::AuthManager> mgr;
+    std::string admin_key;
+
+    TestAuth(const std::string& path) : key_path(path) {
+        // Create empty key file
+        std::ofstream f(key_path);
+        f.close();
+        zeptodb::auth::AuthManager::Config cfg;
+        cfg.enabled = true;
+        cfg.api_keys_file = key_path;
+        cfg.jwt_enabled = false;
+        cfg.rate_limit_enabled = false;
+        cfg.audit_enabled = false;
+        cfg.audit_buffer_enabled = false;
+        mgr = std::make_shared<zeptodb::auth::AuthManager>(cfg);
+        admin_key = mgr->create_api_key("test-admin", zeptodb::auth::Role::ADMIN);
+    }
+    ~TestAuth() { std::remove(key_path.c_str()); }
+};
+
+} // anonymous namespace
+
+// ── Test: standalone mode returns mode=standalone ──
+TEST(HttpCluster, StandaloneMode_ReturnsStandalone) {
+    TestNode node;
+    node.ingest(100);
+
+    TestAuth auth("/tmp/zepto_test_keys_standalone.txt");
+
+    uint16_t port = 18701;
+    zeptodb::server::HttpServer server(*node.executor, port,
+                                        zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    auto body = http_get("localhost", port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(body.find("\"mode\":\"standalone\""), std::string::npos);
+    EXPECT_NE(body.find("\"node_count\":1"), std::string::npos);
+
+    server.stop();
+}
+
+// ── Test: cluster mode with coordinator returns mode=cluster ──
+TEST(HttpCluster, ClusterMode_ReturnsClusterAndMultipleNodes) {
+    // Node 0 (coordinator / local)
+    TestNode coord_node;
+    coord_node.ingest(200);
+
+    // Data node on RPC port
+    TestNode data_node;
+    data_node.ingest(100, 2);
+
+    // Start data node RPC server
+    uint16_t rpc_port = 18801;
+    zeptodb::cluster::TcpRpcServer rpc_srv;
+    rpc_srv.set_stats_callback([&]() {
+        const auto& s = data_node.pipeline->stats();
+        return std::string("{\"id\":1")
+            + ",\"host\":\"127.0.0.1\""
+            + ",\"port\":" + std::to_string(rpc_port)
+            + ",\"state\":\"ACTIVE\""
+            + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+            + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+            + ",\"queries_executed\":" + std::to_string(s.queries_executed.load())
+            + "}";
+    });
+    rpc_srv.start(rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(50ms);
+
+    // Set up coordinator
+    zeptodb::cluster::QueryCoordinator coordinator;
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18802, 0};
+    coordinator.add_local_node(self_addr, *coord_node.pipeline);
+    zeptodb::cluster::NodeAddress remote_addr{"127.0.0.1", rpc_port, 1};
+    coordinator.add_remote_node(remote_addr);
+
+    EXPECT_EQ(coordinator.node_count(), 2u);
+
+    // HTTP server with coordinator
+    TestAuth auth("/tmp/zepto_test_keys_cluster.txt");
+
+    uint16_t http_port = 18802;
+    zeptodb::server::HttpServer server(*coord_node.executor, http_port,
+                                        zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_coordinator(&coordinator);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    // Verify /admin/cluster
+    auto cluster_body = http_get("localhost", http_port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(cluster_body.find("\"mode\":\"cluster\""), std::string::npos);
+    EXPECT_NE(cluster_body.find("\"node_count\":2"), std::string::npos);
+
+    // Verify /admin/nodes returns 2 nodes
+    auto nodes_body = http_get("localhost", http_port, "/admin/nodes", auth.admin_key);
+    EXPECT_NE(nodes_body.find("\"id\":0"), std::string::npos);
+    EXPECT_NE(nodes_body.find("\"id\":1"), std::string::npos);
+    EXPECT_NE(nodes_body.find("\"state\":\"ACTIVE\""), std::string::npos);
+
+    server.stop();
+    rpc_srv.stop();
+}
+
+// ── Test: data node stats include id/host/port fields ──
+TEST(HttpCluster, DataNodeStats_IncludesIdHostPort) {
+    TestNode data_node;
+    data_node.ingest(50);
+
+    uint16_t rpc_port = 18803;
+    zeptodb::cluster::TcpRpcServer rpc_srv;
+    rpc_srv.set_stats_callback([&]() {
+        const auto& s = data_node.pipeline->stats();
+        return std::string("{\"id\":42")
+            + ",\"host\":\"127.0.0.1\""
+            + ",\"port\":" + std::to_string(rpc_port)
+            + ",\"state\":\"ACTIVE\""
+            + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+            + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+            + ",\"queries_executed\":" + std::to_string(s.queries_executed.load())
+            + "}";
+    });
+    rpc_srv.start(rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(50ms);
+
+    // Request stats via RPC client
+    zeptodb::cluster::TcpRpcClient client("127.0.0.1", rpc_port);
+    auto stats = client.request_stats();
+    EXPECT_NE(stats.find("\"id\":42"), std::string::npos);
+    EXPECT_NE(stats.find("\"host\":\"127.0.0.1\""), std::string::npos);
+    EXPECT_NE(stats.find("\"port\":18803"), std::string::npos);
+    EXPECT_NE(stats.find("\"queries_executed\":"), std::string::npos);
+
+    rpc_srv.stop();
+}
+
+// ── Test: TcpRpcClient resolves hostname (localhost) ──
+TEST(HttpCluster, TcpRpcClient_ResolvesHostname) {
+    TestNode data_node;
+    data_node.ingest(10);
+
+    uint16_t rpc_port = 18804;
+    zeptodb::cluster::TcpRpcServer rpc_srv;
+    rpc_srv.set_stats_callback([]() {
+        return std::string("{\"id\":99,\"state\":\"ACTIVE\"}");
+    });
+    rpc_srv.start(rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(50ms);
+
+    // "localhost" should resolve via getaddrinfo fallback
+    zeptodb::cluster::TcpRpcClient client("localhost", rpc_port);
+    auto stats = client.request_stats();
+    EXPECT_NE(stats.find("\"id\":99"), std::string::npos);
+
+    // "127.0.0.1" should still work via inet_pton
+    zeptodb::cluster::TcpRpcClient client2("127.0.0.1", rpc_port);
+    auto stats2 = client2.request_stats();
+    EXPECT_NE(stats2.find("\"id\":99"), std::string::npos);
+
+    rpc_srv.stop();
+}
+
+// ── Test: dynamic mode — standalone when 1 node, cluster when >1 ──
+TEST(HttpCluster, DynamicMode_StandaloneToCluster) {
+    TestNode coord_node;
+    coord_node.ingest(50);
+
+    TestNode data_node;
+    data_node.ingest(30, 2);
+
+    // Start data node RPC
+    uint16_t rpc_port = 18805;
+    zeptodb::cluster::TcpRpcServer rpc_srv;
+    rpc_srv.set_stats_callback([&]() {
+        const auto& s = data_node.pipeline->stats();
+        return std::string("{\"id\":1,\"host\":\"127.0.0.1\",\"port\":")
+            + std::to_string(rpc_port)
+            + ",\"state\":\"ACTIVE\""
+            + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+            + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+            + ",\"queries_executed\":" + std::to_string(s.queries_executed.load())
+            + "}";
+    });
+    rpc_srv.start(rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(50ms);
+
+    // Coordinator with only local node (standalone)
+    zeptodb::cluster::QueryCoordinator coordinator;
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18806, 0};
+    coordinator.add_local_node(self_addr, *coord_node.pipeline);
+
+    TestAuth auth("/tmp/zepto_test_keys_dynamic.txt");
+
+    uint16_t http_port = 18806;
+    zeptodb::server::HttpServer server(*coord_node.executor, http_port,
+                                        zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_coordinator(&coordinator);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    // Should be standalone (1 node)
+    auto body1 = http_get("localhost", http_port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(body1.find("\"mode\":\"standalone\""), std::string::npos);
+    EXPECT_NE(body1.find("\"node_count\":1"), std::string::npos);
+
+    // Add remote node → becomes cluster
+    zeptodb::cluster::NodeAddress remote_addr{"127.0.0.1", rpc_port, 1};
+    coordinator.add_remote_node(remote_addr);
+
+    auto body2 = http_get("localhost", http_port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(body2.find("\"mode\":\"cluster\""), std::string::npos);
+    EXPECT_NE(body2.find("\"node_count\":2"), std::string::npos);
+
+    // /admin/nodes should return 2 nodes
+    auto nodes = http_get("localhost", http_port, "/admin/nodes", auth.admin_key);
+    EXPECT_NE(nodes.find("\"id\":0"), std::string::npos);
+    EXPECT_NE(nodes.find("\"id\":1"), std::string::npos);
+
+    server.stop();
+    rpc_srv.stop();
+}
+
+// ── Test: runtime node add via POST /admin/nodes ──
+TEST(HttpCluster, RuntimeNodeAdd_ViaPostAPI) {
+    TestNode coord_node;
+    coord_node.ingest(50);
+
+    TestNode data_node;
+
+    // Start data node RPC
+    uint16_t rpc_port = 18807;
+    zeptodb::cluster::TcpRpcServer rpc_srv;
+    rpc_srv.set_stats_callback([&]() {
+        return std::string("{\"id\":5,\"host\":\"127.0.0.1\",\"port\":")
+            + std::to_string(rpc_port)
+            + ",\"state\":\"ACTIVE\",\"ticks_ingested\":0"
+            + ",\"ticks_stored\":0,\"queries_executed\":0}";
+    });
+    rpc_srv.start(rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(50ms);
+
+    // Coordinator (local only)
+    zeptodb::cluster::QueryCoordinator coordinator;
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18808, 0};
+    coordinator.add_local_node(self_addr, *coord_node.pipeline);
+
+    TestAuth auth("/tmp/zepto_test_keys_runtime.txt");
+
+    uint16_t http_port = 18808;
+    zeptodb::server::HttpServer server(*coord_node.executor, http_port,
+                                        zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_coordinator(&coordinator);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    // POST /admin/nodes to add remote node
+    {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(http_port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        ASSERT_EQ(connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+
+        std::string body = "{\"id\":5,\"host\":\"127.0.0.1\",\"port\":" + std::to_string(rpc_port) + "}";
+        std::string req = "POST /admin/nodes HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Authorization: Bearer " + auth.admin_key + "\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n"
+            "Connection: close\r\n\r\n" + body;
+        send(fd, req.data(), req.size(), 0);
+
+        char buf[4096];
+        ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+        close(fd);
+        ASSERT_GT(n, 0);
+        std::string resp(buf, static_cast<size_t>(n));
+        EXPECT_NE(resp.find("200"), std::string::npos);
+    }
+
+    // Verify cluster mode and 2 nodes
+    auto cluster = http_get("localhost", http_port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(cluster.find("\"mode\":\"cluster\""), std::string::npos);
+
+    auto nodes = http_get("localhost", http_port, "/admin/nodes", auth.admin_key);
+    EXPECT_NE(nodes.find("\"id\":0"), std::string::npos);
+    EXPECT_NE(nodes.find("\"id\":5"), std::string::npos);
+
+    server.stop();
+    rpc_srv.stop();
+}
+
+// ============================================================================
+// HA Failover Integration Tests
+// ============================================================================
+
+#include "zeptodb/cluster/coordinator_ha.h"
+
+// ── Test: Active serves queries, standby promotes when active dies ──
+TEST(HttpClusterHA, ActiveServesQueries_StandbyPromotesOnFailure) {
+    // Active node
+    TestNode active_node;
+    active_node.ingest(100);
+
+    // Standby node
+    TestNode standby_node;
+    standby_node.ingest(100);
+
+    // Active's RPC server (for standby to ping)
+    uint16_t active_rpc_port = 18901;
+    zeptodb::cluster::TcpRpcServer active_rpc;
+    active_rpc.start(active_rpc_port, [&](const std::string& sql) {
+        return active_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+
+    // Standby's RPC server
+    uint16_t standby_rpc_port = 18902;
+    zeptodb::cluster::TcpRpcServer standby_rpc;
+    standby_rpc.start(standby_rpc_port, [&](const std::string& sql) {
+        return standby_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+
+    // Set up HA coordinators
+    zeptodb::cluster::CoordinatorHAConfig ha_cfg;
+    ha_cfg.ping_interval_ms = 100;
+    ha_cfg.failover_after_ms = 300;
+
+    zeptodb::cluster::CoordinatorHA active_ha(ha_cfg);
+    active_ha.init(zeptodb::cluster::CoordinatorRole::ACTIVE,
+                   "127.0.0.1", standby_rpc_port);
+    zeptodb::cluster::NodeAddress active_addr{"127.0.0.1", 18903, 0};
+    active_ha.add_local_node(active_addr, *active_node.pipeline);
+    active_ha.start();
+
+    zeptodb::cluster::CoordinatorHA standby_ha(ha_cfg);
+    standby_ha.init(zeptodb::cluster::CoordinatorRole::STANDBY,
+                    "127.0.0.1", active_rpc_port);
+    zeptodb::cluster::NodeAddress standby_addr{"127.0.0.1", 18904, 1};
+    standby_ha.add_local_node(standby_addr, *standby_node.pipeline);
+
+    std::atomic<bool> promoted{false};
+    standby_ha.on_promotion([&]() { promoted.store(true); });
+    standby_ha.start();
+
+    // Active should be active, standby should be standby
+    EXPECT_TRUE(active_ha.is_active());
+    EXPECT_FALSE(standby_ha.is_active());
+
+    // Active serves queries
+    auto result = active_ha.execute_sql("SELECT count(*) FROM trades WHERE symbol = 1");
+    EXPECT_TRUE(result.error.empty());
+
+    // Kill active's RPC server → standby can't ping → promotes
+    active_rpc.stop();
+    // Wait for failover (300ms timeout + some margin)
+    std::this_thread::sleep_for(500ms);
+
+    EXPECT_TRUE(promoted.load());
+    EXPECT_TRUE(standby_ha.is_active());
+    EXPECT_EQ(standby_ha.promotion_count(), 1u);
+
+    // Standby (now active) can serve queries
+    auto result2 = standby_ha.execute_sql("SELECT count(*) FROM trades WHERE symbol = 1");
+    EXPECT_TRUE(result2.error.empty());
+
+    active_ha.stop();
+    standby_ha.stop();
+    standby_rpc.stop();
+}
+
+// ── Test: HA with HTTP server — active serves, standby promotes ──
+TEST(HttpClusterHA, HttpServer_FailoverPreservesClusterState) {
+    TestNode node;
+    node.ingest(50);
+
+    // Simulate: active RPC that we can kill
+    uint16_t active_rpc_port = 18905;
+    zeptodb::cluster::TcpRpcServer active_rpc;
+    active_rpc.start(active_rpc_port, [&](const std::string& sql) {
+        return node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+
+    // Standby HA coordinator
+    zeptodb::cluster::CoordinatorHAConfig ha_cfg;
+    ha_cfg.ping_interval_ms = 100;
+    ha_cfg.failover_after_ms = 300;
+
+    zeptodb::cluster::CoordinatorHA standby_ha(ha_cfg);
+    standby_ha.init(zeptodb::cluster::CoordinatorRole::STANDBY,
+                    "127.0.0.1", active_rpc_port);
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18906, 0};
+    standby_ha.add_local_node(self_addr, *node.pipeline);
+
+    // Also register a data node address (will be re-registered on promotion)
+    uint16_t data_rpc_port = 18907;
+    TestNode data_node;
+    zeptodb::cluster::TcpRpcServer data_rpc;
+    data_rpc.set_stats_callback([&]() {
+        return std::string("{\"id\":2,\"host\":\"127.0.0.1\",\"port\":")
+            + std::to_string(data_rpc_port)
+            + ",\"state\":\"ACTIVE\",\"ticks_ingested\":0"
+            + ",\"ticks_stored\":0,\"queries_executed\":0}";
+    });
+    data_rpc.start(data_rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+
+    zeptodb::cluster::NodeAddress data_addr{"127.0.0.1", data_rpc_port, 2};
+    standby_ha.add_remote_node(data_addr);
+
+    standby_ha.start();
+
+    // HTTP server on standby
+    TestAuth auth("/tmp/zepto_test_keys_ha.txt");
+    uint16_t http_port = 18906;
+    zeptodb::server::HttpServer server(*node.executor, http_port,
+                                        zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_coordinator(&standby_ha.coordinator(), 0);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    // Before failover: standby is not active
+    EXPECT_FALSE(standby_ha.is_active());
+
+    // Kill active RPC → triggers promotion
+    active_rpc.stop();
+    std::this_thread::sleep_for(500ms);
+
+    EXPECT_TRUE(standby_ha.is_active());
+
+    // After promotion: /admin/cluster should work
+    auto cluster = http_get("localhost", http_port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(cluster.find("\"node_count\":"), std::string::npos);
+
+    // After promotion: data node should be re-registered and reachable
+    auto nodes = http_get("localhost", http_port, "/admin/nodes", auth.admin_key);
+    EXPECT_NE(nodes.find("\"id\":0"), std::string::npos);
+
+    server.stop();
+    standby_ha.stop();
+    data_rpc.stop();
+}
+
+// ── P1: Standby dies first — Active continues serving ──
+TEST(HttpClusterHA, StandbyDiesFirst_ActiveContinues) {
+    TestNode active_node;
+    active_node.ingest(50);
+
+    // Standby RPC (will be killed)
+    uint16_t standby_rpc_port = 18910;
+    zeptodb::cluster::TcpRpcServer standby_rpc;
+    standby_rpc.start(standby_rpc_port, [&](const std::string& sql) {
+        return active_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+
+    // Active HA
+    zeptodb::cluster::CoordinatorHAConfig ha_cfg;
+    ha_cfg.ping_interval_ms = 100;
+    ha_cfg.failover_after_ms = 300;
+
+    zeptodb::cluster::CoordinatorHA active_ha(ha_cfg);
+    active_ha.init(zeptodb::cluster::CoordinatorRole::ACTIVE,
+                   "127.0.0.1", standby_rpc_port);
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18911, 0};
+    active_ha.add_local_node(self_addr, *active_node.pipeline);
+    active_ha.start();
+
+    EXPECT_TRUE(active_ha.is_active());
+
+    // Kill standby
+    standby_rpc.stop();
+    std::this_thread::sleep_for(500ms);
+
+    // Active should still be active and serve queries
+    EXPECT_TRUE(active_ha.is_active());
+    auto result = active_ha.execute_sql("SELECT count(*) FROM trades WHERE symbol = 1");
+    EXPECT_TRUE(result.error.empty());
+
+    active_ha.stop();
+}
+
+// ── P2: Query during promotion window returns error ──
+TEST(HttpClusterHA, QueryDuringPromotion_ReturnsError) {
+    TestNode node;
+    node.ingest(50);
+
+    // Standby HA with no reachable active (immediate failover scenario)
+    zeptodb::cluster::CoordinatorHAConfig ha_cfg;
+    ha_cfg.ping_interval_ms = 50;
+    ha_cfg.failover_after_ms = 150;
+
+    zeptodb::cluster::CoordinatorHA standby_ha(ha_cfg);
+    // Point to unreachable port
+    standby_ha.init(zeptodb::cluster::CoordinatorRole::STANDBY,
+                    "127.0.0.1", 19999);
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18912, 0};
+    standby_ha.add_local_node(self_addr, *node.pipeline);
+
+    // Before start: standby forwards to active → fails
+    EXPECT_FALSE(standby_ha.is_active());
+    auto result = standby_ha.execute_sql("SELECT count(*) FROM trades");
+    // Should get error (peer unreachable)
+    EXPECT_FALSE(result.error.empty());
+
+    // Start monitoring → will promote after 150ms
+    standby_ha.start();
+    std::this_thread::sleep_for(300ms);
+
+    // After promotion: queries should work
+    EXPECT_TRUE(standby_ha.is_active());
+    auto result2 = standby_ha.execute_sql("SELECT count(*) FROM trades WHERE symbol = 1");
+    EXPECT_TRUE(result2.error.empty());
+
+    standby_ha.stop();
+}
+
+// ── P3: Split-brain — fencing token rejects stale writes ──
+TEST(HttpClusterHA, SplitBrain_FencingTokenRejectsStaleWrites) {
+    TestNode node;
+    node.ingest(50);
+
+    // Data node with fencing
+    uint16_t data_rpc_port = 18913;
+    zeptodb::cluster::TcpRpcServer data_rpc;
+    zeptodb::cluster::FencingToken fencing;
+    fencing.advance();  // epoch → 1
+    // Simulate data node has seen epoch 10
+    fencing.validate(10);  // last_seen = 10
+
+    data_rpc.set_fencing_token(&fencing);
+    data_rpc.start(data_rpc_port, [&](const std::string& sql) {
+        return node.executor->execute(sql);
+    }, [&](const zeptodb::ingestion::TickMessage& msg) {
+        node.pipeline->ingest_tick(msg);
+        return true;
+    });
+    std::this_thread::sleep_for(30ms);
+
+    // Old coordinator with epoch 5 (stale)
+    zeptodb::cluster::TcpRpcClient stale_client("127.0.0.1", data_rpc_port);
+    stale_client.set_epoch(5);
+
+    // New coordinator with epoch 15
+    zeptodb::cluster::TcpRpcClient new_client("127.0.0.1", data_rpc_port);
+    new_client.set_epoch(15);
+
+    // Stale write should be rejected
+    zeptodb::ingestion::TickMessage msg{};
+    msg.symbol_id = 1;
+    msg.price = 10000;
+    msg.volume = 100;
+    msg.recv_ts = 999;
+    bool stale_ok = stale_client.ingest_tick(msg);
+    EXPECT_FALSE(stale_ok);
+
+    // New write should succeed
+    bool new_ok = new_client.ingest_tick(msg);
+    EXPECT_TRUE(new_ok);
+
+    // SQL queries are not fenced (read-only)
+    auto result = stale_client.execute_sql("SELECT count(*) FROM trades WHERE symbol = 1");
+    EXPECT_TRUE(result.error.empty());
+
+    data_rpc.stop();
+}
+
+// ── P4: Data node failure — remaining nodes still serve ──
+TEST(HttpClusterHA, DataNodeFailure_RemainingNodesServe) {
+    TestNode coord_node;
+    coord_node.ingest(100);
+
+    // Healthy data node
+    TestNode healthy_node;
+    healthy_node.ingest(50, 2);
+    uint16_t healthy_port = 18914;
+    zeptodb::cluster::TcpRpcServer healthy_rpc;
+    healthy_rpc.set_stats_callback([&]() {
+        const auto& s = healthy_node.pipeline->stats();
+        return std::string("{\"id\":1,\"host\":\"127.0.0.1\",\"port\":")
+            + std::to_string(healthy_port)
+            + ",\"state\":\"ACTIVE\""
+            + ",\"ticks_ingested\":" + std::to_string(s.ticks_ingested.load())
+            + ",\"ticks_stored\":" + std::to_string(s.ticks_stored.load())
+            + ",\"queries_executed\":" + std::to_string(s.queries_executed.load())
+            + "}";
+    });
+    healthy_rpc.start(healthy_port, [&](const std::string& sql) {
+        return healthy_node.executor->execute(sql);
+    });
+
+    // Dead data node (start then immediately stop)
+    uint16_t dead_port = 18915;
+    zeptodb::cluster::TcpRpcServer dead_rpc;
+    dead_rpc.start(dead_port, [&](const std::string& sql) {
+        return coord_node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+    dead_rpc.stop();  // kill it
+
+    // Coordinator with both nodes registered
+    zeptodb::cluster::QueryCoordinator coordinator;
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18916, 0};
+    coordinator.add_local_node(self_addr, *coord_node.pipeline);
+    coordinator.add_remote_node({"127.0.0.1", healthy_port, 1});
+    coordinator.add_remote_node({"127.0.0.1", dead_port, 2});
+
+    TestAuth auth("/tmp/zepto_test_keys_partial.txt");
+    uint16_t http_port = 18916;
+    zeptodb::server::HttpServer server(*coord_node.executor, http_port,
+                                        zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_coordinator(&coordinator);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    // /admin/nodes — healthy node should appear, dead node stats missing
+    auto nodes = http_get("localhost", http_port, "/admin/nodes", auth.admin_key);
+    EXPECT_NE(nodes.find("\"id\":0"), std::string::npos);
+    EXPECT_NE(nodes.find("\"id\":1"), std::string::npos);
+    // Dead node's stats won't be in the response (scatter failed)
+
+    // Cluster should still report 3 registered nodes
+    auto cluster = http_get("localhost", http_port, "/admin/cluster", auth.admin_key);
+    EXPECT_NE(cluster.find("\"node_count\":3"), std::string::npos);
+
+    server.stop();
+    healthy_rpc.stop();
+}
+
+// ── P5: Network partition — unnecessary promotion with fencing ──
+TEST(HttpClusterHA, NetworkPartition_PromotionWithFencing) {
+    TestNode node;
+    node.ingest(50);
+
+    // Active RPC that we'll kill to simulate partition
+    uint16_t active_rpc_port = 18917;
+    zeptodb::cluster::TcpRpcServer active_rpc;
+    active_rpc.start(active_rpc_port, [&](const std::string& sql) {
+        return node.executor->execute(sql);
+    });
+    std::this_thread::sleep_for(30ms);
+
+    // Standby with fencing awareness
+    zeptodb::cluster::CoordinatorHAConfig ha_cfg;
+    ha_cfg.ping_interval_ms = 50;
+    ha_cfg.failover_after_ms = 150;
+
+    zeptodb::cluster::CoordinatorHA standby_ha(ha_cfg);
+    standby_ha.init(zeptodb::cluster::CoordinatorRole::STANDBY,
+                    "127.0.0.1", active_rpc_port);
+    zeptodb::cluster::NodeAddress self_addr{"127.0.0.1", 18918, 0};
+    standby_ha.add_local_node(self_addr, *node.pipeline);
+
+    size_t promo_count = 0;
+    standby_ha.on_promotion([&]() { promo_count++; });
+    standby_ha.start();
+
+    // Verify standby is monitoring
+    EXPECT_FALSE(standby_ha.is_active());
+    std::this_thread::sleep_for(100ms);
+    EXPECT_FALSE(standby_ha.is_active());  // still standby (active is alive)
+
+    // Simulate network partition: kill active RPC
+    active_rpc.stop();
+    std::this_thread::sleep_for(300ms);
+
+    // Standby should promote exactly once
+    EXPECT_TRUE(standby_ha.is_active());
+    EXPECT_EQ(promo_count, 1u);
+    EXPECT_EQ(standby_ha.promotion_count(), 1u);
+
+    // Further waiting should NOT cause additional promotions
+    std::this_thread::sleep_for(300ms);
+    EXPECT_EQ(promo_count, 1u);
+
+    standby_ha.stop();
+}

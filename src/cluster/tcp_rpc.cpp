@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <netdb.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -343,9 +344,18 @@ int TcpRpcClient::connect_to_server() const {
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(port_);
+
+    // Try inet_pton first (numeric IP), fall back to getaddrinfo (hostname)
     if (::inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) <= 0) {
-        ::close(fd);
-        return -1;
+        struct addrinfo hints{}, *res = nullptr;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (::getaddrinfo(host_.c_str(), nullptr, &hints, &res) != 0 || !res) {
+            ::close(fd);
+            return -1;
+        }
+        addr.sin_addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr;
+        ::freeaddrinfo(res);
     }
 
     if (connect_timeout_ms_ <= 0) {
