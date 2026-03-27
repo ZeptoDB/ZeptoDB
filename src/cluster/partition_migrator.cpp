@@ -1,5 +1,5 @@
 #include "zeptodb/cluster/partition_migrator.h"
-#include "zeptodb/cluster/rpc_protocol.h"
+#include "zeptodb/common/logger.h"
 
 namespace zeptodb::cluster {
 
@@ -9,31 +9,22 @@ void PartitionMigrator::add_node(NodeId id, const std::string& host,
 }
 
 bool PartitionMigrator::migrate_symbol(SymbolId symbol, NodeId from,
-                                        NodeId to) {
+                                        NodeId to, uint64_t& rows_out) {
+    rows_out = 0;
     auto src_it = nodes_.find(from);
     auto dst_it = nodes_.find(to);
-    if (src_it == nodes_.end() || dst_it == nodes_.end()) {
-        stats_.moves_failed.fetch_add(1);
-        return false;
-    }
+    if (src_it == nodes_.end() || dst_it == nodes_.end()) return false;
 
-    // Query all rows for this symbol from source node
     std::string sql = "SELECT * FROM trades WHERE symbol = "
                     + std::to_string(symbol);
     auto result = src_it->second->execute_sql(sql);
-    if (!result.ok() || result.rows.empty()) {
-        // No data or error — still count as completed (nothing to move)
-        if (result.ok()) {
-            stats_.moves_completed.fetch_add(1);
-            return true;
-        }
-        stats_.moves_failed.fetch_add(1);
-        return false;
+    if (!result.ok()) { stats_.moves_failed.fetch_add(1); return false; }
+    if (result.rows.empty()) {
+        rows_out = 0;
+        stats_.moves_completed.fetch_add(1);
+        return true;
     }
 
-    // Convert result rows back to TickMessages for WAL replay on dest
-    // Result columns: symbol, price, volume, timestamp (standard trades schema)
-    // Find column indices
     int col_price = -1, col_volume = -1, col_ts = -1;
     for (size_t i = 0; i < result.column_names.size(); ++i) {
         if (result.column_names[i] == "price")     col_price  = static_cast<int>(i);
@@ -52,9 +43,9 @@ bool PartitionMigrator::migrate_symbol(SymbolId symbol, NodeId from,
         batch.push_back(msg);
     }
 
-    // Send to destination as WAL batch
     bool ok = dst_it->second->replicate_wal(batch);
     if (ok) {
+        rows_out = batch.size();
         stats_.moves_completed.fetch_add(1);
         stats_.rows_migrated.fetch_add(batch.size());
     } else {
@@ -63,26 +54,78 @@ bool PartitionMigrator::migrate_symbol(SymbolId symbol, NodeId from,
     return ok;
 }
 
-size_t PartitionMigrator::execute_plan(
+void PartitionMigrator::execute_move(MoveStatus& ms, PartitionRouter& router) {
+    ms.attempts++;
+
+    // PENDING → DUAL_WRITE
+    ms.state = MoveState::DUAL_WRITE;
+    router.begin_migration(ms.move.symbol, ms.move.from, ms.move.to);
+
+    // DUAL_WRITE → COPYING
+    ms.state = MoveState::COPYING;
+    uint64_t rows = 0;
+    bool ok = migrate_symbol(ms.move.symbol, ms.move.from, ms.move.to, rows);
+
+    if (ok) {
+        ms.state = MoveState::COMMITTED;
+        ms.rows_migrated = rows;
+        ms.error.clear();
+        router.end_migration(ms.move.symbol);
+    } else {
+        // Rollback: delete partial data from dest
+        rollback_move(ms.move.symbol, ms.move.to);
+        ms.state = MoveState::FAILED;
+        ms.error = "migrate_symbol failed (attempt " + std::to_string(ms.attempts) + ")";
+        router.end_migration(ms.move.symbol);
+        ZEPTO_WARN("PartitionMigrator: move symbol={} {}→{} failed, rolled back (attempt {})",
+                   ms.move.symbol, ms.move.from, ms.move.to, ms.attempts);
+    }
+}
+
+void PartitionMigrator::rollback_move(SymbolId symbol, NodeId dest) {
+    auto it = nodes_.find(dest);
+    if (it == nodes_.end()) return;
+    std::string sql = "DELETE FROM trades WHERE symbol = " + std::to_string(symbol);
+    auto r = it->second->execute_sql(sql);
+    if (!r.ok()) {
+        ZEPTO_WARN("PartitionMigrator: rollback DELETE on node {} failed: {}",
+                   dest, r.error);
+    }
+}
+
+MigrationCheckpoint PartitionMigrator::execute_plan(
     const PartitionRouter::MigrationPlan& plan,
     PartitionRouter& router)
 {
-    size_t success = 0;
+    MigrationCheckpoint cp;
+    cp.moves.reserve(plan.moves.size());
+    for (auto& m : plan.moves)
+        cp.moves.push_back({m, MoveState::PENDING, {}, 0, 0});
 
-    // P0-5: Begin dual-write for all symbols being migrated
-    for (auto& move : plan.moves)
-        router.begin_migration(move.symbol, move.from, move.to);
+    return resume_plan(std::move(cp), router);
+}
 
-    for (auto& move : plan.moves) {
-        if (migrate_symbol(move.symbol, move.from, move.to))
-            ++success;
+MigrationCheckpoint PartitionMigrator::resume_plan(
+    MigrationCheckpoint checkpoint,
+    PartitionRouter& router)
+{
+    for (auto& ms : checkpoint.moves) {
+        if (ms.state == MoveState::COMMITTED) continue;
+
+        // Reset FAILED to retry
+        if (ms.state == MoveState::FAILED) ms.state = MoveState::PENDING;
+
+        while (ms.state == MoveState::PENDING && ms.attempts < max_retries_) {
+            execute_move(ms, router);
+            // Save checkpoint after each move attempt
+            if (!checkpoint_path_.empty())
+                checkpoint.save_to_file(checkpoint_path_);
+            if (ms.state == MoveState::COMMITTED) break;
+            if (ms.state == MoveState::FAILED && ms.attempts < max_retries_)
+                ms.state = MoveState::PENDING;
+        }
     }
-
-    // End dual-write after all moves complete
-    for (auto& move : plan.moves)
-        router.end_migration(move.symbol);
-
-    return success;
+    return checkpoint;
 }
 
 } // namespace zeptodb::cluster
