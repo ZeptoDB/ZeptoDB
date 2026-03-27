@@ -17,6 +17,7 @@
 #include "zeptodb/cluster/partition_router.h"
 #include "zeptodb/cluster/health_monitor.h"
 #include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/cluster/ring_consensus.h"
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/ingestion/tick_plant.h"
@@ -50,6 +51,8 @@ struct ClusterConfig {
     PipelineConfig    pipeline;          // 로컬 파이프라인 설정
     bool              enable_remote_ingest = true;  // 원격 인제스트 활성화
     uint16_t          rpc_port = 0;      // TCP RPC port (0 = self.port + 100)
+    bool              is_coordinator = false;  // true = ring 변경 권한 보유
+    RpcSecurityConfig rpc_security;      // 내부 RPC 보안 (설정 시 자동 전파)
 };
 
 // ============================================================================
@@ -92,20 +95,36 @@ public:
         }
 
         // 3. Seed 노드에 연결 + RPC client 생성
+        size_t seed_connected = 0;
         for (auto& seed : seeds) {
             try {
                 ConnectionId conn = transport_.connect(seed);
                 peer_connections_[seed.id] = conn;
                 peer_addresses_[seed.id]   = seed;
 
-                // Pre-create RPC client for remote tick ingest.
-                // Peer's RPC port convention: peer.port + 100
                 uint16_t peer_rpc_port = static_cast<uint16_t>(seed.port + 100);
-                peer_rpc_clients_[seed.id] = std::make_unique<TcpRpcClient>(
-                    seed.host, peer_rpc_port, 2000);
+                auto rpc = std::make_unique<TcpRpcClient>(
+                    seed.host, peer_rpc_port, 1000);
+                if (config_.rpc_security.enabled) {
+                    rpc->set_security(config_.rpc_security);
+                }
+                peer_rpc_clients_[seed.id] = std::move(rpc);
+                ++seed_connected;
             } catch (...) {
                 // 연결 실패 시 무시 (나중에 재시도)
             }
+        }
+
+        // Require at least 1 seed connection (unless no seeds given = bootstrap)
+        if (!seeds.empty() && seed_connected == 0) {
+            for (auto& seed : seeds)
+                router_.remove_node(seed.id);
+            peer_addresses_.clear();
+            peer_connections_.clear();
+            transport_.shutdown();
+            throw std::runtime_error(
+                "ClusterNode: failed to connect to any seed node ("
+                + std::to_string(seeds.size()) + " seeds tried)");
         }
 
         // 4. Health Monitor 시작
@@ -121,6 +140,12 @@ public:
         uint16_t rport = (config_.rpc_port > 0)
                        ? config_.rpc_port
                        : static_cast<uint16_t>(config_.self.port + 100);
+
+        // RPC 보안 자동 적용
+        if (config_.rpc_security.enabled) {
+            rpc_server_.set_security(config_.rpc_security);
+        }
+
         rpc_server_.start(
             rport,
             [this](const std::string& sql) { return execute_sql_local(sql); },
@@ -163,6 +188,29 @@ public:
             });
 
         rpc_port_ = rport;
+
+        // 7. RingConsensus 초기화 (외부에서 set_consensus()로 주입하지 않은 경우 기본 EpochBroadcast)
+        if (!consensus_) {
+            consensus_ = std::make_unique<EpochBroadcastConsensus>(
+                router_, router_mutex_, fencing_token_);
+        }
+
+        // Follower: RPC 서버에 ring update 콜백 등록
+        rpc_server_.set_ring_update_callback(
+            [this](const uint8_t* data, size_t len) {
+                return consensus_->apply_update(data, len);
+            });
+
+        // Coordinator: peer RPC 주소를 consensus에 등록
+        if (config_.is_coordinator) {
+            auto* ebc = dynamic_cast<EpochBroadcastConsensus*>(consensus_.get());
+            if (ebc) {
+                for (auto& [id, addr] : peer_addresses_) {
+                    uint16_t peer_rpc = static_cast<uint16_t>(addr.port + 100);
+                    ebc->add_peer(id, addr.host, peer_rpc);
+                }
+            }
+        }
 
         joined_.store(true);
     }
@@ -276,6 +324,13 @@ public:
     HealthMonitor& health() { return health_; }
     ZeptoPipeline& pipeline() { return local_pipeline_; }
 
+    /// Access the RingConsensus (nullptr if not initialized)
+    RingConsensus* consensus() { return consensus_.get(); }
+
+    /// Set a custom RingConsensus implementation (e.g. future RaftConsensus).
+    /// Must be called before join_cluster().
+    void set_consensus(std::unique_ptr<RingConsensus> c) { consensus_ = std::move(c); }
+
     // ----------------------------------------------------------------
     // 원격 메모리 노출 (RDMA one-sided)
     // ----------------------------------------------------------------
@@ -322,6 +377,9 @@ private:
             auto [ins, _] = peer_rpc_clients_.emplace(
                 target,
                 std::make_unique<TcpRpcClient>(addr_it->second.host, peer_rpc_port, 2000));
+            if (config_.rpc_security.enabled) {
+                ins->second->set_security(config_.rpc_security);
+            }
             it = ins;
         }
         return it->second->ingest_tick(msg);
@@ -339,13 +397,29 @@ private:
     /// 노드 상태 변경 콜백
     void on_node_state_change(NodeId id, NodeState old_s, NodeState new_s) {
         if (new_s == NodeState::DEAD) {
-            // 장애 노드 라우터에서 제거
-            std::unique_lock lock(router_mutex_);
-            router_.remove_node(id);
-        } else if (new_s == NodeState::ACTIVE && old_s == NodeState::JOINING) {
-            // 새 노드 활성화 시 라우터에 추가
-            std::unique_lock lock(router_mutex_);
-            router_.add_node(id);
+            if (config_.is_coordinator && consensus_) {
+                consensus_->propose_remove(id);
+            } else {
+                std::unique_lock lock(router_mutex_);
+                router_.remove_node(id);
+            }
+        } else if (new_s == NodeState::ACTIVE &&
+                   (old_s == NodeState::JOINING || old_s == NodeState::REJOINING)) {
+            if (config_.is_coordinator && consensus_) {
+                // Register peer in consensus for future broadcasts
+                auto* ebc = dynamic_cast<EpochBroadcastConsensus*>(consensus_.get());
+                if (ebc) {
+                    auto addr_it = peer_addresses_.find(id);
+                    if (addr_it != peer_addresses_.end()) {
+                        uint16_t peer_rpc = static_cast<uint16_t>(addr_it->second.port + 100);
+                        ebc->add_peer(id, addr_it->second.host, peer_rpc);
+                    }
+                }
+                consensus_->propose_add(id);
+            } else {
+                std::unique_lock lock(router_mutex_);
+                router_.add_node(id);
+            }
         }
     }
 
@@ -361,6 +435,8 @@ private:
     ZeptoPipeline                               local_pipeline_;
     TcpRpcServer                               rpc_server_;
     uint16_t                                   rpc_port_ = 0;
+    FencingToken                               fencing_token_;
+    std::unique_ptr<RingConsensus>             consensus_;
 
     std::atomic<bool>                          joined_{false};
 
