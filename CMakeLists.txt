@@ -171,9 +171,33 @@ if(ZEPTO_USE_PARQUET)
         if(ARROW_FOUND AND PARQUET_FOUND)
             message(STATUS "Arrow (pkg-config): ${ARROW_VERSION} (Parquet 활성화)")
         else()
-            message(STATUS "Arrow/Parquet: 없음 — Parquet 저장 비활성화")
-            message(STATUS "  설치: sudo dnf install -y arrow-devel parquet-devel")
-            set(ZEPTO_USE_PARQUET OFF)
+            # Fallback: pyarrow 번들 C++ 라이브러리
+            execute_process(
+                COMMAND python3 -c "import pyarrow; print(pyarrow.get_library_dirs()[0])"
+                OUTPUT_VARIABLE PYARROW_LIB_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE PYARROW_RESULT ERROR_QUIET)
+            execute_process(
+                COMMAND python3 -c "import pyarrow; print(pyarrow.get_include())"
+                OUTPUT_VARIABLE PYARROW_INC_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+            find_library(PYARROW_ARROW_LIB NAMES arrow PATHS "${PYARROW_LIB_DIR}" NO_DEFAULT_PATH)
+            find_library(PYARROW_PARQUET_LIB NAMES parquet PATHS "${PYARROW_LIB_DIR}" NO_DEFAULT_PATH)
+            if(PYARROW_ARROW_LIB AND PYARROW_PARQUET_LIB)
+                message(STATUS "Arrow/Parquet: pyarrow 번들 사용 (${PYARROW_LIB_DIR})")
+                set(ZEPTO_PARQUET_VIA_PYARROW ON)
+                add_library(PyArrow::arrow SHARED IMPORTED)
+                set_target_properties(PyArrow::arrow PROPERTIES
+                    IMPORTED_LOCATION "${PYARROW_ARROW_LIB}"
+                    INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_INC_DIR}")
+                add_library(PyArrow::parquet SHARED IMPORTED)
+                set_target_properties(PyArrow::parquet PROPERTIES
+                    IMPORTED_LOCATION "${PYARROW_PARQUET_LIB}"
+                    INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_INC_DIR}")
+            else()
+                message(STATUS "Arrow/Parquet: 없음 — Parquet 저장 비활성화")
+                message(STATUS "  설치: pip3 install pyarrow")
+                set(ZEPTO_USE_PARQUET OFF)
+            endif()
         endif()
     endif()
 endif()
@@ -309,6 +333,8 @@ if(ZEPTO_USE_PARQUET)
         target_link_libraries(zepto_storage PUBLIC Arrow::arrow_shared Parquet::parquet_shared)
     elseif(ARROW_FOUND AND PARQUET_FOUND)
         target_link_libraries(zepto_storage PUBLIC PkgConfig::ARROW PkgConfig::PARQUET)
+    elseif(ZEPTO_PARQUET_VIA_PYARROW)
+        target_link_libraries(zepto_storage PUBLIC PyArrow::arrow PyArrow::parquet)
     endif()
     target_compile_definitions(zepto_storage PUBLIC ZEPTO_PARQUET_ENABLED=1)
 endif()
