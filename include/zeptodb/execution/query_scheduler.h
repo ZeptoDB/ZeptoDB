@@ -58,6 +58,7 @@ struct QueryFragment {
     bool        has_group_by      = false;
     std::string group_by_column;
     int64_t     group_xbar_bucket = 0;
+    int64_t     group_dt_bucket   = 0;
 
     // 단순 필터 힌트 (직렬화 가능)
     int64_t symbol_filter = -1;       // -1 = no filter

@@ -1219,12 +1219,41 @@ GroupByClause Parser::parse_group_by() {
             gc.aliases.push_back(alias);
             gc.columns.push_back(col);
             gc.xbar_buckets.push_back(bucket);
+            gc.date_trunc_buckets.push_back(0);
+        } else if (check(TokenType::DATE_TRUNC)) {
+            // DATE_TRUNC('unit', col) in GROUP BY
+            advance(); // DATE_TRUNC 소비
+            expect(TokenType::LPAREN, "(");
+            // Parse unit string literal
+            auto tok = current();
+            if (tok.type != TokenType::STRING)
+                throw std::runtime_error("DATE_TRUNC expects a string unit");
+            std::string unit = tok.value;
+            advance();
+            expect(TokenType::COMMA, ",");
+            std::string alias, col;
+            parse_qualified_name(alias, col);
+            expect(TokenType::RPAREN, ")");
+            // Convert unit to nanosecond bucket
+            int64_t bucket = 1;
+            if (unit == "us")        bucket = 1'000LL;
+            else if (unit == "ms")   bucket = 1'000'000LL;
+            else if (unit == "s")    bucket = 1'000'000'000LL;
+            else if (unit == "min")  bucket = 60'000'000'000LL;
+            else if (unit == "hour") bucket = 3'600'000'000'000LL;
+            else if (unit == "day")  bucket = 86'400'000'000'000LL;
+            else if (unit == "week") bucket = 604'800'000'000'000LL;
+            gc.aliases.push_back(alias);
+            gc.columns.push_back(col);
+            gc.xbar_buckets.push_back(0);
+            gc.date_trunc_buckets.push_back(bucket);
         } else {
             std::string alias, col;
             parse_qualified_name(alias, col);
             gc.aliases.push_back(alias);
             gc.columns.push_back(col);
             gc.xbar_buckets.push_back(0); // 0 = 일반 컬럼
+            gc.date_trunc_buckets.push_back(0);
         }
     };
 

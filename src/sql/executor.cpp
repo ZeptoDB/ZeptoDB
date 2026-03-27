@@ -2638,7 +2638,9 @@ QueryResultSet QueryExecutor::exec_group_agg(
     const std::string& group_col = gb.columns[0];
     // xbar 버킷 크기 (0이면 일반 컬럼, >0이면 xbar 플로어)
     int64_t group_xbar_bucket = gb.xbar_buckets.empty() ? 0 : gb.xbar_buckets[0];
-    bool is_symbol_group = (gb.columns.size() == 1 && group_col == "symbol" && group_xbar_bucket == 0);
+    int64_t group_dt_bucket = gb.date_trunc_buckets.empty() ? 0 : gb.date_trunc_buckets[0];
+    bool is_symbol_group = (gb.columns.size() == 1 && group_col == "symbol"
+                            && group_xbar_bucket == 0 && group_dt_bucket == 0);
 
     struct GroupState {
         int64_t  sum     = 0;
@@ -2817,6 +2819,7 @@ QueryResultSet QueryExecutor::exec_group_agg(
     // ─────────────────────────────────────────────────────────────────────
     if (gb.columns.size() == 1) {
         const int64_t bucket = gb.xbar_buckets.empty() ? 0 : gb.xbar_buckets[0];
+        const int64_t dt_bucket = gb.date_trunc_buckets.empty() ? 0 : gb.date_trunc_buckets[0];
         const size_t ncols = stmt.columns.size();
 
         // Flat GroupState: key→slot index map + single contiguous array.
@@ -2869,6 +2872,7 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 // Compute flat int64_t key — no heap allocation
                 int64_t kv = gkey_col ? gkey_col[idx] : symbol_kv;
                 if (bucket > 0) kv = (kv / bucket) * bucket;
+                if (dt_bucket > 0) kv = (kv / dt_bucket) * dt_bucket;
 
                 // Sorted-scan fast path: skip hash lookup when key unchanged.
                 if (__builtin_expect(kv != cached_key, 0)) {
@@ -3012,6 +3016,8 @@ QueryResultSet QueryExecutor::exec_group_agg(
         for (size_t gi = 0; gi < gb.columns.size(); ++gi) {
             const std::string& gcol   = gb.columns[gi];
             int64_t            bucket = gb.xbar_buckets[gi];
+            int64_t            dt_bucket = (gi < gb.date_trunc_buckets.size())
+                                           ? gb.date_trunc_buckets[gi] : 0;
             int64_t            kv;
             if (gcol == "symbol") {
                 kv = static_cast<int64_t>(part.key().symbol_id);
@@ -3020,6 +3026,7 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 kv = gdata ? gdata[idx] : 0;
             }
             if (bucket > 0) kv = (kv / bucket) * bucket;
+            if (dt_bucket > 0) kv = (kv / dt_bucket) * dt_bucket;
             key.push_back(kv);
         }
         return key;

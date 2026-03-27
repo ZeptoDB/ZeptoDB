@@ -292,6 +292,8 @@ struct GroupByClause {
     std::vector<std::string> aliases;  // 대응되는 테이블 alias (없으면 "")
     // XBAR: GROUP BY xbar(col, bucket) 지원
     std::vector<int64_t>     xbar_buckets;  // 0이면 일반 컬럼, >0이면 xbar
+    // DATE_TRUNC: GROUP BY DATE_TRUNC('unit', col) 지원
+    std::vector<int64_t>     date_trunc_buckets; // 0이면 미사용, >0이면 DATE_TRUNC bucket (ns)
 };
 
 // ============================================================================
