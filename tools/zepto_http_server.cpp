@@ -1,11 +1,19 @@
 // ============================================================================
-// zepto_http_server — standalone HTTP server for Web UI + API
+// zepto_http_server — HTTP server for Web UI + API
+// ============================================================================
+// Always starts with QueryCoordinator enabled.
+// - No data nodes → standalone behavior (local pipeline only)
+// - Data nodes added → cluster behavior
+// - --ha active/standby --peer host:port → HA failover
 // ============================================================================
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/server/http_server.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/auth/auth_manager.h"
 #include "zeptodb/ingestion/tick_plant.h"
+#include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/cluster/coordinator_ha.h"
+#include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/util/logger.h"
 
 #include <csignal>
@@ -37,36 +45,90 @@ static bool is_port_in_use(uint16_t port) {
 }
 #endif
 
+struct RemoteNodeSpec { uint32_t id; std::string host; uint16_t port; };
+
 int main(int argc, char* argv[]) {
     uint16_t port = 8123;
+    uint16_t rpc_port = 0;  // RPC port for HA peer communication
     int num_ticks = 10000;
     bool no_auth = false;
+    uint32_t node_id = 0;
+    std::vector<RemoteNodeSpec> remote_nodes;
+    std::string log_level = "info";
+    std::string ha_role_str;   // "active" or "standby"
+    std::string peer_spec;     // "host:port"
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "--port" || arg == "-p") && i + 1 < argc)
             port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (arg == "--rpc-port" && i + 1 < argc)
+            rpc_port = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if ((arg == "--ticks" || arg == "-n") && i + 1 < argc)
             num_ticks = std::atoi(argv[++i]);
         else if (arg == "--no-auth")
             no_auth = true;
+        else if (arg == "--node-id" && i + 1 < argc)
+            node_id = static_cast<uint32_t>(std::atoi(argv[++i]));
+        else if (arg == "--log-level" && i + 1 < argc)
+            log_level = argv[++i];
+        else if (arg == "--ha" && i + 1 < argc)
+            ha_role_str = argv[++i];
+        else if (arg == "--peer" && i + 1 < argc)
+            peer_spec = argv[++i];
+        else if (arg == "--cluster") {}  // no-op (always enabled)
+        else if (arg == "--add-node" && i + 1 < argc) {
+            std::string spec = argv[++i];
+            auto p1 = spec.find(':');
+            auto p2 = spec.find(':', p1 + 1);
+            if (p1 != std::string::npos && p2 != std::string::npos) {
+                remote_nodes.push_back({
+                    static_cast<uint32_t>(std::stoi(spec.substr(0, p1))),
+                    spec.substr(p1 + 1, p2 - p1 - 1),
+                    static_cast<uint16_t>(std::stoi(spec.substr(p2 + 1)))
+                });
+            }
+        }
         else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: " << argv[0] << " [--port 8123] [--ticks 10000] [--no-auth]\n";
+            std::cout << "Usage: " << argv[0]
+                      << " [--port 8123] [--ticks 10000] [--no-auth]\n"
+                      << "       [--node-id 0] [--add-node id:host:port ...]\n"
+                      << "       [--log-level info|debug|warn|error]\n"
+                      << "       [--ha active|standby] [--peer host:port] [--rpc-port PORT]\n\n"
+                      << "HA mode:\n"
+                      << "  --ha active  --peer standby-host:rpc-port  --rpc-port 9100\n"
+                      << "  --ha standby --peer active-host:rpc-port   --rpc-port 9101\n\n"
+                      << "Example:\n"
+                      << "  # Active coordinator\n"
+                      << "  ./zepto_http_server --port 8123 --ha active --peer localhost:9101 --rpc-port 9100\n\n"
+                      << "  # Standby coordinator\n"
+                      << "  ./zepto_http_server --port 8124 --ha standby --peer localhost:9100 --rpc-port 9101\n";
             return 0;
         }
+    }
+
+    bool ha_mode = !ha_role_str.empty();
+    if (ha_mode && peer_spec.empty()) {
+        std::cerr << "Error: --ha requires --peer host:port\n";
+        return 1;
+    }
+    if (ha_mode && rpc_port == 0) {
+        rpc_port = port + 1000;  // default: HTTP port + 1000
     }
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    // Initialize logger — console + file output
-    zeptodb::util::Logger::instance().init("/var/log/zeptodb",
-                                           zeptodb::util::LogLevel::INFO);
+    // Initialize logger
+    zeptodb::util::LogLevel ll = zeptodb::util::LogLevel::INFO;
+    if (log_level == "debug")    ll = zeptodb::util::LogLevel::DEBUG;
+    else if (log_level == "warn")  ll = zeptodb::util::LogLevel::WARN;
+    else if (log_level == "error") ll = zeptodb::util::LogLevel::ERROR;
+    zeptodb::util::Logger::instance().init("/var/log/zeptodb", ll);
 
 #ifdef __linux__
     if (is_port_in_use(port)) {
-        std::cerr << "Error: port " << port << " is already in use. "
-                  << "Stop the existing server first or use --port <other>.\n";
+        std::cerr << "Error: port " << port << " is already in use.\n";
         return 1;
     }
 #endif
@@ -76,7 +138,7 @@ int main(int argc, char* argv[]) {
     cfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
     zeptodb::core::ZeptoPipeline pipeline(cfg);
 
-    // Register default trades schema so SHOW TABLES / DESCRIBE work
+    // Register default trades schema
     zeptodb::sql::QueryExecutor bootstrap_ex(pipeline);
     bootstrap_ex.execute("CREATE TABLE IF NOT EXISTS trades (symbol SYMBOL, price INT64, volume INT64, timestamp INT64)");
 
@@ -102,28 +164,106 @@ int main(int argc, char* argv[]) {
 
     auto auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
 
-    auto admin_key  = auth->create_api_key("dev-admin",  zeptodb::auth::Role::ADMIN);
-    auto writer_key = auth->create_api_key("dev-writer", zeptodb::auth::Role::WRITER);
-    auto reader_key = auth->create_api_key("dev-reader", zeptodb::auth::Role::READER);
+    // Only create dev keys if they don't already exist
+    auto existing = auth->list_api_keys();
+    auto has_key = [&](const std::string& name) {
+        return std::any_of(existing.begin(), existing.end(),
+            [&](const auto& e) { return e.name == name && e.enabled; });
+    };
+    std::string admin_key, writer_key, reader_key;
+    if (!has_key("dev-admin"))  admin_key  = auth->create_api_key("dev-admin",  zeptodb::auth::Role::ADMIN);
+    if (!has_key("dev-writer")) writer_key = auth->create_api_key("dev-writer", zeptodb::auth::Role::WRITER);
+    if (!has_key("dev-reader")) reader_key = auth->create_api_key("dev-reader", zeptodb::auth::Role::READER);
 
     // HTTP server
     zeptodb::sql::QueryExecutor executor(pipeline);
     zeptodb::server::HttpServer server(executor, port, zeptodb::auth::TlsConfig{}, auth);
     server.set_ready(true);
 
+    // ── HA mode ──
+    std::unique_ptr<zeptodb::cluster::CoordinatorHA> ha;
+    std::unique_ptr<zeptodb::cluster::TcpRpcServer> rpc_srv;
+
+    // ── Non-HA: plain coordinator ──
+    std::unique_ptr<zeptodb::cluster::QueryCoordinator> coordinator;
+
+    if (ha_mode) {
+        auto role = (ha_role_str == "active")
+            ? zeptodb::cluster::CoordinatorRole::ACTIVE
+            : zeptodb::cluster::CoordinatorRole::STANDBY;
+
+        auto colon = peer_spec.find(':');
+        std::string peer_host = peer_spec.substr(0, colon);
+        uint16_t peer_port = static_cast<uint16_t>(
+            std::atoi(peer_spec.substr(colon + 1).c_str()));
+
+        ha = std::make_unique<zeptodb::cluster::CoordinatorHA>();
+        ha->init(role, peer_host, peer_port);
+
+        // Register local node
+        zeptodb::cluster::NodeAddress self_addr{"localhost", port, node_id};
+        ha->add_local_node(self_addr, pipeline);
+
+        // Register remote data nodes
+        for (auto& rn : remote_nodes) {
+            zeptodb::cluster::NodeAddress addr{rn.host, rn.port, rn.id};
+            ha->add_remote_node(addr);
+        }
+
+        // Start RPC server for peer communication (ping/query forwarding)
+        rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+        rpc_srv->start(rpc_port, [&](const std::string& sql) {
+            return ha->execute_sql(sql);
+        });
+
+        ha->on_promotion([port, &ha]() {
+            std::cout << "\n*** PROMOTED to ACTIVE (port " << port << ") ***\n"
+                      << "Promotions: " << ha->promotion_count() << "\n";
+        });
+
+        ha->start();
+        server.set_coordinator(&ha->coordinator(), static_cast<uint16_t>(node_id));
+
+        std::cout << "HA mode: " << ha_role_str
+                  << " (rpc_port=" << rpc_port
+                  << ", peer=" << peer_spec << ")\n";
+    } else {
+        coordinator = std::make_unique<zeptodb::cluster::QueryCoordinator>();
+        zeptodb::cluster::NodeAddress self_addr{"localhost", port, node_id};
+        coordinator->add_local_node(self_addr, pipeline);
+
+        for (auto& rn : remote_nodes) {
+            zeptodb::cluster::NodeAddress addr{rn.host, rn.port, rn.id};
+            coordinator->add_remote_node(addr);
+        }
+
+        server.set_coordinator(coordinator.get(), static_cast<uint16_t>(node_id));
+    }
+
     std::cout << "ZeptoDB HTTP server: http://localhost:" << port
-              << "  (" << num_ticks << " sample ticks loaded)\n\n"
-              << "=== Dev API Keys (shown once) ===\n"
-              << "  admin:  " << admin_key  << "\n"
-              << "  writer: " << writer_key << "\n"
-              << "  reader: " << reader_key << "\n"
-              << "=================================\n";
+              << "  (" << num_ticks << " sample ticks loaded, node_id=" << node_id << ")\n";
+    if (!remote_nodes.empty()) {
+        std::cout << "Remote nodes:\n";
+        for (auto& rn : remote_nodes)
+            std::cout << "  Node " << rn.id << " → " << rn.host << ":" << rn.port << "\n";
+    }
+    if (!admin_key.empty() || !writer_key.empty() || !reader_key.empty()) {
+        std::cout << "\n=== Dev API Keys (shown once) ===\n";
+        if (!admin_key.empty())  std::cout << "  admin:  " << admin_key  << "\n";
+        if (!writer_key.empty()) std::cout << "  writer: " << writer_key << "\n";
+        if (!reader_key.empty()) std::cout << "  reader: " << reader_key << "\n";
+        std::cout << "=================================\n";
+    } else {
+        std::cout << "\n=== Dev API Keys: already exist (skipped creation) ===\n";
+    }
 
     server.start_async();
 
     while (g_running.load())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+    if (ha) ha->stop();
+    if (rpc_srv) rpc_srv->stop();
     server.stop();
     return 0;
 }
