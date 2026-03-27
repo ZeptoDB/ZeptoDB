@@ -1548,3 +1548,486 @@ TEST(HttpClusterHA, NetworkPartition_PromotionWithFencing) {
 
     standby_ha.stop();
 }
+
+// ============================================================================
+// TcpRpcServer: payload size limit
+// ============================================================================
+
+TEST(TcpRpcServerPayloadLimit, RejectsOversizedPayload) {
+    using namespace zeptodb::cluster;
+
+    TcpRpcServer server;
+    server.set_max_payload_size(128);  // 128 bytes limit for test
+    server.start(19950,
+        [](const std::string&) {
+            return zeptodb::sql::QueryResultSet{};
+        });
+    std::this_thread::sleep_for(20ms);
+
+    // Small payload should succeed
+    TcpRpcClient client("127.0.0.1", 19950);
+    auto result = client.execute_sql("SELECT 1");
+    EXPECT_TRUE(result.error.empty()) << result.error;
+
+    // Oversized payload: send raw message with payload_len > 128
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0);
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(19950);
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+
+    RpcHeader hdr;
+    hdr.type        = static_cast<uint32_t>(RpcType::SQL_QUERY);
+    hdr.request_id  = 1;
+    hdr.payload_len = 256;  // exceeds 128 limit
+    ::send(fd, &hdr, sizeof(hdr), 0);
+
+    // Server should close the connection — recv should return 0
+    RpcHeader resp{};
+    ssize_t n = ::recv(fd, &resp, sizeof(resp), 0);
+    EXPECT_LE(n, 0);  // connection closed or error
+    ::close(fd);
+
+    // Server should still be running and accept new connections
+    auto result2 = client.execute_sql("SELECT 2");
+    EXPECT_TRUE(result2.error.empty()) << result2.error;
+
+    server.stop();
+}
+
+// ============================================================================
+// TcpRpcServer: max connections limit
+// ============================================================================
+
+TEST(TcpRpcServerMaxConnections, RejectsWhenFull) {
+    using namespace zeptodb::cluster;
+
+    TcpRpcServer server;
+    server.set_max_connections(2);
+    server.start(19951,
+        [](const std::string&) { return zeptodb::sql::QueryResultSet{}; });
+    std::this_thread::sleep_for(20ms);
+
+    // Open 2 persistent connections (keep-alive) that hold slots
+    auto make_conn = []() -> int {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(19951);
+        ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+            ::close(fd);
+            return -1;
+        }
+        // Send a PING to ensure server has accepted and counted this connection
+        RpcHeader ping{};
+        ping.type = static_cast<uint32_t>(RpcType::PING);
+        ::send(fd, &ping, sizeof(ping), 0);
+        RpcHeader pong{};
+        ::recv(fd, &pong, sizeof(pong), 0);
+        return fd;
+    };
+
+    int fd1 = make_conn();
+    int fd2 = make_conn();
+    ASSERT_GE(fd1, 0);
+    ASSERT_GE(fd2, 0);
+
+    // 3rd connection should be rejected (server closes it immediately)
+    std::this_thread::sleep_for(10ms);
+    int fd3 = ::socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(19951);
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    int ret = ::connect(fd3, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (ret == 0) {
+        // Connection accepted at TCP level but server should close it
+        std::this_thread::sleep_for(20ms);
+        RpcHeader ping{};
+        ping.type = static_cast<uint32_t>(RpcType::PING);
+        ::send(fd3, &ping, sizeof(ping), 0);
+        RpcHeader resp{};
+        ssize_t n = ::recv(fd3, &resp, sizeof(resp), 0);
+        EXPECT_LE(n, 0);  // server closed the connection
+    }
+    ::close(fd3);
+
+    // Close one slot, new connection should work
+    ::close(fd1);
+    std::this_thread::sleep_for(30ms);  // wait for server to decrement active_conns
+
+    TcpRpcClient client("127.0.0.1", 19951);
+    auto result = client.execute_sql("SELECT 1");
+    EXPECT_TRUE(result.error.empty()) << result.error;
+
+    ::close(fd2);
+    server.stop();
+}
+
+// ============================================================================
+// TcpRpcServer: thread pool
+// ============================================================================
+
+TEST(TcpRpcServerThreadPool, ConcurrentRequestsWithSmallPool) {
+    using namespace zeptodb::cluster;
+
+    TcpRpcServer server;
+    server.set_thread_pool_size(2);  // only 2 worker threads
+    std::atomic<int> active{0};
+    std::atomic<int> max_active{0};
+
+    server.start(19952,
+        [&](const std::string&) {
+            int cur = active.fetch_add(1) + 1;
+            // Track max concurrent handlers
+            int prev = max_active.load();
+            while (cur > prev && !max_active.compare_exchange_weak(prev, cur)) {}
+            std::this_thread::sleep_for(50ms);
+            active.fetch_sub(1);
+            return zeptodb::sql::QueryResultSet{};
+        });
+    std::this_thread::sleep_for(20ms);
+
+    // Fire 4 concurrent requests — only 2 should run at a time
+    std::vector<std::future<bool>> futures;
+    for (int i = 0; i < 4; ++i) {
+        futures.push_back(std::async(std::launch::async, [&]() {
+            TcpRpcClient client("127.0.0.1", 19952);
+            auto r = client.execute_sql("SELECT 1");
+            return r.ok();
+        }));
+    }
+    for (auto& f : futures) EXPECT_TRUE(f.get());
+
+    // With 2 workers, max concurrent should be <= 2
+    EXPECT_LE(max_active.load(), 2);
+
+    server.stop();
+}
+
+// ============================================================================
+// TcpRpcServer: graceful drain
+// ============================================================================
+
+TEST(TcpRpcServerGracefulDrain, InFlightRequestCompletesBeforeStop) {
+    using namespace zeptodb::cluster;
+
+    TcpRpcServer server;
+    server.set_thread_pool_size(2);
+    server.set_drain_timeout_ms(5000);
+
+    std::atomic<bool> handler_entered{false};
+    std::atomic<bool> handler_done{false};
+
+    server.start(19953,
+        [&](const std::string&) {
+            handler_entered.store(true);
+            // Simulate a slow query
+            std::this_thread::sleep_for(200ms);
+            handler_done.store(true);
+            return zeptodb::sql::QueryResultSet{};
+        });
+    std::this_thread::sleep_for(20ms);
+
+    // Start a slow request in background
+    auto fut = std::async(std::launch::async, [&]() {
+        TcpRpcClient client("127.0.0.1", 19953);
+        return client.execute_sql("SELECT slow");
+    });
+
+    // Wait until handler is processing
+    while (!handler_entered.load())
+        std::this_thread::sleep_for(5ms);
+
+    // Stop while request is in-flight — should wait for it
+    server.stop();
+
+    // Handler should have completed (not been killed)
+    EXPECT_TRUE(handler_done.load());
+
+    auto result = fut.get();
+    EXPECT_TRUE(result.ok()) << result.error;
+}
+
+TEST(TcpRpcServerGracefulDrain, ForceCloseAfterTimeout) {
+    using namespace zeptodb::cluster;
+
+    TcpRpcServer server;
+    server.set_thread_pool_size(1);
+    server.set_drain_timeout_ms(100);  // very short timeout
+
+    server.start(19954,
+        [&](const std::string&) {
+            // This handler takes longer than drain timeout
+            std::this_thread::sleep_for(2000ms);
+            return zeptodb::sql::QueryResultSet{};
+        });
+    std::this_thread::sleep_for(20ms);
+
+    // Start a very slow request
+    auto fut = std::async(std::launch::async, [&]() {
+        TcpRpcClient client("127.0.0.1", 19954);
+        return client.execute_sql("SELECT very_slow");
+    });
+
+    // Wait for handler to start
+    std::this_thread::sleep_for(50ms);
+
+    // stop() should force-close after 100ms, not hang for 2s
+    auto t0 = std::chrono::steady_clock::now();
+    server.stop();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    // Should complete well under 2000ms (the handler sleep)
+    EXPECT_LT(elapsed, 1500);
+
+    // Client gets an error (connection was force-closed)
+    auto result = fut.get();
+    // Result may or may not have error depending on timing, just ensure no hang
+}
+
+// ============================================================================
+// PartitionRouter: concurrent add/remove/route
+// ============================================================================
+
+TEST(PartitionRouterConcurrency, ConcurrentAddRemoveRoute) {
+    using namespace zeptodb::cluster;
+
+    PartitionRouter router;
+    router.add_node(1);
+    router.add_node(2);
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> route_count{0};
+    std::atomic<int> errors{0};
+
+    // Reader threads: route continuously
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; ++i) {
+        readers.emplace_back([&, i]() {
+            while (!stop.load()) {
+                try {
+                    router.route(static_cast<SymbolId>(i * 100 + route_count.load()));
+                    route_count.fetch_add(1);
+                } catch (...) {
+                    errors.fetch_add(1);
+                }
+            }
+        });
+    }
+
+    // Writer thread: add/remove node 3 repeatedly
+    std::thread writer([&]() {
+        for (int i = 0; i < 50 && !stop.load(); ++i) {
+            router.add_node(3);
+            std::this_thread::sleep_for(1ms);
+            router.remove_node(3);
+            std::this_thread::sleep_for(1ms);
+        }
+        stop.store(true);
+    });
+
+    writer.join();
+    stop.store(true);
+    for (auto& r : readers) r.join();
+
+    EXPECT_EQ(errors.load(), 0);
+    EXPECT_GT(route_count.load(), 0);
+    // Node 3 should be gone at the end
+    EXPECT_EQ(router.node_count(), 2u);
+}
+
+// ============================================================================
+// TcpRpcClient::ping() connection pooling
+// ============================================================================
+
+TEST(TcpRpcClientPing, UsesConnectionPool) {
+    using namespace zeptodb::cluster;
+
+    TcpRpcServer server;
+    server.start(19955,
+        [](const std::string&) { return zeptodb::sql::QueryResultSet{}; });
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", 19955, 2000, 4);
+
+    // First ping creates a connection
+    EXPECT_TRUE(client.ping());
+    // Connection should be returned to pool
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+
+    // Second ping reuses the pooled connection
+    EXPECT_TRUE(client.ping());
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+
+    // Multiple pings should not grow the pool beyond 1
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(client.ping());
+    }
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+
+    server.stop();
+}
+
+// ============================================================================
+// P8-Medium: GossipNodeRegistry atomic, K8sNodeRegistry deadlock, ClusterNode seed
+// ============================================================================
+
+TEST(GossipNodeRegistryAtomic, RunningFlagIsAtomic) {
+    using namespace zeptodb::cluster;
+
+    // Verify running_ is std::atomic<bool> — concurrent reads should not race
+    GossipNodeRegistry reg(HealthConfig{});
+    EXPECT_FALSE(reg.is_running());
+
+    // Read is_running from multiple threads before start — no UB
+    std::atomic<int> false_count{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) {
+        threads.emplace_back([&]() {
+            if (!reg.is_running()) false_count.fetch_add(1);
+        });
+    }
+    for (auto& t : threads) t.join();
+    EXPECT_EQ(false_count.load(), 4);
+}
+
+TEST(K8sNodeRegistryDeadlock, CallbackDuringRegisterDoesNotDeadlock) {
+    using namespace zeptodb::cluster;
+
+    K8sNodeRegistry reg;
+    NodeAddress self{};
+    self.id = 1; self.host = "127.0.0.1"; self.port = 29100;
+
+    std::atomic<int> cb_count{0};
+    reg.on_change([&](NodeId, NodeEvent) {
+        // This callback accesses the registry — would deadlock before fix
+        auto nodes = reg.active_nodes();
+        cb_count.fetch_add(1);
+    });
+
+    reg.start(self);
+
+    NodeAddress peer{};
+    peer.id = 2; peer.host = "127.0.0.1"; peer.port = 29101;
+    reg.register_node(peer);  // should not deadlock
+
+    EXPECT_GE(cb_count.load(), 1);
+    EXPECT_EQ(reg.node_count(), 2u);
+
+    reg.deregister_node(peer.id);
+    EXPECT_EQ(reg.node_count(), 1u);
+
+    reg.stop();
+}
+
+TEST(ClusterNodeSeedFailure, BootstrapWithNoSeedsSucceeds) {
+    using namespace zeptodb::cluster;
+    using ShmNode = ClusterNode<SharedMemBackend>;
+
+    ClusterConfig cfg;
+    cfg.self = {"127.0.0.1", 29201, 1};
+    cfg.pipeline.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    cfg.enable_remote_ingest = false;
+
+    auto node = std::make_unique<ShmNode>(cfg);
+
+    // No seeds = bootstrap mode, should succeed
+    EXPECT_NO_THROW(node->join_cluster({}));
+    EXPECT_TRUE(node->is_joined());
+    node->leave_cluster();
+}
+
+TEST(ClusterNodeSeedFailure, PartialSeedConnectionSucceeds) {
+    using namespace zeptodb::cluster;
+    using ShmNode = ClusterNode<SharedMemBackend>;
+
+    // Node 1: bootstrap (no seeds)
+    ClusterConfig cfg1;
+    cfg1.self = {"127.0.0.1", 29210, 10};
+    cfg1.pipeline.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    cfg1.enable_remote_ingest = false;
+    auto node1 = std::make_unique<ShmNode>(cfg1);
+    node1->join_cluster({});
+
+    // Node 2: join with node1 as seed — should succeed
+    ClusterConfig cfg2;
+    cfg2.self = {"127.0.0.1", 29211, 11};
+    cfg2.pipeline.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    cfg2.enable_remote_ingest = false;
+    auto node2 = std::make_unique<ShmNode>(cfg2);
+    EXPECT_NO_THROW(node2->join_cluster({cfg1.self}));
+    EXPECT_TRUE(node2->is_joined());
+
+    node2->leave_cluster();
+    node1->leave_cluster();
+}
+
+// ============================================================================
+// K8sNodeRegistry: endpoint parsing and reconciliation
+// ============================================================================
+
+TEST(K8sNodeRegistryEndpoints, ParseEndpointsJson) {
+    using namespace zeptodb::cluster;
+
+    // Simulated K8s Endpoints API response (minimal)
+    std::string json = R"({
+        "subsets": [{
+            "addresses": [
+                {"ip": "10.0.0.1", "targetRef": {"name": "zeptodb-0"}},
+                {"ip": "10.0.0.2", "targetRef": {"name": "zeptodb-1"}},
+                {"ip": "10.0.0.3", "targetRef": {"name": "zeptodb-2"}}
+            ],
+            "ports": [{"port": 8080, "protocol": "TCP"}]
+        }]
+    })";
+
+    auto addrs = K8sNodeRegistry::parse_endpoints_json(json);
+    ASSERT_EQ(addrs.size(), 3u);
+    EXPECT_EQ(addrs[0].host, "10.0.0.1");
+    EXPECT_EQ(addrs[0].port, 8080);
+    EXPECT_EQ(addrs[1].host, "10.0.0.2");
+    EXPECT_EQ(addrs[2].host, "10.0.0.3");
+
+    // IDs should be stable and distinct
+    EXPECT_NE(addrs[0].id, addrs[1].id);
+    EXPECT_NE(addrs[1].id, addrs[2].id);
+}
+
+TEST(K8sNodeRegistryEndpoints, ReconcileDetectsJoinAndLeave) {
+    using namespace zeptodb::cluster;
+
+    K8sNodeRegistry reg;
+    NodeAddress self{"10.0.0.1", 8080, 1};
+
+    std::vector<std::pair<NodeId, NodeEvent>> events;
+    reg.on_change([&](NodeId id, NodeEvent ev) {
+        events.push_back({id, ev});
+    });
+    reg.start(self);
+
+    // Simulate first poll: discover 2 peers
+    NodeAddress peer1{"10.0.0.2", 8080, 2};
+    NodeAddress peer2{"10.0.0.3", 8080, 3};
+    reg.register_node(peer1);
+    reg.register_node(peer2);
+
+    EXPECT_EQ(reg.node_count(), 3u);  // self + 2 peers
+    EXPECT_EQ(events.size(), 2u);     // 2 JOINED events
+
+    // Simulate peer2 disappearing
+    reg.deregister_node(3);
+    EXPECT_EQ(reg.node_count(), 2u);
+
+    bool found_left = false;
+    for (auto& [id, ev] : events) {
+        if (id == 3 && ev == NodeEvent::LEFT) found_left = true;
+    }
+    EXPECT_TRUE(found_left);
+
+    reg.stop();
+}

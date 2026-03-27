@@ -903,7 +903,8 @@ TEST(PartitionMigration, MigrateSymbol_SourceToDest) {
     migrator.add_node(1, "127.0.0.1", 19860);
     migrator.add_node(2, "127.0.0.1", 19861);
 
-    EXPECT_TRUE(migrator.migrate_symbol(500, 1, 2));
+    uint64_t rows_tmp = 0;
+    EXPECT_TRUE(migrator.migrate_symbol(500, 1, 2, rows_tmp));
     EXPECT_EQ(migrator.stats().moves_completed.load(), 1u);
     EXPECT_EQ(migrator.stats().rows_migrated.load(), 10u);
 
@@ -965,8 +966,8 @@ TEST(PartitionMigration, ExecutePlan_MultipleSymbols) {
     plan.moves.push_back({601, 1, 2});
 
     zeptodb::cluster::PartitionRouter router;
-    size_t ok = migrator.execute_plan(plan, router);
-    EXPECT_EQ(ok, 2u);
+    auto cp = migrator.execute_plan(plan, router);
+    EXPECT_EQ(cp.committed_count(), 2u);
     EXPECT_EQ(migrator.stats().rows_migrated.load(), 10u);
 
     // Verify dest
@@ -999,7 +1000,8 @@ TEST(PartitionMigration, MigrateEmptySymbol_Succeeds) {
     migrator.add_node(2, "127.0.0.1", 19865);  // doesn't matter, no data to send
 
     // Symbol 999 has no data — should succeed (nothing to move)
-    EXPECT_TRUE(migrator.migrate_symbol(999, 1, 2));
+    uint64_t rows_empty = 0;
+    EXPECT_TRUE(migrator.migrate_symbol(999, 1, 2, rows_empty));
     EXPECT_EQ(migrator.stats().moves_completed.load(), 1u);
     EXPECT_EQ(migrator.stats().rows_migrated.load(), 0u);
 
@@ -1322,10 +1324,13 @@ TEST(Snapshot, TwoNodeSnapshot) {
     p1->drain_sync(100);
     p2->drain_sync(100);
 
-    // Each node handles SNAPSHOT by returning row count
+    // Each node handles SNAPSHOT 2PC commands
     TcpRpcServer srv1, srv2;
     srv1.start(19910, [&](const std::string& sql) {
-        if (sql == "SNAPSHOT") {
+        if (sql.find("SNAPSHOT PREPARE") == 0 || sql.find("SNAPSHOT ABORT") == 0) {
+            return make_result({"status"}, {{1}});
+        }
+        if (sql.find("SNAPSHOT COMMIT") == 0 || sql == "SNAPSHOT") {
             auto rows = p1->total_stored_rows();
             return make_result({"rows_flushed"},
                                {{static_cast<int64_t>(rows)}});
@@ -1334,7 +1339,10 @@ TEST(Snapshot, TwoNodeSnapshot) {
         return ex.execute(sql);
     });
     srv2.start(19911, [&](const std::string& sql) {
-        if (sql == "SNAPSHOT") {
+        if (sql.find("SNAPSHOT PREPARE") == 0 || sql.find("SNAPSHOT ABORT") == 0) {
+            return make_result({"status"}, {{1}});
+        }
+        if (sql.find("SNAPSHOT COMMIT") == 0 || sql == "SNAPSHOT") {
             auto rows = p2->total_stored_rows();
             return make_result({"rows_flushed"},
                                {{static_cast<int64_t>(rows)}});
@@ -1366,7 +1374,9 @@ TEST(Snapshot, NodeDown_PartialFailure) {
 
     TcpRpcServer srv1;
     srv1.start(19912, [&](const std::string& sql) {
-        if (sql == "SNAPSHOT")
+        if (sql.find("SNAPSHOT PREPARE") == 0 || sql.find("SNAPSHOT ABORT") == 0)
+            return make_result({"status"}, {{1}});
+        if (sql.find("SNAPSHOT COMMIT") == 0 || sql == "SNAPSHOT")
             return make_result({"rows_flushed"}, {{0}});
         return QueryResultSet{};
     });
@@ -3733,4 +3743,295 @@ TEST(QueryCoordinator, AddRemoveNode_Runtime) {
     EXPECT_EQ(coord.node_count(), 1u);
 
     p1->stop();
+}
+
+// ============================================================================
+// SnapshotCoordinator: 2PC abort on prepare failure
+// ============================================================================
+
+TEST(Snapshot, TwoPC_AbortOnPrepareFailure) {
+    using namespace zeptodb::cluster;
+
+    std::atomic<int> prepare_count{0};
+    std::atomic<int> abort_count{0};
+    std::atomic<int> commit_count{0};
+
+    // Node 1: succeeds prepare
+    TcpRpcServer srv1;
+    srv1.start(19960, [&](const std::string& sql) {
+        if (sql.find("SNAPSHOT PREPARE") == 0) { prepare_count++; return make_result({"status"}, {{1}}); }
+        if (sql.find("SNAPSHOT ABORT") == 0)   { abort_count++;   return make_result({"status"}, {{1}}); }
+        if (sql.find("SNAPSHOT COMMIT") == 0)  { commit_count++;  return make_result({"rows_flushed"}, {{5}}); }
+        return zeptodb::sql::QueryResultSet{};
+    });
+
+    // Node 2: fails prepare
+    TcpRpcServer srv2;
+    srv2.start(19961, [&](const std::string& sql) {
+        if (sql.find("SNAPSHOT PREPARE") == 0) {
+            prepare_count++;
+            zeptodb::sql::QueryResultSet err;
+            err.error = "disk full";
+            return err;
+        }
+        if (sql.find("SNAPSHOT ABORT") == 0)  { abort_count++;  return make_result({"status"}, {{1}}); }
+        if (sql.find("SNAPSHOT COMMIT") == 0) { commit_count++; return make_result({"rows_flushed"}, {{3}}); }
+        return zeptodb::sql::QueryResultSet{};
+    });
+    std::this_thread::sleep_for(20ms);
+
+    SnapshotCoordinator snap;
+    snap.add_node(1, "127.0.0.1", 19960);
+    snap.add_node(2, "127.0.0.1", 19961);
+
+    auto result = snap.take_snapshot();
+
+    // Should have aborted — not committed
+    EXPECT_FALSE(result.all_ok());
+    EXPECT_EQ(prepare_count.load(), 2);  // both received PREPARE
+    EXPECT_EQ(abort_count.load(), 2);    // both received ABORT
+    EXPECT_EQ(commit_count.load(), 0);   // no COMMIT sent
+
+    srv1.stop();
+    srv2.stop();
+}
+
+// ============================================================================
+// PartitionMigrator: state machine + checkpoint + retry
+// ============================================================================
+
+TEST(PartitionMigratorStateMachine, ResumeRetiesFailedMoves) {
+    using namespace zeptodb::cluster;
+
+    // Source node: symbol 700 has data, symbol 701 always fails
+    auto src = make_pipeline();
+    for (int i = 0; i < 5; ++i) {
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = 700;
+        msg.price = 10000000LL;
+        msg.volume = 100;
+        msg.recv_ts = static_cast<int64_t>(i) * 1'000'000'000LL;
+        src->ingest_tick(msg);
+    }
+    src->drain_sync(100);
+
+    auto dst = make_pipeline();
+
+    std::atomic<int> call_count{0};
+    TcpRpcServer src_srv;
+    src_srv.start(19970, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*src);
+        return ex.execute(sql);
+    });
+
+    // Dest: first call for WAL fails, subsequent succeed
+    TcpRpcServer dst_srv;
+    dst_srv.start(19971, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*dst);
+        return ex.execute(sql);
+    },
+    [&](const zeptodb::ingestion::TickMessage& msg) {
+        return dst->ingest_tick(msg);
+    },
+    [&](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
+        int c = call_count.fetch_add(1);
+        if (c == 0) return 0;  // first WAL replicate fails
+        size_t ok = 0;
+        for (auto& msg : batch)
+            if (dst->ingest_tick(msg)) ok++;
+        return ok;
+    });
+    std::this_thread::sleep_for(20ms);
+
+    PartitionMigrator migrator;
+    migrator.set_max_retries(3);
+    migrator.add_node(1, "127.0.0.1", 19970);
+    migrator.add_node(2, "127.0.0.1", 19971);
+
+    PartitionRouter router;
+    router.add_node(1);
+    router.add_node(2);
+
+    PartitionRouter::MigrationPlan plan;
+    plan.moves.push_back({700, 1, 2});
+
+    auto cp = migrator.execute_plan(plan, router);
+
+    // Should have retried and eventually succeeded
+    EXPECT_EQ(cp.committed_count(), 1u);
+    EXPECT_EQ(cp.failed_count(), 0u);
+    EXPECT_TRUE(cp.all_done());
+
+    // First attempt failed, second succeeded
+    EXPECT_GE(cp.moves[0].attempts, 2);
+
+    src_srv.stop();
+    dst_srv.stop();
+}
+
+// ============================================================================
+// PartitionMigrator: disk checkpoint save/load
+// ============================================================================
+
+TEST(MigrationCheckpointDisk, SaveAndLoad) {
+    using namespace zeptodb::cluster;
+
+    MigrationCheckpoint cp;
+    cp.moves.push_back({{100, 1, 2}, MoveState::COMMITTED, "", 500, 1});
+    cp.moves.push_back({{200, 1, 3}, MoveState::FAILED, "timeout", 0, 3});
+    cp.moves.push_back({{300, 2, 3}, MoveState::PENDING, "", 0, 0});
+
+    std::string path = "/tmp/zepto_test_checkpoint.json";
+    ASSERT_TRUE(cp.save_to_file(path));
+
+    auto loaded = MigrationCheckpoint::load_from_file(path);
+    ASSERT_EQ(loaded.moves.size(), 3u);
+
+    EXPECT_EQ(loaded.moves[0].move.symbol, 100u);
+    EXPECT_EQ(loaded.moves[0].move.from, 1u);
+    EXPECT_EQ(loaded.moves[0].move.to, 2u);
+    EXPECT_EQ(loaded.moves[0].state, MoveState::COMMITTED);
+    EXPECT_EQ(loaded.moves[0].rows_migrated, 500u);
+    EXPECT_EQ(loaded.moves[0].attempts, 1);
+
+    EXPECT_EQ(loaded.moves[1].state, MoveState::FAILED);
+    EXPECT_EQ(loaded.moves[1].error, "timeout");
+    EXPECT_EQ(loaded.moves[1].attempts, 3);
+
+    EXPECT_EQ(loaded.moves[2].state, MoveState::PENDING);
+
+    // Resume should skip COMMITTED, retry FAILED and PENDING
+    EXPECT_EQ(loaded.committed_count(), 1u);
+    EXPECT_EQ(loaded.failed_count(), 1u);
+    EXPECT_EQ(loaded.pending_count(), 2u);  // FAILED + PENDING
+
+    ::unlink(path.c_str());
+}
+
+TEST(MigrationCheckpointDisk, AutoSaveDuringPlan) {
+    using namespace zeptodb::cluster;
+
+    auto src = make_pipeline();
+    for (int i = 0; i < 3; ++i) {
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = 800;
+        msg.price = 10000000LL;
+        msg.volume = 100;
+        msg.recv_ts = static_cast<int64_t>(i) * 1'000'000'000LL;
+        src->ingest_tick(msg);
+    }
+    src->drain_sync(100);
+
+    auto dst = make_pipeline();
+
+    TcpRpcServer src_srv, dst_srv;
+    src_srv.start(19980, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*src);
+        return ex.execute(sql);
+    });
+    dst_srv.start(19981, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*dst);
+        return ex.execute(sql);
+    }, nullptr,
+    [&](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
+        size_t ok = 0;
+        for (auto& msg : batch) if (dst->ingest_tick(msg)) ok++;
+        return ok;
+    });
+    std::this_thread::sleep_for(20ms);
+
+    std::string cp_path = "/tmp/zepto_test_auto_checkpoint.json";
+
+    PartitionMigrator migrator;
+    migrator.set_checkpoint_path(cp_path);
+    migrator.add_node(1, "127.0.0.1", 19980);
+    migrator.add_node(2, "127.0.0.1", 19981);
+
+    PartitionRouter router;
+    router.add_node(1);
+    router.add_node(2);
+
+    PartitionRouter::MigrationPlan plan;
+    plan.moves.push_back({800, 1, 2});
+
+    auto cp = migrator.execute_plan(plan, router);
+    EXPECT_EQ(cp.committed_count(), 1u);
+
+    // Checkpoint file should exist on disk
+    auto loaded = MigrationCheckpoint::load_from_file(cp_path);
+    ASSERT_EQ(loaded.moves.size(), 1u);
+    EXPECT_EQ(loaded.moves[0].state, MoveState::COMMITTED);
+    EXPECT_EQ(loaded.moves[0].move.symbol, 800u);
+
+    ::unlink(cp_path.c_str());
+    src_srv.stop();
+    dst_srv.stop();
+}
+
+// ============================================================================
+// PartitionMigrator: Phase C — rollback on failure
+// ============================================================================
+
+TEST(PartitionMigratorRollback, FailedMoveDeletesPartialData) {
+    using namespace zeptodb::cluster;
+
+    auto src = make_pipeline();
+    for (int i = 0; i < 5; ++i) {
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = 850;
+        msg.price = 10000000LL;
+        msg.volume = 100;
+        msg.recv_ts = static_cast<int64_t>(i) * 1'000'000'000LL;
+        src->ingest_tick(msg);
+    }
+    src->drain_sync(100);
+
+    auto dst = make_pipeline();
+
+    TcpRpcServer src_srv;
+    src_srv.start(19990, [&](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(*src);
+        return ex.execute(sql);
+    });
+
+    // Dest: SQL executor handles DELETE, WAL always fails
+    std::atomic<int> delete_count{0};
+    TcpRpcServer dst_srv;
+    dst_srv.start(19991, [&](const std::string& sql) {
+        if (sql.find("DELETE") != std::string::npos) {
+            delete_count.fetch_add(1);
+            // In real impl this would delete data; here just acknowledge
+            return make_result({"deleted"}, {{1}});
+        }
+        zeptodb::sql::QueryExecutor ex(*dst);
+        return ex.execute(sql);
+    }, nullptr,
+    [&](const std::vector<zeptodb::ingestion::TickMessage>&) -> size_t {
+        return 0;  // WAL replicate always fails
+    });
+    std::this_thread::sleep_for(20ms);
+
+    PartitionMigrator migrator;
+    migrator.set_max_retries(1);  // fail fast
+    migrator.add_node(1, "127.0.0.1", 19990);
+    migrator.add_node(2, "127.0.0.1", 19991);
+
+    PartitionRouter router;
+    router.add_node(1);
+    router.add_node(2);
+
+    PartitionRouter::MigrationPlan plan;
+    plan.moves.push_back({850, 1, 2});
+
+    auto cp = migrator.execute_plan(plan, router);
+
+    // Move should have failed
+    EXPECT_EQ(cp.failed_count(), 1u);
+    EXPECT_EQ(cp.committed_count(), 0u);
+
+    // Rollback DELETE should have been sent to dest
+    EXPECT_GE(delete_count.load(), 1);
+
+    src_srv.stop();
+    dst_srv.stop();
 }
