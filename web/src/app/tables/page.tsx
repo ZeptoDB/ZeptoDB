@@ -163,7 +163,7 @@ export default function TablesPage() {
                     <TableCell sx={mono}>{c.column}</TableCell>
                     <TableCell>
                       <Chip label={c.type} size="small" variant="outlined"
-                        sx={{ ...mono, height: 22, borderColor: "#334155" }} />
+                        sx={{ ...mono, height: 22, borderColor: "rgba(255, 255, 255, 0.08)" }} />
                     </TableCell>
                   </TableRow>
                 ))}

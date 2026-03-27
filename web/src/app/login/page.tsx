@@ -35,10 +35,10 @@ export default function LoginPage() {
   };
 
   return (
-    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "#0A0E1A" }}>
-      <Paper sx={{ p: 4, width: 420, border: "1px solid #1E293B" }}>
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "#0A0C10" }}>
+      <Paper sx={{ p: 4, width: 420, border: "1px solid rgba(255, 255, 255, 0.08)" }}>
         <Box sx={{ textAlign: "center", mb: 3 }}>
-          <Typography variant="h5" sx={{ fontWeight: 700, background: "linear-gradient(135deg,#5C6BC0,#FFC107)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+          <Typography variant="h5" sx={{ fontWeight: 700, background: "linear-gradient(135deg,#4D7CFF,#00F5D4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
             ZeptoDB
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Sign in to Console</Typography>

@@ -32,14 +32,14 @@ const stateColor: Record<string, "success" | "warning" | "error" | "default" | "
 };
 
 const barColor: Record<string, string> = {
-  ACTIVE: "#66bb6a", SUSPECT: "#ffa726", DEAD: "#ef5350", JOINING: "#42a5f5", LEAVING: "#bdbdbd",
+  ACTIVE: "#00E676", SUSPECT: "#FFB300", DEAD: "#FF1744", JOINING: "#2979FF", LEAVING: "#bdbdbd",
 };
 
-const NODE_COLORS = ["#5C6BC0", "#66bb6a", "#ffa726", "#ef5350", "#ab47bc", "#26c6da", "#ff7043", "#8d6e63"];
+const NODE_COLORS = ["#4D7CFF", "#00E676", "#FFB300", "#FF1744", "#00F5D4", "#8EACFF", "#ff7043", "#8d6e63"];
 
 function StatCard({ label, value, color = "primary.main" }: { label: string; value: string | number; color?: string }) {
   return (
-    <Paper sx={{ p: 2.5, border: "1px solid #1E293B" }}>
+    <Paper sx={{ p: 2.5, border: "1px solid rgba(255, 255, 255, 0.08)" }}>
       <Typography variant="caption" color="text.secondary">{label}</Typography>
       <Typography variant="h5" sx={{ fontWeight: 700, color, fontFamily: "'JetBrains Mono', monospace" }}>
         {typeof value === "number" ? value.toLocaleString() : value}
@@ -103,7 +103,7 @@ export default function ClusterPage() {
   const nodeIds = [...new Set(metrics.map((m) => m.node_id))].sort();
   const timeSeries = buildTimeSeries(metrics, nodeIds);
 
-  const tooltipStyle = { backgroundColor: "#111827", border: "1px solid #1E293B", borderRadius: 8, fontSize: 12 };
+  const tooltipStyle = { backgroundColor: "#1B2129", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 8, fontSize: 12 };
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -118,8 +118,8 @@ export default function ClusterPage() {
       </Grid>
 
       {/* Node status table */}
-      <Paper sx={{ border: "1px solid #1E293B" }}>
-        <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid #1E293B" }}>
+      <Paper sx={{ border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+        <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <Typography variant="body2" color="text.secondary">Node Status</Typography>
         </Box>
         <TableContainer>
@@ -157,7 +157,7 @@ export default function ClusterPage() {
 
       {/* Ticks stored bar chart */}
       {nodes.length > 0 && (
-        <Paper sx={{ p: 2, border: "1px solid #1E293B" }}>
+        <Paper sx={{ p: 2, border: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Ticks Stored per Node</Typography>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={barData}>
@@ -174,7 +174,7 @@ export default function ClusterPage() {
 
       {/* Ingestion history line chart (per-node time series) */}
       {timeSeries.length > 1 && (
-        <Paper sx={{ p: 2, border: "1px solid #1E293B" }}>
+        <Paper sx={{ p: 2, border: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Ticks Ingested (History)</Typography>
           <ResponsiveContainer width="100%" height={250}>
             <LineChart data={timeSeries}>
@@ -192,7 +192,7 @@ export default function ClusterPage() {
 
       {/* Queries executed history */}
       {timeSeries.length > 1 && (
-        <Paper sx={{ p: 2, border: "1px solid #1E293B" }}>
+        <Paper sx={{ p: 2, border: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Queries Executed (History)</Typography>
           <ResponsiveContainer width="100%" height={250}>
             <LineChart data={timeSeries}>
@@ -210,7 +210,7 @@ export default function ClusterPage() {
 
       {/* Ingest latency history */}
       {timeSeries.length > 1 && (
-        <Paper sx={{ p: 2, border: "1px solid #1E293B" }}>
+        <Paper sx={{ p: 2, border: "1px solid rgba(255, 255, 255, 0.08)" }}>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Ingest Latency (ns) (History)</Typography>
           <ResponsiveContainer width="100%" height={250}>
             <LineChart data={timeSeries}>
