@@ -1,6 +1,6 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 ---
 
@@ -54,6 +54,22 @@ Last updated: 2026-03-25
 ## Cluster & HA
 - [x] **Cluster Integrity** — Unified PartitionRouter, FencingToken in RPC (24-byte header), split-brain defense (K8s Lease), CoordinatorHA auto re-registration — 13 tests
 - [x] **Distributed DML routing** — INSERT routes to symbol node, UPDATE/DELETE broadcast, DDL broadcast
+- [x] **RingConsensus (P8-Critical)** — `RingConsensus` 추상 인터페이스 + `EpochBroadcastConsensus` 구현. Coordinator epoch broadcast로 전체 노드 ring 동기화. `RING_UPDATE`/`RING_ACK` RPC 메시지. `ClusterConfig::is_coordinator` 플래그. Raft 교체 가능한 플러그인 구조 (`set_consensus()`)
+- [x] **CoordinatorHA ↔ K8sLease 통합 (P8-Critical)** — promote 경로에서 K8sLease 획득 필수화 (`require_lease`), `FencingToken::advance()` + RPC client epoch 전파, lease 상실 시 자동 demote
+- [x] **WalReplicator 복제 보장 (P8-Critical)** — Quorum write (`quorum_w`), 실패 재시도 큐 (`max_retries`/`retry_queue_capacity`), 백프레셔 (`backpressure` — producer block), 기존 async/sync 하위 호환
+- [x] **Failover 데이터 복구 (P8-Critical)** — FailoverManager에 auto re-replication 내장 (`auto_re_replicate`/`async_re_replicate`). PartitionMigrator 통합, `register_node()`로 노드 등록, 미등록 시 graceful fallback
+- [x] **내부 RPC 보안 (P8-Critical)** — `RpcSecurityConfig` shared-secret HMAC 인증. AUTH_HANDSHAKE/AUTH_OK/AUTH_REJECT 프로토콜. mTLS 설정 구조 준비
+- [x] **HealthMonitor DEAD 복구 (P8-High)** — `REJOINING` 상태 추가 (DEAD→REJOINING→ACTIVE). `on_rejoin()` 콜백으로 데이터 재동기화 제어. ClusterNode에서 REJOINING→ACTIVE 시 라우터 자동 재추가
+- [x] **HealthMonitor UDP 내결함성 (P8-High)** — 연속 miss 확인 (기본 3회), bind 실패 시 fatal error, 보조 TCP heartbeat (SUSPECT→DEAD 전이 전 TCP probe 이중 확인)
+- [x] **TcpRpcServer 리소스 관리 (P8-High)** — 스레드 풀 전환 (detach→고정 워커 풀+작업 큐), payload 크기 상한 (64MB), graceful drain (30초 타임아웃), 동시 연결 수 제한 (1024)
+- [x] **PartitionRouter 동시성 (P8-High)** — `ring_mutex_` (shared_mutex) 내장. add/remove는 unique_lock, route/plan은 shared_lock. TOCTOU 제거
+- [x] **TcpRpcClient::ping() 연결 누수 (P8-High)** — connect_to_server()+close() → acquire()/release() 풀 재활용
+- [x] **GossipNodeRegistry data race (P8-Medium)** — `bool running_` → `std::atomic<bool>`. 멀티스레드 UB 제거
+- [x] **K8sNodeRegistry 데드락 (P8-Medium)** — `fire_event_unlocked()` 삭제. lock 해제 후 콜백 호출로 변경
+- [x] **ClusterNode 노드 재합류 (P8-Medium)** — seed 연결 성공 카운트, 전체 실패 시 `std::runtime_error`. bootstrap(seeds 없음) 정상 허용
+- [x] **SnapshotCoordinator 일관성 (P8-Medium)** — 2PC (PREPARE→COMMIT/ABORT). 전 노드 ingest 일시 중단 후 일관된 시점 flush. 실패 시 전 노드 ABORT. `take_snapshot_legacy()` 하위 호환
+- [x] **K8sNodeRegistry 실제 구현 (P8-Medium)** — poll_loop()에서 K8s Endpoints API HTTP GET. 환경변수 자동 감지, SA token 인증, parse_endpoints_json()+reconcile() diff→JOINED/LEFT 이벤트
+- [x] **PartitionMigrator 원자성 (P8-Medium)** — MoveState 상태 머신 (PENDING→DUAL_WRITE→COPYING→COMMITTED/FAILED), MigrationCheckpoint JSON 디스크 영속화 (save/load), resume_plan() 재시도 (max_retries=3), rollback_move() — 실패 시 dest에 DELETE 전송
 
 ## Operations & Deployment
 - [x] **Production operations** — monitoring, backup, systemd service
@@ -65,6 +81,8 @@ Last updated: 2026-03-25
 - [x] **HTTP observability** — structured JSON access log, slow query log (>100ms), X-Request-Id tracing, server lifecycle events, Prometheus http_requests_total/active_sessions — 2 tests
 - [x] **`/whoami` endpoint** — returns authenticated role and subject for reliable client-side role detection — 1 test
 - [x] **Web UI cluster page** — node status table, per-node metrics history charts (ingestion/queries/latency), recharts type fix
+- [x] **API key granular control** — symbol/table ACL, tenant binding, key expiry, PATCH update endpoint, Web UI create/edit dialogs — 6 tests
+- [x] **SSO/JWT CLI + JWKS auto-fetch** — `--jwt-*` / `--jwks-url` CLI flags, JWKS background key rotation, kid-based multi-key, `POST /admin/auth/reload` runtime refresh — 3 tests
 
 ## Migration Toolkit
 - [x] **Migration toolkit** — kdb+ HDB loader, q→SQL, ClickHouse DDL/query translation, DuckDB Parquet, TimescaleDB hypertable — 126 tests

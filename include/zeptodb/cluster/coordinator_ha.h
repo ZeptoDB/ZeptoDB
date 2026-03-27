@@ -11,6 +11,7 @@
 
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/k8s_lease.h"
 
 #include <atomic>
 #include <chrono>
@@ -26,6 +27,8 @@ enum class CoordinatorRole : uint8_t { ACTIVE, STANDBY };
 struct CoordinatorHAConfig {
     uint32_t ping_interval_ms = 500;   // how often standby pings active
     uint32_t failover_after_ms = 2000; // promote after this many ms without pong
+    bool     require_lease = false;    // true = K8sLease 획득 필수 (프로덕션)
+    LeaseConfig lease_config;          // K8sLease 설정
 };
 
 class CoordinatorHA {
@@ -66,13 +69,26 @@ public:
     using PromotionCallback = std::function<void()>;
     void on_promotion(PromotionCallback cb) { promotion_cb_ = std::move(cb); }
 
+    /// Access fencing token (for RPC epoch propagation)
+    FencingToken& fencing_token() { return fencing_token_; }
+    const FencingToken& fencing_token() const { return fencing_token_; }
+
+    /// Current epoch (from fencing token)
+    uint64_t epoch() const { return fencing_token_.current(); }
+
+    /// Access K8sLease (nullptr if require_lease=false)
+    K8sLease* lease() { return lease_.get(); }
+
 private:
     void monitor_loop();
+    bool try_promote();
 
     CoordinatorHAConfig config_;
     std::atomic<CoordinatorRole> role_{CoordinatorRole::STANDBY};
 
     QueryCoordinator coordinator_;
+    FencingToken     fencing_token_;
+    std::unique_ptr<K8sLease> lease_;
 
     std::string peer_host_;
     uint16_t    peer_port_ = 0;

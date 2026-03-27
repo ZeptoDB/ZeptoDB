@@ -1,4 +1,5 @@
 #include "zeptodb/cluster/wal_replicator.h"
+#include "zeptodb/common/logger.h"
 #include <chrono>
 
 namespace zeptodb::cluster {
@@ -29,11 +30,25 @@ void WalReplicator::stop() {
 bool WalReplicator::enqueue(const zeptodb::ingestion::TickMessage& msg) {
     uint64_t epoch_before;
     {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::unique_lock<std::mutex> lock(mu_);
+
         if (queue_.size() >= config_.queue_capacity) {
-            stats_.dropped.fetch_add(1, std::memory_order_relaxed);
-            return false;
+            if (config_.backpressure) {
+                // 백프레셔: queue에 공간이 생길 때까지 block
+                stats_.backpressured.fetch_add(1, std::memory_order_relaxed);
+                bool ok = cv_.wait_for(lock,
+                    std::chrono::milliseconds(config_.backpressure_timeout_ms),
+                    [this]() { return queue_.size() < config_.queue_capacity || !running_.load(); });
+                if (!ok || !running_.load()) {
+                    stats_.dropped.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+            } else {
+                stats_.dropped.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
         }
+
         queue_.push_back(msg);
         stats_.enqueued.fetch_add(1, std::memory_order_relaxed);
         epoch_before = flush_epoch_.load(std::memory_order_relaxed);
@@ -64,35 +79,106 @@ void WalReplicator::send_loop() {
                              return !running_.load() ||
                                     queue_.size() >= config_.batch_size;
                          });
-            if (queue_.empty()) continue;
+            if (queue_.empty() && retry_queue_.empty()) continue;
             batch.swap(queue_);
             queue_.reserve(config_.queue_capacity);
         }
-        flush_batch(batch);
+
+        // 백프레셔 해제: queue에 공간이 생겼으므로 blocked producer 깨움
+        if (config_.backpressure) cv_.notify_all();
+
+        if (!batch.empty()) flush_batch(batch);
         batch.clear();
+
+        // 재시도 큐 처리
+        process_retry_queue();
     }
 }
 
 void WalReplicator::flush_batch(
     std::vector<zeptodb::ingestion::TickMessage>& batch)
 {
-    bool all_ok = true;
-    for (auto& replica : replicas_) {
-        if (replica->replicate_wal(batch)) {
-            stats_.replicated.fetch_add(batch.size(),
-                                        std::memory_order_relaxed);
+    size_t ack_count = 0;
+    size_t required = config_.quorum_w > 0
+        ? config_.quorum_w
+        : replicas_.size();  // quorum_w=0 → 전체 성공 필요
+
+    std::vector<size_t> failed_indices;
+
+    for (size_t i = 0; i < replicas_.size(); ++i) {
+        if (replicas_[i]->replicate_wal(batch)) {
+            ++ack_count;
+            stats_.replicated.fetch_add(batch.size(), std::memory_order_relaxed);
         } else {
             stats_.send_errors.fetch_add(1, std::memory_order_relaxed);
-            all_ok = false;
+            failed_indices.push_back(i);
         }
     }
 
-    if (all_ok)
+    bool quorum_met = ack_count >= required;
+
+    if (quorum_met) {
         stats_.sync_acked.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // 실패한 replica가 있으면 재시도 큐에 추가
+    if (!failed_indices.empty() && config_.max_retries > 0) {
+        std::lock_guard<std::mutex> lock(retry_mu_);
+        if (retry_queue_.size() < config_.retry_queue_capacity) {
+            retry_queue_.push_back(RetryEntry{batch, 0});
+        } else {
+            stats_.retry_exhausted.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 
     // Signal sync waiters
     flush_epoch_.fetch_add(1, std::memory_order_release);
     sync_cv_.notify_all();
+}
+
+void WalReplicator::process_retry_queue() {
+    std::vector<RetryEntry> pending;
+    {
+        std::lock_guard<std::mutex> lock(retry_mu_);
+        if (retry_queue_.empty()) return;
+        pending.swap(retry_queue_);
+    }
+
+    std::vector<RetryEntry> still_failed;
+
+    for (auto& entry : pending) {
+        entry.attempts++;
+        bool any_success = false;
+
+        for (auto& replica : replicas_) {
+            if (replica->replicate_wal(entry.batch)) {
+                any_success = true;
+                stats_.replicated.fetch_add(entry.batch.size(),
+                                            std::memory_order_relaxed);
+                stats_.retried.fetch_add(1, std::memory_order_relaxed);
+                break;  // 1개라도 성공하면 이 batch는 OK
+            }
+        }
+
+        if (!any_success) {
+            if (entry.attempts < config_.max_retries) {
+                still_failed.push_back(std::move(entry));
+            } else {
+                stats_.retry_exhausted.fetch_add(1, std::memory_order_relaxed);
+                ZEPTO_WARN("WalReplicator: batch dropped after {} retries ({} ticks)",
+                           config_.max_retries, entry.batch.size());
+            }
+        }
+    }
+
+    if (!still_failed.empty()) {
+        std::lock_guard<std::mutex> lock(retry_mu_);
+        for (auto& e : still_failed) {
+            if (retry_queue_.size() < config_.retry_queue_capacity) {
+                retry_queue_.push_back(std::move(e));
+            }
+        }
+    }
 }
 
 } // namespace zeptodb::cluster

@@ -17,11 +17,13 @@ headless:
 
 resources:
   requests:
-    cpu: "4"
-    memory: "16Gi"
-  limits:
     cpu: "8"
     memory: "32Gi"
+    hugepages-2Mi: "4Gi"
+  limits:
+    cpu: "8"              # requests == limits → Guaranteed QoS → cpuset pinning
+    memory: "32Gi"
+    hugepages-2Mi: "4Gi"
 
 config:
   port: 8123
@@ -98,6 +100,28 @@ nodeSelector: {}
 tolerations: []
 
 # ---------------------------------------------------------------------------
+# Performance tuning for latency-sensitive workloads
+# ---------------------------------------------------------------------------
+# These settings eliminate the main container performance bottlenecks:
+#   1. Guaranteed QoS (requests == limits) → cpuset pinning, no throttling
+#   2. Hugepages → arena allocator performance
+#   3. hostNetwork → bypass CNI overhead for cluster RPC
+#   4. Topology Manager (kubelet) → single-NUMA-node scheduling
+#
+# kubelet flags required on nodes (via launch template or EKS config):
+#   --cpu-manager-policy=static
+#   --topology-manager-policy=single-numa-node
+#   --memory-manager-policy=Static
+#   --reserved-memory='[{"numaNode":0,"limits":{"memory":"1Gi"}}]'
+# ---------------------------------------------------------------------------
+performanceTuning:
+  hostNetwork: false       # true → bypass CNI for cluster RPC (requires dnsPolicy override)
+  hugepages:
+    enabled: true
+    size: "2Mi"
+    amount: "4Gi"
+
+# ---------------------------------------------------------------------------
 # Karpenter (Fleet API) — replaces Cluster Autoscaler
 # ---------------------------------------------------------------------------
 # Karpenter calls EC2 Fleet API directly (CreateFleet) instead of going
@@ -123,24 +147,47 @@ karpenter:
   # =========================================================================
   # Realtime pool: ingestion + low-latency queries
   # Fleet API: On-Demand only → lowest-price allocation
+  #
+  # Performance tuning:
+  #   - i4i: NVMe instance store (~4 GB/s) for HDB flush
+  #   - c7g: Graviton3 compute-optimized for ingestion
+  #   - userData: kernel tuning applied on node boot
+  #   - Single AZ: consistent network latency
   # =========================================================================
   realtime:
     weight: 10                         # lower = higher priority
     arch: ["arm64"]                    # Graviton (best price-performance)
-    instanceFamilies: ["c7g", "c6g"]   # compute-optimized
+    instanceFamilies: ["i4g", "c7g"]   # i4g: instance store NVMe, c7g: compute
     instanceSizes: ["xlarge", "2xlarge", "4xlarge"]
-    zones: []                          # empty = all AZs; set ["us-east-1a"] for single-AZ latency
+    zones: []                          # set ["ap-northeast-2a"] for single-AZ latency
     volumeSize: "100Gi"
+    instanceStorePolicy: "RAID0"       # use NVMe instance store for HDB flush
     limits:
       cpu: "64"
       memory: "128Gi"
     consolidateAfter: "30m"            # conservative — avoid churn during trading hours
     budgets:                           # disruption budget — max 1 node at a time
       - nodes: "1"
-    # userData: |                      # optional: bare-metal tuning on boot
-    #   #!/bin/bash
-    #   echo 16384 > /proc/sys/vm/nr_hugepages
-    #   echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+    userData: |
+      #!/bin/bash
+      # --- ZeptoDB bare-metal tuning (applied on node boot) ---
+      # Hugepages: 16GB (8192 x 2MB)
+      echo 8192 > /proc/sys/vm/nr_hugepages
+      # CPU governor: consistent clock speed
+      for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        [ -f "$g" ] && echo performance > "$g"
+      done
+      # Disable NUMA auto-balancing (ZeptoDB manages NUMA explicitly)
+      echo 0 > /proc/sys/kernel/numa_balancing
+      # Memory: no swap, no THP
+      sysctl -w vm.swappiness=0
+      [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo never > /sys/kernel/mm/transparent_hugepage/enabled
+      # Network: low-latency tuning
+      sysctl -w net.core.busy_poll=50
+      sysctl -w net.core.busy_read=50
+      sysctl -w net.ipv4.tcp_low_latency=1
+      sysctl -w net.core.rmem_max=134217728
+      sysctl -w net.core.wmem_max=134217728
 
   # =========================================================================
   # Analytics pool: backtesting + batch queries

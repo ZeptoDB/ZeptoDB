@@ -27,6 +27,9 @@ spec:
         iops: 6000
         throughput: 400
         deleteOnTermination: true
+  {{- if .Values.karpenter.realtime.instanceStorePolicy }}
+  instanceStorePolicy: {{ .Values.karpenter.realtime.instanceStorePolicy }}
+  {{- end }}
   {{- with .Values.karpenter.realtime.userData }}
   userData: |
     {{- . | nindent 4 }}

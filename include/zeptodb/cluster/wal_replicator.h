@@ -33,14 +33,29 @@ struct ReplicatorConfig {
     size_t   queue_capacity = 1 << 20; // 1M entries ring buffer
     bool     sync_mode      = false;  // if true, enqueue blocks until replica ACK
     uint32_t sync_timeout_ms = 1000;  // max wait for sync ACK
+
+    // Quorum write: 최소 W개 replica ACK 필요 (0 = best-effort, 모든 replica 시도)
+    size_t   quorum_w       = 0;
+
+    // 재시도: send 실패 시 retry_queue에 보관 후 재시도
+    size_t   retry_queue_capacity = 1 << 16;  // 64K batches
+    uint32_t retry_interval_ms    = 100;       // 재시도 간격
+    uint32_t max_retries          = 3;         // 최대 재시도 횟수
+
+    // 백프레셔: queue 가득 차면 producer block (drop 대신)
+    bool     backpressure    = false;
+    uint32_t backpressure_timeout_ms = 500;  // block 최대 대기 시간
 };
 
 struct ReplicatorStats {
     std::atomic<uint64_t> enqueued{0};
     std::atomic<uint64_t> replicated{0};
-    std::atomic<uint64_t> dropped{0};     // queue full
+    std::atomic<uint64_t> dropped{0};     // queue full (backpressure=false only)
     std::atomic<uint64_t> send_errors{0};
     std::atomic<uint64_t> sync_acked{0};  // batches confirmed by replica
+    std::atomic<uint64_t> retried{0};     // batches retried
+    std::atomic<uint64_t> retry_exhausted{0}; // batches dropped after max retries
+    std::atomic<uint64_t> backpressured{0};   // enqueue calls that blocked
 };
 
 class WalReplicator {
@@ -72,6 +87,12 @@ public:
 private:
     void send_loop();
     void flush_batch(std::vector<zeptodb::ingestion::TickMessage>& batch);
+    void process_retry_queue();
+
+    struct RetryEntry {
+        std::vector<zeptodb::ingestion::TickMessage> batch;
+        uint32_t attempts = 0;
+    };
 
     ReplicatorConfig config_;
     ReplicatorStats  stats_;
@@ -87,6 +108,10 @@ private:
     std::mutex                                   sync_mu_;
     std::condition_variable                      sync_cv_;
     std::atomic<uint64_t>                        flush_epoch_{0};
+
+    // Retry queue: failed batches awaiting retry
+    std::mutex                                   retry_mu_;
+    std::vector<RetryEntry>                      retry_queue_;
 
     std::atomic<bool> running_{false};
     std::thread       send_thread_;

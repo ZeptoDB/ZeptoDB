@@ -48,6 +48,11 @@ enum class RpcType : uint32_t {
     STATS_RESULT  = 10, // Response with node stats JSON
     METRICS_REQUEST = 11, // Request metrics history (payload: since_ms:i64 + limit:u32)
     METRICS_RESULT  = 12, // Response with metrics history JSON array
+    RING_UPDATE     = 13, // RingSnapshot broadcast (coordinator → followers)
+    RING_ACK        = 14, // Acknowledgement of RING_UPDATE
+    AUTH_HANDSHAKE  = 15, // Client → Server: nonce + HMAC (40 bytes)
+    AUTH_OK         = 16, // Server → Client: authentication accepted
+    AUTH_REJECT     = 17, // Server → Client: authentication rejected
 };
 
 // ============================================================================

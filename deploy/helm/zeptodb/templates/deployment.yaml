@@ -29,6 +29,10 @@ spec:
         {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.gracefulShutdown.terminationGracePeriodSeconds }}
+      {{- if .Values.performanceTuning.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -93,6 +97,10 @@ spec:
             - name: data
               mountPath: {{ .Values.config.dataDir }}
             {{- end }}
+            {{- if .Values.performanceTuning.hugepages.enabled }}
+            - name: hugepage
+              mountPath: /dev/hugepages
+            {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
@@ -123,4 +131,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "zeptodb.fullname" . }}-data
+        {{- end }}
+        {{- if .Values.performanceTuning.hugepages.enabled }}
+        - name: hugepage
+          emptyDir:
+            medium: HugePages-{{ .Values.performanceTuning.hugepages.size }}
         {{- end }}
