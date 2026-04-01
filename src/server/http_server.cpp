@@ -1413,6 +1413,19 @@ std::string HttpServer::build_json_response(
 
     os << "\"data\":[";
 
+    // ── String-only path (EXPLAIN, DDL messages) ──
+    if (!result.string_rows.empty() && result.rows.empty()) {
+        for (size_t i = 0; i < result.string_rows.size(); ++i) {
+            if (i > 0) os << ",";
+            os << "[\"";
+            for (char ch : result.string_rows[i]) {
+                if (ch == '"') os << "\\\"";
+                else if (ch == '\\') os << "\\\\";
+                else os << ch;
+            }
+            os << "\"]";
+        }
+    }
     // ── String-result path (SHOW TABLES / DESCRIBE) ──
     // When string_rows is populated and rows exist, interleave string values
     // with integer values based on column_types (SYMBOL → string, else int).
@@ -1480,7 +1493,10 @@ std::string HttpServer::build_json_response(
     os << "],";
 
     // 메타데이터
-    os << "\"rows\":" << result.rows.size() << ",";
+    size_t row_count = result.rows.size();
+    if (result.rows.empty() && !result.string_rows.empty())
+        row_count = result.string_rows.size();
+    os << "\"rows\":" << row_count << ",";
     os << "\"rows_scanned\":" << result.rows_scanned << ",";
 
     // 소수점 2자리로 제한

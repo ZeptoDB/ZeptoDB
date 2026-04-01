@@ -2,8 +2,8 @@ function headers(apiKey?: string): HeadersInit {
   return apiKey?.length ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
-export async function querySQL(sql: string, apiKey?: string) {
-  const res = await fetch("/api", { method: "POST", body: sql, headers: headers(apiKey) });
+export async function querySQL(sql: string, apiKey?: string, signal?: AbortSignal) {
+  const res = await fetch("/api", { method: "POST", body: sql, headers: headers(apiKey), signal });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -20,6 +20,12 @@ export async function fetchStats(apiKey?: string) {
 export async function fetchHealth(apiKey?: string) {
   const res = await fetch("/api/health", { headers: headers(apiKey) });
   if (!res.ok) return { status: "unhealthy" };
+  return res.json();
+}
+
+export async function fetchVersion(apiKey?: string) {
+  const res = await fetch("/api/admin/version", { headers: headers(apiKey) });
+  if (!res.ok) return null;
   return res.json();
 }
 
