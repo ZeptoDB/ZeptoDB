@@ -87,14 +87,17 @@ extra:
 nav:
   - Home: index.md
   - Getting Started:
-      - Quick Start: getting-started/quickstart.md
+      - Quick Start: getting-started/QUICK_START.md
       - Installation: getting-started/installation.md
       - Build from Source: getting-started/build.md
+      - Interactive Playground: getting-started/INTERACTIVE_PLAYGROUND.md
+      - Example Datasets: getting-started/EXAMPLE_DATASETS.md
   - API Reference:
       - SQL Reference: api/SQL_REFERENCE.md
       - Python Reference: api/PYTHON_REFERENCE.md
       - C++ Reference: api/CPP_REFERENCE.md
       - HTTP Reference: api/HTTP_REFERENCE.md
+      - Arrow Flight: api/FLIGHT_REFERENCE.md
       - Config Reference: api/CONFIG_REFERENCE.md
   - Architecture:
       - Overview: design/high_level_architecture.md
@@ -104,9 +107,14 @@ nav:
       - SQL & Client: design/layer4_transpiler_client.md
       - Security: design/layer5_security_auth.md
       - Distributed Cluster: design/phase_c_distributed.md
+      - Multi-node Stability: design/multinode_stability.md
+      - Logging & Observability: design/logging_observability.md
       - Tech Stack: design/tech_stack.md
   - Operations:
       - Production Deployment: deployment/PRODUCTION_DEPLOYMENT.md
+      - Multi-node Cluster: deployment/MULTI_NODE_CLUSTER.md
+      - Bare Metal Tuning: deployment/BARE_METAL_TUNING.md
+      - Cloud Performance Tuning: deployment/CLOUD_PERFORMANCE_TUNING.md
       - Production Operations: operations/PRODUCTION_OPERATIONS.md
       - Kubernetes Operations: operations/KUBERNETES_OPERATIONS.md
       - K8s Failure Scenarios: operations/KUBERNETES_FAILURE_SCENARIOS.md
@@ -131,12 +139,17 @@ nav:
       - kdb+ Replacement: design/kdb_replacement_analysis.md
       - Industry Analysis: design/industry_business_analysis.md
       - Kafka Consumer: design/kafka_consumer_design.md
+      - SQL DML: design/sql_dml.md
+      - String Column: design/string_column_plan.md
+      - Client Compatibility: design/client_compatibility.md
       - Multi-node Use Cases: design/multinode_usecases.md
       - Physical AI Market: design/physical_ai_market.md
+      - Web UI PRD: design/web_ui_prd.md
   - Business:
       - Executive Summary: business/EXECUTIVE_SUMMARY.md
       - Business Strategy: business/BUSINESS_STRATEGY.md
       - Product Positioning: business/product_positioning.md
+      - Competitive Analysis: business/competitive_analysis.md
       - Industry Gap Analysis: business/industry_gap_analysis.md
   - Development Log:
       - "000: Environment Setup": devlog/000_environment_setup.md
@@ -163,5 +176,20 @@ nav:
       - "021: DDL Schema": devlog/021_ddl_schema_management.md
       - "022: Helm Rolling Upgrade": devlog/022_helm_rolling_upgrade.md
       - "023: ARM Graviton": devlog/023_arm_graviton_verification.md
+      - "024: SQL INSERT": devlog/024_sql_insert.md
+      - "025: SQL UPDATE/DELETE": devlog/025_sql_update_delete.md
+      - "026: Tiering + MatView": devlog/026_tiering_matview_multitenancy.md
       - "027: String Column": devlog/027_string_column_support.md
       - "028: Repo Cleanup": devlog/028_repo_structure_cleanup.md
+      - "029: HTTP Observability": devlog/029_http_observability.md
+      - "030: Ring Consensus": devlog/030_ring_consensus.md
+      - "031: Coordinator HA": devlog/031_coordinator_ha_lease.md
+      - "032: WAL Replicator": devlog/032_wal_replicator_reliability.md
+      - "033: Failover Recovery": devlog/033_failover_data_recovery.md
+      - "034: RPC Security": devlog/034_rpc_security.md
+      - "035: Health Monitor": devlog/035_health_monitor_resilience.md
+      - "036: SSO JWKS CLI": devlog/036_sso_jwks_cli.md
+      - "037: Cluster Stability": devlog/037_p8_cluster_stability.md
+      - "038: Arrow Flight": devlog/038_arrow_flight_server.md
+      - "039: Query Editor Charts": devlog/039_query_editor_chart_tabs_multistatement.md
+      - "040: Getting Started": devlog/040_getting_started_onboarding.md

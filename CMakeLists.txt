@@ -40,6 +40,7 @@ option(ZEPTO_USE_S3         "Enable AWS S3 upload"        ON)
 option(ZEPTO_USE_TCMALLOC   "Link tcmalloc_minimal for HFT allocation performance" OFF)
 option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
+option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
 
 # ============================================================================
 # macOS Homebrew — expose installed packages to find_package()
@@ -214,6 +215,44 @@ endif()
 
 # --- AWS SDK C++ S3 (optional) ---
 if(ZEPTO_USE_S3)
+
+# --- Arrow Flight (optional, requires Arrow + gRPC) ---
+set(ZEPTO_HAS_FLIGHT OFF)
+if(ZEPTO_USE_FLIGHT)
+    # Try system-installed ArrowFlight first
+    find_package(ArrowFlight CONFIG QUIET)
+    if(ArrowFlight_FOUND)
+        message(STATUS "ArrowFlight: ${ArrowFlight_VERSION} (system)")
+        set(ZEPTO_HAS_FLIGHT ON)
+    else()
+        # Fallback: pyarrow bundled libarrow_flight
+        execute_process(
+            COMMAND python3 -c "import pyarrow; print(pyarrow.get_library_dirs()[0])"
+            OUTPUT_VARIABLE _PYARROW_LIB_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _PYARROW_RES ERROR_QUIET)
+        execute_process(
+            COMMAND python3 -c "import pyarrow; print(pyarrow.get_include())"
+            OUTPUT_VARIABLE _PYARROW_INC_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        # pyarrow ships libarrow_flight.so.XXXX (no bare .so symlink)
+        file(GLOB _FLIGHT_SO "${_PYARROW_LIB_DIR}/libarrow_flight.so*")
+        if(_FLIGHT_SO)
+            list(GET _FLIGHT_SO 0 _FLIGHT_SO_PATH)
+            message(STATUS "ArrowFlight: pyarrow bundle (${_FLIGHT_SO_PATH})")
+            add_library(PyArrow::arrow_flight SHARED IMPORTED)
+            set_target_properties(PyArrow::arrow_flight PROPERTIES
+                IMPORTED_LOCATION "${_FLIGHT_SO_PATH}"
+                IMPORTED_NO_SONAME TRUE
+                INTERFACE_INCLUDE_DIRECTORIES "${_PYARROW_INC_DIR}")
+            set(ZEPTO_HAS_FLIGHT ON)
+            set(ZEPTO_FLIGHT_VIA_PYARROW ON)
+        else()
+            message(STATUS "ArrowFlight: not found — Flight server disabled")
+            message(STATUS "  Install: pip3 install pyarrow")
+            set(ZEPTO_USE_FLIGHT OFF)
+        endif()
+    endif()
+endif()
     find_package(AWSSDK CONFIG COMPONENTS s3 QUIET)
     if(AWSSDK_FOUND)
         message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (S3 업로드 활성화)")
@@ -491,6 +530,34 @@ if(ZEPTO_USE_TCMALLOC AND TCMALLOC_LIB)
 endif()
 
 # --- Phase C: Cluster (분산 메모리 & 트랜스포트) ---
+
+# --- Arrow Flight Server (optional) ---
+add_library(zepto_flight STATIC
+    src/server/flight_server.cpp
+)
+target_include_directories(zepto_flight PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_flight PUBLIC
+    zepto_sql
+    zepto_common
+)
+if(ZEPTO_HAS_FLIGHT)
+    if(ArrowFlight_FOUND)
+        target_link_libraries(zepto_flight PUBLIC ArrowFlight::arrow_flight_shared)
+    elseif(ZEPTO_FLIGHT_VIA_PYARROW)
+        target_link_libraries(zepto_flight PUBLIC PyArrow::arrow_flight)
+        # Also need libarrow.so for Arrow core types
+        if(TARGET PyArrow::arrow)
+            target_link_libraries(zepto_flight PUBLIC PyArrow::arrow)
+        elseif(Arrow_FOUND)
+            target_link_libraries(zepto_flight PUBLIC Arrow::arrow_shared)
+        elseif(ARROW_FOUND)
+            target_link_libraries(zepto_flight PUBLIC PkgConfig::ARROW)
+        endif()
+    endif()
+    target_compile_definitions(zepto_flight PUBLIC ZEPTO_FLIGHT_ENABLED=1)
+endif()
 add_library(zepto_cluster STATIC
     src/cluster/shm_backend.cpp
     src/cluster/ucx_backend.cpp
@@ -618,6 +685,13 @@ add_executable(zepto_http_server tools/zepto_http_server.cpp)
 target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_http_server PRIVATE
     zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster)
+
+# Arrow Flight + HTTP server
+add_executable(zepto_flight_server tools/zepto_flight_server.cpp)
+target_include_directories(zepto_flight_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(zepto_flight_server PRIVATE
+    zepto_flight zepto_server zepto_sql zepto_execution zepto_core
+    zepto_storage zepto_ingestion zepto_cluster)
 target_include_directories(zepto_data_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_data_node PRIVATE
     zepto_cluster zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion)
@@ -840,5 +914,6 @@ message(STATUS "  LLVM JIT:      ${ZEPTO_USE_JIT}")
 message(STATUS "  LZ4:           ${ZEPTO_USE_LZ4}")
 message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
+message(STATUS "  Arrow Flight:  ${ZEPTO_HAS_FLIGHT}")
 message(STATUS "  Tests:         ${ZEPTO_BUILD_TESTS}")
 message(STATUS "=================================")

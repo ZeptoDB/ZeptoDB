@@ -22,6 +22,7 @@ add_executable(zepto_tests
     unit/test_features.cpp
     unit/test_kafka.cpp
     unit/test_metrics_collector.cpp
+    unit/test_flight_server.cpp
 )
 target_include_directories(zepto_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h access
@@ -37,6 +38,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_scheduler
     zepto_server
     zepto_kafka
+    zepto_flight
     GTest::gtest_main
 )
 if(ZEPTO_HAS_OPENSSL)

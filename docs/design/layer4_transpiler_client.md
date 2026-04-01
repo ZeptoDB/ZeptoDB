@@ -571,10 +571,55 @@ Timing ON
 - [ ] Python DSL → LLVM JIT direct compilation
 - [ ] Arrow Flight server (stream results as Arrow over network)
 - [ ] PyPI publish (requires PyPI account + token)
+- [ ] Cost-based planner — see §9 Impact Assessment (major engine impact)
+- [ ] Composite index — see §9 Impact Assessment (major engine impact)
+- [ ] MV query rewrite — see §9 Impact Assessment (major engine impact)
+- [ ] Prepared statements — see §9 Impact Assessment (moderate engine impact)
+- [ ] Query result cache — see §9 Impact Assessment (indirect engine impact)
+- [ ] SAMPLE clause — see §9 Impact Assessment (positive engine impact)
+- [ ] INTERVAL syntax — see §9 Impact Assessment (cosmetic, no engine impact)
 
 ---
 
-## 9. Streaming Data Source Connectors (Backlog)
+## 9. SQL Feature — Engine Performance Impact Assessment
+
+> Evaluation of planned SQL/query features by their direct impact on engine execution performance.
+
+| Feature | Engine Perf Impact? | Explanation |
+|---------|---------------------|-------------|
+| INTERVAL syntax | No | Pure parser/AST sugar — translates to the same nanosecond literal before reaching the execution engine. Zero runtime cost. |
+| Query result cache | Yes (indirect) | Doesn't make the engine itself faster, but avoids hitting the engine entirely on cache hits. Huge win for repeated dashboard queries. |
+| MV query rewrite | Yes (major) | Rewrites a full-scan query into a pre-aggregated MV lookup. Eliminates execution work entirely when a matching MV exists. |
+| Cost-based planner | Yes (major) | Chooses better join order, index usage, and scan strategies. Every query benefits once the planner makes smarter decisions. Single highest-leverage item for long-term engine throughput. |
+| Prepared statements | Yes (moderate) | Skips tokenize → parse → plan on repeated executions. For high-QPS workloads the saved CPU is significant; for ad-hoc queries it's negligible. |
+| JOINs/Window on virtual tables | Yes (moderate) | Enables the engine to push joins and window functions into virtual-table scan operators instead of materializing first. Performance depends on how much work can be pushed down. |
+| Scalar subqueries in WHERE | Mixed | Enables new query patterns, but a naive implementation (re-execute per row) can hurt performance. Needs decorrelation to be a net positive. |
+| Composite index | Yes (major) | Turns multi-column filter scans from O(n) to O(log n). Directly reduces the amount of data the engine touches for the most common query shapes. |
+| SAMPLE clause | Yes (positive) | Reads only a fraction of partitions/rows. Directly reduces I/O and compute for exploratory queries. Doesn't affect non-SAMPLE queries. |
+
+### Summary
+
+6 of 9 items directly improve engine performance:
+- **Highest leverage:** Cost-based planner + MV query rewrite + Composite index
+- **Cosmetic only:** INTERVAL syntax (zero runtime cost)
+- **Bypass, not speedup:** Query result cache (avoids engine, doesn't speed it up)
+- **Double-edged:** Scalar subqueries require decorrelation to avoid per-row re-execution regression
+
+### Recommended priority for engine speed
+
+1. **Cost-based planner** — highest effort but every query benefits (major)
+2. **Composite index** — O(n) → O(log n) for multi-column filters (major)
+3. **MV query rewrite** — eliminates execution entirely for matching queries (major)
+4. **Prepared statements** — significant for high-QPS workloads (moderate)
+5. **JOINs/Window on virtual tables** — pushdown reduces materialization (moderate)
+6. **SAMPLE clause** — reduces I/O for exploratory queries (positive)
+7. **Query result cache** — bypasses engine on cache hits (indirect)
+8. **Scalar subqueries** — implement only with decorrelation (mixed)
+9. **INTERVAL syntax** — cosmetic, implement whenever convenient (none)
+
+---
+
+## 10. Streaming Data Source Connectors (Backlog)
 
 - Kafka/Redpanda/Pulsar (librdkafka, C++ client)
 - AWS Kinesis, Azure Event Hubs, Google Pub/Sub

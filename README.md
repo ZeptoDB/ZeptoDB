@@ -8,6 +8,7 @@
 
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![LLVM 19](https://img.shields.io/badge/LLVM-19-orange)
+![License](https://img.shields.io/badge/License-BSL_1.1-blue)
 ![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)
 ![Tests](https://img.shields.io/badge/tests-726%2B%20passing-brightgreen)
 
@@ -314,4 +315,10 @@ zeptodb/
 
 ## License
 
-Proprietary — All rights reserved.
+ZeptoDB is licensed under the [Business Source License 1.1](LICENSE).
+
+- **Additional Use Grant**: Production use is permitted, except offering ZeptoDB as a commercial DBaaS, managed service, or cloud service.
+- **Change Date**: 2030-04-01
+- **Change License**: Apache License, Version 2.0
+
+For commercial licensing inquiries, contact skswlsaks@gmail.com.

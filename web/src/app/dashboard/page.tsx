@@ -1,7 +1,7 @@
 "use client";
-import { Box, Paper, Typography, Grid, useTheme } from "@mui/material";
+import { Box, Paper, Typography, Grid, Chip, useTheme } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
-import { fetchStats } from "@/lib/api";
+import { fetchStats, fetchHealth, fetchVersion } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { useRef, useEffect, useState } from "react";
@@ -21,6 +21,9 @@ export default function DashboardPage() {
   const theme = useTheme();
   const { auth } = useAuth();
   const { data } = useQuery({ queryKey: ["stats"], queryFn: () => fetchStats(auth?.apiKey), refetchInterval: 2000 });
+  const { data: health } = useQuery({ queryKey: ["health"], queryFn: () => fetchHealth(auth?.apiKey), refetchInterval: 5000 });
+  const { data: version } = useQuery({ queryKey: ["version"], queryFn: () => fetchVersion(auth?.apiKey) });
+  const healthy = health?.status === "healthy";
   const history = useRef<{ time: string; rate: number }[]>([]);
   const prevIngested = useRef(0);
   const [chartData, setChartData] = useState<{ time: string; rate: number }[]>([]);
@@ -37,6 +40,18 @@ export default function DashboardPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
       <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: "-0.02em" }}>Dashboard Overview</Typography>
+      <Card sx={{ p: 2, display: "flex", alignItems: "center", gap: 3 }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: healthy ? "success.main" : "error.main", boxShadow: `0 0 8px ${healthy ? theme.palette.success.main : theme.palette.error.main}80` }} />
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>{healthy ? "Healthy" : "Unhealthy"}</Typography>
+        </Box>
+        {version && (
+          <>
+            <Chip label={`${version.engine ?? "ZeptoDB"} v${version.version ?? "?"}`} size="small" variant="outlined" />
+            {version.build && <Typography variant="caption" color="text.secondary">Build: {version.build}</Typography>}
+          </>
+        )}
+      </Card>
       <Grid container spacing={2}>
         <Grid size={{ xs: 6, md: 3 }}><StatCard label="Ticks Ingested" value={data?.ticks_ingested ?? 0} /></Grid>
         <Grid size={{ xs: 6, md: 3 }}><StatCard label="Ticks Stored" value={data?.ticks_stored ?? 0} /></Grid>

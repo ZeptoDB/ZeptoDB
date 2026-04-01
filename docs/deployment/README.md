@@ -14,12 +14,15 @@ Guides for deploying ZeptoDB in production environments.
 - Comparison table and migration paths
 
 ### 2. [BARE_METAL_TUNING.md](BARE_METAL_TUNING.md)
-**Bare Metal Optimization Detailed Guide** (TODO)
-- CPU Pinning strategy
-- NUMA optimization
-- io_uring configuration
-- Network tuning
-- Benchmarking methods
+**Bare Metal Optimization Detailed Guide**
+- CPU Pinning & isolation (`isolcpus`, `nohz_full`, IRQ affinity)
+- NUMA optimization (per-node binding, `numastat` verification)
+- Hugepages (2MB/1GB sizing, allocation, verification)
+- C-state & CPU frequency control
+- Kernel sysctl parameters
+- Build optimization (tcmalloc, LTO, PGO)
+- Network tuning (busy_poll, buffer sizes)
+- Benchmarking & profiling methods
 
 ### 3. [KUBERNETES_OPS.md](KUBERNETES_OPS.md)
 **Kubernetes Operations Guide** (TODO)
