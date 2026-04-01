@@ -41,6 +41,15 @@ static inline bool is_cancelled() {
 // Makes CTEs visible to recursive exec_select() calls (set operations, subqueries).
 static thread_local std::unordered_map<std::string, QueryResultSet> tl_cte_map;
 
+// ── Resolve value_expr in WHERE Expr tree ──────────────────────────────────
+// Pre-evaluates constant ArithExpr (NOW(), INTERVAL) into int64 values
+// so all downstream comparison code works unchanged.
+// Forward-declared; implemented after eval_arith.
+static void resolve_value_exprs(std::shared_ptr<Expr>& expr);
+static void resolve_where_exprs(std::optional<WhereClause>& wc) {
+    if (wc && wc->expr) resolve_value_exprs(wc->expr);
+}
+
 // ── OFFSET + LIMIT helper ──────────────────────────────────────────────────
 // Apply OFFSET then LIMIT to result rows (works on both rows and typed_rows).
 static void apply_offset_limit(QueryResultSet& r, const SelectStmt& stmt) {
@@ -800,35 +809,54 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
     tl_cte_map.clear();
     double t0 = now_us();
     try {
-        Parser parser;
-        ParsedStatement ps = parser.parse_statement(sql);
+        // ── Prepared statement cache: reuse parsed AST ───────────────────────
+        size_t h = sql_hash(sql);
+        ParsedStatement ps;
+        {
+            std::lock_guard<std::mutex> lk(stmt_cache_mu_);
+            auto it = stmt_cache_.find(h);
+            if (it != stmt_cache_.end()) {
+                ps = it->second;
+            } else {
+                Parser parser;
+                ps = parser.parse_statement(sql);
+                if (stmt_cache_.size() < 4096) // cap cache size
+                    stmt_cache_.emplace(h, ps);
+            }
+        }
 
+        // ── DML/DDL: not cacheable, invalidate result cache ──────────────────
         if (ps.kind == ParsedStatement::Kind::CREATE_TABLE) {
             auto r = exec_create_table(*ps.create_table);
             r.execution_time_us = now_us() - t0;
             return r;
         }
         if (ps.kind == ParsedStatement::Kind::DROP_TABLE) {
+            invalidate_result_cache(ps.drop_table->table_name);
             auto r = exec_drop_table(*ps.drop_table);
             r.execution_time_us = now_us() - t0;
             return r;
         }
         if (ps.kind == ParsedStatement::Kind::ALTER_TABLE) {
+            invalidate_result_cache(ps.alter_table->table_name);
             auto r = exec_alter_table(*ps.alter_table);
             r.execution_time_us = now_us() - t0;
             return r;
         }
         if (ps.kind == ParsedStatement::Kind::INSERT) {
+            invalidate_result_cache(ps.insert->table_name);
             auto r = exec_insert(*ps.insert);
             r.execution_time_us = now_us() - t0;
             return r;
         }
         if (ps.kind == ParsedStatement::Kind::UPDATE) {
+            invalidate_result_cache(ps.update->table_name);
             auto r = exec_update(*ps.update);
             r.execution_time_us = now_us() - t0;
             return r;
         }
         if (ps.kind == ParsedStatement::Kind::DELETE) {
+            invalidate_result_cache(ps.del->table_name);
             auto r = exec_delete(*ps.del);
             r.execution_time_us = now_us() - t0;
             return r;
@@ -898,6 +926,24 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
             return result;
         }
 
+        // ── Query result cache: check for cached SELECT result ───────────────
+        bool cacheable = result_cache_max_ > 0 && stmt.cte_defs.empty();
+        if (cacheable) {
+            std::lock_guard<std::mutex> lk(result_cache_mu_);
+            auto it = result_cache_.find(h);
+            if (it != result_cache_.end()) {
+                double now_mono = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+                if (now_mono < it->second.expire_time) {
+                    auto cached = it->second.result;
+                    cached.execution_time_us = now_us() - t0;
+                    return cached;
+                }
+                result_cache_.erase(it); // expired
+            }
+        }
+
         // Execute each CTE definition and store result in the thread-local map.
         for (auto& cte : stmt.cte_defs) {
             auto res = exec_select(*cte.stmt);
@@ -909,6 +955,23 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
         result.execution_time_us = now_us() - t0;
         result.symbol_dict = &pipeline_.symbol_dict();
         tl_cte_map.clear();
+
+        // ── Store in result cache ────────────────────────────────────────────
+        if (cacheable && result.ok()) {
+            std::lock_guard<std::mutex> lk(result_cache_mu_);
+            if (result_cache_.size() >= result_cache_max_) {
+                // Evict oldest entry
+                auto oldest = result_cache_.begin();
+                for (auto it = result_cache_.begin(); it != result_cache_.end(); ++it)
+                    if (it->second.expire_time < oldest->second.expire_time) oldest = it;
+                result_cache_.erase(oldest);
+            }
+            double now_mono = static_cast<double>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+            result_cache_[h] = {result, now_mono + result_cache_ttl_s_};
+        }
+
         return result;
     } catch (const std::exception& e) {
         tl_cte_map.clear();
@@ -931,7 +994,12 @@ QueryResultSet QueryExecutor::execute(const std::string& sql,
 // ============================================================================
 // SELECT 실행 디스패처
 // ============================================================================
-QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt) {
+QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
+    // Pre-resolve WHERE value_expr (NOW(), INTERVAL, etc.) into int64 values
+    SelectStmt stmt = stmt_in;
+    resolve_where_exprs(stmt.where);
+    resolve_where_exprs(stmt.having);
+
     // Set operations: UNION [ALL] / INTERSECT / EXCEPT
     if (stmt.set_op != SelectStmt::SetOp::NONE && stmt.rhs) {
         // Strip set_op from left side before executing
@@ -1633,6 +1701,48 @@ static int64_t eval_arith(const ArithExpr& node,
                 return std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count();
             }
+            if (node.func_name == "interval") {
+                // Parse "N unit" from func_unit, return nanoseconds
+                // Supported: seconds/minutes/hours/days/weeks, with or without 's'
+                auto& lit = node.func_unit;
+                // Split on first space or find where digits end
+                size_t i = 0;
+                while (i < lit.size() && (std::isdigit(static_cast<unsigned char>(lit[i])) || lit[i] == ' ' || lit[i] == '.'))
+                    ++i;
+                // If no space found, try splitting at digit/alpha boundary
+                size_t split = lit.find(' ');
+                int64_t n = 1;
+                std::string unit_str;
+                if (split != std::string::npos) {
+                    n = std::stoll(lit.substr(0, split));
+                    unit_str = lit.substr(split + 1);
+                } else {
+                    // e.g. "5minutes" — find where digits end
+                    size_t d = 0;
+                    while (d < lit.size() && std::isdigit(static_cast<unsigned char>(lit[d]))) ++d;
+                    if (d > 0 && d < lit.size()) {
+                        n = std::stoll(lit.substr(0, d));
+                        unit_str = lit.substr(d);
+                    } else {
+                        unit_str = lit;
+                    }
+                }
+                // Normalize: lowercase, strip trailing 's'
+                for (auto& c : unit_str) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                while (!unit_str.empty() && unit_str.back() == ' ') unit_str.pop_back();
+                if (!unit_str.empty() && unit_str.back() == 's' && unit_str != "ns" && unit_str != "ms")
+                    unit_str.pop_back();
+                int64_t ns_per = 1;
+                if (unit_str == "n" || unit_str == "ns" || unit_str == "nanosecond")  ns_per = 1LL;
+                else if (unit_str == "u" || unit_str == "us" || unit_str == "microsecond") ns_per = 1'000LL;
+                else if (unit_str == "ms" || unit_str == "millisecond") ns_per = 1'000'000LL;
+                else if (unit_str == "second" || unit_str == "sec" || unit_str == "s") ns_per = 1'000'000'000LL;
+                else if (unit_str == "minute" || unit_str == "min" || unit_str == "m") ns_per = 60'000'000'000LL;
+                else if (unit_str == "hour" || unit_str == "h")   ns_per = 3'600'000'000'000LL;
+                else if (unit_str == "day" || unit_str == "d")    ns_per = 86'400'000'000'000LL;
+                else if (unit_str == "week" || unit_str == "w")   ns_per = 604'800'000'000'000LL;
+                return n * ns_per;
+            }
             int64_t arg = node.func_arg ? eval_arith(*node.func_arg, part, idx) : 0;
             if (node.func_name == "date_trunc") {
                 int64_t bucket = date_trunc_bucket(node.func_unit);
@@ -1657,6 +1767,87 @@ static int64_t eval_arith(const ArithExpr& node,
         }
     }
     return 0;
+}
+
+// eval_arith_const: evaluate a constant ArithExpr (no partition context).
+// Used to pre-resolve WHERE value_expr like NOW() - INTERVAL '5 minutes'.
+static int64_t eval_arith_const(const ArithExpr& node) {
+    switch (node.kind) {
+        case ArithExpr::Kind::LITERAL: return node.literal;
+        case ArithExpr::Kind::COLUMN:  return 0; // columns can't be resolved without data
+        case ArithExpr::Kind::BINARY: {
+            int64_t lv = eval_arith_const(*node.left);
+            int64_t rv = eval_arith_const(*node.right);
+            switch (node.arith_op) {
+                case ArithOp::ADD: return lv + rv;
+                case ArithOp::SUB: return lv - rv;
+                case ArithOp::MUL: return lv * rv;
+                case ArithOp::DIV: return rv != 0 ? lv / rv : 0;
+            }
+        }
+        case ArithExpr::Kind::FUNC: {
+            if (node.func_name == "now")
+                return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+            if (node.func_name == "interval") {
+                // Reuse the same logic as eval_arith INTERVAL case
+                auto& lit = node.func_unit;
+                size_t split = lit.find(' ');
+                int64_t n = 1;
+                std::string unit_str;
+                if (split != std::string::npos) {
+                    n = std::stoll(lit.substr(0, split));
+                    unit_str = lit.substr(split + 1);
+                } else {
+                    size_t d = 0;
+                    while (d < lit.size() && std::isdigit(static_cast<unsigned char>(lit[d]))) ++d;
+                    if (d > 0 && d < lit.size()) { n = std::stoll(lit.substr(0, d)); unit_str = lit.substr(d); }
+                    else unit_str = lit;
+                }
+                for (auto& c : unit_str) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                while (!unit_str.empty() && unit_str.back() == ' ') unit_str.pop_back();
+                if (!unit_str.empty() && unit_str.back() == 's' && unit_str != "ns" && unit_str != "ms")
+                    unit_str.pop_back();
+                int64_t ns_per = 1;
+                if (unit_str == "n" || unit_str == "ns" || unit_str == "nanosecond")  ns_per = 1LL;
+                else if (unit_str == "u" || unit_str == "us" || unit_str == "microsecond") ns_per = 1'000LL;
+                else if (unit_str == "ms" || unit_str == "millisecond") ns_per = 1'000'000LL;
+                else if (unit_str == "second" || unit_str == "sec" || unit_str == "s") ns_per = 1'000'000'000LL;
+                else if (unit_str == "minute" || unit_str == "min" || unit_str == "m") ns_per = 60'000'000'000LL;
+                else if (unit_str == "hour" || unit_str == "h")   ns_per = 3'600'000'000'000LL;
+                else if (unit_str == "day" || unit_str == "d")    ns_per = 86'400'000'000'000LL;
+                else if (unit_str == "week" || unit_str == "w")   ns_per = 604'800'000'000'000LL;
+                return n * ns_per;
+            }
+            int64_t arg = node.func_arg ? eval_arith_const(*node.func_arg) : 0;
+            if (node.func_name == "date_trunc") {
+                int64_t bucket = date_trunc_bucket(node.func_unit);
+                return (arg / bucket) * bucket;
+            }
+            if (node.func_name == "epoch_s")  return arg / 1'000'000'000LL;
+            if (node.func_name == "epoch_ms") return arg / 1'000'000LL;
+            return arg;
+        }
+    }
+    return 0;
+}
+
+// resolve_value_exprs: walk Expr tree, evaluate value_expr → value
+static void resolve_value_exprs(std::shared_ptr<Expr>& expr) {
+    if (!expr) return;
+    if (expr->kind == Expr::Kind::AND || expr->kind == Expr::Kind::OR) {
+        resolve_value_exprs(expr->left);
+        resolve_value_exprs(expr->right);
+        return;
+    }
+    if (expr->kind == Expr::Kind::NOT) {
+        resolve_value_exprs(expr->left);
+        return;
+    }
+    if (expr->value_expr) {
+        expr->value = eval_arith_const(*expr->value_expr);
+        expr->value_expr.reset();
+    }
 }
 
 // eval_expr_single: evaluate an Expr condition for one row (used by CASE WHEN)
@@ -4879,6 +5070,50 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
     }
 
     return result;
+}
+
+// ============================================================================
+// Prepared statement cache
+// ============================================================================
+size_t QueryExecutor::sql_hash(const std::string& sql) {
+    return std::hash<std::string>{}(sql);
+}
+
+size_t QueryExecutor::prepared_cache_size() const {
+    std::lock_guard<std::mutex> lk(stmt_cache_mu_);
+    return stmt_cache_.size();
+}
+
+void QueryExecutor::clear_prepared_cache() {
+    std::lock_guard<std::mutex> lk(stmt_cache_mu_);
+    stmt_cache_.clear();
+}
+
+// ============================================================================
+// Query result cache
+// ============================================================================
+void QueryExecutor::enable_result_cache(size_t max_entries, double ttl_seconds) {
+    std::lock_guard<std::mutex> lk(result_cache_mu_);
+    result_cache_max_   = max_entries;
+    result_cache_ttl_s_ = ttl_seconds;
+}
+
+void QueryExecutor::disable_result_cache() {
+    std::lock_guard<std::mutex> lk(result_cache_mu_);
+    result_cache_max_ = 0;
+    result_cache_.clear();
+}
+
+void QueryExecutor::invalidate_result_cache(const std::string& /*table*/) {
+    // Simple: clear all cached results on any write.
+    // Future: selective invalidation by table name.
+    std::lock_guard<std::mutex> lk(result_cache_mu_);
+    result_cache_.clear();
+}
+
+size_t QueryExecutor::result_cache_size() const {
+    std::lock_guard<std::mutex> lk(result_cache_mu_);
+    return result_cache_.size();
 }
 
 } // namespace zeptodb::sql

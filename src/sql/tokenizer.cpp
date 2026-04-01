@@ -97,6 +97,7 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     if (upper == "AJ0")         return TokenType::AJ0;
     // Query plan
     if (upper == "EXPLAIN")     return TokenType::EXPLAIN;
+    if (upper == "INTERVAL")    return TokenType::INTERVAL;
     // CTE / subquery
     if (upper == "WITH")        return TokenType::WITH;
     // DML

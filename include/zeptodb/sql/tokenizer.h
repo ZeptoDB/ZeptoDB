@@ -73,6 +73,9 @@ enum class TokenType {
     // Query plan
     EXPLAIN,    // EXPLAIN SELECT ...
 
+    // INTERVAL literal
+    INTERVAL,   // INTERVAL '5 minutes'
+
     // CTE / subquery
     WITH,       // WITH name AS (...)
 

@@ -226,6 +226,7 @@ struct Expr {
     bool        is_float = false;
     std::string value_str;         // 문자열 리터럴
     bool        is_string = false;
+    std::shared_ptr<ArithExpr> value_expr; // RHS expression (NOW() - INTERVAL '5 min')
 
     // BETWEEN 필드
     int64_t     lo = 0;

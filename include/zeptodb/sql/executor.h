@@ -7,6 +7,7 @@
 // ============================================================================
 
 #include "zeptodb/sql/ast.h"
+#include "zeptodb/sql/parser.h"
 #include "zeptodb/storage/column_store.h"
 #include "zeptodb/storage/string_dictionary.h"
 #include "zeptodb/core/pipeline.h"
@@ -17,6 +18,9 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <mutex>
+#include <unordered_map>
+#include <functional>
 
 namespace zeptodb::sql {
 
@@ -94,6 +98,16 @@ public:
     /// 현재 병렬 설정 조회
     const ParallelOptions& parallel_options() const { return par_opts_; }
 
+    /// Prepared statement cache stats
+    size_t prepared_cache_size() const;
+    void   clear_prepared_cache();
+
+    /// Query result cache control
+    void   enable_result_cache(size_t max_entries = 128, double ttl_seconds = 5.0);
+    void   disable_result_cache();
+    void   invalidate_result_cache(const std::string& table = "");
+    size_t result_cache_size() const;
+
     /// 현재 스케줄러 접근 (테스트용)
     zeptodb::execution::QueryScheduler& scheduler() { return *scheduler_; }
     const zeptodb::execution::QueryScheduler& scheduler() const { return *scheduler_; }
@@ -110,6 +124,22 @@ private:
     // 비-로컬 스케줄러 주입 시 nullptr → 직렬 폴백.
     zeptodb::execution::WorkerPool* pool_raw_ = nullptr;
 
+    // ── Prepared statement cache (parse result reuse) ────────────────────────
+    mutable std::mutex stmt_cache_mu_;
+    std::unordered_map<size_t, ParsedStatement> stmt_cache_;  // hash(sql) → parsed
+
+    // ── Query result cache (TTL-based) ───────────────────────────────────────
+    struct CachedResult {
+        QueryResultSet result;
+        double         expire_time;  // monotonic seconds
+    };
+    mutable std::mutex result_cache_mu_;
+    std::unordered_map<size_t, CachedResult> result_cache_;
+    size_t result_cache_max_   = 0;      // 0 = disabled
+    double result_cache_ttl_s_ = 5.0;
+
+    static size_t sql_hash(const std::string& sql);
+
     // DDL 실행 함수들
     QueryResultSet exec_create_table(const CreateTableStmt& stmt);
     QueryResultSet exec_drop_table(const DropTableStmt& stmt);
@@ -125,7 +155,7 @@ private:
     QueryResultSet exec_drop_mv(const DropMVStmt& stmt);
 
     // SELECT 실행 내부 함수들
-    QueryResultSet exec_select(const SelectStmt& stmt);
+    QueryResultSet exec_select(const SelectStmt& stmt_in);
 
     // WHERE 절 평가 (행 인덱스 필터링)
     std::vector<uint32_t> eval_where(

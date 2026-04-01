@@ -616,6 +616,36 @@ SELECT * FROM trades WHERE timestamp > NOW() - 60000000000
 SELECT EPOCH_S(NOW()) - EPOCH_S(timestamp) AS age_sec FROM trades
 ```
 
+### INTERVAL
+
+Duration literal that evaluates to nanoseconds. Use with `NOW()` for readable time-range queries.
+
+```sql
+INTERVAL 'N unit'
+```
+
+| Unit | Aliases |
+|------|---------|
+| `nanoseconds` | `ns`, `nanosecond` |
+| `microseconds` | `us`, `microsecond` |
+| `milliseconds` | `ms`, `millisecond` |
+| `seconds` | `s`, `sec`, `second` |
+| `minutes` | `m`, `min`, `minute` |
+| `hours` | `h`, `hour` |
+| `days` | `d`, `day` |
+| `weeks` | `w`, `week` |
+
+```sql
+-- Last 5 minutes of trades
+SELECT * FROM trades WHERE timestamp > NOW() - INTERVAL '5 minutes'
+
+-- Last 2 hours
+SELECT * FROM trades WHERE timestamp > NOW() - INTERVAL '2 hours'
+
+-- In SELECT expressions
+SELECT NOW() - INTERVAL '1 day' AS yesterday FROM trades LIMIT 1
+```
+
 ### EPOCH_S / EPOCH_MS
 
 Convert nanosecond timestamp to seconds or milliseconds.

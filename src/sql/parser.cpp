@@ -1170,8 +1170,11 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
     node->kind = Expr::Kind::COMPARE;
     node->op   = parse_compare_op();
 
-    // 오른쪽 값 (숫자 또는 문자열)
-    if (check(TokenType::NUMBER)) {
+    // 오른쪽 값 (숫자, 문자열, or expression like NOW() - INTERVAL '5 min')
+    if (check(TokenType::NOW) || check(TokenType::EPOCH_S) || check(TokenType::EPOCH_MS)
+        || check(TokenType::DATE_TRUNC) || check(TokenType::INTERVAL)) {
+        node->value_expr = parse_arith_expr_node();
+    } else if (check(TokenType::NUMBER)) {
         std::string s = current().value;
         advance();
         // 실수 여부 체크
@@ -1469,6 +1472,16 @@ std::shared_ptr<ArithExpr> Parser::parse_arith_primary() {
             node->func_arg2 = parse_arith_expr_node(); // length
         }
         expect(TokenType::RPAREN, ")");
+        return node;
+    }
+
+    // INTERVAL '5 minutes' → nanosecond literal
+    if (check(TokenType::INTERVAL)) {
+        advance();
+        std::string lit = parse_string_literal(); // e.g. "5 minutes"
+        node->kind = ArithExpr::Kind::FUNC;
+        node->func_name = "interval";
+        node->func_unit = lit;
         return node;
     }
 

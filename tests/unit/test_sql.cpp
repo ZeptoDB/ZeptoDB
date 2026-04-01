@@ -4364,3 +4364,100 @@ TEST(OffsetSQL, OffsetWithOrderBy) {
     EXPECT_EQ(r.rows[1][0], 1003);
     EXPECT_EQ(r.rows[2][0], 1004);
 }
+
+// ============================================================================
+// INTERVAL syntax tests
+// ============================================================================
+
+TEST(ParserInterval, IntervalLiteral) {
+    Parser p;
+    // INTERVAL in SELECT arithmetic: NOW() - INTERVAL '5 minutes'
+    auto stmt = p.parse("SELECT NOW() - INTERVAL '5 minutes' AS cutoff FROM trades");
+    ASSERT_EQ(stmt.columns.size(), 1u);
+    ASSERT_TRUE(stmt.columns[0].arith_expr);
+    EXPECT_EQ(stmt.columns[0].arith_expr->kind, ArithExpr::Kind::BINARY);
+}
+
+TEST(ParserInterval, IntervalUnits) {
+    Parser p;
+    // Various units should parse without error
+    for (auto* unit : {"1 second", "5 minutes", "2 hours", "7 days", "1 week",
+                       "500 milliseconds", "100 microseconds"}) {
+        std::string sql = "SELECT NOW() - INTERVAL '" + std::string(unit) + "' AS t FROM trades";
+        EXPECT_NO_THROW(p.parse(sql)) << "Failed for unit: " << unit;
+    }
+}
+
+TEST_F(SqlExecutorTest, IntervalInWhere) {
+    // Insert a row with a recent timestamp
+    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string insert_sql = "INSERT INTO trades (symbol, timestamp, price, volume) VALUES (1, "
+        + std::to_string(now_ns) + ", 15000, 100)";
+    auto ir = executor->execute(insert_sql);
+    ASSERT_TRUE(ir.ok()) << ir.error;
+
+    // Query with INTERVAL: should find the row we just inserted
+    auto r = executor->execute(
+        "SELECT price FROM trades WHERE timestamp > NOW() - INTERVAL '1 hour'");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_GE(r.rows.size(), 1u) << "Should find recently inserted row";
+}
+
+// ============================================================================
+// Prepared statement cache tests
+// ============================================================================
+
+TEST_F(SqlExecutorTest, PreparedStatementCache) {
+    // First execution: cache miss
+    auto r1 = executor->execute("SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    EXPECT_GE(executor->prepared_cache_size(), 1u);
+
+    // Second execution: cache hit (same SQL)
+    auto r2 = executor->execute("SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+
+    // Results should be identical
+    ASSERT_EQ(r1.rows.size(), r2.rows.size());
+    if (!r1.rows.empty())
+        EXPECT_EQ(r1.rows[0][0], r2.rows[0][0]);
+
+    // Clear cache
+    executor->clear_prepared_cache();
+    EXPECT_EQ(executor->prepared_cache_size(), 0u);
+}
+
+// ============================================================================
+// Query result cache tests
+// ============================================================================
+
+TEST_F(SqlExecutorTest, ResultCacheHit) {
+    executor->enable_result_cache(64, 10.0);
+
+    auto r1 = executor->execute("SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    EXPECT_EQ(executor->result_cache_size(), 1u);
+
+    // Second call should hit cache
+    auto r2 = executor->execute("SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    ASSERT_EQ(r1.rows.size(), r2.rows.size());
+
+    executor->disable_result_cache();
+    EXPECT_EQ(executor->result_cache_size(), 0u);
+}
+
+TEST_F(SqlExecutorTest, ResultCacheInvalidateOnInsert) {
+    executor->enable_result_cache(64, 10.0);
+
+    auto r1 = executor->execute("SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    EXPECT_EQ(executor->result_cache_size(), 1u);
+
+    // INSERT should invalidate cache
+    executor->execute("INSERT INTO trades (symbol, timestamp, price, volume) VALUES (1, 999999, 100, 10)");
+    EXPECT_EQ(executor->result_cache_size(), 0u);
+
+    executor->disable_result_cache();
+}
