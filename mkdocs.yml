@@ -1,6 +1,6 @@
 site_name: ZeptoDB
 site_description: Ultra-Low Latency In-Memory Database
-site_url: https://zeptodb.io
+site_url: https://zeptodb.github.io/ZeptoDB/
 repo_url: https://github.com/zeptodb/zeptodb
 repo_name: zeptodb/zeptodb
 
