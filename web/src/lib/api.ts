@@ -2,8 +2,12 @@ function headers(apiKey?: string): HeadersInit {
   return apiKey?.length ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
+function fetchOpts(apiKey?: string, signal?: AbortSignal): RequestInit {
+  return { headers: headers(apiKey), credentials: "include" as const, signal };
+}
+
 export async function querySQL(sql: string, apiKey?: string, signal?: AbortSignal) {
-  const res = await fetch("/api", { method: "POST", body: sql, headers: headers(apiKey), signal });
+  const res = await fetch("/api", { method: "POST", body: sql, ...fetchOpts(apiKey, signal) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -12,31 +16,31 @@ export async function querySQL(sql: string, apiKey?: string, signal?: AbortSigna
 }
 
 export async function fetchStats(apiKey?: string) {
-  const res = await fetch("/api/stats", { headers: headers(apiKey) });
+  const res = await fetch("/api/stats", fetchOpts(apiKey));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 export async function fetchHealth(apiKey?: string) {
-  const res = await fetch("/api/health", { headers: headers(apiKey) });
+  const res = await fetch("/api/health", fetchOpts(apiKey));
   if (!res.ok) return { status: "unhealthy" };
   return res.json();
 }
 
 export async function fetchVersion(apiKey?: string) {
-  const res = await fetch("/api/admin/version", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/version", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
 
 export async function fetchCluster(apiKey?: string) {
-  const res = await fetch("/api/admin/cluster", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/cluster", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
 
 export async function fetchNodes(apiKey?: string) {
-  const res = await fetch("/api/admin/nodes", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/nodes", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -47,7 +51,7 @@ export async function fetchMetricsHistory(apiKey?: string, sinceMs?: number, lim
   if (limit) params.set("limit", String(limit));
   const qs = params.toString();
   const url = qs ? `/api/admin/metrics/history?${qs}` : "/api/admin/metrics/history";
-  const res = await fetch(url, { headers: headers(apiKey) });
+  const res = await fetch(url, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -55,7 +59,7 @@ export async function fetchMetricsHistory(apiKey?: string, sinceMs?: number, lim
 // ── Admin: API Keys ─────────────────────────────────────────────────────────
 
 export async function fetchKeys(apiKey?: string) {
-  const res = await fetch("/api/admin/keys", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/keys", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -78,6 +82,7 @@ export async function createKey(
   const res = await fetch("/api/admin/keys", {
     method: "POST",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -101,6 +106,7 @@ export async function updateKey(
   const res = await fetch(`/api/admin/keys/${keyId}`, {
     method: "PATCH",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(patch),
   });
   if (!res.ok) {
@@ -111,7 +117,7 @@ export async function updateKey(
 }
 
 export async function revokeKey(keyId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/keys/${keyId}`, { method: "DELETE", headers: headers(apiKey) });
+  const res = await fetch(`/api/admin/keys/${keyId}`, { method: "DELETE", ...fetchOpts(apiKey) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -122,13 +128,13 @@ export async function revokeKey(keyId: string, apiKey?: string) {
 // ── Admin: Queries ──────────────────────────────────────────────────────────
 
 export async function fetchQueries(apiKey?: string) {
-  const res = await fetch("/api/admin/queries", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/queries", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
 
 export async function killQuery(queryId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/queries/${queryId}`, { method: "DELETE", headers: headers(apiKey) });
+  const res = await fetch(`/api/admin/queries/${queryId}`, { method: "DELETE", ...fetchOpts(apiKey) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -139,7 +145,7 @@ export async function killQuery(queryId: string, apiKey?: string) {
 // ── Admin: Audit ────────────────────────────────────────────────────────────
 
 export async function fetchAudit(apiKey?: string, n = 100) {
-  const res = await fetch(`/api/admin/audit?n=${n}`, { headers: headers(apiKey) });
+  const res = await fetch(`/api/admin/audit?n=${n}`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -147,7 +153,7 @@ export async function fetchAudit(apiKey?: string, n = 100) {
 // ── Admin: API Key Usage ────────────────────────────────────────────────────
 
 export async function fetchKeyUsage(keyId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/keys/${keyId}/usage`, { headers: headers(apiKey) });
+  const res = await fetch(`/api/admin/keys/${keyId}/usage`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -155,15 +161,22 @@ export async function fetchKeyUsage(keyId: string, apiKey?: string) {
 // ── Admin: Tenants ──────────────────────────────────────────────────────────
 
 export async function fetchTenants(apiKey?: string) {
-  const res = await fetch("/api/admin/tenants", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/tenants", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
+}
+
+export async function fetchTenant(tenantId: string, apiKey?: string) {
+  const all = await fetchTenants(apiKey);
+  if (!all) return null;
+  return all.find((t: { tenant_id: string }) => t.tenant_id === tenantId) ?? null;
 }
 
 export async function createTenant(tenantId: string, name: string, maxConcurrentQueries: number, tableNamespace: string, apiKey?: string) {
   const res = await fetch("/api/admin/tenants", {
     method: "POST",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ tenant_id: tenantId, name, max_concurrent_queries: maxConcurrentQueries, table_namespace: tableNamespace }),
   });
   if (!res.ok) {
@@ -174,7 +187,7 @@ export async function createTenant(tenantId: string, name: string, maxConcurrent
 }
 
 export async function deleteTenant(tenantId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/tenants/${tenantId}`, { method: "DELETE", headers: headers(apiKey) });
+  const res = await fetch(`/api/admin/tenants/${tenantId}`, { method: "DELETE", ...fetchOpts(apiKey) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -185,7 +198,7 @@ export async function deleteTenant(tenantId: string, apiKey?: string) {
 // ── Admin: Sessions ─────────────────────────────────────────────────────────
 
 export async function fetchSessions(apiKey?: string) {
-  const res = await fetch("/api/admin/sessions", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/sessions", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -193,7 +206,7 @@ export async function fetchSessions(apiKey?: string) {
 // ── Admin: Settings ─────────────────────────────────────────────────────────
 
 export async function fetchSettings(apiKey?: string) {
-  const res = await fetch("/api/admin/settings", { headers: headers(apiKey) });
+  const res = await fetch("/api/admin/settings", fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }

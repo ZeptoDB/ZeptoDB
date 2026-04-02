@@ -22,6 +22,8 @@ describe("fetchNodes", () => {
     const result = await fetchNodes("zepto_admin_key");
     expect(mockFetch).toHaveBeenCalledWith("/api/admin/nodes", {
       headers: { Authorization: "Bearer zepto_admin_key" },
+      credentials: "include",
+      signal: undefined,
     });
     expect(result.nodes).toHaveLength(3);
     expect(result.nodes[2].state).toBe("SUSPECT");
@@ -54,6 +56,8 @@ describe("fetchMetricsHistory", () => {
     const result = await fetchMetricsHistory("zepto_key");
     expect(mockFetch).toHaveBeenCalledWith("/api/admin/metrics/history", {
       headers: { Authorization: "Bearer zepto_key" },
+      credentials: "include",
+      signal: undefined,
     });
     expect(result).toHaveLength(1);
   });
@@ -64,7 +68,7 @@ describe("fetchMetricsHistory", () => {
     await fetchMetricsHistory("zepto_key", 1711234567000);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/admin/metrics/history?since=1711234567000",
-      { headers: { Authorization: "Bearer zepto_key" } },
+      { headers: { Authorization: "Bearer zepto_key" }, credentials: "include", signal: undefined },
     );
   });
 
@@ -74,7 +78,7 @@ describe("fetchMetricsHistory", () => {
     await fetchMetricsHistory("zepto_key", 1711234567000, 100);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/admin/metrics/history?since=1711234567000&limit=100",
-      { headers: { Authorization: "Bearer zepto_key" } },
+      { headers: { Authorization: "Bearer zepto_key" }, credentials: "include", signal: undefined },
     );
   });
 
@@ -84,7 +88,7 @@ describe("fetchMetricsHistory", () => {
     await fetchMetricsHistory("zepto_key", undefined, 50);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/admin/metrics/history?limit=50",
-      { headers: { Authorization: "Bearer zepto_key" } },
+      { headers: { Authorization: "Bearer zepto_key" }, credentials: "include", signal: undefined },
     );
   });
 

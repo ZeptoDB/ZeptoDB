@@ -13,19 +13,29 @@ describe("headers", () => {
     await fetchHealth("zepto_abc123");
     expect(mockFetch).toHaveBeenCalledWith("/api/health", {
       headers: { Authorization: "Bearer zepto_abc123" },
+      credentials: "include",
+      signal: undefined,
     });
   });
 
   it("sends no Authorization header when apiKey is empty string", async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: "healthy" }) });
     await fetchHealth("");
-    expect(mockFetch).toHaveBeenCalledWith("/api/health", { headers: {} });
+    expect(mockFetch).toHaveBeenCalledWith("/api/health", {
+      headers: {},
+      credentials: "include",
+      signal: undefined,
+    });
   });
 
   it("sends no Authorization header when apiKey is undefined", async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: "healthy" }) });
     await fetchHealth();
-    expect(mockFetch).toHaveBeenCalledWith("/api/health", { headers: {} });
+    expect(mockFetch).toHaveBeenCalledWith("/api/health", {
+      headers: {},
+      credentials: "include",
+      signal: undefined,
+    });
   });
 });
 
@@ -39,8 +49,28 @@ describe("querySQL", () => {
       method: "POST",
       body: "SELECT price FROM trades WHERE symbol = 1 LIMIT 1",
       headers: { Authorization: "Bearer zepto_key" },
+      credentials: "include",
+      signal: undefined,
     });
     expect(r).toEqual(result);
+  });
+
+  it("SHOW TABLES sends correct SQL", async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ columns: ["name"], data: [["trades"]] }) });
+    await querySQL("SHOW TABLES");
+    expect(mockFetch).toHaveBeenCalledWith("/api", expect.objectContaining({
+      method: "POST",
+      body: "SHOW TABLES",
+    }));
+  });
+
+  it("DESCRIBE sends correct SQL", async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ columns: ["column", "type"], data: [] }) });
+    await querySQL("DESCRIBE trades");
+    expect(mockFetch).toHaveBeenCalledWith("/api", expect.objectContaining({
+      method: "POST",
+      body: "DESCRIBE trades",
+    }));
   });
 
   it("throws on server error with error message", async () => {

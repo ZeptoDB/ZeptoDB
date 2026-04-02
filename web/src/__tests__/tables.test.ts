@@ -16,6 +16,8 @@ describe("TablesPage SQL usage", () => {
       method: "POST",
       body: "SHOW TABLES",
       headers: { Authorization: "Bearer zepto_key" },
+      credentials: "include",
+      signal: undefined,
     });
     expect(r.data[0][0]).toBe("trades");
   });
@@ -29,6 +31,8 @@ describe("TablesPage SQL usage", () => {
       method: "POST",
       body: "DESCRIBE trades",
       headers: { Authorization: "Bearer zepto_key" },
+      credentials: "include",
+      signal: undefined,
     });
     expect(r.data).toHaveLength(2);
     expect(r.data[0][0]).toBe("price");

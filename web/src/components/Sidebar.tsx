@@ -11,6 +11,7 @@ import HubIcon from "@mui/icons-material/HubOutlined";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import SettingsIcon from "@mui/icons-material/Settings";
 import ExitToAppIcon from "@mui/icons-material/ExitToApp";
+import GroupsIcon from "@mui/icons-material/Groups";
 import { useAuth } from "@/lib/auth";
 
 const WIDTH = 220;
@@ -22,6 +23,7 @@ const nav: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: <DashboardIcon />, roles: ["admin", "writer", "reader", "metrics"] },
   { label: "Tables", href: "/tables", icon: <StorageIcon />, roles: ["admin", "writer", "reader", "analyst"] },
   { label: "Cluster", href: "/cluster", icon: <HubIcon />, roles: ["admin"] },
+  { label: "Tenants", href: "/tenants", icon: <GroupsIcon />, roles: ["admin"] },
   { label: "Admin", href: "/admin", icon: <AdminPanelSettingsIcon />, roles: ["admin"] },
   { label: "Settings", href: "/settings", icon: <SettingsIcon />, roles: ["admin"] },
 ];
@@ -35,7 +37,7 @@ export default function Sidebar() {
   const router = useRouter();
   const { auth, logout } = useAuth();
 
-  const handleLogout = () => { logout(); router.push("/login"); };
+  const handleLogout = () => { logout().then(() => router.push("/login")); };
   const visible = getVisibleNav(auth?.role ?? "reader");
 
   return (

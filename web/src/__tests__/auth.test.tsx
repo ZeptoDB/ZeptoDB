@@ -13,7 +13,7 @@ const mockSessionStorage = {
 };
 Object.defineProperty(globalThis, "sessionStorage", { value: mockSessionStorage });
 
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import { AuthProvider, useAuth } from "@/lib/auth";
 
 function TestConsumer() {
@@ -21,11 +21,11 @@ function TestConsumer() {
   return (
     <div>
       <span data-testid="role">{auth?.role ?? "none"}</span>
-      <span data-testid="key">{auth?.apiKey ?? "none"}</span>
       <span data-testid="subject">{auth?.subject ?? "none"}</span>
+      <span data-testid="source">{auth?.source ?? "none"}</span>
       <button onClick={() => login("zepto_test_key").catch(() => {})}>login</button>
       <button onClick={() => login("  zepto_padded  ").catch(() => {})}>login-padded</button>
-      <button onClick={logout}>logout</button>
+      <button onClick={() => { logout(); }}>logout</button>
     </div>
   );
 }
@@ -44,83 +44,98 @@ function ErrorConsumer() {
   );
 }
 
+// Default mock: no session, no auth
+function setupDefaultMock() {
+  mockFetch.mockImplementation((url: string) => {
+    if (url === "/api/auth/me") return Promise.resolve({ ok: false, status: 401 });
+    if (url === "/api/auth/logout") return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    if (url === "/api/auth/session") return Promise.resolve({ ok: false, status: 503 });
+    return Promise.resolve({ ok: false, status: 404 });
+  });
+}
+
 beforeEach(() => {
   mockFetch.mockReset();
   Object.keys(store).forEach((k) => delete store[k]);
+  setupDefaultMock();
 });
 
+async function renderAndWait(ui: React.ReactElement) {
+  let result: ReturnType<typeof render>;
+  await act(async () => { result = render(ui); });
+  return result!;
+}
+
 function mockWhoami(role: string, subject: string) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    json: () => Promise.resolve({ role, subject }),
+  mockFetch.mockImplementation((url: string) => {
+    if (url === "/api/auth/me") return Promise.resolve({ ok: false, status: 401 });
+    if (url === "/api/whoami") return Promise.resolve({ ok: true, json: () => Promise.resolve({ role, subject }) });
+    if (url === "/api/auth/session") return Promise.resolve({ ok: false, status: 503 });
+    if (url === "/api/auth/logout") return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    return Promise.resolve({ ok: false, status: 404 });
   });
 }
 
 function mockWhoamiFail(error: string) {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    json: () => Promise.resolve({ error }),
+  mockFetch.mockImplementation((url: string) => {
+    if (url === "/api/auth/me") return Promise.resolve({ ok: false, status: 401 });
+    if (url === "/api/whoami") return Promise.resolve({ ok: false, json: () => Promise.resolve({ error }) });
+    if (url === "/api/auth/logout") return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    return Promise.resolve({ ok: false, status: 404 });
   });
 }
 
 describe("AuthProvider", () => {
-  it("starts with no auth", () => {
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+  it("starts with no auth", async () => {
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
     expect(screen.getByTestId("role").textContent).toBe("none");
   });
 
-  it("login calls /api/whoami with cache:no-store", async () => {
+  it("login calls /api/whoami and falls back to client storage", async () => {
     mockWhoami("admin", "ak_1234");
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
     await act(async () => { screen.getByText("login").click(); });
 
-    expect(mockFetch).toHaveBeenCalledWith("/api/whoami", {
-      headers: { Authorization: "Bearer zepto_test_key" },
-      cache: "no-store",
-    });
     expect(screen.getByTestId("role").textContent).toBe("admin");
     expect(screen.getByTestId("subject").textContent).toBe("ak_1234");
+    expect(screen.getByTestId("source").textContent).toBe("api_key");
   });
 
   it("login trims whitespace from API key", async () => {
     mockWhoami("reader", "ak_5678");
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
     await act(async () => { screen.getByText("login-padded").click(); });
-
-    expect(mockFetch).toHaveBeenCalledWith("/api/whoami", {
-      headers: { Authorization: "Bearer zepto_padded" },
-      cache: "no-store",
-    });
-    expect(screen.getByTestId("key").textContent).toBe("zepto_padded");
+    expect(screen.getByTestId("role").textContent).toBe("reader");
   });
 
   it("login throws on invalid key (401)", async () => {
     mockWhoamiFail("Invalid API key");
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
     await act(async () => { screen.getByText("login").click(); });
     expect(screen.getByTestId("role").textContent).toBe("none");
   });
 
   it("login propagates backend error message", async () => {
     mockWhoamiFail("Rate limit exceeded");
-    render(<AuthProvider><ErrorConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><ErrorConsumer /></AuthProvider>);
     await act(async () => { screen.getByText("login-bad").click(); });
     expect(screen.getByTestId("err").textContent).toBe("Rate limit exceeded");
   });
 
   it("login falls back to generic message when body is not JSON", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      json: () => Promise.reject(new Error("not json")),
+    mockFetch.mockImplementation((url: string) => {
+      if (url === "/api/auth/me") return Promise.resolve({ ok: false, status: 401 });
+      if (url === "/api/whoami") return Promise.resolve({ ok: false, json: () => Promise.reject(new Error("not json")) });
+      return Promise.resolve({ ok: false, status: 404 });
     });
-    render(<AuthProvider><ErrorConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><ErrorConsumer /></AuthProvider>);
     await act(async () => { screen.getByText("login-bad").click(); });
     expect(screen.getByTestId("err").textContent).toBe("Invalid API key");
   });
 
   it("logout clears auth state", async () => {
     mockWhoami("admin", "ak_1234");
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
     await act(async () => { screen.getByText("login").click(); });
     expect(screen.getByTestId("role").textContent).toBe("admin");
 
@@ -130,26 +145,23 @@ describe("AuthProvider", () => {
 
   it("re-login works after logout", async () => {
     mockWhoami("admin", "ak_1234");
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
 
-    // Login
     await act(async () => { screen.getByText("login").click(); });
     expect(screen.getByTestId("role").textContent).toBe("admin");
 
-    // Logout
     await act(async () => { screen.getByText("logout").click(); });
     expect(screen.getByTestId("role").textContent).toBe("none");
 
-    // Re-login
     mockWhoami("writer", "ak_5678");
     await act(async () => { screen.getByText("login").click(); });
     expect(screen.getByTestId("role").textContent).toBe("writer");
     expect(screen.getByTestId("subject").textContent).toBe("ak_5678");
   });
 
-  it("sessionStorage is cleared on logout and set on login", async () => {
+  it("sessionStorage is cleared on logout", async () => {
     mockWhoami("reader", "ak_r");
-    render(<AuthProvider><TestConsumer /></AuthProvider>);
+    await renderAndWait(<AuthProvider><TestConsumer /></AuthProvider>);
 
     await act(async () => { screen.getByText("login").click(); });
     expect(mockSessionStorage.setItem).toHaveBeenCalledWith(

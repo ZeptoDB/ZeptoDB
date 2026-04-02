@@ -4,7 +4,7 @@ import { getVisibleNav } from "@/components/Sidebar";
 describe("getVisibleNav (role-based menu filtering)", () => {
   it("admin sees all menus including Cluster, Admin, and Settings", () => {
     const labels = getVisibleNav("admin").map((n) => n.label);
-    expect(labels).toEqual(["Query", "Dashboard", "Tables", "Cluster", "Admin", "Settings"]);
+    expect(labels).toEqual(["Query", "Dashboard", "Tables", "Cluster", "Tenants", "Admin", "Settings"]);
   });
 
   it("writer sees Query, Dashboard, Tables", () => {
