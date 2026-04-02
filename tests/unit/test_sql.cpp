@@ -4461,3 +4461,177 @@ TEST_F(SqlExecutorTest, ResultCacheInvalidateOnInsert) {
 
     executor->disable_result_cache();
 }
+
+// ============================================================================
+// SAMPLE clause tests
+// ============================================================================
+
+TEST_F(SqlExecutorTest, SampleParse) {
+    // SAMPLE 1.0 should return all rows (same as no SAMPLE)
+    auto all = executor->execute("SELECT * FROM trades");
+    ASSERT_TRUE(all.ok()) << all.error;
+    auto sampled = executor->execute("SELECT * FROM trades SAMPLE 1.0");
+    ASSERT_TRUE(sampled.ok()) << sampled.error;
+    EXPECT_EQ(sampled.rows.size(), all.rows.size());
+}
+
+TEST_F(SqlExecutorTest, SampleReducesRows) {
+    auto all = executor->execute("SELECT * FROM trades");
+    ASSERT_TRUE(all.ok()) << all.error;
+    size_t total = all.rows.size();
+    ASSERT_GE(total, 10u);
+
+    // SAMPLE 0.5 should return roughly half (deterministic hash, not random)
+    auto sampled = executor->execute("SELECT * FROM trades SAMPLE 0.5");
+    ASSERT_TRUE(sampled.ok()) << sampled.error;
+    // Allow wide tolerance: between 10% and 90% of total
+    EXPECT_GT(sampled.rows.size(), total / 10);
+    EXPECT_LT(sampled.rows.size(), total);
+}
+
+TEST_F(SqlExecutorTest, SampleDeterministic) {
+    // Same query should return same rows every time
+    auto r1 = executor->execute("SELECT * FROM trades SAMPLE 0.3");
+    auto r2 = executor->execute("SELECT * FROM trades SAMPLE 0.3");
+    ASSERT_TRUE(r1.ok()) << r1.error;
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_EQ(r1.rows.size(), r2.rows.size());
+    EXPECT_EQ(r1.rows, r2.rows);
+}
+
+TEST_F(SqlExecutorTest, SampleWithWhere) {
+    auto all = executor->execute("SELECT * FROM trades WHERE symbol = 1");
+    ASSERT_TRUE(all.ok()) << all.error;
+    auto sampled = executor->execute("SELECT * FROM trades SAMPLE 0.5 WHERE symbol = 1");
+    ASSERT_TRUE(sampled.ok()) << sampled.error;
+    EXPECT_LE(sampled.rows.size(), all.rows.size());
+}
+
+TEST_F(SqlExecutorTest, SampleWithAgg) {
+    auto sampled = executor->execute("SELECT count(*) FROM trades SAMPLE 0.5");
+    ASSERT_TRUE(sampled.ok()) << sampled.error;
+    ASSERT_EQ(sampled.rows.size(), 1u);
+    auto all = executor->execute("SELECT count(*) FROM trades");
+    ASSERT_TRUE(all.ok()) << all.error;
+    // Sampled count should be less than or equal to full count
+    EXPECT_LE(sampled.rows[0][0], all.rows[0][0]);
+}
+
+TEST_F(SqlExecutorTest, SampleWithGroupBy) {
+    auto sampled = executor->execute(
+        "SELECT symbol, count(*) FROM trades SAMPLE 0.5 GROUP BY symbol");
+    ASSERT_TRUE(sampled.ok()) << sampled.error;
+    // Should still produce groups (at least 1 symbol)
+    EXPECT_GE(sampled.rows.size(), 1u);
+}
+
+TEST_F(SqlExecutorTest, SampleExplain) {
+    auto r = executor->execute("EXPLAIN SELECT * FROM trades SAMPLE 0.3");
+    ASSERT_TRUE(r.ok()) << r.error;
+    bool found = false;
+    for (auto& line : r.string_rows) {
+        if (line.find("Sample:") != std::string::npos &&
+            line.find("30%") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "EXPLAIN should show Sample rate";
+}
+
+TEST_F(SqlExecutorTest, SampleInvalidRate) {
+    auto r1 = executor->execute("SELECT * FROM trades SAMPLE 0.0");
+    EXPECT_FALSE(r1.ok());
+    auto r2 = executor->execute("SELECT * FROM trades SAMPLE 1.5");
+    EXPECT_FALSE(r2.ok());
+}
+
+// ============================================================================
+// Scalar subquery in WHERE tests
+// ============================================================================
+
+TEST_F(SqlExecutorTest, ScalarSubqueryCompare) {
+    // price > (SELECT avg(price) FROM trades)
+    // avg of all 15 rows: symbol1 has 15000..15090, symbol2 has 20000..20040
+    auto all = executor->execute("SELECT avg(price) FROM trades");
+    ASSERT_TRUE(all.ok()) << all.error;
+    int64_t avg_price = all.rows[0][0];
+
+    auto r = executor->execute(
+        "SELECT count(*) FROM trades WHERE price > (SELECT avg(price) FROM trades)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+
+    // Verify manually: count rows where price > avg
+    auto manual = executor->execute(
+        "SELECT count(*) FROM trades WHERE price > " + std::to_string(avg_price));
+    ASSERT_TRUE(manual.ok()) << manual.error;
+    EXPECT_EQ(r.rows[0][0], manual.rows[0][0]);
+}
+
+TEST_F(SqlExecutorTest, ScalarSubqueryWithInnerWhere) {
+    // price > (SELECT avg(price) FROM trades WHERE symbol = 1)
+    auto r = executor->execute(
+        "SELECT * FROM trades WHERE price > (SELECT avg(price) FROM trades WHERE symbol = 1)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_GE(r.rows.size(), 1u);
+}
+
+TEST_F(SqlExecutorTest, InSubquery) {
+    // symbol IN (SELECT symbol FROM trades WHERE volume > 105)
+    // Inner query returns symbols that have rows with volume > 105.
+    // Both symbol=1 (vol 106-109) and symbol=2 (vol 200-204) qualify.
+    // So outer WHERE matches all rows in both symbols.
+    auto total = executor->execute("SELECT count(*) FROM trades");
+    ASSERT_TRUE(total.ok()) << total.error;
+
+    auto r = executor->execute(
+        "SELECT count(*) FROM trades WHERE symbol IN (SELECT symbol FROM trades WHERE volume > 105)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    // Both symbols match → all rows returned
+    EXPECT_EQ(r.rows[0][0], total.rows[0][0]);
+}
+
+TEST_F(SqlExecutorTest, ScalarSubqueryMultiRowError) {
+    // Subquery returns multiple rows → error
+    auto r = executor->execute(
+        "SELECT * FROM trades WHERE price > (SELECT price FROM trades)");
+    EXPECT_FALSE(r.ok());
+    EXPECT_NE(r.error.find("1 row"), std::string::npos);
+}
+
+TEST_F(SqlExecutorTest, ScalarSubqueryMultiColError) {
+    // Subquery returns multiple columns → error
+    auto r = executor->execute(
+        "SELECT * FROM trades WHERE price > (SELECT price, volume FROM trades WHERE symbol = 1 LIMIT 1)");
+    EXPECT_FALSE(r.ok());
+    EXPECT_NE(r.error.find("1 column"), std::string::npos);
+}
+
+TEST_F(SqlExecutorTest, ScalarSubqueryInAnd) {
+    // Combined with AND
+    auto r = executor->execute(
+        "SELECT count(*) FROM trades WHERE symbol = 1 AND price > (SELECT avg(price) FROM trades WHERE symbol = 1)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    // symbol=1 prices: 15000,15010,...,15090. avg=15045. Rows > 15045: 15050,15060,15070,15080,15090 = 5
+    EXPECT_EQ(r.rows[0][0], 5);
+}
+
+TEST_F(SqlExecutorTest, ScalarSubqueryWithGroupBy) {
+    auto r = executor->execute(
+        "SELECT symbol, count(*) FROM trades "
+        "WHERE price > (SELECT avg(price) FROM trades) GROUP BY symbol");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_GE(r.rows.size(), 1u);
+}
+
+TEST_F(SqlExecutorTest, InSubqueryEmpty) {
+    // Subquery returns no rows → IN () matches nothing
+    auto r = executor->execute(
+        "SELECT count(*) FROM trades WHERE symbol IN (SELECT symbol FROM trades WHERE volume > 999999)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 1u);
+    EXPECT_EQ(r.rows[0][0], 0);
+}

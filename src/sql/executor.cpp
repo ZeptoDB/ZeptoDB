@@ -71,6 +71,25 @@ static void apply_offset_limit(QueryResultSet& r, const SelectStmt& stmt) {
 }
 
 // ── Template helpers for type-dispatched comparisons ────────────────────────
+
+// ── SAMPLE helper: filter row indices by deterministic hash ─────────────────
+// Uses a fast integer hash (splitmix64-style) so results are reproducible for
+// the same data.  Threshold = rate * 2^32 — avoids floating-point per row.
+static void apply_sample(std::vector<uint32_t>& indices, double rate) {
+    if (rate >= 1.0) return;
+    const uint32_t threshold = static_cast<uint32_t>(rate * 4294967296.0);
+    size_t out = 0;
+    for (size_t i = 0; i < indices.size(); ++i) {
+        uint64_t h = indices[i];
+        h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
+        h ^= (h >> 31);
+        if (static_cast<uint32_t>(h) < threshold)
+            indices[out++] = indices[i];
+    }
+    indices.resize(out);
+}
+
 template<typename T>
 static bool compare_val(T v, CompareOp op, T cmp) {
     switch (op) {
@@ -398,6 +417,12 @@ static QueryResultSet build_explain_plan(const SelectStmt& stmt,
         line("Limit:      " + std::to_string(stmt.limit.value()));
     if (stmt.offset.has_value())
         line("Offset:     " + std::to_string(stmt.offset.value()));
+    if (stmt.sample_rate.has_value()) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.4g", *stmt.sample_rate);
+        line(std::string("Sample:     ") + buf + " (" +
+             std::to_string(static_cast<int>(*stmt.sample_rate * 100)) + "% of rows)");
+    }
     line("Partitions: " + std::to_string(total_parts));
     line("TotalRows:  " + std::to_string(total_rows));
     if (stmt.group_by.has_value() && stmt.group_by->columns.size() == 1
@@ -999,6 +1024,17 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
     SelectStmt stmt = stmt_in;
     resolve_where_exprs(stmt.where);
     resolve_where_exprs(stmt.having);
+
+    // Pre-resolve uncorrelated scalar/IN subqueries into literal values
+    if (stmt.where && stmt.where->expr) {
+        try {
+            resolve_subqueries(stmt.where->expr);
+        } catch (const std::exception& e) {
+            QueryResultSet r;
+            r.error = e.what();
+            return r;
+        }
+    }
 
     // Set operations: UNION [ALL] / INTERSECT / EXCEPT
     if (stmt.set_op != SelectStmt::SetOp::NONE && stmt.rhs) {
@@ -1850,6 +1886,65 @@ static void resolve_value_exprs(std::shared_ptr<Expr>& expr) {
     }
 }
 
+// ── Resolve uncorrelated scalar/IN subqueries into literals ────────────────
+void QueryExecutor::resolve_subqueries(std::shared_ptr<Expr>& expr) {
+    if (!expr) return;
+    if (expr->kind == Expr::Kind::AND || expr->kind == Expr::Kind::OR) {
+        resolve_subqueries(expr->left);
+        resolve_subqueries(expr->right);
+        return;
+    }
+    if (expr->kind == Expr::Kind::NOT) {
+        resolve_subqueries(expr->left);
+        return;
+    }
+    if (expr->kind == Expr::Kind::SCALAR_SUBQUERY && expr->subquery) {
+        auto sub = exec_select(*expr->subquery);
+        if (!sub.ok())
+            throw std::runtime_error("Scalar subquery error: " + sub.error);
+        if (sub.rows.size() != 1 || sub.column_names.size() != 1)
+            throw std::runtime_error(
+                "Scalar subquery must return exactly 1 row × 1 column, got "
+                + std::to_string(sub.rows.size()) + " rows × "
+                + std::to_string(sub.column_names.size()) + " columns");
+        // Replace with a plain COMPARE node
+        expr->kind = Expr::Kind::COMPARE;
+        if (!sub.typed_rows.empty()) {
+            auto& tv = sub.typed_rows[0][0];
+            // Check if the column type is float
+            if (!sub.column_types.empty() &&
+                (sub.column_types[0] == storage::ColumnType::FLOAT64 ||
+                 sub.column_types[0] == storage::ColumnType::FLOAT32)) {
+                expr->value_f = tv.f;
+                expr->is_float = true;
+                expr->value = static_cast<int64_t>(tv.f);
+            } else {
+                expr->value = tv.i;
+            }
+        } else {
+            expr->value = sub.rows[0][0];
+        }
+        expr->subquery.reset();
+    }
+    if (expr->kind == Expr::Kind::IN_SUBQUERY && expr->subquery) {
+        auto sub = exec_select(*expr->subquery);
+        if (!sub.ok())
+            throw std::runtime_error("IN subquery error: " + sub.error);
+        if (sub.column_names.size() != 1)
+            throw std::runtime_error(
+                "IN subquery must return exactly 1 column, got "
+                + std::to_string(sub.column_names.size()));
+        // Replace with a plain IN node (deduplicated)
+        expr->kind = Expr::Kind::IN;
+        expr->in_values.clear();
+        std::set<int64_t> seen;
+        for (auto& row : sub.rows)
+            if (seen.insert(row[0]).second)
+                expr->in_values.push_back(row[0]);
+        expr->subquery.reset();
+    }
+}
+
 // eval_expr_single: evaluate an Expr condition for one row (used by CASE WHEN)
 static bool eval_expr_single(const std::shared_ptr<Expr>& expr,
                               const Partition& part, uint32_t idx)
@@ -2461,6 +2556,10 @@ QueryResultSet QueryExecutor::exec_simple_select(
             }
         }
 
+        // SAMPLE: reduce sel_indices before row collection
+        if (stmt.sample_rate.has_value())
+            apply_sample(sel_indices, *stmt.sample_rate);
+
         // ORDER BY가 있으면 LIMIT은 apply_order_by에서 처리 → 여기서 제한 없이 수집
         bool has_order = stmt.order_by.has_value();
         size_t collect_limit = has_order ? SIZE_MAX : stmt.limit.value_or(SIZE_MAX);
@@ -2632,6 +2731,10 @@ QueryResultSet QueryExecutor::exec_agg(
                 }
             }
         }
+
+        // SAMPLE: reduce sel_indices before aggregation
+        if (stmt.sample_rate.has_value())
+            apply_sample(sel_indices, *stmt.sample_rate);
 
         for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
             const auto& col = stmt.columns[ci];
@@ -2881,6 +2984,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 sel_indices = eval_where(stmt, *part, n);
             }
 
+            // SAMPLE: reduce sel_indices before group aggregation
+            if (stmt.sample_rate.has_value())
+                apply_sample(sel_indices, *stmt.sample_rate);
+
             auto& states = groups[symbol_gkey];
             if (states.empty()) states.resize(stmt.columns.size());
 
@@ -3042,6 +3149,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
                 rows_scanned += n;
                 sel_indices = eval_where(stmt, *part, n);
             }
+
+            // SAMPLE: reduce sel_indices before group aggregation
+            if (stmt.sample_rate.has_value())
+                apply_sample(sel_indices, *stmt.sample_rate);
 
             // Hoist group key column pointer (symbol handled inline)
             const int64_t* gkey_col = (group_col == "symbol")
@@ -3237,6 +3348,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
             rows_scanned += n;
             sel_indices = eval_where(stmt, *part, n);
         }
+
+        // SAMPLE: reduce sel_indices before group aggregation
+        if (stmt.sample_rate.has_value())
+            apply_sample(sel_indices, *stmt.sample_rate);
 
         for (auto idx : sel_indices) {
             auto gkey  = make_group_key(*part, idx);

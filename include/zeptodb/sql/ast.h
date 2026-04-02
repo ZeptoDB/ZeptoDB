@@ -213,6 +213,8 @@ struct Expr {
         IN,          // col IN (v1, v2, ...)
         IS_NULL,     // col IS [NOT] NULL  (negated=true → IS NOT NULL)
         LIKE,        // col LIKE 'pattern'  (negated=true → NOT LIKE)
+        SCALAR_SUBQUERY, // col op (SELECT ...) — uncorrelated scalar subquery
+        IN_SUBQUERY,     // col IN (SELECT ...) — uncorrelated IN subquery
     };
 
     Kind kind = Kind::COMPARE;
@@ -244,6 +246,9 @@ struct Expr {
     // AND / OR / NOT 결합
     std::shared_ptr<Expr> left;
     std::shared_ptr<Expr> right;
+
+    // Scalar / IN subquery (uncorrelated)
+    std::shared_ptr<SelectStmt> subquery;
 };
 
 // ============================================================================
@@ -329,6 +334,7 @@ struct SelectStmt {
     std::optional<OrderByClause> order_by;     // ORDER BY 절
     std::optional<int64_t>      limit;         // LIMIT n
     std::optional<int64_t>      offset;        // OFFSET n
+    std::optional<double>       sample_rate;   // SAMPLE 0.1 (fraction 0..1)
     std::optional<WhereClause>  having;        // HAVING 절 (GROUP BY 이후 집계 필터)
 
     // Set operations: UNION [ALL] / INTERSECT / EXCEPT

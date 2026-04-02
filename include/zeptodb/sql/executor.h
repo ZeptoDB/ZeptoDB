@@ -140,6 +140,9 @@ private:
 
     static size_t sql_hash(const std::string& sql);
 
+    // Resolve uncorrelated scalar/IN subqueries in WHERE tree into literals
+    void resolve_subqueries(std::shared_ptr<Expr>& expr);
+
     // DDL 실행 함수들
     QueryResultSet exec_create_table(const CreateTableStmt& stmt);
     QueryResultSet exec_drop_table(const DropTableStmt& stmt);

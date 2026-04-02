@@ -76,6 +76,9 @@ enum class TokenType {
     // INTERVAL literal
     INTERVAL,   // INTERVAL '5 minutes'
 
+    // Sampling
+    SAMPLE,     // SAMPLE 0.1  (fraction 0..1)
+
     // CTE / subquery
     WITH,       // WITH name AS (...)
 

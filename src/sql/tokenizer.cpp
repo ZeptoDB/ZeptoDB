@@ -98,6 +98,7 @@ TokenType Tokenizer::keyword_type(const std::string& upper) {
     // Query plan
     if (upper == "EXPLAIN")     return TokenType::EXPLAIN;
     if (upper == "INTERVAL")    return TokenType::INTERVAL;
+    if (upper == "SAMPLE")      return TokenType::SAMPLE;
     // CTE / subquery
     if (upper == "WITH")        return TokenType::WITH;
     // DML

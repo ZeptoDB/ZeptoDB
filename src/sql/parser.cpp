@@ -431,12 +431,14 @@ SelectStmt Parser::parse_select() {
             && current().value != "GROUP"
             && current().value != "ORDER"
             && current().value != "LIMIT"
+            && current().value != "SAMPLE"
             && current().type != TokenType::WHERE
             && current().type != TokenType::JOIN
             && current().type != TokenType::ASOF
             && current().type != TokenType::GROUP
             && current().type != TokenType::ORDER
             && current().type != TokenType::LIMIT
+            && current().type != TokenType::SAMPLE
             && current().type != TokenType::INNER
             && current().type != TokenType::LEFT
             && current().type != TokenType::RIGHT
@@ -450,6 +452,15 @@ SelectStmt Parser::parse_select() {
             stmt.from_alias = current().value;
             advance();
         }
+    }
+
+    // SAMPLE (fraction 0..1 — applied before WHERE)
+    if (match(TokenType::SAMPLE)) {
+        auto tok = expect(TokenType::NUMBER, "sample rate (0..1)");
+        double rate = std::stod(tok.value);
+        if (rate <= 0.0 || rate > 1.0)
+            throw std::runtime_error("SAMPLE rate must be in (0, 1]");
+        stmt.sample_rate = rate;
     }
 
     // JOIN (ASOF JOIN, AJ0 JOIN, INNER JOIN, JOIN, LEFT JOIN, RIGHT JOIN, FULL JOIN, PLUS JOIN, UNION JOIN, WINDOW JOIN)
@@ -1099,10 +1110,18 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
         return node;
     }
 
-    // IN (v1, v2, ...)
+    // IN (v1, v2, ...) or IN (SELECT ...)
     if (match(TokenType::IN)) {
-        node->kind = Expr::Kind::IN;
         expect(TokenType::LPAREN, "(");
+        // IN (SELECT ...) — subquery
+        if (check(TokenType::SELECT)) {
+            node->kind = Expr::Kind::IN_SUBQUERY;
+            node->subquery = std::make_shared<SelectStmt>(parse_select());
+            expect(TokenType::RPAREN, ")");
+            return node;
+        }
+        // IN (v1, v2, ...) — literal list
+        node->kind = Expr::Kind::IN;
         // Parse comma-separated integer/float literals
         if (check(TokenType::NUMBER)) {
             std::string s = current().value;
@@ -1170,8 +1189,15 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
     node->kind = Expr::Kind::COMPARE;
     node->op   = parse_compare_op();
 
+    // 오른쪽 값: (SELECT ...) scalar subquery
+    if (check(TokenType::LPAREN) && peek().type == TokenType::SELECT) {
+        node->kind = Expr::Kind::SCALAR_SUBQUERY;
+        advance(); // consume (
+        node->subquery = std::make_shared<SelectStmt>(parse_select());
+        expect(TokenType::RPAREN, ")");
+    }
     // 오른쪽 값 (숫자, 문자열, or expression like NOW() - INTERVAL '5 min')
-    if (check(TokenType::NOW) || check(TokenType::EPOCH_S) || check(TokenType::EPOCH_MS)
+    else if (check(TokenType::NOW) || check(TokenType::EPOCH_S) || check(TokenType::EPOCH_MS)
         || check(TokenType::DATE_TRUNC) || check(TokenType::INTERVAL)) {
         node->value_expr = parse_arith_expr_node();
     } else if (check(TokenType::NUMBER)) {

@@ -484,13 +484,18 @@ target_link_libraries(zepto_sql PUBLIC
 # --- Auth Library (RBAC + API Key + JWT + AuthManager + Rate Limiting + Secrets) ---
 add_library(zepto_auth STATIC
     src/auth/api_key_store.cpp
+    src/auth/vault_key_backend.cpp
     src/auth/jwt_validator.cpp
     src/auth/jwks_provider.cpp
     src/auth/auth_manager.cpp
+    src/auth/sso_identity_provider.cpp
     src/auth/rate_limiter.cpp
     src/auth/secrets_provider.cpp
     src/auth/query_tracker.cpp
     src/auth/tenant_manager.cpp
+    src/auth/oidc_discovery.cpp
+    src/auth/session_store.cpp
+    src/auth/oauth2_token_exchange.cpp
 )
 target_include_directories(zepto_auth PUBLIC
     ${CMAKE_SOURCE_DIR}/include

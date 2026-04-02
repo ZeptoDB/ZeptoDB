@@ -7,10 +7,10 @@
 // ============================================================================
 
 #include "zeptodb/execution/join_operator.h"
+#include "zeptodb/execution/flat_hash_map.h"
 #include "zeptodb/storage/column_store.h"
 
 #include <algorithm>
-#include <unordered_map>
 #include <vector>
 #include <cstdint>
 #include <climits>
@@ -44,36 +44,34 @@ JoinResult AsofJoinOperator::execute(
     result.right_indices.reserve(ln);
 
     // 심볼별 오른쪽 인덱스 그룹화
-    std::unordered_map<int64_t, std::vector<int64_t>> right_groups;
-    right_groups.reserve(32);
+    FlatHashMap<std::vector<int64_t>> right_groups(rn);
     for (size_t i = 0; i < rn; ++i) {
         right_groups[rk[i]].push_back(static_cast<int64_t>(i));
     }
 
     // 각 그룹 내에서 타임스탬프 기준 정렬
-    for (auto& [sym, indices] : right_groups) {
+    right_groups.for_each([rt](int64_t /*sym*/, std::vector<int64_t>& indices) {
         std::sort(indices.begin(), indices.end(), [rt](int64_t a, int64_t b) {
             return rt[a] < rt[b];
         });
-    }
+    });
 
     // 각 왼쪽 행에 대해 ASOF 매칭 (이진 탐색)
     for (size_t li = 0; li < ln; ++li) {
         int64_t sym  = lk[li];
         int64_t l_ts = lt[li];
 
-        auto it = right_groups.find(sym);
-        if (it == right_groups.end()) continue;
+        auto* rindices = right_groups.find(sym);
+        if (!rindices) continue;
 
-        const auto& rindices = it->second;
         auto pos = std::upper_bound(
-            rindices.begin(), rindices.end(), l_ts,
+            rindices->begin(), rindices->end(), l_ts,
             [rt](int64_t ts_val, int64_t ridx) {
                 return ts_val < rt[ridx];
             }
         );
 
-        if (pos != rindices.begin()) {
+        if (pos != rindices->begin()) {
             --pos;
             result.left_indices.push_back(static_cast<int64_t>(li));
             result.right_indices.push_back(*pos);
@@ -138,20 +136,19 @@ JoinResult HashJoinOperator::execute(
 
     if (join_type_ == JoinType::RIGHT) {
         // RIGHT: build on left, probe with right
-        std::unordered_map<int64_t, std::vector<int64_t>> hash_map;
-        hash_map.reserve(ln * 2);
+        FlatHashMap<std::vector<int64_t>> hash_map(ln);
         for (size_t li = 0; li < ln; ++li)
             hash_map[lk[li]].push_back(static_cast<int64_t>(li));
 
         for (size_t ri = 0; ri < rn; ++ri) {
-            auto it = hash_map.find(rk[ri]);
-            if (it == hash_map.end()) {
+            auto* bucket = hash_map.find(rk[ri]);
+            if (!bucket) {
                 result.left_indices.push_back(-1LL);  // left NULL
                 result.right_indices.push_back(static_cast<int64_t>(ri));
                 ++result.match_count;
                 continue;
             }
-            for (int64_t li : it->second) {
+            for (int64_t li : *bucket) {
                 result.left_indices.push_back(li);
                 result.right_indices.push_back(static_cast<int64_t>(ri));
                 ++result.match_count;
@@ -159,21 +156,20 @@ JoinResult HashJoinOperator::execute(
         }
     } else if (join_type_ == JoinType::FULL) {
         // FULL OUTER: LEFT JOIN + unmatched right rows
-        std::unordered_map<int64_t, std::vector<int64_t>> hash_map;
-        hash_map.reserve(rn * 2);
+        FlatHashMap<std::vector<int64_t>> hash_map(rn);
         for (size_t ri = 0; ri < rn; ++ri)
             hash_map[rk[ri]].push_back(static_cast<int64_t>(ri));
 
         std::vector<bool> right_matched(rn, false);
         for (size_t li = 0; li < ln; ++li) {
-            auto it = hash_map.find(lk[li]);
-            if (it == hash_map.end()) {
+            auto* bucket = hash_map.find(lk[li]);
+            if (!bucket) {
                 result.left_indices.push_back(static_cast<int64_t>(li));
                 result.right_indices.push_back(-1LL);
                 ++result.match_count;
                 continue;
             }
-            for (int64_t ri : it->second) {
+            for (int64_t ri : *bucket) {
                 result.left_indices.push_back(static_cast<int64_t>(li));
                 result.right_indices.push_back(ri);
                 right_matched[static_cast<size_t>(ri)] = true;
@@ -189,14 +185,13 @@ JoinResult HashJoinOperator::execute(
         }
     } else {
         // INNER / LEFT: build on right, probe with left
-        std::unordered_map<int64_t, std::vector<int64_t>> hash_map;
-        hash_map.reserve(rn * 2);
+        FlatHashMap<std::vector<int64_t>> hash_map(rn);
         for (size_t ri = 0; ri < rn; ++ri)
             hash_map[rk[ri]].push_back(static_cast<int64_t>(ri));
 
         for (size_t li = 0; li < ln; ++li) {
-            auto it = hash_map.find(lk[li]);
-            if (it == hash_map.end()) {
+            auto* bucket = hash_map.find(lk[li]);
+            if (!bucket) {
                 if (join_type_ == JoinType::LEFT) {
                     result.left_indices.push_back(static_cast<int64_t>(li));
                     result.right_indices.push_back(-1LL);
@@ -204,7 +199,7 @@ JoinResult HashJoinOperator::execute(
                 }
                 continue;
             }
-            for (int64_t ri : it->second) {
+            for (int64_t ri : *bucket) {
                 result.left_indices.push_back(static_cast<int64_t>(li));
                 result.right_indices.push_back(ri);
                 ++result.match_count;
@@ -239,54 +234,53 @@ WindowJoinResult WindowJoinOperator::execute(
     result.match_counts.resize(ln, 0);
 
     // 오른쪽 테이블 심볼별 인덱스 그룹화 (타임스탬프 오름차순 정렬됨 가정)
-    std::unordered_map<int64_t, std::vector<size_t>> right_groups;
-    right_groups.reserve(32);
+    FlatHashMap<std::vector<size_t>> right_groups(rn);
     for (size_t i = 0; i < rn; ++i) {
         right_groups[right_key[i]].push_back(i);
     }
 
     // 각 그룹 타임스탬프 기준 정렬 (안전 보장)
-    for (auto& [sym, indices] : right_groups) {
+    right_groups.for_each([right_time](int64_t /*sym*/, std::vector<size_t>& indices) {
         std::sort(indices.begin(), indices.end(),
             [right_time](size_t a, size_t b) {
                 return right_time[a] < right_time[b];
             });
-    }
+    });
 
     // 각 왼쪽 행 처리
     for (size_t li = 0; li < ln; ++li) {
         result.left_indices[li] = static_cast<int64_t>(li);
 
-        auto it = right_groups.find(left_key[li]);
-        if (it == right_groups.end()) {
+        auto* rgroup = right_groups.find(left_key[li]);
+        if (!rgroup) {
             // 매칭 없음 → 집계 = 0, count = 0
             continue;
         }
 
-        const auto& rgroup = it->second;
+        const auto& rg = *rgroup;
         int64_t t_lo = left_time[li] - window_before_;
         int64_t t_hi = left_time[li] + window_after_;
 
         // 이진 탐색으로 [t_lo, t_hi] 범위 찾기
         // lower_bound: right_time[idx] >= t_lo
         size_t begin = static_cast<size_t>(std::lower_bound(
-            rgroup.begin(), rgroup.end(), t_lo,
+            rg.begin(), rg.end(), t_lo,
             [right_time](size_t ridx, int64_t val) {
                 return right_time[ridx] < val;
-            }) - rgroup.begin());
+            }) - rg.begin());
 
         // upper_bound: right_time[idx] > t_hi
         size_t end = static_cast<size_t>(std::upper_bound(
-            rgroup.begin(), rgroup.end(), t_hi,
+            rg.begin(), rg.end(), t_hi,
             [right_time](int64_t val, size_t ridx) {
                 return val < right_time[ridx];
-            }) - rgroup.begin());
+            }) - rg.begin());
 
         if (begin >= end) continue; // 범위 내 행 없음
 
         int64_t cnt = 0;
         result.agg_values[li] = aggregate_window(
-            right_time, right_val, rgroup, begin, end, cnt);
+            right_time, right_val, rg, begin, end, cnt);
         result.match_counts[li] = cnt;
     }
 

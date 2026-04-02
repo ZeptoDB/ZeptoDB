@@ -156,12 +156,28 @@ WHERE avg_price > 15000
 [WITH cte_name AS (SELECT ...) [, cte_name2 AS (SELECT ...) ...]]
 SELECT [DISTINCT] col_expr [AS alias], ...
 FROM { table_name [AS alias] | (SELECT ...) AS alias }
+  [SAMPLE fraction]
   [JOIN ...]
 WHERE condition
 GROUP BY col_or_expr, ...
 HAVING condition
 ORDER BY col [ASC|DESC], ...
 LIMIT n
+```
+
+### SAMPLE
+
+Reads only a fraction of rows (0 < fraction ≤ 1). Uses deterministic hashing so results are reproducible. Applied after WHERE filtering.
+
+```sql
+-- Read ~10% of rows
+SELECT * FROM trades SAMPLE 0.1
+
+-- Combine with WHERE and aggregation
+SELECT avg(price) FROM trades SAMPLE 0.2 WHERE symbol = 1
+
+-- Approximate GROUP BY on large datasets
+SELECT symbol, count(*) FROM trades SAMPLE 0.5 GROUP BY symbol
 ```
 
 ### Column expressions
@@ -271,6 +287,29 @@ FROM (
 ) AS sub
 ```
 
+### Scalar subqueries in WHERE
+
+Use a subquery that returns a single value as a comparison target. The subquery is evaluated once before the outer scan.
+
+```sql
+-- Compare against aggregate
+SELECT * FROM trades
+WHERE price > (SELECT avg(price) FROM trades)
+
+-- With inner filter
+SELECT * FROM trades
+WHERE price > (SELECT avg(price) FROM trades WHERE symbol = 1)
+
+-- IN (SELECT ...) — filter by subquery result set
+SELECT * FROM trades
+WHERE symbol IN (SELECT symbol FROM trades WHERE volume > 1000)
+```
+
+Limitations:
+- Scalar subqueries must return exactly 1 row × 1 column (error otherwise)
+- Only uncorrelated subqueries (no references to outer query columns)
+- IN subquery results are auto-deduplicated
+
 ### Supported clauses on virtual tables
 
 All standard clauses work on CTE / subquery results:
@@ -282,6 +321,7 @@ All standard clauses work on CTE / subquery results:
 | `HAVING` | ✅ Post-aggregation filter |
 | `ORDER BY` | ✅ Single and multi-column, ASC/DESC |
 | `LIMIT` | ✅ |
+| `SAMPLE` | ✅ Deterministic hash-based row sampling (0..1 fraction) |
 | `DISTINCT` | ✅ |
 | `SELECT *` | ✅ Pass-through all source columns |
 | Arithmetic | ✅ `price * volume AS notional` |
@@ -289,8 +329,8 @@ All standard clauses work on CTE / subquery results:
 
 ### Limitations
 
-- No correlated subqueries (`WHERE col = (SELECT ...)`)
-- No subqueries inside SELECT expressions or WHERE conditions
+- No correlated subqueries (`WHERE col = (SELECT ... WHERE inner.x = outer.x)`)
+- Scalar subqueries in WHERE supported (uncorrelated only): `WHERE col > (SELECT ...)`, `WHERE col IN (SELECT ...)`
 - VWAP, XBAR, window functions, and JOIN not yet supported on virtual tables
 
 ---
