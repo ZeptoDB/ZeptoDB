@@ -100,6 +100,8 @@ nav:
       - Python Reference: api/PYTHON_REFERENCE.md
       - C++ Reference: api/CPP_REFERENCE.md
       - HTTP Reference: api/HTTP_REFERENCE.md
+      - SSO Integration Guide: api/SSO_INTEGRATION_GUIDE.md
+      - Security Operations Guide: api/SECURITY_OPERATIONS_GUIDE.md
       - Arrow Flight: api/FLIGHT_REFERENCE.md
       - Config Reference: api/CONFIG_REFERENCE.md
   - Architecture:
