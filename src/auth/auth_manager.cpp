@@ -37,7 +37,13 @@ AuthManager::AuthManager(Config config)
     : config_(std::move(config))
 {
     if (!config_.api_keys_file.empty()) {
-        key_store_ = std::make_unique<ApiKeyStore>(config_.api_keys_file);
+        if (config_.vault_keys_enabled) {
+            auto vault = std::make_unique<VaultKeyBackend>(config_.vault_keys);
+            key_store_ = std::make_unique<ApiKeyStore>(
+                config_.api_keys_file, std::move(vault));
+        } else {
+            key_store_ = std::make_unique<ApiKeyStore>(config_.api_keys_file);
+        }
     }
 
     if (config_.jwt_enabled) {
@@ -58,6 +64,52 @@ AuthManager::AuthManager(Config config)
 
     if (config_.rate_limit_enabled) {
         rate_limiter_ = std::make_unique<RateLimiter>(config_.rate_limit);
+    }
+
+    if (config_.sso_enabled) {
+        sso_provider_ = std::make_unique<SsoIdentityProvider>(config_.sso);
+        for (auto& idp : config_.sso_idps)
+            sso_provider_->add_idp(std::move(idp));
+    }
+
+    // OIDC Discovery: auto-configure from issuer URL
+    if (!config_.oidc_issuer.empty()) {
+        oidc_meta_ = OidcDiscovery::fetch(config_.oidc_issuer);
+        if (oidc_meta_) {
+            // Auto-register as SSO IdP if SSO provider exists
+            if (!sso_provider_) {
+                config_.sso_enabled = true;
+                sso_provider_ = std::make_unique<SsoIdentityProvider>(config_.sso);
+            }
+            IdpConfig oidc_idp;
+            oidc_idp.id       = "oidc-auto";
+            oidc_idp.issuer   = oidc_meta_->issuer;
+            oidc_idp.jwks_url = oidc_meta_->jwks_uri;
+            oidc_idp.audience = config_.oidc_audience;
+            sso_provider_->add_idp(std::move(oidc_idp));
+
+            // Also configure JWT validator with JWKS if not already set
+            if (!jwt_validator_ && !oidc_meta_->jwks_uri.empty()) {
+                JwtValidator::Config jwt_cfg;
+                jwt_cfg.expected_issuer   = oidc_meta_->issuer;
+                jwt_cfg.expected_audience = config_.oidc_audience;
+                jwt_validator_ = std::make_unique<JwtValidator>(jwt_cfg);
+                jwks_provider_ = std::make_unique<JwksProvider>(oidc_meta_->jwks_uri);
+                jwks_provider_->refresh();
+                jwt_validator_->set_key_resolver([this](const std::string& kid) -> std::string {
+                    if (!jwks_provider_) return "";
+                    if (!kid.empty()) return jwks_provider_->get_pem(kid);
+                    return jwks_provider_->get_default_pem();
+                });
+                jwks_provider_->start();
+                config_.jwt_enabled = true;
+            }
+        }
+    }
+
+    // Server-side session store
+    if (config_.sessions_enabled) {
+        session_store_ = std::make_unique<SessionStore>(config_.session_config);
     }
 }
 
@@ -89,7 +141,7 @@ AuthDecision AuthManager::check(const std::string& method,
         return {AuthStatus::OK, ctx, ""};
     }
 
-    // No auth header → unauthorized
+    // No auth header → check session cookie before rejecting
     if (auth_header.empty()) {
         return {AuthStatus::UNAUTHORIZED, {}, "No Authorization header"};
     }
@@ -97,6 +149,23 @@ AuthDecision AuthManager::check(const std::string& method,
     std::string token = extract_bearer_token(auth_header);
     if (token.empty()) {
         return {AuthStatus::UNAUTHORIZED, {}, "Invalid Authorization header format"};
+    }
+
+    // Try SSO identity provider first (multi-IdP, issuer-routed)
+    if (sso_provider_ && token.size() > 2 &&
+        token[0] == 'e' && token[1] == 'y') {
+        auto decision = check_sso(token);
+        if (decision.status == AuthStatus::OK) {
+            if (rate_limiter_) {
+                auto rd = rate_limiter_->check_identity(decision.context.subject);
+                if (rd == RateDecision::RATE_LIMITED)
+                    return {AuthStatus::FORBIDDEN, {}, "Rate limit exceeded"};
+                rate_limiter_->check_ip(remote_addr);
+            }
+            if (config_.audit_enabled)
+                audit(decision.context, method + " " + path, "sso-auth", remote_addr);
+            return decision;
+        }
     }
 
     // Try JWT first (Bearer tokens starting with "ey" are JWTs)
@@ -161,6 +230,23 @@ AuthDecision AuthManager::check_api_key(const std::string& token) const {
 }
 
 // ============================================================================
+// check_sso
+// ============================================================================
+AuthDecision AuthManager::check_sso(const std::string& token) const {
+    auto identity = sso_provider_->resolve(token);
+    if (!identity) return {AuthStatus::UNAUTHORIZED, {}, "SSO: no matching IdP or invalid token"};
+
+    AuthContext ctx;
+    ctx.subject         = identity->subject;
+    ctx.name            = identity->email.empty() ? identity->subject : identity->email;
+    ctx.role            = identity->role;
+    ctx.source          = "sso:" + identity->idp_id;
+    ctx.allowed_symbols = identity->allowed_symbols;
+    ctx.tenant_id       = identity->tenant_id;
+    return {AuthStatus::OK, ctx, ""};
+}
+
+// ============================================================================
 // check_jwt
 // ============================================================================
 AuthDecision AuthManager::check_jwt(const std::string& token) const {
@@ -220,6 +306,42 @@ std::vector<ApiKeyEntry> AuthManager::list_api_keys() const {
 bool AuthManager::refresh_jwks() {
     if (!jwks_provider_) return false;
     return jwks_provider_->refresh();
+}
+
+// ============================================================================
+// check_session — resolve session cookie to AuthContext
+// ============================================================================
+std::optional<AuthContext> AuthManager::check_session(
+    const std::string& cookie_header) const
+{
+    if (!session_store_ || cookie_header.empty()) return std::nullopt;
+
+    // Parse cookie header for session cookie
+    const auto& name = session_store_->config().cookie_name;
+    std::string search = name + "=";
+    auto pos = cookie_header.find(search);
+    if (pos == std::string::npos) return std::nullopt;
+
+    auto val_start = pos + search.size();
+    auto val_end = cookie_header.find(';', val_start);
+    std::string sid = (val_end != std::string::npos)
+        ? cookie_header.substr(val_start, val_end - val_start)
+        : cookie_header.substr(val_start);
+
+    // Trim whitespace
+    while (!sid.empty() && sid.back() == ' ') sid.pop_back();
+
+    auto session = session_store_->get(sid);
+    if (!session) return std::nullopt;
+
+    AuthContext ctx;
+    ctx.subject         = session->subject;
+    ctx.name            = session->name;
+    ctx.role            = session->role;
+    ctx.source          = session->source;
+    ctx.allowed_symbols = session->allowed_symbols;
+    ctx.tenant_id       = session->tenant_id;
+    return ctx;
 }
 
 // ============================================================================

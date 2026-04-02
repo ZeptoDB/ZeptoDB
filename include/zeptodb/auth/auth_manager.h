@@ -19,6 +19,11 @@
 #include "zeptodb/auth/jwks_provider.h"
 #include "zeptodb/auth/rate_limiter.h"
 #include "zeptodb/auth/audit_buffer.h"
+#include "zeptodb/auth/vault_key_backend.h"
+#include "zeptodb/auth/sso_identity_provider.h"
+#include "zeptodb/auth/oidc_discovery.h"
+#include "zeptodb/auth/session_store.h"
+#include "zeptodb/auth/oauth2_token_exchange.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -85,6 +90,10 @@ public:
         // API Key settings
         std::string api_keys_file;  // path to key store file
 
+        // Vault-backed API Key Store (optional, write-through sync)
+        bool                     vault_keys_enabled = false;
+        VaultKeyBackend::Config  vault_keys;
+
         // JWT / SSO settings
         bool                jwt_enabled = false;
         JwtValidator::Config jwt;
@@ -94,6 +103,24 @@ public:
         bool                rate_limit_enabled = true;
         RateLimiter::Config rate_limit;
 
+        // SSO Identity Provider (multi-IdP support)
+        bool                          sso_enabled = false;
+        SsoIdentityProvider::Config   sso;
+        std::vector<IdpConfig>        sso_idps;  // IdPs to register on startup
+
+        // OIDC Discovery: auto-configure IdP from issuer URL
+        // When set, fetches /.well-known/openid-configuration to populate
+        // jwks_uri, authorization_endpoint, token_endpoint automatically.
+        std::string oidc_issuer;       // e.g. "https://accounts.google.com"
+        std::string oidc_client_id;
+        std::string oidc_client_secret;
+        std::string oidc_redirect_uri; // e.g. "http://localhost:8123/auth/callback"
+        std::string oidc_audience;     // optional audience override
+
+        // Server-side session store
+        bool                  sessions_enabled = false;
+        SessionStore::Config  session_config;
+
         // Audit log
         bool        audit_enabled  = true;
         std::string audit_log_file;  // empty = log to stderr via spdlog
@@ -102,7 +129,10 @@ public:
         bool        audit_buffer_enabled = true;
 
         // Paths that never require authentication
-        std::vector<std::string> public_paths = {"/ping", "/health", "/ready"};
+        std::vector<std::string> public_paths = {
+            "/ping", "/health", "/ready",
+            "/auth/login", "/auth/callback", "/auth/logout"
+        };
     };
 
     explicit AuthManager(Config config);
@@ -160,16 +190,37 @@ public:
     /// Access JWKS provider (may be null if not configured).
     JwksProvider* jwks_provider() { return jwks_provider_.get(); }
 
+    /// Access SSO identity provider (may be null if not configured).
+    SsoIdentityProvider* sso_provider() { return sso_provider_.get(); }
+
+    /// Access session store (may be null if not configured).
+    SessionStore* session_store() { return session_store_.get(); }
+
+    /// Access OIDC metadata (populated after discovery).
+    const OidcMetadata* oidc_metadata() const { return oidc_meta_ ? &*oidc_meta_ : nullptr; }
+
+    /// Get OIDC client_id (for building authorize URL in HTTP handler).
+    const std::string& oidc_client_id() const { return config_.oidc_client_id; }
+    const std::string& oidc_client_secret() const { return config_.oidc_client_secret; }
+    const std::string& oidc_redirect_uri() const { return config_.oidc_redirect_uri; }
+
+    /// Authenticate via session cookie. Returns nullopt if no valid session.
+    std::optional<AuthContext> check_session(const std::string& cookie_header) const;
+
 private:
     Config                         config_;
     std::unique_ptr<ApiKeyStore>   key_store_;
     std::unique_ptr<JwtValidator>  jwt_validator_;
     std::unique_ptr<JwksProvider>  jwks_provider_;
     std::unique_ptr<RateLimiter>   rate_limiter_;
+    std::unique_ptr<SsoIdentityProvider> sso_provider_;
+    std::unique_ptr<SessionStore>  session_store_;
+    std::optional<OidcMetadata>    oidc_meta_;
     mutable AuditBuffer            audit_buffer_;
 
     AuthDecision check_api_key(const std::string& token) const;
     AuthDecision check_jwt(const std::string& token) const;
+    AuthDecision check_sso(const std::string& token) const;
 
     static std::string extract_bearer_token(const std::string& auth_header);
     bool is_public_path(const std::string& path) const;
