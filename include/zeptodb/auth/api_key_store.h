@@ -15,10 +15,14 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <memory>
 #include <mutex>
 #include <cstdint>
 
 namespace zeptodb::auth {
+
+// Forward declaration — Vault backend for key sync
+class VaultKeyBackend;
 
 // ============================================================================
 // ApiKeyEntry — one registered key
@@ -46,6 +50,10 @@ class ApiKeyStore {
 public:
     // config_path: path to the key file. Created if it does not exist.
     explicit ApiKeyStore(std::string config_path);
+
+    // config_path + Vault backend for write-through sync.
+    ApiKeyStore(std::string config_path,
+                std::unique_ptr<VaultKeyBackend> vault_backend);
 
     // Create a new API key. Returns the full plaintext key (shown exactly once).
     // Persists to config_path immediately.
@@ -84,9 +92,12 @@ private:
     std::string              config_path_;
     std::vector<ApiKeyEntry> entries_;
     mutable std::mutex       mutex_;
+    std::unique_ptr<VaultKeyBackend> vault_backend_;
 
     void load();
     void save() const;  // caller must hold mutex_
+    void sync_from_vault();  // merge Vault entries not present locally
+    void sync_to_vault(const ApiKeyEntry& entry);  // write-through
 
     static std::string generate_key();   // returns full "zepto_<hex>" key
     static std::string generate_key_id();

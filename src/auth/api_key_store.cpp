@@ -2,6 +2,7 @@
 // ZeptoDB: ApiKeyStore Implementation
 // ============================================================================
 #include "zeptodb/auth/api_key_store.h"
+#include "zeptodb/auth/vault_key_backend.h"
 
 #include <openssl/sha.h>
 #include <openssl/rand.h>
@@ -45,6 +46,15 @@ ApiKeyStore::ApiKeyStore(std::string config_path)
     load();
 }
 
+ApiKeyStore::ApiKeyStore(std::string config_path,
+                         std::unique_ptr<VaultKeyBackend> vault_backend)
+    : config_path_(std::move(config_path)),
+      vault_backend_(std::move(vault_backend))
+{
+    load();
+    sync_from_vault();
+}
+
 // ============================================================================
 // is_expired
 // ============================================================================
@@ -83,6 +93,7 @@ std::string ApiKeyStore::create_key(const std::string& name,
     std::lock_guard<std::mutex> lk(mutex_);
     entries_.push_back(std::move(entry));
     save();
+    sync_to_vault(entries_.back());
 
     return full_key;
 }
@@ -114,6 +125,7 @@ bool ApiKeyStore::revoke(const std::string& key_id) {
         if (e.id == key_id) {
             e.enabled = false;
             save();
+            sync_to_vault(e);
             return true;
         }
     }
@@ -139,6 +151,7 @@ bool ApiKeyStore::update_key(const std::string& key_id,
             if (tenant_id)     e.tenant_id       = *tenant_id;
             if (expires_at_ns) e.expires_at_ns   = *expires_at_ns;
             save();
+            sync_to_vault(e);
             return true;
         }
     }
@@ -257,6 +270,38 @@ void ApiKeyStore::save() const {
           << SEP << e.expires_at_ns
           << '\n';
     }
+}
+
+// ============================================================================
+// sync_from_vault — merge Vault entries not present locally
+// ============================================================================
+void ApiKeyStore::sync_from_vault() {
+    if (!vault_backend_ || !vault_backend_->available()) return;
+
+    auto vault_entries = vault_backend_->load_all();
+    if (vault_entries.empty()) return;
+
+    std::lock_guard<std::mutex> lk(mutex_);
+    bool changed = false;
+    for (auto& ve : vault_entries) {
+        bool found = false;
+        for (const auto& le : entries_) {
+            if (le.id == ve.id) { found = true; break; }
+        }
+        if (!found) {
+            entries_.push_back(std::move(ve));
+            changed = true;
+        }
+    }
+    if (changed) save();
+}
+
+// ============================================================================
+// sync_to_vault — write-through (best-effort, does not fail the operation)
+// ============================================================================
+void ApiKeyStore::sync_to_vault(const ApiKeyEntry& entry) {
+    if (!vault_backend_ || !vault_backend_->available()) return;
+    vault_backend_->store(entry);  // fire-and-forget
 }
 
 // ============================================================================
