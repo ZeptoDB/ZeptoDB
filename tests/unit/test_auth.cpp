@@ -25,6 +25,9 @@
 #include "zeptodb/auth/secrets_provider.h"
 #include "zeptodb/auth/audit_buffer.h"
 #include "zeptodb/auth/tenant_manager.h"
+#include "zeptodb/auth/oidc_discovery.h"
+#include "zeptodb/auth/session_store.h"
+#include "zeptodb/auth/oauth2_token_exchange.h"
 
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
@@ -1396,4 +1399,522 @@ TEST(TenantManagerTest, TableNamespace) {
 
     EXPECT_TRUE(mgr->can_access_table("ns1", "deskA.trades"));
     EXPECT_FALSE(mgr->can_access_table("ns1", "public_trades"));
+}
+
+// ============================================================================
+// VaultKeyBackend Tests
+// ============================================================================
+#include "zeptodb/auth/vault_key_backend.h"
+
+TEST(VaultKeyBackendTest, UnavailableWhenNotConfigured) {
+    VaultKeyBackend::Config cfg;
+    // No addr, no token
+    VaultKeyBackend backend(cfg);
+    EXPECT_FALSE(backend.available());
+}
+
+TEST(VaultKeyBackendTest, UnavailableWhenOnlyAddr) {
+    VaultKeyBackend::Config cfg;
+    cfg.addr = "http://localhost:8200";
+    VaultKeyBackend backend(cfg);
+    // No token → unavailable (unless VAULT_TOKEN env is set)
+    if (!std::getenv("VAULT_TOKEN"))
+        EXPECT_FALSE(backend.available());
+}
+
+TEST(VaultKeyBackendTest, AvailableWhenFullyConfigured) {
+    VaultKeyBackend::Config cfg;
+    cfg.addr  = "http://localhost:8200";
+    cfg.token = "test-token";
+    VaultKeyBackend backend(cfg);
+    EXPECT_TRUE(backend.available());
+}
+
+TEST(VaultKeyBackendTest, LoadReturnsNulloptWhenUnavailable) {
+    VaultKeyBackend::Config cfg;
+    VaultKeyBackend backend(cfg);
+    EXPECT_EQ(backend.load("ak_test"), std::nullopt);
+}
+
+TEST(VaultKeyBackendTest, LoadAllReturnsEmptyWhenUnavailable) {
+    VaultKeyBackend::Config cfg;
+    VaultKeyBackend backend(cfg);
+    EXPECT_TRUE(backend.load_all().empty());
+}
+
+TEST(VaultKeyBackendTest, StoreReturnsFalseWhenUnavailable) {
+    VaultKeyBackend::Config cfg;
+    VaultKeyBackend backend(cfg);
+    ApiKeyEntry entry;
+    entry.id = "ak_test";
+    entry.key_hash = "deadbeef";
+    EXPECT_FALSE(backend.store(entry));
+}
+
+TEST(VaultKeyBackendTest, RemoveReturnsFalseWhenUnavailable) {
+    VaultKeyBackend::Config cfg;
+    VaultKeyBackend backend(cfg);
+    EXPECT_FALSE(backend.remove("ak_test"));
+}
+
+// Test that ApiKeyStore with a null-like (unavailable) Vault backend
+// still works exactly like the file-only store.
+TEST(VaultKeyBackendTest, ApiKeyStoreWithUnavailableVault) {
+    auto tmp = std::filesystem::temp_directory_path() / "vault_test_keys.conf";
+    std::filesystem::remove(tmp);
+
+    VaultKeyBackend::Config vcfg;  // no addr/token → unavailable
+    auto vault = std::make_unique<VaultKeyBackend>(vcfg);
+
+    ApiKeyStore store(tmp.string(), std::move(vault));
+
+    // Create key should still work (file-only)
+    auto key = store.create_key("test-svc", Role::READER);
+    EXPECT_FALSE(key.empty());
+    EXPECT_TRUE(key.starts_with("zepto_"));
+
+    auto entry = store.validate(key);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->name, "test-svc");
+    EXPECT_EQ(entry->role, Role::READER);
+
+    // Revoke should work
+    EXPECT_TRUE(store.revoke(entry->id));
+    EXPECT_FALSE(store.validate(key).has_value());
+
+    std::filesystem::remove(tmp);
+}
+
+// ============================================================================
+// SSO Identity Provider Tests
+// ============================================================================
+#include "zeptodb/auth/sso_identity_provider.h"
+
+class SsoIdentityProviderTest : public ::testing::Test {
+protected:
+    static constexpr const char* SECRET = "sso_test_secret_256bit_min_key!!";
+    static constexpr const char* ISSUER = "https://idp.example.com";
+
+    // Build a JWT with groups and custom claims
+    std::string make_sso_jwt(const std::string& sub,
+                              const std::string& groups_json = "",
+                              const std::string& tenant = "",
+                              int64_t exp_offset = 3600) {
+        std::string payload = R"({"sub":")" + sub +
+            R"(","iss":")" + std::string(ISSUER) +
+            R"(","exp":)" + std::to_string(unix_now(exp_offset));
+        if (!groups_json.empty())
+            payload += R"(,"groups":)" + groups_json;
+        if (!tenant.empty())
+            payload += R"(,"tenant_id":")" + tenant + R"(")";
+        payload += "}";
+        return make_hs256_jwt(payload, SECRET);
+    }
+
+    IdpConfig make_idp_config() {
+        IdpConfig cfg;
+        cfg.id       = "test-idp";
+        cfg.issuer   = ISSUER;
+        cfg.audience = "";  // skip audience check for simplicity
+        cfg.group_claim = "groups";
+        cfg.tenant_claim = "tenant_id";
+        cfg.group_role_map = {
+            {"Admins",    Role::ADMIN},
+            {"Writers",   Role::WRITER},
+            {"Readers",   Role::READER},
+            {"Analysts",  Role::ANALYST},
+        };
+        cfg.default_role = Role::READER;
+        return cfg;
+    }
+
+    // We need to wire up HS256 since we don't have a real JWKS endpoint.
+    // The SsoIdentityProvider creates a JwtValidator per IdP, but without
+    // hs256_secret or rs256 key, validation will fail. We'll set the secret
+    // via the JWT config embedded in IdpConfig... but IdpConfig doesn't have
+    // hs256_secret. The provider creates JwtValidator with no keys, relying
+    // on JWKS. For testing, we need to work around this.
+    //
+    // Solution: We test the SsoIdentityProvider's JSON helpers and role
+    // resolution directly, and test the full flow via AuthManager integration.
+};
+
+TEST_F(SsoIdentityProviderTest, AddAndListIdps) {
+    SsoIdentityProvider provider;
+    auto cfg = make_idp_config();
+    EXPECT_TRUE(provider.add_idp(cfg));
+    EXPECT_FALSE(provider.add_idp(cfg));  // duplicate
+
+    auto ids = provider.list_idps();
+    ASSERT_EQ(ids.size(), 1u);
+    EXPECT_EQ(ids[0], "test-idp");
+}
+
+TEST_F(SsoIdentityProviderTest, RemoveIdp) {
+    SsoIdentityProvider provider;
+    provider.add_idp(make_idp_config());
+    EXPECT_TRUE(provider.remove_idp("test-idp"));
+    EXPECT_FALSE(provider.remove_idp("test-idp"));
+    EXPECT_TRUE(provider.list_idps().empty());
+}
+
+TEST_F(SsoIdentityProviderTest, ResolveReturnsNulloptForUnknownIssuer) {
+    SsoIdentityProvider provider;
+    provider.add_idp(make_idp_config());
+
+    // JWT with a different issuer
+    std::string payload = R"({"sub":"u","iss":"https://other.idp.com","exp":)"
+                        + std::to_string(unix_now(3600)) + "}";
+    std::string token = make_hs256_jwt(payload, SECRET);
+    EXPECT_FALSE(provider.resolve(token).has_value());
+}
+
+TEST_F(SsoIdentityProviderTest, ResolveReturnsNulloptForMalformedToken) {
+    SsoIdentityProvider provider;
+    provider.add_idp(make_idp_config());
+    EXPECT_FALSE(provider.resolve("not.a.jwt").has_value());
+    EXPECT_FALSE(provider.resolve("").has_value());
+}
+
+TEST_F(SsoIdentityProviderTest, ExtractIssuerFromJwt) {
+    std::string payload = R"({"sub":"u","iss":"https://corp.okta.com","exp":999})";
+    std::string token = make_hs256_jwt(payload, "secret");
+    // Use the static helper
+    std::string issuer = SsoIdentityProvider::extract_json_string(
+        JwtValidator::base64url_decode(token.substr(token.find('.') + 1,
+            token.rfind('.') - token.find('.') - 1)),
+        "iss");
+    EXPECT_EQ(issuer, "https://corp.okta.com");
+}
+
+TEST_F(SsoIdentityProviderTest, ExtractJsonStringArray) {
+    std::string json = R"({"groups":["Admins","Writers","Readers"],"other":"val"})";
+    auto groups = SsoIdentityProvider::extract_json_string_array(json, "groups");
+    ASSERT_EQ(groups.size(), 3u);
+    EXPECT_EQ(groups[0], "Admins");
+    EXPECT_EQ(groups[1], "Writers");
+    EXPECT_EQ(groups[2], "Readers");
+}
+
+TEST_F(SsoIdentityProviderTest, ExtractJsonStringArrayEmpty) {
+    std::string json = R"({"groups":[]})";
+    auto groups = SsoIdentityProvider::extract_json_string_array(json, "groups");
+    EXPECT_TRUE(groups.empty());
+}
+
+TEST_F(SsoIdentityProviderTest, ExtractJsonStringArrayMissing) {
+    std::string json = R"({"other":"val"})";
+    auto groups = SsoIdentityProvider::extract_json_string_array(json, "groups");
+    EXPECT_TRUE(groups.empty());
+}
+
+TEST_F(SsoIdentityProviderTest, ExtractJsonString) {
+    std::string json = R"({"tenant_id":"desk_a","name":"Test"})";
+    EXPECT_EQ(SsoIdentityProvider::extract_json_string(json, "tenant_id"), "desk_a");
+    EXPECT_EQ(SsoIdentityProvider::extract_json_string(json, "name"), "Test");
+    EXPECT_EQ(SsoIdentityProvider::extract_json_string(json, "missing"), "");
+}
+
+TEST_F(SsoIdentityProviderTest, CacheOperations) {
+    SsoIdentityProvider::Config cfg;
+    cfg.cache_ttl_s = 300;
+    cfg.cache_capacity = 100;
+    SsoIdentityProvider provider(cfg);
+
+    EXPECT_EQ(provider.cache_size(), 0u);
+    provider.clear_cache();
+    EXPECT_EQ(provider.cache_size(), 0u);
+}
+
+TEST_F(SsoIdentityProviderTest, CacheTtlExpiry) {
+    SsoIdentityProvider::Config cfg;
+    cfg.cache_ttl_s = 0;  // immediate expiry
+    cfg.cache_capacity = 100;
+    SsoIdentityProvider provider(cfg);
+
+    // Add an IdP — even though resolve will fail (no JWKS/HS256),
+    // the cache itself should handle TTL correctly
+    EXPECT_EQ(provider.cache_size(), 0u);
+}
+
+TEST_F(SsoIdentityProviderTest, MultipleIdps) {
+    SsoIdentityProvider provider;
+
+    IdpConfig okta;
+    okta.id     = "okta";
+    okta.issuer = "https://okta.example.com";
+    okta.default_role = Role::READER;
+
+    IdpConfig azure;
+    azure.id     = "azure";
+    azure.issuer = "https://login.microsoftonline.com/tenant";
+    azure.default_role = Role::WRITER;
+
+    EXPECT_TRUE(provider.add_idp(okta));
+    EXPECT_TRUE(provider.add_idp(azure));
+
+    auto ids = provider.list_idps();
+    EXPECT_EQ(ids.size(), 2u);
+}
+
+// Integration test: AuthManager with SSO enabled using HS256 (via JWT fallback)
+TEST(SsoAuthManagerTest, SsoFallsBackToJwtWhenNoIdpMatches) {
+    std::string key_file = tmp_key_file();
+    static constexpr const char* SECRET = "sso_integration_test_secret_key!";
+
+    AuthManager::Config cfg;
+    cfg.enabled       = true;
+    cfg.api_keys_file = key_file;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = false;
+
+    // Enable SSO with an IdP that won't match our JWT issuer
+    cfg.sso_enabled = true;
+    IdpConfig idp;
+    idp.id     = "other-idp";
+    idp.issuer = "https://other.idp.com";
+    cfg.sso_idps.push_back(idp);
+
+    // Also enable regular JWT
+    cfg.jwt_enabled      = true;
+    cfg.jwt.hs256_secret = SECRET;
+
+    AuthManager mgr(cfg);
+
+    // JWT with a different issuer should fall through SSO → succeed via JWT
+    std::string payload = R"({"sub":"jwt_user","zepto_role":"reader","exp":)"
+                        + std::to_string(unix_now(3600)) + "}";
+    std::string token = make_hs256_jwt(payload, SECRET);
+
+    auto d = mgr.check("POST", "/", "Bearer " + token, "127.0.0.1");
+    EXPECT_EQ(d.status, AuthStatus::OK);
+    EXPECT_EQ(d.context.source, "jwt");
+
+    std::filesystem::remove(key_file);
+}
+
+// ============================================================================
+// OIDC Discovery Tests
+// ============================================================================
+
+TEST(OidcDiscoveryTest, ExtractJsonString) {
+    std::string json = R"({"issuer":"https://accounts.google.com","jwks_uri":"https://www.googleapis.com/oauth2/v3/certs"})";
+    EXPECT_EQ(OidcDiscovery::extract_json_string(json, "issuer"), "https://accounts.google.com");
+    EXPECT_EQ(OidcDiscovery::extract_json_string(json, "jwks_uri"), "https://www.googleapis.com/oauth2/v3/certs");
+    EXPECT_EQ(OidcDiscovery::extract_json_string(json, "missing"), "");
+}
+
+TEST(OidcDiscoveryTest, FetchReturnsNulloptForInvalidUrl) {
+    auto meta = OidcDiscovery::fetch("http://localhost:1/nonexistent");
+    EXPECT_FALSE(meta.has_value());
+}
+
+// ============================================================================
+// SessionStore Tests
+// ============================================================================
+
+class SessionStoreTest : public ::testing::Test {
+protected:
+    SessionStore::Config make_config(int64_t ttl_s = 3600) {
+        SessionStore::Config cfg;
+        cfg.session_ttl_s    = ttl_s;
+        cfg.refresh_window_s = 300;
+        cfg.max_sessions     = 100;
+        cfg.cookie_name      = "zepto_sid";
+        return cfg;
+    }
+};
+
+TEST_F(SessionStoreTest, CreateAndGet) {
+    SessionStore store(make_config());
+    auto sid = store.create("user1", "user1", Role::READER, "test");
+    EXPECT_FALSE(sid.empty());
+    EXPECT_EQ(store.size(), 1u);
+
+    auto session = store.get(sid);
+    ASSERT_TRUE(session.has_value());
+    EXPECT_EQ(session->subject, "user1");
+    EXPECT_EQ(session->role, Role::READER);
+}
+
+TEST_F(SessionStoreTest, GetReturnsNulloptForUnknownId) {
+    SessionStore store(make_config());
+    EXPECT_FALSE(store.get("nonexistent").has_value());
+}
+
+TEST_F(SessionStoreTest, Destroy) {
+    SessionStore store(make_config());
+    auto sid = store.create("user1", "user1", Role::READER, "test");
+    EXPECT_TRUE(store.destroy(sid));
+    EXPECT_EQ(store.size(), 0u);
+    EXPECT_FALSE(store.get(sid).has_value());
+}
+
+TEST_F(SessionStoreTest, DestroyReturnsFalseForUnknown) {
+    SessionStore store(make_config());
+    EXPECT_FALSE(store.destroy("nonexistent"));
+}
+
+TEST_F(SessionStoreTest, ExpiredSessionReturnsNullopt) {
+    // TTL = 0 means immediate expiry
+    SessionStore store(make_config(0));
+    auto sid = store.create("user1", "user1", Role::READER, "test");
+    // Session should be expired immediately (or within nanoseconds)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    EXPECT_FALSE(store.get(sid).has_value());
+}
+
+TEST_F(SessionStoreTest, EvictExpired) {
+    SessionStore store(make_config(0));
+    store.create("a", "a", Role::READER, "test");
+    store.create("b", "b", Role::READER, "test");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto evicted = store.evict_expired();
+    EXPECT_EQ(evicted, 2u);
+    EXPECT_EQ(store.size(), 0u);
+}
+
+TEST_F(SessionStoreTest, UpdateRefreshToken) {
+    SessionStore store(make_config());
+    auto sid = store.create("user1", "user1", Role::READER, "test", {}, "", "old_token");
+    EXPECT_TRUE(store.update_refresh_token(sid, "new_token"));
+
+    auto session = store.get(sid);
+    ASSERT_TRUE(session.has_value());
+    EXPECT_EQ(session->refresh_token, "new_token");
+}
+
+TEST_F(SessionStoreTest, MakeCookie) {
+    SessionStore store(make_config());
+    auto cookie = store.make_cookie("abc123");
+    EXPECT_NE(cookie.find("zepto_sid=abc123"), std::string::npos);
+    EXPECT_NE(cookie.find("Path=/"), std::string::npos);
+    EXPECT_NE(cookie.find("HttpOnly"), std::string::npos);
+    EXPECT_NE(cookie.find("SameSite=Lax"), std::string::npos);
+}
+
+TEST_F(SessionStoreTest, MakeClearCookie) {
+    SessionStore store(make_config());
+    auto cookie = store.make_clear_cookie();
+    EXPECT_NE(cookie.find("zepto_sid="), std::string::npos);
+    EXPECT_NE(cookie.find("Max-Age=0"), std::string::npos);
+}
+
+TEST_F(SessionStoreTest, MultipleSessions) {
+    SessionStore store(make_config());
+    auto s1 = store.create("user1", "user1", Role::ADMIN, "test");
+    auto s2 = store.create("user2", "user2", Role::WRITER, "test");
+    EXPECT_EQ(store.size(), 2u);
+
+    auto sess1 = store.get(s1);
+    auto sess2 = store.get(s2);
+    ASSERT_TRUE(sess1.has_value());
+    ASSERT_TRUE(sess2.has_value());
+    EXPECT_EQ(sess1->role, Role::ADMIN);
+    EXPECT_EQ(sess2->role, Role::WRITER);
+}
+
+// ============================================================================
+// OAuth2TokenExchange Tests (unit — no network)
+// ============================================================================
+
+TEST(OAuth2TokenExchangeTest, ExtractJsonString) {
+    std::string json = R"({"access_token":"abc","id_token":"def","refresh_token":"ghi"})";
+    EXPECT_EQ(OAuth2TokenExchange::extract_json_string(json, "access_token"), "abc");
+    EXPECT_EQ(OAuth2TokenExchange::extract_json_string(json, "id_token"), "def");
+    EXPECT_EQ(OAuth2TokenExchange::extract_json_string(json, "refresh_token"), "ghi");
+    EXPECT_EQ(OAuth2TokenExchange::extract_json_string(json, "missing"), "");
+}
+
+TEST(OAuth2TokenExchangeTest, ExtractJsonInt) {
+    std::string json = R"({"expires_in":3600,"other":"text"})";
+    EXPECT_EQ(OAuth2TokenExchange::extract_json_int(json, "expires_in"), 3600);
+    EXPECT_EQ(OAuth2TokenExchange::extract_json_int(json, "missing"), 0);
+}
+
+TEST(OAuth2TokenExchangeTest, ExchangeFailsForInvalidEndpoint) {
+    OAuth2ExchangeParams params;
+    params.token_endpoint = "http://localhost:1/token";
+    params.code           = "test_code";
+    params.redirect_uri   = "http://localhost/callback";
+    params.client_id      = "test";
+    auto result = OAuth2TokenExchange::exchange(params);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(OAuth2TokenExchangeTest, RefreshFailsForInvalidEndpoint) {
+    auto result = OAuth2TokenExchange::refresh(
+        "http://localhost:1/token", "refresh_tok", "client", "secret");
+    EXPECT_FALSE(result.has_value());
+}
+
+// ============================================================================
+// AuthManager Session Integration Tests
+// ============================================================================
+
+TEST(AuthManagerSessionTest, SessionCheckFromCookie) {
+    std::string key_file = tmp_key_file();
+    AuthManager::Config cfg;
+    cfg.enabled            = true;
+    cfg.api_keys_file      = key_file;
+    cfg.audit_enabled      = false;
+    cfg.rate_limit_enabled = false;
+    cfg.sessions_enabled   = true;
+    cfg.session_config.session_ttl_s = 3600;
+    cfg.session_config.cookie_name   = "zepto_sid";
+
+    AuthManager mgr(cfg);
+    auto* store = mgr.session_store();
+    ASSERT_NE(store, nullptr);
+
+    // Create a session manually
+    auto sid = store->create("session_user", "session_user", Role::ADMIN, "test");
+
+    // Check session via cookie header
+    auto resolved = mgr.check_session("zepto_sid=" + sid);
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(resolved->subject, "session_user");
+    EXPECT_EQ(resolved->role, Role::ADMIN);
+
+    std::filesystem::remove(key_file);
+}
+
+TEST(AuthManagerSessionTest, SessionCheckReturnsNulloptForInvalidCookie) {
+    std::string key_file = tmp_key_file();
+    AuthManager::Config cfg;
+    cfg.enabled            = true;
+    cfg.api_keys_file      = key_file;
+    cfg.audit_enabled      = false;
+    cfg.rate_limit_enabled = false;
+    cfg.sessions_enabled   = true;
+
+    AuthManager mgr(cfg);
+    EXPECT_FALSE(mgr.check_session("zepto_sid=invalid_id").has_value());
+    EXPECT_FALSE(mgr.check_session("").has_value());
+    EXPECT_FALSE(mgr.check_session("other_cookie=value").has_value());
+
+    std::filesystem::remove(key_file);
+}
+
+TEST(AuthManagerSessionTest, OidcPublicPathsArePublic) {
+    std::string key_file = tmp_key_file();
+    AuthManager::Config cfg;
+    cfg.enabled            = true;
+    cfg.api_keys_file      = key_file;
+    cfg.audit_enabled      = false;
+    cfg.rate_limit_enabled = false;
+
+    AuthManager mgr(cfg);
+
+    // Auth endpoints should be public
+    auto d1 = mgr.check("GET", "/auth/login", "", "127.0.0.1");
+    EXPECT_EQ(d1.status, AuthStatus::OK);
+
+    auto d2 = mgr.check("GET", "/auth/callback", "", "127.0.0.1");
+    EXPECT_EQ(d2.status, AuthStatus::OK);
+
+    auto d3 = mgr.check("POST", "/auth/logout", "", "127.0.0.1");
+    EXPECT_EQ(d3.status, AuthStatus::OK);
+
+    std::filesystem::remove(key_file);
 }

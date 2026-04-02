@@ -16,6 +16,8 @@
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/auth/cancellation_token.h"
 #include "zeptodb/auth/tenant_manager.h"
+#include "zeptodb/auth/session_store.h"
+#include "zeptodb/auth/oauth2_token_exchange.h"
 #include "zeptodb/sql/parser.h"
 #include "zeptodb/util/logger.h"
 
@@ -1224,6 +1226,288 @@ void HttpServer::setup_admin_routes() {
            << "\"query_timeout_ms\":" << query_timeout_ms_ << ","
            << "\"multi_tenancy_enabled\":" << (tenant_mgr_ ? "true" : "false") << ","
            << "\"cluster_mode\":" << (coordinator_ ? "true" : "false")
+           << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // SSO / OAuth2 / Session endpoints (no admin required)
+    // -------------------------------------------------------------------------
+
+    // GET /auth/login — redirect to IdP authorization endpoint
+    svr_->Get("/auth/login", [this](
+        const httplib::Request& /*req*/, httplib::Response& res)
+    {
+        if (!auth_ || !auth_->oidc_metadata()) {
+            res.status = 503;
+            res.set_content(build_error_json("OIDC not configured"), "application/json");
+            return;
+        }
+        const auto* meta = auth_->oidc_metadata();
+        std::string state = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+
+        std::string url = meta->authorization_endpoint
+            + "?response_type=code"
+            + "&client_id=" + auth_->oidc_client_id()
+            + "&redirect_uri=" + auth_->oidc_redirect_uri()
+            + "&scope=openid+email+profile"
+            + "&state=" + state;
+        res.set_redirect(url);
+    });
+
+    // GET /auth/callback — OAuth2 authorization code callback
+    svr_->Get("/auth/callback", [this](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!auth_ || !auth_->oidc_metadata()) {
+            res.status = 503;
+            res.set_content(build_error_json("OIDC not configured"), "application/json");
+            return;
+        }
+        if (!req.has_param("code")) {
+            res.status = 400;
+            std::string error_desc = req.has_param("error_description")
+                ? req.get_param_value("error_description") : "No authorization code";
+            res.set_content(build_error_json(error_desc), "application/json");
+            return;
+        }
+
+        const auto* meta = auth_->oidc_metadata();
+        zeptodb::auth::OAuth2ExchangeParams params;
+        params.token_endpoint = meta->token_endpoint;
+        params.code           = req.get_param_value("code");
+        params.redirect_uri   = auth_->oidc_redirect_uri();
+        params.client_id      = auth_->oidc_client_id();
+        params.client_secret  = auth_->oidc_client_secret();
+
+        auto tokens = zeptodb::auth::OAuth2TokenExchange::exchange(params);
+        if (!tokens) {
+            res.status = 502;
+            res.set_content(build_error_json("Token exchange failed"), "application/json");
+            return;
+        }
+
+        // Resolve identity from id_token (or access_token)
+        std::string jwt = !tokens->id_token.empty() ? tokens->id_token : tokens->access_token;
+        auto decision = auth_->check("GET", "/auth/callback",
+                                      "Bearer " + jwt, req.remote_addr);
+        if (decision.status != zeptodb::auth::AuthStatus::OK) {
+            res.status = 401;
+            res.set_content(build_error_json("Identity resolution failed: " + decision.reason),
+                            "application/json");
+            return;
+        }
+
+        // Create server-side session
+        auto* store = auth_->session_store();
+        if (store) {
+            auto sid = store->create(
+                decision.context.subject, decision.context.name,
+                decision.context.role, decision.context.source,
+                decision.context.allowed_symbols, decision.context.tenant_id,
+                tokens->refresh_token);
+            res.set_header("Set-Cookie", store->make_cookie(sid));
+            // Redirect to Web UI
+            res.set_redirect("/query");
+        } else {
+            // No session store — return tokens as JSON (API mode)
+            std::ostringstream os;
+            os << "{\"access_token\":\"" << tokens->access_token << "\""
+               << ",\"role\":\"" << zeptodb::auth::role_to_string(decision.context.role) << "\""
+               << ",\"subject\":\"" << decision.context.subject << "\"";
+            if (!tokens->refresh_token.empty())
+                os << ",\"refresh_token\":\"" << tokens->refresh_token << "\"";
+            if (tokens->expires_in > 0)
+                os << ",\"expires_in\":" << tokens->expires_in;
+            os << "}";
+            res.set_content(os.str(), "application/json");
+        }
+    });
+
+    // POST /auth/session — create session from Bearer token (JWT/API key login)
+    svr_->Post("/auth/session", [this](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!auth_) {
+            res.status = 503;
+            res.set_content(build_error_json("Auth not configured"), "application/json");
+            return;
+        }
+        std::string auth_hdr;
+        if (req.has_header("Authorization"))
+            auth_hdr = req.get_header_value("Authorization");
+        if (auth_hdr.empty()) {
+            res.status = 401;
+            res.set_content(build_error_json("Authorization header required"), "application/json");
+            return;
+        }
+
+        auto decision = auth_->check("POST", "/auth/session", auth_hdr, req.remote_addr);
+        if (decision.status != zeptodb::auth::AuthStatus::OK) {
+            res.status = 401;
+            res.set_content(build_error_json(decision.reason), "application/json");
+            return;
+        }
+
+        auto* store = auth_->session_store();
+        if (!store) {
+            res.status = 503;
+            res.set_content(build_error_json("Sessions not enabled"), "application/json");
+            return;
+        }
+
+        auto sid = store->create(
+            decision.context.subject, decision.context.name,
+            decision.context.role, decision.context.source,
+            decision.context.allowed_symbols, decision.context.tenant_id);
+        res.set_header("Set-Cookie", store->make_cookie(sid));
+        std::ostringstream os;
+        os << "{\"session\":true"
+           << ",\"role\":\"" << zeptodb::auth::role_to_string(decision.context.role) << "\""
+           << ",\"subject\":\"" << decision.context.subject << "\""
+           << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // POST /auth/logout — destroy session
+    svr_->Post("/auth/logout", [this](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        auto* store = auth_ ? auth_->session_store() : nullptr;
+        if (!store) {
+            res.set_content("{\"ok\":true}", "application/json");
+            return;
+        }
+
+        // Extract session cookie
+        if (req.has_header("Cookie")) {
+            auto ctx = auth_->check_session(req.get_header_value("Cookie"));
+            // Find and destroy the session
+            const auto& cookie = req.get_header_value("Cookie");
+            const auto& name = store->config().cookie_name;
+            auto pos = cookie.find(name + "=");
+            if (pos != std::string::npos) {
+                auto val_start = pos + name.size() + 1;
+                auto val_end = cookie.find(';', val_start);
+                std::string sid = (val_end != std::string::npos)
+                    ? cookie.substr(val_start, val_end - val_start)
+                    : cookie.substr(val_start);
+                while (!sid.empty() && sid.back() == ' ') sid.pop_back();
+                store->destroy(sid);
+            }
+        }
+        res.set_header("Set-Cookie", store->make_clear_cookie());
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
+    // POST /auth/refresh — refresh session using stored refresh token
+    svr_->Post("/auth/refresh", [this](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        auto* store = auth_ ? auth_->session_store() : nullptr;
+        if (!store || !auth_->oidc_metadata()) {
+            res.status = 503;
+            res.set_content(build_error_json("Session refresh not available"), "application/json");
+            return;
+        }
+
+        // Get current session from cookie
+        std::string sid;
+        if (req.has_header("Cookie")) {
+            const auto& cookie = req.get_header_value("Cookie");
+            const auto& name = store->config().cookie_name;
+            auto pos = cookie.find(name + "=");
+            if (pos != std::string::npos) {
+                auto val_start = pos + name.size() + 1;
+                auto val_end = cookie.find(';', val_start);
+                sid = (val_end != std::string::npos)
+                    ? cookie.substr(val_start, val_end - val_start)
+                    : cookie.substr(val_start);
+                while (!sid.empty() && sid.back() == ' ') sid.pop_back();
+            }
+        }
+
+        auto session = store->get(sid);
+        if (!session || session->refresh_token.empty()) {
+            res.status = 401;
+            res.set_content(build_error_json("No valid session or refresh token"), "application/json");
+            return;
+        }
+
+        const auto* meta = auth_->oidc_metadata();
+        auto tokens = zeptodb::auth::OAuth2TokenExchange::refresh(
+            meta->token_endpoint,
+            session->refresh_token,
+            auth_->oidc_client_id(),
+            auth_->oidc_client_secret());
+
+        if (!tokens) {
+            // Refresh failed — destroy session
+            store->destroy(sid);
+            res.set_header("Set-Cookie", store->make_clear_cookie());
+            res.status = 401;
+            res.set_content(build_error_json("Token refresh failed"), "application/json");
+            return;
+        }
+
+        // Update refresh token if a new one was issued
+        if (!tokens->refresh_token.empty()) {
+            store->update_refresh_token(sid, tokens->refresh_token);
+        }
+
+        // Extend session cookie
+        res.set_header("Set-Cookie", store->make_cookie(sid));
+        std::ostringstream os;
+        os << "{\"refreshed\":true"
+           << ",\"expires_in\":" << tokens->expires_in
+           << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // GET /auth/me — return current session info (from cookie or Bearer)
+    svr_->Get("/auth/me", [this](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!auth_) {
+            res.status = 503;
+            res.set_content(build_error_json("Auth not configured"), "application/json");
+            return;
+        }
+
+        // Try session cookie first
+        if (req.has_header("Cookie")) {
+            auto ctx = auth_->check_session(req.get_header_value("Cookie"));
+            if (ctx) {
+                std::ostringstream os;
+                os << "{\"subject\":\"" << ctx->subject << "\""
+                   << ",\"role\":\"" << zeptodb::auth::role_to_string(ctx->role) << "\""
+                   << ",\"source\":\"" << ctx->source << "\""
+                   << "}";
+                res.set_content(os.str(), "application/json");
+                return;
+            }
+        }
+
+        // Fall back to Bearer token
+        std::string auth_hdr;
+        if (req.has_header("Authorization"))
+            auth_hdr = req.get_header_value("Authorization");
+        if (auth_hdr.empty()) {
+            res.status = 401;
+            res.set_content(build_error_json("Not authenticated"), "application/json");
+            return;
+        }
+        auto decision = auth_->check("GET", "/auth/me", auth_hdr, req.remote_addr);
+        if (decision.status != zeptodb::auth::AuthStatus::OK) {
+            res.status = 401;
+            res.set_content(build_error_json(decision.reason), "application/json");
+            return;
+        }
+        std::ostringstream os;
+        os << "{\"subject\":\"" << decision.context.subject << "\""
+           << ",\"role\":\"" << zeptodb::auth::role_to_string(decision.context.role) << "\""
+           << ",\"source\":\"" << decision.context.source << "\""
            << "}";
         res.set_content(os.str(), "application/json");
     });

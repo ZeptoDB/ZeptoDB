@@ -164,6 +164,21 @@ auth:
 | `jwt.expected_audience` | string | — | Required JWT audience |
 | `jwt.role_claim` | string | `zepto_role` | JWT claim for role |
 | `jwt.symbols_claim` | string | `zepto_symbols` | JWT claim for symbol list |
+| `oidc.issuer` | string | — | OIDC issuer URL (auto-discovers JWKS, auth, token endpoints) |
+| `oidc.client_id` | string | — | OAuth2 client ID |
+| `oidc.client_secret` | string | — | OAuth2 client secret (use Vault/env in production) |
+| `oidc.redirect_uri` | string | — | OAuth2 callback URL (e.g., `http://host:8123/auth/callback`) |
+| `oidc.audience` | string | — | Expected audience claim (optional) |
+| `session.enabled` | bool | false | Enable server-side session store |
+| `session.ttl_s` | int | 3600 | Session lifetime (seconds) |
+| `session.refresh_window_s` | int | 300 | Extend session if active within this window |
+| `session.max_sessions` | int | 10000 | Max concurrent sessions |
+| `session.cookie_name` | string | `zepto_sid` | Session cookie name |
+| `session.cookie_secure` | bool | false | Secure flag on cookie (set true with TLS) |
+| `session.cookie_httponly` | bool | true | HttpOnly flag on cookie |
+| `sso.enabled` | bool | false | Enable multi-IdP SSO identity provider |
+| `sso.cache_ttl_s` | int | 300 | Identity cache TTL |
+| `sso.cache_capacity` | int | 10000 | Max cached identities |
 | `rate_limit.requests_per_minute` | int | 1000 | Per-identity rate limit |
 | `rate_limit.burst_capacity` | int | 200 | Token bucket burst size |
 | `rate_limit.per_ip_rpm` | int | 10000 | Per-IP rate limit |

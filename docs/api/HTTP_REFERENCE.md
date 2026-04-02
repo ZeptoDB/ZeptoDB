@@ -27,6 +27,8 @@ using the ClickHouse data source plugin with no modification.
   - [Version](#admin-version)
 - [Roles & Permissions](#roles--permissions)
 
+> Enterprise security guide: [Security Operations Guide](SECURITY_OPERATIONS_GUIDE.md) · [SSO Integration Guide](SSO_INTEGRATION_GUIDE.md)
+
 ---
 
 ## Quick Start
@@ -461,6 +463,83 @@ Returns `502` if no JWKS URL is configured or the fetch fails.
 
 ---
 
+### SSO / OAuth2 Endpoints
+
+> Full guide: [SSO Integration Guide](SSO_INTEGRATION_GUIDE.md)
+
+#### `GET /auth/login` — Redirect to IdP
+
+Redirects the browser to the configured OIDC authorization endpoint. No authentication required.
+
+```
+GET /auth/login → 302 https://idp.example.com/authorize?response_type=code&client_id=...
+```
+
+Returns `503` if OIDC is not configured.
+
+#### `GET /auth/callback` — OAuth2 code exchange
+
+Handles the IdP redirect after user authentication. Exchanges the authorization code for tokens, resolves identity, creates a server-side session, and redirects to `/query`.
+
+Query params: `code` (required), `state` (optional)
+
+Returns `502` if token exchange fails, `401` if identity resolution fails.
+
+#### `POST /auth/session` — Create session from Bearer token
+
+Creates a server-side session from an existing Bearer token (API key or JWT). Returns a `Set-Cookie` header.
+
+```bash
+curl -X POST http://localhost:8123/auth/session \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"session": true, "role": "writer", "subject": "user@example.com"}
+```
+
+#### `POST /auth/logout` — Destroy session
+
+Destroys the server-side session and clears the cookie. No authentication required.
+
+```bash
+curl -X POST http://localhost:8123/auth/logout -b "zepto_sid=SESSION_ID"
+```
+
+```json
+{"ok": true}
+```
+
+#### `POST /auth/refresh` — Refresh OAuth2 token
+
+Refreshes the OAuth2 access token using the stored refresh token. Requires a valid session cookie.
+
+```bash
+curl -X POST http://localhost:8123/auth/refresh -b "zepto_sid=SESSION_ID"
+```
+
+```json
+{"refreshed": true, "expires_in": 3600}
+```
+
+Returns `401` if the session is invalid or refresh fails.
+
+#### `GET /auth/me` — Current identity
+
+Returns the authenticated identity from session cookie or Bearer token.
+
+```bash
+curl http://localhost:8123/auth/me -b "zepto_sid=SESSION_ID"
+# or
+curl http://localhost:8123/auth/me -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"subject": "user@example.com", "role": "writer", "source": "sso:okta-prod"}
+```
+
+---
+
 ### Admin: Active Queries
 
 #### `GET /admin/queries` — List running queries
@@ -738,4 +817,19 @@ Both can be combined: a key with `allowed_tables: ["trades"]` and
 
 ---
 
-*See also: [SQL Reference](SQL_REFERENCE.md) · [Config Reference](CONFIG_REFERENCE.md) · [Python Reference](PYTHON_REFERENCE.md) · [C++ Reference](CPP_REFERENCE.md)*
+## Rate Limiting
+
+When rate limiting is enabled, requests that exceed the configured threshold return:
+
+```
+HTTP 403 Forbidden
+{"error": "Rate limit exceeded"}
+```
+
+Rate limits are applied per-identity (API key ID or JWT `sub`) and per-IP. Both checks must pass.
+
+See [Security Operations Guide — Rate Limiting](SECURITY_OPERATIONS_GUIDE.md#rate-limiting) for configuration details.
+
+---
+
+*See also: [Security Operations Guide](SECURITY_OPERATIONS_GUIDE.md) · [SSO Integration Guide](SSO_INTEGRATION_GUIDE.md) · [SQL Reference](SQL_REFERENCE.md) · [Config Reference](CONFIG_REFERENCE.md)*

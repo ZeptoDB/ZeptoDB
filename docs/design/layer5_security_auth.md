@@ -1,9 +1,10 @@
 # ZeptoDB: Security & Access Control Layer (Layer 5)
 
 **Version:** 2.0
-**Last updated:** 2026-03-22
+**Last updated:** 2026-04-02
 **Status:** ✅ Fully Implemented (all contract-blocker features complete)
 **Related code:** `include/zeptodb/auth/`, `src/auth/`, `tests/unit/test_auth.cpp`
+**Operations guide:** [`docs/api/SECURITY_OPERATIONS_GUIDE.md`](../api/SECURITY_OPERATIONS_GUIDE.md)
 
 ---
 
@@ -565,11 +566,13 @@ include/zeptodb/auth/
   api_key_store.h   — ApiKeyEntry, ApiKeyStore class
   jwt_validator.h   — JwtClaims, JwtValidator class (HS256 + RS256)
   auth_manager.h    — AuthContext, AuthDecision, AuthManager, TlsConfig
+  sso_identity_provider.h — IdpConfig, SsoIdentity, SsoIdentityProvider (multi-IdP)
 
 src/auth/
   api_key_store.cpp — SHA256(OpenSSL), RAND_bytes, file I/O
   jwt_validator.cpp — JWT parsing, HMAC verify (OpenSSL), EVP_DigestVerify
   auth_manager.cpp  — Middleware logic, JWT priority, spdlog audit
+  sso_identity_provider.cpp — Multi-IdP resolution, group-role mapping, identity cache
 ```
 
 ### 8.2 Request Authentication Flow
@@ -581,9 +584,10 @@ src/auth/
    a. is_public_path(path)? → OK (anonymous/metrics role)
    b. No Authorization header? → 401
    c. Extract Bearer token
-   d. Token starts with "ey"? → Try JwtValidator first
-   e. JwtValidator fails or JWT not configured? → Try ApiKeyStore
-   f. Both fail? → 401
+   d. Token starts with "ey"? → Try SsoIdentityProvider first (multi-IdP, issuer-routed)
+   e. SSO miss? → Try JwtValidator (single-IdP fallback)
+   f. JWT fails or not configured? → Try ApiKeyStore
+   g. All fail? → 401
 4. Decision.status == OK → continue to route handler
 5. Decision.status != OK → return 401/403 with JSON error
 6. Audit log written for all authenticated requests
@@ -804,6 +808,33 @@ volumeMounts:
 Full SigV4 signing is not yet implemented. For AWS deployments:
 - Use the **ExternalSecrets Operator** which writes AWS SM values to K8s Secrets → FileSecretsProvider reads them.
 - Or use the AWS CLI subprocess approach in K8s IRSA environments.
+
+### Vault-backed API Key Store
+
+API keys can be synced to HashiCorp Vault KV v2 for multi-node key sharing and
+centralized key management. The local file remains the primary store; Vault acts
+as a write-through backend.
+
+**Configuration:**
+```cpp
+AuthManager::Config cfg;
+cfg.vault_keys_enabled = true;
+cfg.vault_keys.addr    = "https://vault.internal:8200";
+cfg.vault_keys.token   = getenv("VAULT_TOKEN");  // or VAULT_TOKEN env auto-detected
+cfg.vault_keys.mount   = "secret";
+cfg.vault_keys.prefix  = "zeptodb/keys";
+```
+
+**Behavior:**
+- On `create_key()`, `revoke()`, `update_key()`: entry is written to Vault (best-effort).
+- On startup: entries in Vault but not in the local file are merged into the local store.
+- If Vault is unreachable, the local file store continues to work normally.
+
+**Vault path layout:**
+```
+{mount}/data/zeptodb/keys/{key_id}   → JSON with all ApiKeyEntry fields
+{mount}/data/zeptodb/keys/_index     → list of all key IDs
+```
 
 ---
 
