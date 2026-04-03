@@ -1,0 +1,5356 @@
+
+<!doctype html>
+<html lang="ko" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Ultra-Low Latency In-Memory Database">
+      
+      
+      
+        <link rel="canonical" href="https://zeptodb.github.io/ZeptoDB/ko/design/multinode_stability/">
+      
+      
+        <link rel="prev" href="../phase_c_distributed/">
+      
+      
+        <link rel="next" href="../logging_observability/">
+      
+      
+        
+          <link rel="alternate" href="../../../design/multinode_stability/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="ko">
+        
+      
+      
+      <link rel="icon" href="../../../assets/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Multi-node Stability - ZeptoDB</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#zeptodb-multi-node-operational-stability-design" class="md-skip">
+          콘텐츠로 이동
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="상단/헤더">
+    <a href="../../" title="ZeptoDB" class="md-header__button md-logo" aria-label="ZeptoDB" data-md-component="logo">
+      
+  <img src="../../../assets/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ZeptoDB
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Multi-node Stability
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="언어설정">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="../../../design/multinode_stability/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="ko" class="md-select__link">
+              한국어
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="검색" placeholder="검색" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="검색">
+        
+        <button type="reset" class="md-search__icon md-icon" title="지우기" aria-label="지우기" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            검색 초기화
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeptodb/zeptodb" title="저장소로 이동" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeptodb/zeptodb
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="탭" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/QUICK_START/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/SQL_REFERENCE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../high_level_architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../deployment/PRODUCTION_DEPLOYMENT/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../feeds/FEED_HANDLER_GUIDE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Feed Handlers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../bench/results_e2e_mvp/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Benchmarks
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture_design/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Design Docs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../business/EXECUTIVE_SUMMARY/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Business
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devlog/000_environment_setup/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Development Log
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="네비게이션" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../" title="ZeptoDB" class="md-nav__button md-logo" aria-label="ZeptoDB" data-md-component="logo">
+      
+  <img src="../../../assets/logo.png" alt="logo">
+
+    </a>
+    ZeptoDB
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeptodb/zeptodb" title="저장소로 이동" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeptodb/zeptodb
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/QUICK_START/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/build/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build from Source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/INTERACTIVE_PLAYGROUND/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interactive Playground
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/EXAMPLE_DATASETS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example Datasets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/SQL_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/PYTHON_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/CPP_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/HTTP_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/SSO_INTEGRATION_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SSO Integration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/SECURITY_OPERATIONS_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Operations Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/FLIGHT_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Arrow Flight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/CONFIG_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../high_level_architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer1_storage_memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer2_ingestion_network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer3_execution_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer4_transpiler_client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL & Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer5_security_auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../phase_c_distributed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Stability
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="목차">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      목차
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#architecture-context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Context
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-split-brain-data-loss-prevention-p8-critical" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Split-Brain / Data Loss Prevention (P8-Critical ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Split-Brain / Data Loss Prevention (P8-Critical ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-partitionrouter-distributed-synchronization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 PartitionRouter Distributed Synchronization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-coordinatorha-k8slease-based-split-brain-prevention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 CoordinatorHA — K8sLease-Based Split-Brain Prevention
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-wal-replication-guarantee" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 WAL Replication Guarantee
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-failover-data-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.4 Failover Data Recovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#15-internal-rpc-security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.5 Internal RPC Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-failure-detection-and-recovery-p8-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Failure Detection and Recovery (P8-High ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Failure Detection and Recovery (P8-High ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-healthmonitor-dead-node-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 HealthMonitor — DEAD Node Recovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-healthmonitor-udp-fault-tolerance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 HealthMonitor — UDP Fault Tolerance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-rpc-server-resource-management-p8-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. RPC Server Resource Management (P8-High ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. RPC Server Resource Management (P8-High ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-thread-pool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Thread Pool
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-payload-size-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Payload Size Limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-graceful-drain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Graceful Drain
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-concurrent-connection-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Concurrent Connection Limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-routing-and-connection-stability-p8-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Routing and Connection Stability (P8-High ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Routing and Connection Stability (P8-High ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-partitionrouter-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 PartitionRouter Concurrency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-tcprpcclientping-connection-leak" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 TcpRpcClient::ping() Connection Leak
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-node-registry-stability-p8-medium-partial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Node Registry Stability (P8-Medium ✅ partial)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Node Registry Stability (P8-Medium ✅ partial)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-gossipnoderegistry-data-race" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 GossipNodeRegistry Data Race
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-k8snoderegistry-deadlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 K8sNodeRegistry Deadlock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-clusternode-node-rejoin-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 ClusterNode Node Rejoin Validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-incomplete-items-p8-medium-remaining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Incomplete Items (P8-Medium remaining)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-configuration-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Configuration Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-test-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Test Coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../logging_observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Logging & Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tech_stack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tech Stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/PRODUCTION_DEPLOYMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/MULTI_NODE_CLUSTER/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/BARE_METAL_TUNING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bare Metal Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/CLOUD_PERFORMANCE_TUNING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/PRODUCTION_OPERATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/KUBERNETES_OPERATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kubernetes Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/KUBERNETES_FAILURE_SCENARIOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    K8s Failure Scenarios
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../ops/rolling_upgrade.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rolling Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feed Handlers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Feed Handlers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/FEED_HANDLER_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/FEED_HANDLER_COMPLETE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Complete Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/PERFORMANCE_OPTIMIZATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_e2e_mvp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    E2E MVP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_b/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIMD Phase B
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_b_v2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIMD Phase B v2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_a/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HDB Phase A
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_index_attributes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Index Attributes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/kdb_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    kdb+ Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/multinode_benchmark_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/rdma_efa_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RDMA/EFA
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/eks_multinode_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    EKS Multi-node
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design Docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_performance_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../kdb_replacement_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    kdb+ Replacement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../industry_business_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Industry Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../kafka_consumer_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kafka Consumer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sql_dml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL DML
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../string_column_plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    String Column
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client_compatibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Client Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multinode_usecases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Use Cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../physical_ai_market/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Physical AI Market
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../web_ui_prd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web UI PRD
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Business
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Business
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/EXECUTIVE_SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Executive Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/BUSINESS_STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Business Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/product_positioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product Positioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/competitive_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Competitive Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/industry_gap_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Industry Gap Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Log
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development Log
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/000_environment_setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    000: Environment Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/001_e2e_pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    001: E2E Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/002_simd_jit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    002: SIMD + JIT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/003_optimization_v2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    003: Optimization v2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/004_hdb_tiered_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    004: HDB Tiered Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/005_python_bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    005: Python Bridge
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/006_distributed_cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    006: Distributed Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/007_sql_http_join/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    007: SQL + HTTP + JOIN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/008_equi_join_window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    008: Equi JOIN + Window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/009_groupby_timeindex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    009: GROUP BY + Time Index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/010_financial_functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    010: Financial Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/011_parallel_query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    011: Parallel Query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/012_parquet_s3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    012: Parquet + S3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/013_python_ecosystem/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    013: Python Ecosystem
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/014_sql_phase2_phase3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    014: SQL Phase 2 & 3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/015_bare_metal_tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    015: Bare Metal Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/016_xbar_sortedcan_explain_null/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    016: xbar + Sorted + EXPLAIN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/017_connection_hooks_sorted_index_cli_timer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    017: Connection Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/018_cluster_integrity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    018: Cluster Integrity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/019_distributed_query_correctness/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    019: Distributed Query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/020_data_durability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    020: Data Durability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/021_ddl_schema_management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    021: DDL Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/022_helm_rolling_upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    022: Helm Rolling Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/023_arm_graviton_verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    023: ARM Graviton
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/024_sql_insert/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    024: SQL INSERT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/025_sql_update_delete/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    025: SQL UPDATE/DELETE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/026_tiering_matview_multitenancy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    026: Tiering + MatView
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/027_string_column_support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    027: String Column
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/028_repo_structure_cleanup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    028: Repo Cleanup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/029_http_observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    029: HTTP Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/030_ring_consensus.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    030: Ring Consensus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/031_coordinator_ha_lease.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    031: Coordinator HA
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/032_wal_replicator_reliability.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    032: WAL Replicator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/033_failover_data_recovery.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    033: Failover Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/034_rpc_security.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    034: RPC Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/035_health_monitor_resilience.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    035: Health Monitor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/036_sso_jwks_cli.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    036: SSO JWKS CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/037_p8_cluster_stability.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    037: Cluster Stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/038_arrow_flight_server.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    038: Arrow Flight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/039_query_editor_chart_tabs_multistatement.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    039: Query Editor Charts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/040_getting_started_onboarding.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    040: Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="목차">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      목차
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#architecture-context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Context
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-split-brain-data-loss-prevention-p8-critical" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Split-Brain / Data Loss Prevention (P8-Critical ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Split-Brain / Data Loss Prevention (P8-Critical ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-partitionrouter-distributed-synchronization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 PartitionRouter Distributed Synchronization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-coordinatorha-k8slease-based-split-brain-prevention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 CoordinatorHA — K8sLease-Based Split-Brain Prevention
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-wal-replication-guarantee" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 WAL Replication Guarantee
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-failover-data-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.4 Failover Data Recovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#15-internal-rpc-security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.5 Internal RPC Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-failure-detection-and-recovery-p8-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Failure Detection and Recovery (P8-High ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Failure Detection and Recovery (P8-High ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-healthmonitor-dead-node-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 HealthMonitor — DEAD Node Recovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-healthmonitor-udp-fault-tolerance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 HealthMonitor — UDP Fault Tolerance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-rpc-server-resource-management-p8-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. RPC Server Resource Management (P8-High ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. RPC Server Resource Management (P8-High ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-thread-pool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Thread Pool
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-payload-size-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Payload Size Limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-graceful-drain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Graceful Drain
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-concurrent-connection-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Concurrent Connection Limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-routing-and-connection-stability-p8-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Routing and Connection Stability (P8-High ✅)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Routing and Connection Stability (P8-High ✅)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-partitionrouter-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 PartitionRouter Concurrency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-tcprpcclientping-connection-leak" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 TcpRpcClient::ping() Connection Leak
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-node-registry-stability-p8-medium-partial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Node Registry Stability (P8-Medium ✅ partial)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Node Registry Stability (P8-Medium ✅ partial)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-gossipnoderegistry-data-race" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 GossipNodeRegistry Data Race
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-k8snoderegistry-deadlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 K8sNodeRegistry Deadlock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-clusternode-node-rejoin-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 ClusterNode Node Rejoin Validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-incomplete-items-p8-medium-remaining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Incomplete Items (P8-Medium remaining)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-configuration-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Configuration Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-test-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Test Coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="zeptodb-multi-node-operational-stability-design">ZeptoDB Multi-Node Operational Stability Design<a class="headerlink" href="#zeptodb-multi-node-operational-stability-design" title="Permanent link">&para;</a></h1>
+<p><strong>Date</strong>: 2026-03-27
+<strong>Status</strong>: P8-Critical/High completed, P8-Medium in progress</p>
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>This document summarizes the problems resolved and design decisions made to ensure production operational stability of ZeptoDB distributed clusters.
+It covers all stability issues that can occur in a multi-node environment, including split-brain, data loss, resource exhaustion, concurrency bugs, and failure recovery.</p>
+<h3 id="architecture-context">Architecture Context<a class="headerlink" href="#architecture-context" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>┌─────────────────────────────────────────────────────────┐
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>│                    Control Plane                         │
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>│  CoordinatorHA (Active/Standby) + K8sLease + Fencing    │
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│  QueryCoordinator (scatter-gather routing)               │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│  RingConsensus (epoch broadcast → all-node ring sync)    │
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>└────────────────────┬────────────────────────────────────┘
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>                     │ TcpRpc (HMAC auth)
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>     ┌───────────────┼───────────────┐
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>     ▼               ▼               ▼
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>┌─────────┐   ┌─────────┐   ┌─────────┐
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>│ DataNode │   │ DataNode │   │ DataNode │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>│ Pipeline │   │ Pipeline │   │ Pipeline │
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>│ WAL+Rep  │   │ WAL+Rep  │   │ WAL+Rep  │
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>│ Health   │   │ Health   │   │ Health   │
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>└─────────┘   └─────────┘   └─────────┘
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>     ↕ UDP heartbeat + TCP probe ↕
+</code></pre></div>
+<hr />
+<h2 id="1-split-brain-data-loss-prevention-p8-critical">1. Split-Brain / Data Loss Prevention (P8-Critical ✅)<a class="headerlink" href="#1-split-brain-data-loss-prevention-p8-critical" title="Permanent link">&para;</a></h2>
+<h3 id="11-partitionrouter-distributed-synchronization">1.1 PartitionRouter Distributed Synchronization<a class="headerlink" href="#11-partitionrouter-distributed-synchronization" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Each node holds an independent copy of PartitionRouter. No synchronization mechanism exists when the ring changes (node addition/removal), causing routing inconsistencies between nodes. The same symbol gets routed to different nodes, resulting in scattered data storage → inconsistent query results.</p>
+<p><strong>Solution</strong>: <code>RingConsensus</code> interface + <code>EpochBroadcastConsensus</code> implementation.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Coordinator: propose_add(node_id)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  → epoch++ → serialize(ring snapshot + epoch)
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  → broadcast to all followers via TcpRpc RING_UPDATE
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  → followers: apply_update() → epoch validation → ring replacement
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>Follower: RING_UPDATE received
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>  → epoch &gt; local_epoch? → ring replacement + cache invalidation
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  → epoch &lt;= local_epoch? → ignore (stale)
+</code></pre></div>
+<ul>
+<li>Only the Coordinator has ring modification authority (<code>is_coordinator=true</code>)</li>
+<li>Followers receive/apply ring updates via RPC callbacks</li>
+<li>Plugin architecture allowing replacement with a Raft implementation (<code>RingConsensus</code> interface)</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/ring_consensus.h</code>
+<strong>Devlog</strong>: <code>docs/devlog/030_ring_consensus.md</code></p>
+<h3 id="12-coordinatorha-k8slease-based-split-brain-prevention">1.2 CoordinatorHA — K8sLease-Based Split-Brain Prevention<a class="headerlink" href="#12-coordinatorha-k8slease-based-split-brain-prevention" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Two Active coordinators can exist simultaneously. During a network partition, the Standby may incorrectly determine the Active has failed and promote itself → two coordinators performing writes concurrently.</p>
+<p><strong>Solution</strong>: K8sLease + FencingToken dual defense.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Standby: Active ping failure (2 seconds)
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  → try_promote()
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  → require_lease=true? → K8sLease::try_acquire() required
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  → success: FencingToken::advance() → epoch bump
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  → peer_rpc_.set_epoch(new_epoch)
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  → transition to ACTIVE
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>Stale Active (epoch=5) recovers:
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>  → write attempt (TICK_INGEST, epoch=5)
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>  → DataNode: FencingToken::validate(5) → last_seen=6 → REJECTED
+</code></pre></div>
+<ul>
+<li><code>require_lease=false</code> (default): ping-based failover (testing/development)</li>
+<li><code>require_lease=true</code> (production): K8sLease acquisition required</li>
+<li>Automatic demote on lease loss (ACTIVE → STANDBY)</li>
+<li>Current configuration: Active 1 + Standby 1</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/coordinator_ha.h</code>, <code>src/cluster/coordinator_ha.cpp</code>
+<strong>Devlog</strong>: <code>docs/devlog/031_coordinator_ha_lease.md</code></p>
+<h3 id="13-wal-replication-guarantee">1.3 WAL Replication Guarantee<a class="headerlink" href="#13-wal-replication-guarantee" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: WalReplicator drops data when the queue overflows in default async mode, with no retries on failure. Unreplicated data is lost on node failure.</p>
+<p><strong>Solution</strong>: 3 replication modes + retries + backpressure.</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Behavior</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ASYNC</code></td>
+<td>fire-and-forget, drops on queue overflow</td>
+<td>Development/testing</td>
+</tr>
+<tr>
+<td><code>SYNC</code></td>
+<td>Waits for all replica ACKs</td>
+<td>Maximum durability</td>
+</tr>
+<tr>
+<td><code>QUORUM</code></td>
+<td>Waits for majority ACK out of W=N</td>
+<td>Recommended for production</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Failure retry queue: <code>max_retries=3</code>, exponential backoff</li>
+<li>Backpressure: producer blocks on queue saturation (automatic ingest rate throttling)</li>
+<li>Backward compatible with existing async/sync modes</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/ingestion/wal_replicator.h</code>
+<strong>Devlog</strong>: <code>docs/devlog/032_wal_replicator_reliability.md</code></p>
+<h3 id="14-failover-data-recovery">1.4 Failover Data Recovery<a class="headerlink" href="#14-failover-data-recovery" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: On node failure, the node is immediately removed from the router, but there is no procedure for recovering unreplicated data. Data is silently lost when callbacks are not registered.</p>
+<p><strong>Solution</strong>: Re-replication included as a mandatory step in failover.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Node DEAD detected
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  → FailoverManager::handle_failure()
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  → 1. router.remove_node(dead_id)
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>  → 2. auto_re_replicate=true?
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>       → PartitionMigrator: replica → new_replica data replication
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>       → async/sync selectable
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>  → 3. on_failover callback invocation
+</code></pre></div>
+<ul>
+<li>Automatic re-replication enabled via <code>auto_re_replicate</code> setting</li>
+<li>Built-in PartitionMigrator, async/sync selectable</li>
+<li>Graceful fallback when node is not registered (log warning and continue)</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/failover_manager.h</code>
+<strong>Devlog</strong>: <code>docs/devlog/033_failover_data_recovery.md</code></p>
+<h3 id="15-internal-rpc-security">1.5 Internal RPC Security<a class="headerlink" href="#15-internal-rpc-security" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Cluster-internal TCP RPC is plaintext. No authentication/authorization. Anyone with network access can execute SQL and inject data.</p>
+<p><strong>Solution</strong>: Shared-secret HMAC authentication protocol.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Client → Server: AUTH_HANDSHAKE (nonce + HMAC-SHA256(shared_secret, nonce))
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>Server: HMAC verification → AUTH_OK / AUTH_REJECT
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  → on failure: connection immediately rejected
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>  → on success: normal RPC messages allowed
+</code></pre></div>
+<ul>
+<li><code>RpcSecurityConfig::enabled=true</code> + <code>shared_secret</code> configuration</li>
+<li>Automatic handshake on every new connection (TcpRpcClient::acquire())</li>
+<li>mTLS configuration structure prepared (<code>cert_path</code>/<code>key_path</code>/<code>ca_cert_path</code>)</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/rpc_security.h</code>
+<strong>Devlog</strong>: <code>docs/devlog/034_rpc_security.md</code></p>
+<hr />
+<h2 id="2-failure-detection-and-recovery-p8-high">2. Failure Detection and Recovery (P8-High ✅)<a class="headerlink" href="#2-failure-detection-and-recovery-p8-high" title="Permanent link">&para;</a></h2>
+<h3 id="21-healthmonitor-dead-node-recovery">2.1 HealthMonitor — DEAD Node Recovery<a class="headerlink" href="#21-healthmonitor-dead-node-recovery" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Nodes in DEAD state remain DEAD forever even after recovery. No rejoin path exists. Operators must manually reconfigure the cluster.</p>
+<p><strong>Solution</strong>: Added <code>REJOINING</code> state.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>State transitions:
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  DEAD → REJOINING (when heartbeat is received again)
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>  REJOINING → ACTIVE (when on_rejoin callback returns true)
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>  REJOINING → REJOINING (callback returns false → retry on next heartbeat)
+</code></pre></div>
+<ul>
+<li><code>on_rejoin()</code> callback controls data resynchronization</li>
+<li>ClusterNode automatically re-adds to router on REJOINING→ACTIVE transition</li>
+</ul>
+<h3 id="22-healthmonitor-udp-fault-tolerance">2.2 HealthMonitor — UDP Fault Tolerance<a class="headerlink" href="#22-healthmonitor-udp-fault-tolerance" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: A single UDP packet loss can trigger a DEAD determination. Socket bind failures are silently ignored.</p>
+<p><strong>Solution</strong>: Triple-layer defense.</p>
+<table>
+<thead>
+<tr>
+<th>Defense Layer</th>
+<th>Mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Consecutive miss check</td>
+<td><code>consecutive_misses_for_suspect=3</code> — SUSPECT only after 3 consecutive misses</td>
+</tr>
+<tr>
+<td>TCP double-check</td>
+<td>TCP probe (port 9101) verification before SUSPECT→DEAD transition</td>
+</tr>
+<tr>
+<td>Bind failure detection</td>
+<td><code>fatal_on_bind_failure=true</code> — exception raised on UDP bind failure</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/health_monitor.h</code>
+<strong>Devlog</strong>: <code>docs/devlog/035_health_monitor_resilience.md</code></p>
+<hr />
+<h2 id="3-rpc-server-resource-management-p8-high">3. RPC Server Resource Management (P8-High ✅)<a class="headerlink" href="#3-rpc-server-resource-management-p8-high" title="Permanent link">&para;</a></h2>
+<p>Resolved 4 resource management issues in TcpRpcServer.</p>
+<h3 id="31-thread-pool">3.1 Thread Pool<a class="headerlink" href="#31-thread-pool" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>std::thread(...).detach()</code> per connection — unlimited thread count, OOM risk.</p>
+<p><strong>Solution</strong>: Fixed-size worker thread pool + task queue.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>accept_loop(): accept() → conn_queue_.push(fd) → notify_one()
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>worker_loop(): queue_cv_.wait() → pop(fd) → handle_connection(fd) → close(fd)
+</code></pre></div>
+<ul>
+<li><code>set_thread_pool_size(n)</code> — default <code>hardware_concurrency</code>, minimum 4</li>
+<li>Queue wait on pool saturation (natural backpressure)</li>
+<li>All workers joinable on <code>stop()</code> (detach removed)</li>
+</ul>
+<h3 id="32-payload-size-limit">3.2 Payload Size Limit<a class="headerlink" href="#32-payload-size-limit" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>std::vector</code> allocation without <code>payload_len</code> validation — OOM attack possible with a 4GB payload header.</p>
+<p><strong>Solution</strong>: <code>max_payload_size_</code> validation (default 64MB).</p>
+<ul>
+<li>Validation in both <code>handle_connection()</code> main loop and auth handshake</li>
+<li>Connection immediately closed on exceeding limit + <code>ZEPTO_WARN</code> log</li>
+<li>Runtime configurable via <code>set_max_payload_size(bytes)</code> API</li>
+</ul>
+<h3 id="33-graceful-drain">3.3 Graceful Drain<a class="headerlink" href="#33-graceful-drain" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>stop()</code> abandons active connections after 1 second. In-flight query results are lost.</p>
+<p><strong>Solution</strong>: 5-stage graceful shutdown.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>stop():
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  ① close listen socket (reject new connections)
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  ② drain pending queue (close waiting fds)
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  ③ wait for in-flight requests to complete for drain_timeout_ms (default 30 seconds)
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  ④ force shutdown(SHUT_RDWR) on timeout
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  ⑤ join workers (normal) or detach (forced)
+</code></pre></div>
+<ul>
+<li>Configurable via <code>set_drain_timeout_ms(ms)</code> API</li>
+<li>Protects in-flight queries during rolling upgrades</li>
+</ul>
+<h3 id="34-concurrent-connection-limit">3.4 Concurrent Connection Limit<a class="headerlink" href="#34-concurrent-connection-limit" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>active_conns_</code> only counts connections with no upper bound.</p>
+<p><strong>Solution</strong>: <code>max_connections_</code> setting (default 1024).</p>
+<ul>
+<li>Immediately <code>close(cfd)</code> + warning log on exceeding limit in <code>accept_loop()</code></li>
+<li>Runtime configurable via <code>set_max_connections(n)</code> API</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/tcp_rpc.h</code>, <code>src/cluster/tcp_rpc.cpp</code></p>
+<hr />
+<h2 id="4-routing-and-connection-stability-p8-high">4. Routing and Connection Stability (P8-High ✅)<a class="headerlink" href="#4-routing-and-connection-stability-p8-high" title="Permanent link">&para;</a></h2>
+<h3 id="41-partitionrouter-concurrency">4.1 PartitionRouter Concurrency<a class="headerlink" href="#41-partitionrouter-concurrency" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: No internal lock on <code>ring_</code>/<code>node_set_</code>. FailoverManager calls <code>remove_node()</code> without a lock → data race, TOCTOU bug.</p>
+<p><strong>Solution</strong>: Built-in <code>ring_mutex_</code> (<code>std::shared_mutex</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Lock Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add_node</code>, <code>remove_node</code></td>
+<td><code>unique_lock</code> (writer)</td>
+</tr>
+<tr>
+<td><code>route</code>, <code>route_replica</code>, <code>node_count</code>, <code>all_nodes</code>, <code>plan_*</code></td>
+<td><code>shared_lock</code> (reader)</td>
+</tr>
+<tr>
+<td>copy constructor, <code>operator=</code></td>
+<td>Both sides lock-protected</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Safe concurrent access without external <code>router_mutex_</code></li>
+<li>Cache (<code>cache_mutex_</code>) retains its existing separate mutex</li>
+</ul>
+<h3 id="42-tcprpcclientping-connection-leak">4.2 TcpRpcClient::ping() Connection Leak<a class="headerlink" href="#42-tcprpcclientping-connection-leak" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>ping()</code> creates <code>connect_to_server()</code> + <code>close()</code> every time — new TCP connection created/destroyed every 500ms. Kernel TIME_WAIT sockets accumulate.</p>
+<p><strong>Solution</strong>: Connection pool reuse via <code>acquire()</code>/<code>release()</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>// Before (new connection every time)
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>int fd = connect_to_server();
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>... ping ...
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>close(fd);
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>// After (pool reuse)
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>int fd = acquire();      // take from pool or create new
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>... ping ...
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>release(fd, ok);         // return to pool on success, close on failure
+</code></pre></div>
+<p><strong>Related code</strong>: <code>src/cluster/tcp_rpc.cpp</code></p>
+<hr />
+<h2 id="5-node-registry-stability-p8-medium-partial">5. Node Registry Stability (P8-Medium ✅ partial)<a class="headerlink" href="#5-node-registry-stability-p8-medium-partial" title="Permanent link">&para;</a></h2>
+<h3 id="51-gossipnoderegistry-data-race">5.1 GossipNodeRegistry Data Race<a class="headerlink" href="#51-gossipnoderegistry-data-race" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>running_</code> is a <code>bool</code> — UB on concurrent read/write from multiple threads.</p>
+<p><strong>Solution</strong>: <code>std::atomic&lt;bool&gt; running_{false}</code>.</p>
+<h3 id="52-k8snoderegistry-deadlock">5.2 K8sNodeRegistry Deadlock<a class="headerlink" href="#52-k8snoderegistry-deadlock" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: <code>fire_event_unlocked()</code> calls callbacks while holding the <code>mu_</code> lock. Deadlock occurs if the callback calls <code>active_nodes()</code> or similar.</p>
+<p><strong>Solution</strong>: Release lock before invoking callbacks.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>// Before (deadlock)
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>void register_node(addr) {
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    lock_guard lock(mu_);
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    nodes_[id] = ...;
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    fire_event_unlocked(id, JOINED);  // callback while holding mu_!
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>}
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>// After (safe)
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>void register_node(addr) {
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    bool is_new;
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    { lock_guard lock(mu_); is_new = ...; nodes_[id] = ...; }
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    if (is_new) fire_event(id, JOINED);  // callback after lock release
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>}
+</code></pre></div>
+<h3 id="53-clusternode-node-rejoin-validation">5.3 ClusterNode Node Rejoin Validation<a class="headerlink" href="#53-clusternode-node-rejoin-validation" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Node is treated as "joined" even when all seed connections fail. No peer map synchronization.</p>
+<p><strong>Solution</strong>: Seed connection success count + exception on total failure.</p>
+<ul>
+<li><code>seed_connected</code> count based on Transport connect + RPC client creation success</li>
+<li><code>seed_connected == 0</code> (when seeds is non-empty): clean up router/transport then throw <code>std::runtime_error</code></li>
+<li>Bootstrap (no seeds): allowed normally (first node)</li>
+</ul>
+<p><strong>Related code</strong>: <code>include/zeptodb/cluster/node_registry.h</code>, <code>include/zeptodb/cluster/cluster_node.h</code></p>
+<hr />
+<h2 id="6-incomplete-items-p8-medium-remaining">6. Incomplete Items (P8-Medium remaining)<a class="headerlink" href="#6-incomplete-items-p8-medium-remaining" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Current Problem</th>
+<th>Required Action</th>
+<th>Effort</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SnapshotCoordinator Consistency</strong></td>
+<td>Parallel execution without global barrier, point-in-time inconsistency</td>
+<td>2PC (prepare → commit), pause ingestion or LSN cutoff</td>
+<td>M</td>
+</tr>
+<tr>
+<td><strong>K8sNodeRegistry Actual Implementation</strong></td>
+<td>poll_loop() is an empty loop</td>
+<td>Implement K8s Endpoints API watch</td>
+<td>M</td>
+</tr>
+<tr>
+<td><strong>PartitionMigrator Atomicity</strong></td>
+<td>Partial move on mid-failure, cannot resume</td>
+<td>State machine + checkpoint + rollback</td>
+<td>L</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-configuration-summary">7. Configuration Summary<a class="headerlink" href="#7-configuration-summary" title="Permanent link">&para;</a></h2>
+<p>Recommended settings for production deployment:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1">// Coordinator HA</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">CoordinatorHAConfig</span><span class="w"> </span><span class="n">ha_cfg</span><span class="p">;</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">ha_cfg</span><span class="p">.</span><span class="n">require_lease</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">;</span><span class="w">           </span><span class="c1">// K8sLease required</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">ha_cfg</span><span class="p">.</span><span class="n">failover_after_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span><span class="p">;</span><span class="w">       </span><span class="c1">// failover after 2 seconds</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="c1">// WAL Replication</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="n">WalReplicatorConfig</span><span class="w"> </span><span class="n">wal_cfg</span><span class="p">;</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="n">wal_cfg</span><span class="p">.</span><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ReplicationMode</span><span class="o">::</span><span class="n">QUORUM</span><span class="p">;</span><span class="w"> </span><span class="c1">// majority ACK</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="n">wal_cfg</span><span class="p">.</span><span class="n">max_retries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="c1">// RPC Server</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="n">server</span><span class="p">.</span><span class="n">set_max_payload_size</span><span class="p">(</span><span class="mi">64</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">1024</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">1024</span><span class="p">);</span><span class="w">  </span><span class="c1">// 64MB</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="n">server</span><span class="p">.</span><span class="n">set_max_connections</span><span class="p">(</span><span class="mi">1024</span><span class="p">);</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="n">server</span><span class="p">.</span><span class="n">set_thread_pool_size</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span><span class="w">                   </span><span class="c1">// auto (hardware_concurrency)</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="n">server</span><span class="p">.</span><span class="n">set_drain_timeout_ms</span><span class="p">(</span><span class="mi">30000</span><span class="p">);</span><span class="w">               </span><span class="c1">// 30 seconds</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="c1">// RPC Security</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="n">RpcSecurityConfig</span><span class="w"> </span><span class="n">sec</span><span class="p">;</span>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="n">sec</span><span class="p">.</span><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">;</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="n">sec</span><span class="p">.</span><span class="n">shared_secret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;&lt;cluster-secret&gt;&quot;</span><span class="p">;</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a><span class="c1">// Health Monitor</span>
+<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="n">HealthConfig</span><span class="w"> </span><span class="n">health</span><span class="p">;</span>
+<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="n">health</span><span class="p">.</span><span class="n">consecutive_misses_for_suspect</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+<a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a><span class="n">health</span><span class="p">.</span><span class="n">fatal_on_bind_failure</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">;</span>
+<a id="__codelineno-10-26" name="__codelineno-10-26" href="#__codelineno-10-26"></a><span class="c1">// TCP probe auto-enabled (port 9101)</span>
+</code></pre></div>
+<hr />
+<h2 id="8-test-coverage">8. Test Coverage<a class="headerlink" href="#8-test-coverage" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Test Count</th>
+<th>Key Scenarios</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RPC server resources</td>
+<td>4</td>
+<td>payload limit, connection limit, thread pool concurrency, graceful drain</td>
+</tr>
+<tr>
+<td>Split-brain prevention</td>
+<td>2</td>
+<td>stale epoch tick/WAL rejection (FencingRpc)</td>
+</tr>
+<tr>
+<td>PartitionRouter concurrency</td>
+<td>1</td>
+<td>4 reader + 1 writer concurrent add/remove/route</td>
+</tr>
+<tr>
+<td>ping() pool reuse</td>
+<td>1</td>
+<td>pool_idle_count check after consecutive pings</td>
+</tr>
+<tr>
+<td>GossipNodeRegistry</td>
+<td>1</td>
+<td>atomic running_ concurrent reads</td>
+</tr>
+<tr>
+<td>K8sNodeRegistry deadlock</td>
+<td>1</td>
+<td>no deadlock on registry access within callback</td>
+</tr>
+<tr>
+<td>ClusterNode seed validation</td>
+<td>2</td>
+<td>exception on total seed failure, bootstrap success</td>
+</tr>
+<tr>
+<td>CoordinatorHA</td>
+<td>7</td>
+<td>promote/demote, lease integration, dual promote prevention</td>
+</tr>
+<tr>
+<td>WAL replication</td>
+<td>3</td>
+<td>quorum write, retries, backpressure</td>
+</tr>
+<tr>
+<td>Failover</td>
+<td>2</td>
+<td>auto re-replication, graceful fallback</td>
+</tr>
+</tbody>
+</table>
+<p>Total tests: 803+ passing</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  맨위로
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeptodb/zeptodb" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\ud074\ub9bd\ubcf4\ub4dc\uc5d0 \ubcf5\uc0ac\ub428", "clipboard.copy": "\ud074\ub9bd\ubcf4\ub4dc\ub85c \ubcf5\uc0ac", "search.result.more.one": "\uc774 \ubb38\uc11c\uc5d0\uc11c 1\uac1c\uc758 \uac80\uc0c9 \uacb0\uacfc \ub354 \ubcf4\uae30", "search.result.more.other": "\uc774 \ubb38\uc11c\uc5d0\uc11c #\uac1c\uc758 \uac80\uc0c9 \uacb0\uacfc \ub354 \ubcf4\uae30", "search.result.none": "\uac80\uc0c9\uc5b4\uc640 \uc77c\uce58\ud558\ub294 \ubb38\uc11c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4", "search.result.one": "1\uac1c\uc758 \uc77c\uce58\ud558\ub294 \ubb38\uc11c", "search.result.other": "#\uac1c\uc758 \uc77c\uce58\ud558\ub294 \ubb38\uc11c", "search.result.placeholder": "\uac80\uc0c9\uc5b4\ub97c \uc785\ub825\ud558\uc138\uc694", "search.result.term.missing": "\ud3ec\ud568\ub418\uc9c0 \uc54a\uc740 \uac80\uc0c9\uc5b4", "select.version": "\ubc84\uc804 \uc120\ud0dd"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

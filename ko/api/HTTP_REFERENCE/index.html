@@ -1,0 +1,6698 @@
+
+<!doctype html>
+<html lang="ko" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Ultra-Low Latency In-Memory Database">
+      
+      
+      
+        <link rel="canonical" href="https://zeptodb.github.io/ZeptoDB/ko/api/HTTP_REFERENCE/">
+      
+      
+        <link rel="prev" href="../CPP_REFERENCE/">
+      
+      
+        <link rel="next" href="../SSO_INTEGRATION_GUIDE/">
+      
+      
+        
+          <link rel="alternate" href="../../../api/HTTP_REFERENCE/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="ko">
+        
+      
+      
+      <link rel="icon" href="../../../assets/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>HTTP Reference - ZeptoDB</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#zeptodb-http-api-reference" class="md-skip">
+          콘텐츠로 이동
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="상단/헤더">
+    <a href="../../" title="ZeptoDB" class="md-header__button md-logo" aria-label="ZeptoDB" data-md-component="logo">
+      
+  <img src="../../../assets/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ZeptoDB
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              HTTP Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="언어설정">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="../../../api/HTTP_REFERENCE/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="ko" class="md-select__link">
+              한국어
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="검색" placeholder="검색" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="검색">
+        
+        <button type="reset" class="md-search__icon md-icon" title="지우기" aria-label="지우기" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            검색 초기화
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeptodb/zeptodb" title="저장소로 이동" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeptodb/zeptodb
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="탭" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/QUICK_START/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../SQL_REFERENCE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../design/high_level_architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../deployment/PRODUCTION_DEPLOYMENT/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../feeds/FEED_HANDLER_GUIDE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Feed Handlers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../bench/results_e2e_mvp/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Benchmarks
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../design/architecture_design/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Design Docs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../business/EXECUTIVE_SUMMARY/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Business
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devlog/000_environment_setup/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Development Log
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="네비게이션" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../" title="ZeptoDB" class="md-nav__button md-logo" aria-label="ZeptoDB" data-md-component="logo">
+      
+  <img src="../../../assets/logo.png" alt="logo">
+
+    </a>
+    ZeptoDB
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeptodb/zeptodb" title="저장소로 이동" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeptodb/zeptodb
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/QUICK_START/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/build/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build from Source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/INTERACTIVE_PLAYGROUND/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interactive Playground
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/EXAMPLE_DATASETS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example Datasets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SQL_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PYTHON_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CPP_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="목차">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      목차
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#start-the-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start the server
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-your-first-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run your first query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#common-query-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common query patterns
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#with-authentication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        With authentication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-client-zepto_py" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python client (zepto_py)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sql-query-post" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SQL Query — POST /
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#response-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Format
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Response Format">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#success" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Success
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-row-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-row example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authentication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authentication
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Authentication">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API Key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jwt-hs256-or-rs256" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JWT (HS256 or RS256)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#priority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Priority
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /stats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics-prometheus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /metrics (Prometheus)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="/metrics (Prometheus)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#grafana-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Grafana setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-responses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error Responses
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin API
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin API">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#admin-api-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: API Keys
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: API Keys">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminkeys-list-all-api-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/keys — List all API keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-adminkeys-create-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /admin/keys — Create API key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#patch-adminkeysid-update-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PATCH /admin/keys/:id — Update API key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete-adminkeysid-revoke-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DELETE /admin/keys/:id — Revoke API key
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-auth-jwks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Auth / JWKS
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Auth / JWKS">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#post-adminauthreload-force-refresh-jwks-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /admin/auth/reload — Force refresh JWKS keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sso-oauth2-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SSO / OAuth2 Endpoints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="SSO / OAuth2 Endpoints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-authlogin-redirect-to-idp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /auth/login — Redirect to IdP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-authcallback-oauth2-code-exchange" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /auth/callback — OAuth2 code exchange
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-authsession-create-session-from-bearer-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /auth/session — Create session from Bearer token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-authlogout-destroy-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /auth/logout — Destroy session
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-authrefresh-refresh-oauth2-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /auth/refresh — Refresh OAuth2 token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-authme-current-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /auth/me — Current identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-active-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Active Queries
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Active Queries">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminqueries-list-running-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/queries — List running queries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete-adminqueriesid-kill-a-running-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DELETE /admin/queries/:id — Kill a running query
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-audit-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Audit Log
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Audit Log">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminaudit-recent-audit-events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/audit — Recent audit events
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Sessions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Sessions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminsessions-active-client-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/sessions — Active client sessions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-cluster-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Cluster Nodes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Cluster Nodes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminnodes-list-cluster-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/nodes — List cluster nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-adminnodes-add-remote-node-at-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /admin/nodes — Add remote node at runtime
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete-adminnodesid-remove-node-from-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DELETE /admin/nodes/:id — Remove node from cluster
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-cluster-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Cluster Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Cluster Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-admincluster-cluster-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/cluster — Cluster summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-metrics-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Metrics History
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Metrics History">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminmetricshistory-time-series-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/metrics/history — Time-series metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resource-protection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource Protection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Version
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Version">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminversion-server-version-info" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/version — Server version info
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roles-permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roles &amp; Permissions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Roles &amp; Permissions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#table-level-acl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table-Level ACL
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limiting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate Limiting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SSO_INTEGRATION_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SSO Integration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SECURITY_OPERATIONS_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Operations Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../FLIGHT_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Arrow Flight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONFIG_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/high_level_architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/layer1_storage_memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/layer2_ingestion_network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/layer3_execution_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/layer4_transpiler_client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL & Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/layer5_security_auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/phase_c_distributed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/multinode_stability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/logging_observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Logging & Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/tech_stack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tech Stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/PRODUCTION_DEPLOYMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/MULTI_NODE_CLUSTER/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/BARE_METAL_TUNING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bare Metal Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/CLOUD_PERFORMANCE_TUNING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/PRODUCTION_OPERATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/KUBERNETES_OPERATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kubernetes Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/KUBERNETES_FAILURE_SCENARIOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    K8s Failure Scenarios
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../ops/rolling_upgrade.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rolling Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feed Handlers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Feed Handlers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/FEED_HANDLER_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/FEED_HANDLER_COMPLETE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Complete Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/PERFORMANCE_OPTIMIZATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_e2e_mvp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    E2E MVP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_b/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIMD Phase B
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_b_v2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIMD Phase B v2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_a/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HDB Phase A
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_index_attributes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Index Attributes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/kdb_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    kdb+ Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/multinode_benchmark_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/rdma_efa_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RDMA/EFA
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/eks_multinode_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    EKS Multi-node
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design Docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/architecture_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/feature_performance_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/kdb_replacement_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    kdb+ Replacement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/industry_business_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Industry Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/kafka_consumer_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kafka Consumer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/sql_dml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL DML
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/string_column_plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    String Column
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/client_compatibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Client Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/multinode_usecases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Use Cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/physical_ai_market/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Physical AI Market
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/web_ui_prd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web UI PRD
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Business
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Business
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/EXECUTIVE_SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Executive Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/BUSINESS_STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Business Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/product_positioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product Positioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/competitive_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Competitive Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/industry_gap_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Industry Gap Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Log
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development Log
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/000_environment_setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    000: Environment Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/001_e2e_pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    001: E2E Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/002_simd_jit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    002: SIMD + JIT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/003_optimization_v2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    003: Optimization v2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/004_hdb_tiered_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    004: HDB Tiered Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/005_python_bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    005: Python Bridge
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/006_distributed_cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    006: Distributed Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/007_sql_http_join/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    007: SQL + HTTP + JOIN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/008_equi_join_window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    008: Equi JOIN + Window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/009_groupby_timeindex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    009: GROUP BY + Time Index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/010_financial_functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    010: Financial Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/011_parallel_query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    011: Parallel Query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/012_parquet_s3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    012: Parquet + S3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/013_python_ecosystem/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    013: Python Ecosystem
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/014_sql_phase2_phase3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    014: SQL Phase 2 & 3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/015_bare_metal_tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    015: Bare Metal Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/016_xbar_sortedcan_explain_null/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    016: xbar + Sorted + EXPLAIN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/017_connection_hooks_sorted_index_cli_timer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    017: Connection Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/018_cluster_integrity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    018: Cluster Integrity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/019_distributed_query_correctness/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    019: Distributed Query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/020_data_durability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    020: Data Durability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/021_ddl_schema_management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    021: DDL Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/022_helm_rolling_upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    022: Helm Rolling Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/023_arm_graviton_verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    023: ARM Graviton
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/024_sql_insert/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    024: SQL INSERT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/025_sql_update_delete/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    025: SQL UPDATE/DELETE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/026_tiering_matview_multitenancy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    026: Tiering + MatView
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/027_string_column_support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    027: String Column
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/028_repo_structure_cleanup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    028: Repo Cleanup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/029_http_observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    029: HTTP Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/030_ring_consensus.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    030: Ring Consensus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/031_coordinator_ha_lease.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    031: Coordinator HA
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/032_wal_replicator_reliability.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    032: WAL Replicator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/033_failover_data_recovery.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    033: Failover Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/034_rpc_security.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    034: RPC Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/035_health_monitor_resilience.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    035: Health Monitor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/036_sso_jwks_cli.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    036: SSO JWKS CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/037_p8_cluster_stability.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    037: Cluster Stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/038_arrow_flight_server.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    038: Arrow Flight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/039_query_editor_chart_tabs_multistatement.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    039: Query Editor Charts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/040_getting_started_onboarding.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    040: Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="목차">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      목차
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#start-the-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start the server
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-your-first-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run your first query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#common-query-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common query patterns
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#with-authentication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        With authentication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-client-zepto_py" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python client (zepto_py)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sql-query-post" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SQL Query — POST /
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#response-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Format
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Response Format">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#success" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Success
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-row-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-row example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authentication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authentication
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Authentication">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API Key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jwt-hs256-or-rs256" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JWT (HS256 or RS256)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#priority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Priority
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /stats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics-prometheus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /metrics (Prometheus)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="/metrics (Prometheus)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#grafana-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Grafana setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-responses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error Responses
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin API
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin API">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#admin-api-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: API Keys
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: API Keys">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminkeys-list-all-api-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/keys — List all API keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-adminkeys-create-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /admin/keys — Create API key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#patch-adminkeysid-update-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PATCH /admin/keys/:id — Update API key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete-adminkeysid-revoke-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DELETE /admin/keys/:id — Revoke API key
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-auth-jwks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Auth / JWKS
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Auth / JWKS">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#post-adminauthreload-force-refresh-jwks-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /admin/auth/reload — Force refresh JWKS keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sso-oauth2-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SSO / OAuth2 Endpoints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="SSO / OAuth2 Endpoints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-authlogin-redirect-to-idp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /auth/login — Redirect to IdP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-authcallback-oauth2-code-exchange" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /auth/callback — OAuth2 code exchange
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-authsession-create-session-from-bearer-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /auth/session — Create session from Bearer token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-authlogout-destroy-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /auth/logout — Destroy session
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-authrefresh-refresh-oauth2-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /auth/refresh — Refresh OAuth2 token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-authme-current-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /auth/me — Current identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-active-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Active Queries
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Active Queries">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminqueries-list-running-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/queries — List running queries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete-adminqueriesid-kill-a-running-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DELETE /admin/queries/:id — Kill a running query
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-audit-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Audit Log
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Audit Log">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminaudit-recent-audit-events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/audit — Recent audit events
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Sessions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Sessions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminsessions-active-client-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/sessions — Active client sessions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-cluster-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Cluster Nodes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Cluster Nodes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminnodes-list-cluster-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/nodes — List cluster nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#post-adminnodes-add-remote-node-at-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        POST /admin/nodes — Add remote node at runtime
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete-adminnodesid-remove-node-from-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DELETE /admin/nodes/:id — Remove node from cluster
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-cluster-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Cluster Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Cluster Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-admincluster-cluster-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/cluster — Cluster summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-metrics-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Metrics History
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Metrics History">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminmetricshistory-time-series-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/metrics/history — Time-series metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resource-protection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource Protection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin: Version
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Admin: Version">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get-adminversion-server-version-info" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET /admin/version — Server version info
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roles-permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roles &amp; Permissions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Roles &amp; Permissions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#table-level-acl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table-Level ACL
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limiting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate Limiting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="zeptodb-http-api-reference">ZeptoDB HTTP API Reference<a class="headerlink" href="#zeptodb-http-api-reference" title="Permanent link">&para;</a></h1>
+<p><em>Last updated: 2026-03-25</em></p>
+<p>The HTTP server (port 8123) is <strong>ClickHouse-compatible</strong>. Grafana can connect directly
+using the ClickHouse data source plugin with no modification.</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#endpoints">Endpoints</a></li>
+<li><a href="#sql-query--post-">SQL Query — POST /</a></li>
+<li><a href="#response-format">Response Format</a></li>
+<li><a href="#authentication">Authentication</a></li>
+<li><a href="#stats">/stats</a></li>
+<li><a href="#metrics-prometheus">/metrics (Prometheus)</a></li>
+<li><a href="#error-responses">Error Responses</a></li>
+<li><a href="#admin-api">Admin API</a></li>
+<li><a href="#admin-api-keys">API Keys</a></li>
+<li><a href="#admin-active-queries">Active Queries</a></li>
+<li><a href="#admin-audit-log">Audit Log</a></li>
+<li><a href="#admin-sessions">Sessions</a></li>
+<li><a href="#admin-cluster-nodes">Cluster Nodes</a></li>
+<li><a href="#admin-cluster-overview">Cluster Overview</a></li>
+<li><a href="#admin-metrics-history">Metrics History</a></li>
+<li><a href="#admin-version">Version</a></li>
+<li><a href="#roles--permissions">Roles &amp; Permissions</a></li>
+</ul>
+<blockquote>
+<p>Enterprise security guide: <a href="../SECURITY_OPERATIONS_GUIDE/">Security Operations Guide</a> · <a href="../SSO_INTEGRATION_GUIDE/">SSO Integration Guide</a></p>
+</blockquote>
+<hr />
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<h3 id="start-the-server">Start the server<a class="headerlink" href="#start-the-server" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Build (see README for full build instructions)</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>build<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>ninja<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Start with default settings (port 8123, no auth)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>./zepto_server<span class="w"> </span>--port<span class="w"> </span><span class="m">8123</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Start with TLS + auth enabled</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>./zepto_server<span class="w"> </span>--port<span class="w"> </span><span class="m">8123</span><span class="w"> </span>--tls-cert<span class="w"> </span>server.crt<span class="w"> </span>--tls-key<span class="w"> </span>server.key
+</code></pre></div>
+<h3 id="run-your-first-query">Run your first query<a class="headerlink" href="#run-your-first-query" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Health check</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>curl<span class="w"> </span>http://localhost:8123/ping
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># Ok</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># Simple aggregation (string symbol)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span>-d<span class="w"> </span><span class="s2">&quot;SELECT vwap(price, volume) AS vwap, count(*) AS n FROM trades WHERE symbol = &#39;AAPL&#39;&quot;</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="c1"># {&quot;columns&quot;:[&quot;vwap&quot;,&quot;n&quot;],&quot;data&quot;:[[15037.2,1000]],&quot;rows&quot;:1,&quot;execution_time_us&quot;:52.3}</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># Integer symbol ID also supported</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT vwap(price, volume) AS vwap, count(*) AS n FROM trades WHERE symbol = 1&#39;</span>
+</code></pre></div>
+<h3 id="common-query-patterns">Common query patterns<a class="headerlink" href="#common-query-patterns" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># 5-minute OHLCV bars</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="s1">SELECT xbar(timestamp, 300000000000) AS bar,</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="s1">       first(price) AS open, max(price) AS high,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="s1">       min(price) AS low, last(price) AS close, sum(volume) AS vol</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="s1">FROM trades WHERE symbol = 1</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="s1">GROUP BY xbar(timestamp, 300000000000) ORDER BY bar ASC</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="s1">&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>-m<span class="w"> </span>json.tool
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># Volume by symbol</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT symbol, sum(volume) AS total_vol FROM trades GROUP BY symbol ORDER BY symbol&#39;</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="c1"># Last 10 minutes of trades for symbol 1</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">  </span>-d<span class="w"> </span><span class="s2">&quot;SELECT price, volume, epoch_s(timestamp) AS ts FROM trades</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="s2">      WHERE symbol = 1 AND timestamp &gt; </span><span class="k">$(</span>date<span class="w"> </span>+%s<span class="k">)</span><span class="s2">000000000 - 600000000000</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="s2">      ORDER BY timestamp DESC LIMIT 100&quot;</span>
+</code></pre></div>
+<h3 id="with-authentication">With authentication<a class="headerlink" href="#with-authentication" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Generate and store an API key (admin role, server-side tool)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>./zepto_server<span class="w"> </span>--gen-key<span class="w"> </span>--role<span class="w"> </span>admin
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># zepto_a1b2c3d4e5f6...  (64 hex chars)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># Use the key</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="nb">export</span><span class="w"> </span><span class="nv">APEX_KEY</span><span class="o">=</span><span class="s2">&quot;zepto_a1b2c3d4e5f6...&quot;</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$APEX_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT count(*) FROM trades&#39;</span>
+</code></pre></div>
+<h3 id="python-client-zepto_py">Python client (zepto_py)<a class="headerlink" href="#python-client-zepto_py" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">zepto_py</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">apex</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">db</span> <span class="o">=</span> <span class="n">zeptodb</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span> <span class="mi">8123</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># DataFrame results</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">df</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">query_pandas</span><span class="p">(</span><span class="s2">&quot;SELECT symbol, avg(price) FROM trades GROUP BY symbol&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="nb">print</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+</code></pre></div>
+<hr />
+<h2 id="endpoints">Endpoints<a class="headerlink" href="#endpoints" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th style="text-align: center;">Auth required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST</code></td>
+<td><code>/</code></td>
+<td style="text-align: center;">yes</td>
+<td>Execute SQL query</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/</code></td>
+<td style="text-align: center;">yes</td>
+<td>Execute SQL via <code>?query=</code> param</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/ping</code></td>
+<td style="text-align: center;">no</td>
+<td>Health check — returns <code>"Ok\n"</code></td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/health</code></td>
+<td style="text-align: center;">no</td>
+<td>Kubernetes liveness probe</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/ready</code></td>
+<td style="text-align: center;">no</td>
+<td>Kubernetes readiness probe</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/whoami</code></td>
+<td style="text-align: center;">yes</td>
+<td>Return authenticated role and subject</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/stats</code></td>
+<td style="text-align: center;">yes</td>
+<td>Pipeline statistics (JSON)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/metrics</code></td>
+<td style="text-align: center;">no</td>
+<td>Prometheus OpenMetrics</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/keys</code></td>
+<td style="text-align: center;">admin</td>
+<td>List API keys</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/admin/keys</code></td>
+<td style="text-align: center;">admin</td>
+<td>Create API key</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/admin/keys/:id</code></td>
+<td style="text-align: center;">admin</td>
+<td>Revoke API key</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/queries</code></td>
+<td style="text-align: center;">admin</td>
+<td>List running queries</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/admin/queries/:id</code></td>
+<td style="text-align: center;">admin</td>
+<td>Kill a running query</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/audit</code></td>
+<td style="text-align: center;">admin</td>
+<td>Audit log (last N events)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/sessions</code></td>
+<td style="text-align: center;">admin</td>
+<td>Active client sessions</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/version</code></td>
+<td style="text-align: center;">admin</td>
+<td>Server version info</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/nodes</code></td>
+<td style="text-align: center;">admin</td>
+<td>Cluster node status</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/admin/nodes</code></td>
+<td style="text-align: center;">admin</td>
+<td>Add remote node to cluster</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/admin/nodes/:id</code></td>
+<td style="text-align: center;">admin</td>
+<td>Remove node from cluster</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/cluster</code></td>
+<td style="text-align: center;">admin</td>
+<td>Cluster overview</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/admin/metrics/history</code></td>
+<td style="text-align: center;">admin</td>
+<td>Metrics time-series history</td>
+</tr>
+</tbody>
+</table>
+<p>Public paths (<code>/ping</code>, <code>/health</code>, <code>/ready</code>) are always exempt from authentication.</p>
+<p>Every response includes an <code>X-Request-Id</code> header for tracing (e.g., <code>X-Request-Id: r0001a3</code>).</p>
+<hr />
+<h2 id="sql-query-post">SQL Query — POST /<a class="headerlink" href="#sql-query-post" title="Permanent link">&para;</a></h2>
+<p>Send a SQL string as the request body. Content-Type is not required.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 1&#39;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># GROUP BY query</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT symbol, sum(volume) AS vol FROM trades GROUP BY symbol ORDER BY symbol&#39;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Multi-line SQL (use single quotes or heredoc)</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="s1">SELECT xbar(timestamp, 300000000000) AS bar,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="s1">       first(price) AS open, max(price) AS high,</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="s1">       min(price) AS low,   last(price) AS close,</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="s1">       sum(volume) AS volume</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="s1">FROM trades WHERE symbol = 1</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="s1">GROUP BY xbar(timestamp, 300000000000)</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="s1">ORDER BY bar ASC</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="s1">&#39;</span>
+</code></pre></div>
+<hr />
+<h2 id="response-format">Response Format<a class="headerlink" href="#response-format" title="Permanent link">&para;</a></h2>
+<p>All responses are JSON.</p>
+<h3 id="success">Success<a class="headerlink" href="#success" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">&quot;columns&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;vwap(price, volume)&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;count(*)&quot;</span><span class="p">],</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">&quot;data&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[[</span><span class="mf">15037.2</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">]],</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="nt">&quot;rows&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="nt">&quot;execution_time_us&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">52.3</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>columns</code></td>
+<td><code>string[]</code></td>
+<td>Column names in SELECT order</td>
+</tr>
+<tr>
+<td><code>data</code></td>
+<td><code>int64[][]</code></td>
+<td>Row-major result data. All values are int64.</td>
+</tr>
+<tr>
+<td><code>rows</code></td>
+<td><code>int</code></td>
+<td>Number of result rows</td>
+</tr>
+<tr>
+<td><code>execution_time_us</code></td>
+<td><code>float</code></td>
+<td>Query execution time in microseconds</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Prices and timestamps are int64 in the response. Apply your scale factor client-side (e.g. divide by 100 for cents-to-dollars).</p>
+</blockquote>
+<h3 id="multi-row-example">Multi-row example<a class="headerlink" href="#multi-row-example" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;columns&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;symbol&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;vol&quot;</span><span class="p">],</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;data&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">104500</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">101000</span><span class="p">]],</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;rows&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;execution_time_us&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">88.1</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h2 id="authentication">Authentication<a class="headerlink" href="#authentication" title="Permanent link">&para;</a></h2>
+<p>When <code>APEX_TLS_ENABLED</code> is compiled in, the server requires authentication on all
+non-public paths.</p>
+<h3 id="api-key">API Key<a class="headerlink" href="#api-key" title="Permanent link">&para;</a></h3>
+<p>Format: <code>zepto_</code> followed by 64 hex characters (256-bit entropy).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer zepto_a1b2c3d4...64hexchars&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT count(*) FROM trades&#39;</span>
+</code></pre></div>
+<h3 id="jwt-hs256-or-rs256">JWT (HS256 or RS256)<a class="headerlink" href="#jwt-hs256-or-rs256" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;SELECT count(*) FROM trades&#39;</span>
+</code></pre></div>
+<p>JWT claims used:
+- <code>sub</code> — subject (user identifier)
+- <code>role</code> — APEX role string: <code>admin</code>, <code>writer</code>, <code>reader</code>, <code>analyst</code>, <code>metrics</code>
+- <code>exp</code> — expiration timestamp</p>
+<h3 id="priority">Priority<a class="headerlink" href="#priority" title="Permanent link">&para;</a></h3>
+<p>If the <code>Authorization</code> header starts with <code>ey</code>, JWT validation is tried first.
+If JWT fails, API key validation is attempted as fallback.</p>
+<hr />
+<h2 id="stats">/stats<a class="headerlink" href="#stats" title="Permanent link">&para;</a></h2>
+<p>Returns pipeline operational statistics as JSON.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>curl<span class="w"> </span>http://localhost:8123/stats<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer zepto_...&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="p">{</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="nt">&quot;ticks_ingested&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000000</span><span class="p">,</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span><span class="nt">&quot;ticks_stored&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4999800</span><span class="p">,</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span><span class="nt">&quot;ticks_dropped&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span><span class="p">,</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">  </span><span class="nt">&quot;queries_executed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span><span class="p">,</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">  </span><span class="nt">&quot;total_rows_scanned&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50000000</span><span class="p">,</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">  </span><span class="nt">&quot;partitions_created&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">  </span><span class="nt">&quot;last_ingest_latency_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">181</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ticks_ingested</code></td>
+<td>Total ticks pushed into the ring buffer</td>
+</tr>
+<tr>
+<td><code>ticks_stored</code></td>
+<td>Ticks successfully written to column store</td>
+</tr>
+<tr>
+<td><code>ticks_dropped</code></td>
+<td>Ticks dropped due to ring buffer overflow</td>
+</tr>
+<tr>
+<td><code>queries_executed</code></td>
+<td>Total SQL queries executed</td>
+</tr>
+<tr>
+<td><code>total_rows_scanned</code></td>
+<td>Cumulative rows scanned across all queries</td>
+</tr>
+<tr>
+<td><code>partitions_created</code></td>
+<td>Number of partitions allocated</td>
+</tr>
+<tr>
+<td><code>last_ingest_latency_ns</code></td>
+<td>Latency of the most recent ingest (nanoseconds)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="metrics-prometheus">/metrics (Prometheus)<a class="headerlink" href="#metrics-prometheus" title="Permanent link">&para;</a></h2>
+<p>Returns OpenMetrics-format text for Prometheus scraping.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>curl<span class="w"> </span>http://localhost:8123/metrics
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a># HELP zepto_ticks_ingested_total Total ticks ingested
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a># TYPE zepto_ticks_ingested_total counter
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>zepto_ticks_ingested_total 5000000
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a># HELP zepto_ticks_stored_total Total ticks stored to column store
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a># TYPE zepto_ticks_stored_total counter
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>zepto_ticks_stored_total 4999800
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a># HELP zepto_ticks_dropped_total Total ticks dropped (queue overflow)
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a># TYPE zepto_ticks_dropped_total counter
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>zepto_ticks_dropped_total 200
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a>
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a># HELP zepto_queries_executed_total Total SQL queries executed
+<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a># TYPE zepto_queries_executed_total counter
+<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a>zepto_queries_executed_total 12345
+<a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a>
+<a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a># HELP zepto_rows_scanned_total Total rows scanned
+<a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a># TYPE zepto_rows_scanned_total counter
+<a id="__codelineno-15-19" name="__codelineno-15-19" href="#__codelineno-15-19"></a>zepto_rows_scanned_total 50000000
+<a id="__codelineno-15-20" name="__codelineno-15-20" href="#__codelineno-15-20"></a>
+<a id="__codelineno-15-21" name="__codelineno-15-21" href="#__codelineno-15-21"></a># HELP zepto_partitions_total Total partitions created
+<a id="__codelineno-15-22" name="__codelineno-15-22" href="#__codelineno-15-22"></a># TYPE zepto_partitions_total gauge
+<a id="__codelineno-15-23" name="__codelineno-15-23" href="#__codelineno-15-23"></a>zepto_partitions_total 10
+<a id="__codelineno-15-24" name="__codelineno-15-24" href="#__codelineno-15-24"></a>
+<a id="__codelineno-15-25" name="__codelineno-15-25" href="#__codelineno-15-25"></a># HELP zepto_last_ingest_latency_ns Last ingest latency in nanoseconds
+<a id="__codelineno-15-26" name="__codelineno-15-26" href="#__codelineno-15-26"></a># TYPE zepto_last_ingest_latency_ns gauge
+<a id="__codelineno-15-27" name="__codelineno-15-27" href="#__codelineno-15-27"></a>zepto_last_ingest_latency_ns 181
+</code></pre></div>
+<h3 id="grafana-setup">Grafana setup<a class="headerlink" href="#grafana-setup" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Add a ClickHouse data source in Grafana</li>
+<li>Host: <code>localhost</code>, Port: <code>8123</code></li>
+<li>Protocol: HTTP (or HTTPS with TLS)</li>
+<li>No database required — APEX uses <code>trades</code> and <code>quotes</code> table names directly in SQL</li>
+</ol>
+<hr />
+<h2 id="error-responses">Error Responses<a class="headerlink" href="#error-responses" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="p">{</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span><span class="nt">&quot;columns&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">  </span><span class="nt">&quot;data&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">  </span><span class="nt">&quot;rows&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span><span class="nt">&quot;execution_time_us&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">  </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Parse error: unexpected token &#39;FORM&#39; at position 7&quot;</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="p">}</span>
+</code></pre></div>
+<p>Common error strings:</p>
+<table>
+<thead>
+<tr>
+<th>Error</th>
+<th>Cause</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"Parse error: ..."</code></td>
+<td>SQL syntax error</td>
+</tr>
+<tr>
+<td><code>"Unknown table: foo"</code></td>
+<td>Table not found</td>
+</tr>
+<tr>
+<td><code>"Query cancelled"</code></td>
+<td>Cancelled via CancellationToken</td>
+</tr>
+<tr>
+<td><code>"Unauthorized"</code></td>
+<td>Missing or invalid credentials</td>
+</tr>
+<tr>
+<td><code>"Forbidden"</code></td>
+<td>Valid credentials but insufficient role</td>
+</tr>
+</tbody>
+</table>
+<p>HTTP status codes: <code>200</code> on success (even for SQL errors — check <code>error</code> field), <code>401</code> for auth failure, <code>403</code> for permission denied, <code>408</code> for query timeout/cancelled.</p>
+<hr />
+<h2 id="admin-api">Admin API<a class="headerlink" href="#admin-api" title="Permanent link">&para;</a></h2>
+<p>All admin endpoints require the <code>admin</code> role. Returns <code>401</code> without credentials, <code>403</code> with non-admin credentials.</p>
+<h3 id="admin-api-keys">Admin: API Keys<a class="headerlink" href="#admin-api-keys" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminkeys-list-all-api-keys"><code>GET /admin/keys</code> — List all API keys<a class="headerlink" href="#get-adminkeys-list-all-api-keys" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>curl<span class="w"> </span>http://localhost:8123/admin/keys<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="p">[</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="w">  </span><span class="p">{</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="w">    </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ak_7f3k8a2b&quot;</span><span class="p">,</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="w">    </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;trading-desk-1&quot;</span><span class="p">,</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="w">    </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;writer&quot;</span><span class="p">,</span>
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="w">    </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="w">    </span><span class="nt">&quot;created_at_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234567000000000</span><span class="p">,</span>
+<a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a><span class="w">    </span><span class="nt">&quot;last_used_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234590000000000</span><span class="p">,</span>
+<a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a><span class="w">    </span><span class="nt">&quot;expires_at_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a><span class="w">    </span><span class="nt">&quot;tenant_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;hft_desk_1&quot;</span><span class="p">,</span>
+<a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a><span class="w">    </span><span class="nt">&quot;allowed_symbols&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;AAPL&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;MSFT&quot;</span><span class="p">],</span>
+<a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a><span class="w">    </span><span class="nt">&quot;allowed_tables&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;trades&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;quotes&quot;</span><span class="p">]</span>
+<a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a><span class="p">]</span>
+</code></pre></div>
+<h4 id="post-adminkeys-create-api-key"><code>POST /admin/keys</code> — Create API key<a class="headerlink" href="#post-adminkeys-create-api-key" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/admin/keys<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;name&quot;:&quot;algo-service&quot;,&quot;role&quot;:&quot;writer&quot;,&quot;symbols&quot;:[&quot;AAPL&quot;],&quot;tables&quot;:[&quot;trades&quot;],&quot;tenant_id&quot;:&quot;desk_1&quot;,&quot;expires_at_ns&quot;:1743465600000000000}&#39;</span>
+</code></pre></div>
+<p>All fields except <code>name</code> are optional:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>Human-readable label</td>
+</tr>
+<tr>
+<td><code>role</code></td>
+<td>string</td>
+<td><code>"reader"</code></td>
+<td><code>admin</code> / <code>writer</code> / <code>reader</code> / <code>analyst</code> / <code>metrics</code></td>
+</tr>
+<tr>
+<td><code>symbols</code></td>
+<td>string[]</td>
+<td><code>[]</code></td>
+<td>Symbol whitelist (empty = unrestricted)</td>
+</tr>
+<tr>
+<td><code>tables</code></td>
+<td>string[]</td>
+<td><code>[]</code></td>
+<td>Table whitelist (empty = unrestricted)</td>
+</tr>
+<tr>
+<td><code>tenant_id</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Bind key to a tenant</td>
+</tr>
+<tr>
+<td><code>expires_at_ns</code></td>
+<td>int64</td>
+<td><code>0</code></td>
+<td>Expiry timestamp in nanoseconds (0 = never)</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;zepto_a1b2c3d4e5f6...&quot;</span><span class="p">}</span>
+</code></pre></div>
+<p>The full key is shown exactly once. Store it securely.</p>
+<h4 id="patch-adminkeysid-update-api-key"><code>PATCH /admin/keys/:id</code> — Update API key<a class="headerlink" href="#patch-adminkeysid-update-api-key" title="Permanent link">&para;</a></h4>
+<p>Update mutable fields of an existing key. Only provided fields are modified.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>PATCH<span class="w"> </span>http://localhost:8123/admin/keys/ak_7f3k8a2b<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;symbols&quot;:[&quot;AAPL&quot;,&quot;GOOG&quot;],&quot;enabled&quot;:true,&quot;tenant_id&quot;:&quot;desk_2&quot;,&quot;expires_at_ns&quot;:0}&#39;</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>symbols</code></td>
+<td>string[]</td>
+<td>Replace symbol whitelist</td>
+</tr>
+<tr>
+<td><code>tables</code></td>
+<td>string[]</td>
+<td>Replace table whitelist</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td>bool</td>
+<td>Enable/disable key</td>
+</tr>
+<tr>
+<td><code>tenant_id</code></td>
+<td>string</td>
+<td>Change tenant binding</td>
+</tr>
+<tr>
+<td><code>expires_at_ns</code></td>
+<td>int64</td>
+<td>Change expiry (0 = never)</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="p">{</span><span class="nt">&quot;updated&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
+</code></pre></div>
+<h4 id="delete-adminkeysid-revoke-api-key"><code>DELETE /admin/keys/:id</code> — Revoke API key<a class="headerlink" href="#delete-adminkeysid-revoke-api-key" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>DELETE<span class="w"> </span>http://localhost:8123/admin/keys/ak_7f3k8a2b<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="p">{</span><span class="nt">&quot;revoked&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h3 id="admin-auth-jwks">Admin: Auth / JWKS<a class="headerlink" href="#admin-auth-jwks" title="Permanent link">&para;</a></h3>
+<h4 id="post-adminauthreload-force-refresh-jwks-keys"><code>POST /admin/auth/reload</code> — Force refresh JWKS keys<a class="headerlink" href="#post-adminauthreload-force-refresh-jwks-keys" title="Permanent link">&para;</a></h4>
+<p>Triggers an immediate re-fetch of the JWKS endpoint. Useful after IdP key rotation.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/admin/auth/reload<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="p">{</span><span class="nt">&quot;refreshed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;keys_loaded&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">}</span>
+</code></pre></div>
+<p>Returns <code>502</code> if no JWKS URL is configured or the fetch fails.</p>
+<hr />
+<h3 id="sso-oauth2-endpoints">SSO / OAuth2 Endpoints<a class="headerlink" href="#sso-oauth2-endpoints" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>Full guide: <a href="../SSO_INTEGRATION_GUIDE/">SSO Integration Guide</a></p>
+</blockquote>
+<h4 id="get-authlogin-redirect-to-idp"><code>GET /auth/login</code> — Redirect to IdP<a class="headerlink" href="#get-authlogin-redirect-to-idp" title="Permanent link">&para;</a></h4>
+<p>Redirects the browser to the configured OIDC authorization endpoint. No authentication required.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>GET /auth/login → 302 https://idp.example.com/authorize?response_type=code&amp;client_id=...
+</code></pre></div>
+<p>Returns <code>503</code> if OIDC is not configured.</p>
+<h4 id="get-authcallback-oauth2-code-exchange"><code>GET /auth/callback</code> — OAuth2 code exchange<a class="headerlink" href="#get-authcallback-oauth2-code-exchange" title="Permanent link">&para;</a></h4>
+<p>Handles the IdP redirect after user authentication. Exchanges the authorization code for tokens, resolves identity, creates a server-side session, and redirects to <code>/query</code>.</p>
+<p>Query params: <code>code</code> (required), <code>state</code> (optional)</p>
+<p>Returns <code>502</code> if token exchange fails, <code>401</code> if identity resolution fails.</p>
+<h4 id="post-authsession-create-session-from-bearer-token"><code>POST /auth/session</code> — Create session from Bearer token<a class="headerlink" href="#post-authsession-create-session-from-bearer-token" title="Permanent link">&para;</a></h4>
+<p>Creates a server-side session from an existing Bearer token (API key or JWT). Returns a <code>Set-Cookie</code> header.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/auth/session<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="p">{</span><span class="nt">&quot;session&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;writer&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;subject&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user@example.com&quot;</span><span class="p">}</span>
+</code></pre></div>
+<h4 id="post-authlogout-destroy-session"><code>POST /auth/logout</code> — Destroy session<a class="headerlink" href="#post-authlogout-destroy-session" title="Permanent link">&para;</a></h4>
+<p>Destroys the server-side session and clears the cookie. No authentication required.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/auth/logout<span class="w"> </span>-b<span class="w"> </span><span class="s2">&quot;zepto_sid=SESSION_ID&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="p">{</span><span class="nt">&quot;ok&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
+</code></pre></div>
+<h4 id="post-authrefresh-refresh-oauth2-token"><code>POST /auth/refresh</code> — Refresh OAuth2 token<a class="headerlink" href="#post-authrefresh-refresh-oauth2-token" title="Permanent link">&para;</a></h4>
+<p>Refreshes the OAuth2 access token using the stored refresh token. Requires a valid session cookie.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/auth/refresh<span class="w"> </span>-b<span class="w"> </span><span class="s2">&quot;zepto_sid=SESSION_ID&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a><span class="p">{</span><span class="nt">&quot;refreshed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;expires_in&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3600</span><span class="p">}</span>
+</code></pre></div>
+<p>Returns <code>401</code> if the session is invalid or refresh fails.</p>
+<h4 id="get-authme-current-identity"><code>GET /auth/me</code> — Current identity<a class="headerlink" href="#get-authme-current-identity" title="Permanent link">&para;</a></h4>
+<p>Returns the authenticated identity from session cookie or Bearer token.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>curl<span class="w"> </span>http://localhost:8123/auth/me<span class="w"> </span>-b<span class="w"> </span><span class="s2">&quot;zepto_sid=SESSION_ID&quot;</span>
+<a id="__codelineno-34-2" name="__codelineno-34-2" href="#__codelineno-34-2"></a><span class="c1"># or</span>
+<a id="__codelineno-34-3" name="__codelineno-34-3" href="#__codelineno-34-3"></a>curl<span class="w"> </span>http://localhost:8123/auth/me<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a><span class="p">{</span><span class="nt">&quot;subject&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user@example.com&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;writer&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sso:okta-prod&quot;</span><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h3 id="admin-active-queries">Admin: Active Queries<a class="headerlink" href="#admin-active-queries" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminqueries-list-running-queries"><code>GET /admin/queries</code> — List running queries<a class="headerlink" href="#get-adminqueries-list-running-queries" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>curl<span class="w"> </span>http://localhost:8123/admin/queries<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a><span class="p">[</span>
+<a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a><span class="w">  </span><span class="p">{</span>
+<a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a><span class="w">    </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;q_a1b2c3&quot;</span><span class="p">,</span>
+<a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a><span class="w">    </span><span class="nt">&quot;subject&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ak_7f3k8a2b&quot;</span><span class="p">,</span>
+<a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a><span class="w">    </span><span class="nt">&quot;sql&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SELECT * FROM trades WHERE...&quot;</span><span class="p">,</span>
+<a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a><span class="w">    </span><span class="nt">&quot;started_at_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234567000000000</span>
+<a id="__codelineno-37-7" name="__codelineno-37-7" href="#__codelineno-37-7"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a><span class="p">]</span>
+</code></pre></div>
+<h4 id="delete-adminqueriesid-kill-a-running-query"><code>DELETE /admin/queries/:id</code> — Kill a running query<a class="headerlink" href="#delete-adminqueriesid-kill-a-running-query" title="Permanent link">&para;</a></h4>
+<p>Cancels the query at the next partition scan boundary via <code>CancellationToken</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>DELETE<span class="w"> </span>http://localhost:8123/admin/queries/q_a1b2c3<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="p">{</span><span class="nt">&quot;cancelled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h3 id="admin-audit-log">Admin: Audit Log<a class="headerlink" href="#admin-audit-log" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminaudit-recent-audit-events"><code>GET /admin/audit</code> — Recent audit events<a class="headerlink" href="#get-adminaudit-recent-audit-events" title="Permanent link">&para;</a></h4>
+<p>Query parameter: <code>?n=&lt;count&gt;</code> (default: 100).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8123/admin/audit?n=50&quot;</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a><span class="p">[</span>
+<a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a><span class="w">  </span><span class="p">{</span>
+<a id="__codelineno-41-3" name="__codelineno-41-3" href="#__codelineno-41-3"></a><span class="w">    </span><span class="nt">&quot;ts&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234567000000000</span><span class="p">,</span>
+<a id="__codelineno-41-4" name="__codelineno-41-4" href="#__codelineno-41-4"></a><span class="w">    </span><span class="nt">&quot;subject&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ak_7f3k8a2b&quot;</span><span class="p">,</span>
+<a id="__codelineno-41-5" name="__codelineno-41-5" href="#__codelineno-41-5"></a><span class="w">    </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;writer&quot;</span><span class="p">,</span>
+<a id="__codelineno-41-6" name="__codelineno-41-6" href="#__codelineno-41-6"></a><span class="w">    </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;query&quot;</span><span class="p">,</span>
+<a id="__codelineno-41-7" name="__codelineno-41-7" href="#__codelineno-41-7"></a><span class="w">    </span><span class="nt">&quot;detail&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SELECT count(*) FROM trades&quot;</span><span class="p">,</span>
+<a id="__codelineno-41-8" name="__codelineno-41-8" href="#__codelineno-41-8"></a><span class="w">    </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;10.0.1.5&quot;</span>
+<a id="__codelineno-41-9" name="__codelineno-41-9" href="#__codelineno-41-9"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-41-10" name="__codelineno-41-10" href="#__codelineno-41-10"></a><span class="p">]</span>
+</code></pre></div>
+<hr />
+<h3 id="admin-sessions">Admin: Sessions<a class="headerlink" href="#admin-sessions" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminsessions-active-client-sessions"><code>GET /admin/sessions</code> — Active client sessions<a class="headerlink" href="#get-adminsessions-active-client-sessions" title="Permanent link">&para;</a></h4>
+<p>Lists connected clients (equivalent to kdb+ <code>.z.po</code>).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>curl<span class="w"> </span>http://localhost:8123/admin/sessions<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a><span class="p">[</span>
+<a id="__codelineno-43-2" name="__codelineno-43-2" href="#__codelineno-43-2"></a><span class="w">  </span><span class="p">{</span>
+<a id="__codelineno-43-3" name="__codelineno-43-3" href="#__codelineno-43-3"></a><span class="w">    </span><span class="nt">&quot;remote_addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;10.0.1.5&quot;</span><span class="p">,</span>
+<a id="__codelineno-43-4" name="__codelineno-43-4" href="#__codelineno-43-4"></a><span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ak_7f3k8a2b&quot;</span><span class="p">,</span>
+<a id="__codelineno-43-5" name="__codelineno-43-5" href="#__codelineno-43-5"></a><span class="w">    </span><span class="nt">&quot;connected_at_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234567000000000</span><span class="p">,</span>
+<a id="__codelineno-43-6" name="__codelineno-43-6" href="#__codelineno-43-6"></a><span class="w">    </span><span class="nt">&quot;last_active_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234590000000000</span><span class="p">,</span>
+<a id="__codelineno-43-7" name="__codelineno-43-7" href="#__codelineno-43-7"></a><span class="w">    </span><span class="nt">&quot;query_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span>
+<a id="__codelineno-43-8" name="__codelineno-43-8" href="#__codelineno-43-8"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-43-9" name="__codelineno-43-9" href="#__codelineno-43-9"></a><span class="p">]</span>
+</code></pre></div>
+<hr />
+<h3 id="admin-cluster-nodes">Admin: Cluster Nodes<a class="headerlink" href="#admin-cluster-nodes" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminnodes-list-cluster-nodes"><code>GET /admin/nodes</code> — List cluster nodes<a class="headerlink" href="#get-adminnodes-list-cluster-nodes" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>curl<span class="w"> </span>http://localhost:8123/admin/nodes<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a><span class="p">{</span>
+<a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a><span class="w">  </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a><span class="w">    </span><span class="p">{</span>
+<a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a><span class="w">      </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a><span class="w">      </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;10.0.1.1&quot;</span><span class="p">,</span>
+<a id="__codelineno-45-6" name="__codelineno-45-6" href="#__codelineno-45-6"></a><span class="w">      </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8123</span><span class="p">,</span>
+<a id="__codelineno-45-7" name="__codelineno-45-7" href="#__codelineno-45-7"></a><span class="w">      </span><span class="nt">&quot;state&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ACTIVE&quot;</span><span class="p">,</span>
+<a id="__codelineno-45-8" name="__codelineno-45-8" href="#__codelineno-45-8"></a><span class="w">      </span><span class="nt">&quot;ticks_ingested&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000000</span><span class="p">,</span>
+<a id="__codelineno-45-9" name="__codelineno-45-9" href="#__codelineno-45-9"></a><span class="w">      </span><span class="nt">&quot;ticks_stored&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4999800</span><span class="p">,</span>
+<a id="__codelineno-45-10" name="__codelineno-45-10" href="#__codelineno-45-10"></a><span class="w">      </span><span class="nt">&quot;queries_executed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span>
+<a id="__codelineno-45-11" name="__codelineno-45-11" href="#__codelineno-45-11"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-45-12" name="__codelineno-45-12" href="#__codelineno-45-12"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-45-13" name="__codelineno-45-13" href="#__codelineno-45-13"></a><span class="p">}</span>
+</code></pre></div>
+<p>Node states: <code>ACTIVE</code>, <code>SUSPECT</code>, <code>DEAD</code>, <code>JOINING</code>, <code>LEAVING</code>.</p>
+<h4 id="post-adminnodes-add-remote-node-at-runtime"><code>POST /admin/nodes</code> — Add remote node at runtime<a class="headerlink" href="#post-adminnodes-add-remote-node-at-runtime" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8123/admin/nodes<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-46-3" name="__codelineno-46-3" href="#__codelineno-46-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;id&quot;:4,&quot;host&quot;:&quot;10.0.1.4&quot;,&quot;port&quot;:8123}&#39;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a><span class="p">{</span><span class="nt">&quot;added&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;10.0.1.4&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8123</span><span class="p">}</span>
+</code></pre></div>
+<p>Requires cluster mode (<code>set_coordinator()</code> must be called). Idempotent — adding an existing node ID is a no-op.</p>
+<h4 id="delete-adminnodesid-remove-node-from-cluster"><code>DELETE /admin/nodes/:id</code> — Remove node from cluster<a class="headerlink" href="#delete-adminnodesid-remove-node-from-cluster" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>DELETE<span class="w"> </span>http://localhost:8123/admin/nodes/4<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a><span class="p">{</span><span class="nt">&quot;removed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">}</span>
+</code></pre></div>
+<p>The node is removed from the routing table immediately. Safe to call for non-existent IDs.</p>
+<hr />
+<h3 id="admin-cluster-overview">Admin: Cluster Overview<a class="headerlink" href="#admin-cluster-overview" title="Permanent link">&para;</a></h3>
+<h4 id="get-admincluster-cluster-summary"><code>GET /admin/cluster</code> — Cluster summary<a class="headerlink" href="#get-admincluster-cluster-summary" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>curl<span class="w"> </span>http://localhost:8123/admin/cluster<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a><span class="p">{</span>
+<a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a><span class="w">  </span><span class="nt">&quot;mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;standalone&quot;</span><span class="p">,</span>
+<a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a><span class="w">  </span><span class="nt">&quot;node_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a><span class="w">  </span><span class="nt">&quot;partitions_created&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<a id="__codelineno-51-5" name="__codelineno-51-5" href="#__codelineno-51-5"></a><span class="w">  </span><span class="nt">&quot;partitions_evicted&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-51-6" name="__codelineno-51-6" href="#__codelineno-51-6"></a><span class="w">  </span><span class="nt">&quot;ticks_ingested&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000000</span><span class="p">,</span>
+<a id="__codelineno-51-7" name="__codelineno-51-7" href="#__codelineno-51-7"></a><span class="w">  </span><span class="nt">&quot;ticks_stored&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4999800</span><span class="p">,</span>
+<a id="__codelineno-51-8" name="__codelineno-51-8" href="#__codelineno-51-8"></a><span class="w">  </span><span class="nt">&quot;ticks_dropped&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span><span class="p">,</span>
+<a id="__codelineno-51-9" name="__codelineno-51-9" href="#__codelineno-51-9"></a><span class="w">  </span><span class="nt">&quot;queries_executed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span><span class="p">,</span>
+<a id="__codelineno-51-10" name="__codelineno-51-10" href="#__codelineno-51-10"></a><span class="w">  </span><span class="nt">&quot;total_rows_scanned&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50000000</span><span class="p">,</span>
+<a id="__codelineno-51-11" name="__codelineno-51-11" href="#__codelineno-51-11"></a><span class="w">  </span><span class="nt">&quot;last_ingest_latency_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">181</span>
+<a id="__codelineno-51-12" name="__codelineno-51-12" href="#__codelineno-51-12"></a><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h3 id="admin-metrics-history">Admin: Metrics History<a class="headerlink" href="#admin-metrics-history" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminmetricshistory-time-series-metrics"><code>GET /admin/metrics/history</code> — Time-series metrics<a class="headerlink" href="#get-adminmetricshistory-time-series-metrics" title="Permanent link">&para;</a></h4>
+<p>Returns time-series metrics snapshots captured by the server's internal <code>MetricsCollector</code> (3-second interval, 1-hour ring buffer). No external infrastructure required — ZeptoDB monitors itself.</p>
+<h3 id="resource-protection">Resource Protection<a class="headerlink" href="#resource-protection" title="Permanent link">&para;</a></h3>
+<p>The metrics collector is designed to never impact the main trading workload:</p>
+<table>
+<thead>
+<tr>
+<th>Protection</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Memory hard limit</td>
+<td>256 KB default (<code>max_memory_bytes</code>), ~3500 snapshots max</td>
+</tr>
+<tr>
+<td>Fixed circular buffer</td>
+<td>O(1) write, zero allocation after init, no <code>erase()</code></td>
+</tr>
+<tr>
+<td>Lock-free capture</td>
+<td>Atomic write index, <code>memory_order_relaxed</code> reads of stats</td>
+</tr>
+<tr>
+<td>SCHED_IDLE thread</td>
+<td>Linux: only runs when no other thread wants CPU</td>
+</tr>
+<tr>
+<td>Response limit</td>
+<td>Max 600 snapshots per API response (30 min at 3s interval)</td>
+</tr>
+<tr>
+<td>Client-side bound</td>
+<td>Web UI requests <code>?since=&lt;30min_ago&gt;&amp;limit=600</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a><span class="c1"># All history (capped by response_limit=600)</span>
+<a id="__codelineno-52-2" name="__codelineno-52-2" href="#__codelineno-52-2"></a>curl<span class="w"> </span>http://localhost:8123/admin/metrics/history<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-52-3" name="__codelineno-52-3" href="#__codelineno-52-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+<a id="__codelineno-52-4" name="__codelineno-52-4" href="#__codelineno-52-4"></a>
+<a id="__codelineno-52-5" name="__codelineno-52-5" href="#__codelineno-52-5"></a><span class="c1"># Since a specific epoch-ms, with explicit limit</span>
+<a id="__codelineno-52-6" name="__codelineno-52-6" href="#__codelineno-52-6"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8123/admin/metrics/history?since=1711234567000&amp;limit=100&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-52-7" name="__codelineno-52-7" href="#__codelineno-52-7"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a><span class="p">[</span>
+<a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a><span class="w">  </span><span class="p">{</span>
+<a id="__codelineno-53-3" name="__codelineno-53-3" href="#__codelineno-53-3"></a><span class="w">    </span><span class="nt">&quot;timestamp_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1711234567000</span><span class="p">,</span>
+<a id="__codelineno-53-4" name="__codelineno-53-4" href="#__codelineno-53-4"></a><span class="w">    </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-53-5" name="__codelineno-53-5" href="#__codelineno-53-5"></a><span class="w">    </span><span class="nt">&quot;ticks_ingested&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000000</span><span class="p">,</span>
+<a id="__codelineno-53-6" name="__codelineno-53-6" href="#__codelineno-53-6"></a><span class="w">    </span><span class="nt">&quot;ticks_stored&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4999800</span><span class="p">,</span>
+<a id="__codelineno-53-7" name="__codelineno-53-7" href="#__codelineno-53-7"></a><span class="w">    </span><span class="nt">&quot;ticks_dropped&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span><span class="p">,</span>
+<a id="__codelineno-53-8" name="__codelineno-53-8" href="#__codelineno-53-8"></a><span class="w">    </span><span class="nt">&quot;queries_executed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span><span class="p">,</span>
+<a id="__codelineno-53-9" name="__codelineno-53-9" href="#__codelineno-53-9"></a><span class="w">    </span><span class="nt">&quot;total_rows_scanned&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50000000</span><span class="p">,</span>
+<a id="__codelineno-53-10" name="__codelineno-53-10" href="#__codelineno-53-10"></a><span class="w">    </span><span class="nt">&quot;partitions_created&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<a id="__codelineno-53-11" name="__codelineno-53-11" href="#__codelineno-53-11"></a><span class="w">    </span><span class="nt">&quot;last_ingest_latency_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">181</span>
+<a id="__codelineno-53-12" name="__codelineno-53-12" href="#__codelineno-53-12"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-53-13" name="__codelineno-53-13" href="#__codelineno-53-13"></a><span class="p">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>timestamp_ms</code></td>
+<td><code>int64</code></td>
+<td>Epoch milliseconds when snapshot was taken</td>
+</tr>
+<tr>
+<td><code>node_id</code></td>
+<td><code>uint16</code></td>
+<td>Node identifier (0 for standalone)</td>
+</tr>
+<tr>
+<td><code>ticks_ingested</code></td>
+<td><code>uint64</code></td>
+<td>Cumulative ticks ingested at snapshot time</td>
+</tr>
+<tr>
+<td><code>ticks_stored</code></td>
+<td><code>uint64</code></td>
+<td>Cumulative ticks stored</td>
+</tr>
+<tr>
+<td><code>ticks_dropped</code></td>
+<td><code>uint64</code></td>
+<td>Cumulative ticks dropped</td>
+</tr>
+<tr>
+<td><code>queries_executed</code></td>
+<td><code>uint64</code></td>
+<td>Cumulative queries executed</td>
+</tr>
+<tr>
+<td><code>total_rows_scanned</code></td>
+<td><code>uint64</code></td>
+<td>Cumulative rows scanned</td>
+</tr>
+<tr>
+<td><code>partitions_created</code></td>
+<td><code>uint64</code></td>
+<td>Cumulative partitions created</td>
+</tr>
+<tr>
+<td><code>last_ingest_latency_ns</code></td>
+<td><code>int64</code></td>
+<td>Most recent ingest latency (ns)</td>
+</tr>
+</tbody>
+</table>
+<p>Query parameter: <code>?since=&lt;epoch_ms&gt;</code> — returns only snapshots with <code>timestamp_ms &gt;= since</code>.
+Query parameter: <code>?limit=&lt;N&gt;</code> — max snapshots to return (default: 600).</p>
+<hr />
+<h3 id="admin-version">Admin: Version<a class="headerlink" href="#admin-version" title="Permanent link">&para;</a></h3>
+<h4 id="get-adminversion-server-version-info"><code>GET /admin/version</code> — Server version info<a class="headerlink" href="#get-adminversion-server-version-info" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>curl<span class="w"> </span>http://localhost:8123/admin/version<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a><span class="p">{</span><span class="nt">&quot;engine&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ZeptoDB&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.1.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;build&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Mar 25 2026&quot;</span><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h2 id="roles-permissions">Roles &amp; Permissions<a class="headerlink" href="#roles-permissions" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th style="text-align: center;">Query</th>
+<th style="text-align: center;">Ingest</th>
+<th style="text-align: center;">Stats</th>
+<th style="text-align: center;">Metrics</th>
+<th style="text-align: center;">Admin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>admin</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><code>writer</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td><code>reader</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td><code>analyst</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td><code>metrics</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+</tr>
+</tbody>
+</table>
+<h3 id="table-level-acl">Table-Level ACL<a class="headerlink" href="#table-level-acl" title="Permanent link">&para;</a></h3>
+<p>API keys can be restricted to specific tables. When <code>allowed_tables</code> is set,
+queries against any other table return <code>403 Forbidden</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a><span class="c1"># Create a key restricted to trades and quotes tables only</span>
+<a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>https://zepto:8443/admin/keys<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-56-3" name="__codelineno-56-3" href="#__codelineno-56-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ADMIN_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-56-4" name="__codelineno-56-4" href="#__codelineno-56-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;name&quot;:&quot;desk-1&quot;,&quot;role&quot;:&quot;reader&quot;,&quot;tables&quot;:[&quot;trades&quot;,&quot;quotes&quot;]}&#39;</span>
+<a id="__codelineno-56-5" name="__codelineno-56-5" href="#__codelineno-56-5"></a>
+<a id="__codelineno-56-6" name="__codelineno-56-6" href="#__codelineno-56-6"></a><span class="c1"># This key can query trades and quotes, but not risk_positions</span>
+</code></pre></div>
+<p>When <code>allowed_tables</code> is empty (default), the key has access to all tables.
+Table ACL is enforced at the HTTP layer before SQL execution — the SQL parser
+extracts the target table from the query and checks it against the key's whitelist.</p>
+<table>
+<thead>
+<tr>
+<th>ACL Type</th>
+<th>Scope</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Symbol ACL</td>
+<td>Row-level filter by symbol</td>
+<td><code>allowed_symbols: ["AAPL","GOOGL"]</code></td>
+</tr>
+<tr>
+<td>Table ACL</td>
+<td>Table-level access control</td>
+<td><code>allowed_tables: ["trades","quotes"]</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both can be combined: a key with <code>allowed_tables: ["trades"]</code> and
+<code>allowed_symbols: ["AAPL"]</code> can only query AAPL data from the trades table.</p>
+<hr />
+<h2 id="rate-limiting">Rate Limiting<a class="headerlink" href="#rate-limiting" title="Permanent link">&para;</a></h2>
+<p>When rate limiting is enabled, requests that exceed the configured threshold return:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>HTTP 403 Forbidden
+<a id="__codelineno-57-2" name="__codelineno-57-2" href="#__codelineno-57-2"></a>{&quot;error&quot;: &quot;Rate limit exceeded&quot;}
+</code></pre></div>
+<p>Rate limits are applied per-identity (API key ID or JWT <code>sub</code>) and per-IP. Both checks must pass.</p>
+<p>See <a href="../SECURITY_OPERATIONS_GUIDE/#rate-limiting">Security Operations Guide — Rate Limiting</a> for configuration details.</p>
+<hr />
+<p><em>See also: <a href="../SECURITY_OPERATIONS_GUIDE/">Security Operations Guide</a> · <a href="../SSO_INTEGRATION_GUIDE/">SSO Integration Guide</a> · <a href="../SQL_REFERENCE/">SQL Reference</a> · <a href="../CONFIG_REFERENCE/">Config Reference</a></em></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  맨위로
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeptodb/zeptodb" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\ud074\ub9bd\ubcf4\ub4dc\uc5d0 \ubcf5\uc0ac\ub428", "clipboard.copy": "\ud074\ub9bd\ubcf4\ub4dc\ub85c \ubcf5\uc0ac", "search.result.more.one": "\uc774 \ubb38\uc11c\uc5d0\uc11c 1\uac1c\uc758 \uac80\uc0c9 \uacb0\uacfc \ub354 \ubcf4\uae30", "search.result.more.other": "\uc774 \ubb38\uc11c\uc5d0\uc11c #\uac1c\uc758 \uac80\uc0c9 \uacb0\uacfc \ub354 \ubcf4\uae30", "search.result.none": "\uac80\uc0c9\uc5b4\uc640 \uc77c\uce58\ud558\ub294 \ubb38\uc11c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4", "search.result.one": "1\uac1c\uc758 \uc77c\uce58\ud558\ub294 \ubb38\uc11c", "search.result.other": "#\uac1c\uc758 \uc77c\uce58\ud558\ub294 \ubb38\uc11c", "search.result.placeholder": "\uac80\uc0c9\uc5b4\ub97c \uc785\ub825\ud558\uc138\uc694", "search.result.term.missing": "\ud3ec\ud568\ub418\uc9c0 \uc54a\uc740 \uac80\uc0c9\uc5b4", "select.version": "\ubc84\uc804 \uc120\ud0dd"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

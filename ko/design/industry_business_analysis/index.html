@@ -1,0 +1,4944 @@
+
+<!doctype html>
+<html lang="ko" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Ultra-Low Latency In-Memory Database">
+      
+      
+      
+        <link rel="canonical" href="https://zeptodb.github.io/ZeptoDB/ko/design/industry_business_analysis/">
+      
+      
+        <link rel="prev" href="../kdb_replacement_analysis/">
+      
+      
+        <link rel="next" href="../kafka_consumer_design/">
+      
+      
+        
+          <link rel="alternate" href="../../../design/industry_business_analysis/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="ko">
+        
+      
+      
+      <link rel="icon" href="../../../assets/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Industry Analysis - ZeptoDB</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#zeptodb-industry-business-analysis" class="md-skip">
+          콘텐츠로 이동
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="상단/헤더">
+    <a href="../../" title="ZeptoDB" class="md-header__button md-logo" aria-label="ZeptoDB" data-md-component="logo">
+      
+  <img src="../../../assets/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ZeptoDB
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Industry Analysis
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="언어설정">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="../../../design/industry_business_analysis/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="ko" class="md-select__link">
+              한국어
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="검색" placeholder="검색" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="검색">
+        
+        <button type="reset" class="md-search__icon md-icon" title="지우기" aria-label="지우기" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            검색 초기화
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeptodb/zeptodb" title="저장소로 이동" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeptodb/zeptodb
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="탭" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/QUICK_START/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/SQL_REFERENCE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../high_level_architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../deployment/PRODUCTION_DEPLOYMENT/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../feeds/FEED_HANDLER_GUIDE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Feed Handlers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../bench/results_e2e_mvp/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Benchmarks
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture_design/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Design Docs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../business/EXECUTIVE_SUMMARY/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Business
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devlog/000_environment_setup/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Development Log
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="네비게이션" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../" title="ZeptoDB" class="md-nav__button md-logo" aria-label="ZeptoDB" data-md-component="logo">
+      
+  <img src="../../../assets/logo.png" alt="logo">
+
+    </a>
+    ZeptoDB
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeptodb/zeptodb" title="저장소로 이동" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeptodb/zeptodb
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/QUICK_START/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/build/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build from Source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/INTERACTIVE_PLAYGROUND/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interactive Playground
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/EXAMPLE_DATASETS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example Datasets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/SQL_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/PYTHON_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/CPP_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/HTTP_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/SSO_INTEGRATION_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SSO Integration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/SECURITY_OPERATIONS_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Operations Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/FLIGHT_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Arrow Flight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/CONFIG_REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../high_level_architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer1_storage_memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer2_ingestion_network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer3_execution_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer4_transpiler_client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL & Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layer5_security_auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../phase_c_distributed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multinode_stability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../logging_observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Logging & Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tech_stack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tech Stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/PRODUCTION_DEPLOYMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/MULTI_NODE_CLUSTER/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/BARE_METAL_TUNING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bare Metal Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/CLOUD_PERFORMANCE_TUNING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/PRODUCTION_OPERATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/KUBERNETES_OPERATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kubernetes Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/KUBERNETES_FAILURE_SCENARIOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    K8s Failure Scenarios
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../ops/rolling_upgrade.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rolling Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feed Handlers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Feed Handlers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/FEED_HANDLER_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/FEED_HANDLER_COMPLETE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Complete Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../feeds/PERFORMANCE_OPTIMIZATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_e2e_mvp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    E2E MVP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_b/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIMD Phase B
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_b_v2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIMD Phase B v2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_phase_a/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HDB Phase A
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/results_index_attributes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Index Attributes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/kdb_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    kdb+ Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/multinode_benchmark_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/rdma_efa_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RDMA/EFA
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bench/eks_multinode_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    EKS Multi-node
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design Docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_performance_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../kdb_replacement_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    kdb+ Replacement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Industry Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../kafka_consumer_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kafka Consumer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sql_dml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL DML
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../string_column_plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    String Column
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client_compatibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Client Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multinode_usecases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-node Use Cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../physical_ai_market/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Physical AI Market
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../web_ui_prd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web UI PRD
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Business
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Business
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/EXECUTIVE_SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Executive Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/BUSINESS_STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Business Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/product_positioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product Positioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/competitive_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Competitive Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../business/industry_gap_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Industry Gap Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Log
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development Log
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/000_environment_setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    000: Environment Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/001_e2e_pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    001: E2E Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/002_simd_jit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    002: SIMD + JIT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/003_optimization_v2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    003: Optimization v2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/004_hdb_tiered_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    004: HDB Tiered Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/005_python_bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    005: Python Bridge
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/006_distributed_cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    006: Distributed Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/007_sql_http_join/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    007: SQL + HTTP + JOIN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/008_equi_join_window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    008: Equi JOIN + Window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/009_groupby_timeindex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    009: GROUP BY + Time Index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/010_financial_functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    010: Financial Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/011_parallel_query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    011: Parallel Query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/012_parquet_s3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    012: Parquet + S3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/013_python_ecosystem/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    013: Python Ecosystem
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/014_sql_phase2_phase3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    014: SQL Phase 2 & 3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/015_bare_metal_tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    015: Bare Metal Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/016_xbar_sortedcan_explain_null/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    016: xbar + Sorted + EXPLAIN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/017_connection_hooks_sorted_index_cli_timer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    017: Connection Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/018_cluster_integrity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    018: Cluster Integrity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/019_distributed_query_correctness/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    019: Distributed Query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/020_data_durability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    020: Data Durability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/021_ddl_schema_management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    021: DDL Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/022_helm_rolling_upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    022: Helm Rolling Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/023_arm_graviton_verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    023: ARM Graviton
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/024_sql_insert/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    024: SQL INSERT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/025_sql_update_delete/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    025: SQL UPDATE/DELETE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/026_tiering_matview_multitenancy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    026: Tiering + MatView
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/027_string_column_support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    027: String Column
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/028_repo_structure_cleanup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    028: Repo Cleanup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devlog/029_http_observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    029: HTTP Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/030_ring_consensus.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    030: Ring Consensus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/031_coordinator_ha_lease.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    031: Coordinator HA
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/032_wal_replicator_reliability.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    032: WAL Replicator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/033_failover_data_recovery.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    033: Failover Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/034_rpc_security.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    034: RPC Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/035_health_monitor_resilience.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    035: Health Monitor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/036_sso_jwks_cli.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    036: SSO JWKS CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/037_p8_cluster_stability.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    037: Cluster Stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/038_arrow_flight_server.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    038: Arrow Flight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/039_query_editor_chart_tabs_multistatement.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    039: Query Editor Charts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../devlog/040_getting_started_onboarding.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    040: Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="목차">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="zeptodb-industry-business-analysis">ZeptoDB Industry Business Analysis<a class="headerlink" href="#zeptodb-industry-business-analysis" title="Permanent link">&para;</a></h1>
+<h1 id="2026-03-22">2026-03-22<a class="headerlink" href="#2026-03-22" title="Permanent link">&para;</a></h1>
+<hr />
+<h2 id="analysis-framework">Analysis Framework<a class="headerlink" href="#analysis-framework" title="Permanent link">&para;</a></h2>
+<p>Each industry evaluated on 5 axes:
+1. <strong>Market Size &amp; Growth</strong> — TAM/SAM, CAGR
+2. <strong>Current Pain Points</strong> — Limitations of existing solutions
+3. <strong>ZeptoDB Value Proposition</strong> — Differentiation points
+4. <strong>Sales Message</strong> — Decision-maker persuasion logic
+5. <strong>Entry Strategy</strong> — Competitive landscape + approach</p>
+<hr />
+<h2 id="1-hft-high-frequency-trading">1. HFT / High-Frequency Trading<a class="headerlink" href="#1-hft-high-frequency-trading" title="Permanent link">&para;</a></h2>
+<h3 id="market-size">Market Size<a class="headerlink" href="#market-size" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global HFT market</td>
+<td>~$15B (2025)</td>
+</tr>
+<tr>
+<td>kdb+ license market (KX)</td>
+<td>~$500M/year</td>
+</tr>
+<tr>
+<td>Potential replacement market</td>
+<td>$300M+ (hundreds of kdb+ users)</td>
+</tr>
+<tr>
+<td>Growth rate</td>
+<td>Asia HFT: CAGR 18%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points">Current Pain Points<a class="headerlink" href="#current-pain-points" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>kdb+ license cost</strong>: $50K~$200K/seat/year, large hedge funds $1M+/year</li>
+<li><strong>q language talent shortage</strong>: Only thousands of q developers globally, hard to hire, high salaries</li>
+<li><strong>Python bottleneck</strong>: PyKX is IPC-based, serialization overhead for C++ engine data exchange</li>
+<li><strong>Vendor lock-in</strong>: Without kdb+, entire analytics pipeline is paralyzed</li>
+</ul>
+<h3 id="zeptodb-value-proposition">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Cost:     kdb+ $100K+/year  →  ZeptoDB open source (server cost only)
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Language: q (cryptic)       →  SQL + Python (team productive immediately)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>Python:   IPC ~1ms          →  zero-copy 522ns (2000x faster)
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>Perf:     equivalent        →  some query advantage (SIMD JIT)
+</code></pre></div>
+<h3 id="sales-message">Sales Message<a class="headerlink" href="#sales-message" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"Test us before your next kdb+ license renewal.
+Same xbar, EMA, ASOF JOIN, Window JOIN in SQL.
+Developers use Python instead of q. Cost: $0."</p>
+</blockquote>
+<h3 id="entry-strategy">Entry Strategy<a class="headerlink" href="#entry-strategy" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Target decision makers</strong>: CTO, Head of Quant Infrastructure</li>
+<li><strong>Target regions</strong>: Singapore (SGX), Hong Kong (HKEX), Tokyo (TSE)</li>
+<li><strong>Approach</strong>: GitHub open source → community → enterprise support sales</li>
+<li><strong>Reference building</strong>: Small quant fund free POC → large IB reference sales</li>
+<li><strong>Competitors</strong>: KX Systems (kdb+), OneTick, TimeScaleDB</li>
+<li><strong>Win conditions</strong>: Performance parity + 10x cost reduction + Python ecosystem</li>
+</ul>
+<hr />
+<h2 id="2-quant-research-investment-banking">2. Quant Research / Investment Banking<a class="headerlink" href="#2-quant-research-investment-banking" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_1">Market Size<a class="headerlink" href="#market-size_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global quant hedge fund AUM</td>
+<td>~$1.5T (2025)</td>
+</tr>
+<tr>
+<td>Infrastructure software spending</td>
+<td>~$3B/year</td>
+</tr>
+<tr>
+<td>IB data infrastructure (Top 10)</td>
+<td>$100M+/year each</td>
+</tr>
+<tr>
+<td>Growth rate</td>
+<td>Quant strategy share growing, CAGR 15%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_1">Current Pain Points<a class="headerlink" href="#current-pain-points_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Research-to-Production gap</strong>: Develop in Jupyter (Python) → re-implement in C++/q (weeks)</li>
+<li><strong>Backtesting speed</strong>: Window functions on years of history data takes hours</li>
+<li><strong>Data silos</strong>: Market data / alternative data / risk data in separate DBs</li>
+<li><strong>Collaboration barrier</strong>: Quant (Python) ↔ Engineer (C++) language gap</li>
+</ul>
+<h3 id="zeptodb-value-proposition_1">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_1" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Backtest speed:  Pandas hours  →  APEX C++ minutes (100x)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>R2P gap:         Python → C++ re-impl weeks  →  zero-copy immediate
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>Data unification: 3 DBs to manage  →  APEX single DB (SQL + Python)
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>EMA/Window:      pandas rolling slow  →  APEX SIMD 4x faster
+</code></pre></div>
+<h3 id="sales-message_1">Sales Message<a class="headerlink" href="#sales-message_1" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"Run the strategy your quant wrote in Python directly in production.
+zero-copy lets numpy arrays call the C++ engine directly.
+Backtest 1 hour → 3 minutes."</p>
+</blockquote>
+<h3 id="entry-strategy_1">Entry Strategy<a class="headerlink" href="#entry-strategy_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Target</strong>: Quant Developer, Head of Research Technology</li>
+<li><strong>Killer demo</strong>: <code>df['price'].ema(20).collect()</code> → internally runs C++ EMA</li>
+<li><strong>Differentiation</strong>: Live demo of Python DSL executing at C++ performance</li>
+<li><strong>Competitors</strong>: kdb+/PyKX, Polars, Arctic (Man Group open source)</li>
+</ul>
+<hr />
+<h2 id="3-risk-compliance">3. Risk / Compliance<a class="headerlink" href="#3-risk-compliance" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_2">Market Size<a class="headerlink" href="#market-size_2" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global financial risk software</td>
+<td>~$12B (2025)</td>
+</tr>
+<tr>
+<td>RegTech market</td>
+<td>~$15B, CAGR 22%</td>
+</tr>
+<tr>
+<td>Basel IV compliance investment</td>
+<td>Major banks $100M+ each</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_2">Current Pain Points<a class="headerlink" href="#current-pain-points_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>VaR calculation speed</strong>: Full portfolio × thousands of scenarios = hours of batch processing</li>
+<li><strong>Real-time risk limits</strong>: Position change → risk recalculation delay</li>
+<li><strong>Audit trail</strong>: Timestamp tracking of what data drove which decisions</li>
+<li><strong>Regulatory reporting</strong>: EMIR, MiFID II — large-scale trade data queries</li>
+</ul>
+<h3 id="zeptodb-value-proposition_2">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_2" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>VaR calculation:     Batch hours  →  Parallel query 3.4x, real-time possible
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>Position × market:   Slow cross join  →  SIMD Hash JOIN
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>Audit log:           HDB timestamp immutable storage  →  perfect tracking
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>SQL standard:        Non-standard query language  →  standard SQL, existing tool connectivity
+</code></pre></div>
+<h3 id="sales-message_2">Sales Message<a class="headerlink" href="#sales-message_2" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"Real-time intraday risk monitoring, not post-market VaR calculations.
+Parallel query 3.4x + SIMD Hash JOIN updates entire portfolio in seconds.
+Automate regulatory reporting with Grafana + standard SQL."</p>
+</blockquote>
+<h3 id="entry-strategy_2">Entry Strategy<a class="headerlink" href="#entry-strategy_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Target</strong>: Chief Risk Officer, Head of Risk Technology</li>
+<li><strong>Regulatory leverage</strong>: Increasing Basel IV / FRTB compliance requirements</li>
+<li><strong>Partnership</strong>: Risk consulting firms (KPMG, Deloitte) channel sales</li>
+</ul>
+<hr />
+<h2 id="4-cryptocurrency-exchanges">4. Cryptocurrency Exchanges<a class="headerlink" href="#4-cryptocurrency-exchanges" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_3">Market Size<a class="headerlink" href="#market-size_3" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global crypto exchanges</td>
+<td>500+ (top 20 account for 80% of volume)</td>
+</tr>
+<tr>
+<td>Technology infrastructure spending</td>
+<td>Large exchanges $50M+/year each</td>
+</tr>
+<tr>
+<td>DeFi infrastructure</td>
+<td>Rapid growth, exploding data processing demand</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_3">Current Pain Points<a class="headerlink" href="#current-pain-points_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>24/7 vs traditional finance</strong>: No market close, maintenance is difficult</li>
+<li><strong>Data explosion</strong>: BTC alone tens of thousands of trades/second</li>
+<li><strong>Multi-chain</strong>: Different DB per chain, no unified analytics</li>
+<li><strong>On-chain + Off-chain</strong>: Hard to JOIN blockchain data + orderbook data</li>
+</ul>
+<h3 id="zeptodb-value-proposition_3">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_3" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Throughput:    5.52M ticks/sec → covers even the largest exchanges
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>24/7:          HDB auto flush, WAL recovery → uninterrupted operations
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Unified:       SQL JOIN to combine on-chain + off-chain data
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>Distributed:   Consolidate multi-exchange data with cluster
+</code></pre></div>
+<h3 id="sales-message_3">Sales Message<a class="headerlink" href="#sales-message_3" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"BTC alone tens of thousands of trades/second, all coins combined millions.
+ZeptoDB 5.52M ticks/sec processes every trade in real-time,
+then analyze directly in SQL. Grafana dashboard connects instantly."</p>
+</blockquote>
+<hr />
+<h2 id="5-smart-factory-manufacturing">5. Smart Factory / Manufacturing<a class="headerlink" href="#5-smart-factory-manufacturing" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_4">Market Size<a class="headerlink" href="#market-size_4" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Industrial IoT platform market</td>
+<td>~$110B (2025) → $280B (2030)</td>
+</tr>
+<tr>
+<td>Smart factory investment</td>
+<td>Samsung alone $50B+/year</td>
+</tr>
+<tr>
+<td>Predictive maintenance software</td>
+<td>~$5B → $15B (CAGR 24%)</td>
+</tr>
+<tr>
+<td>Semiconductor fab 1-minute downtime loss</td>
+<td>$500K~$1M</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_4">Current Pain Points<a class="headerlink" href="#current-pain-points_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>High-frequency sensor data</strong>: InfluxDB unstable above 10KHz</li>
+<li><strong>Batch anomaly detection</strong>: Batch processing not real-time → detect after incident</li>
+<li><strong>ML pipeline separation</strong>: Sensor DB and ML training pipeline are separate</li>
+<li><strong>Multi-factory integration</strong>: Hard to centrally analyze data from global factories</li>
+</ul>
+<h3 id="zeptodb-value-proposition_4">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_4" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Sensor processing: InfluxDB limit (~100KHz)  →  APEX 5.52M/sec (50x)
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>Anomaly detection: Batch 10-min delay        →  Real-time 272μs detection
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>Predictive maint:  Offline ML               →  Python zero-copy online learning
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>Integration:       Different DB per factory  →  Distributed cluster single view
+</code></pre></div>
+<h3 id="roi-case">ROI Case<a class="headerlink" href="#roi-case" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Semiconductor fab example:
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>- Before: InfluxDB batch, 10-min anomaly detection delay
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>- APEX: Real-time anomaly detection within 10 seconds
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>- Monthly downtime reduction: 30 min → 5 min
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>- Cost savings: 25 min × $800K/min = $2M/month
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>- APEX cost: $0 (open source) + server cost
+</code></pre></div>
+<h3 id="sales-message_4">Sales Message<a class="headerlink" href="#sales-message_4" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"1 minute of semiconductor fab downtime = $1M loss.
+Process 10KHz vibration sensors in real-time and use EMA + DELTA
+to predict equipment failure 10 minutes ahead. ZeptoDB does what InfluxDB can't."</p>
+</blockquote>
+<h3 id="entry-strategy_3">Entry Strategy<a class="headerlink" href="#entry-strategy_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Target</strong>: Head of Manufacturing IT, Plant Manager, CTO</li>
+<li><strong>References</strong>: Samsung DS (semiconductor), SK Hynix — leverage Korean network</li>
+<li><strong>Partners</strong>: Siemens Mendix, PTC ThingWorx ecosystem</li>
+<li><strong>Competitors</strong>: InfluxDB Enterprise, Timescale, OSIsoft PI System</li>
+<li><strong>Win conditions</strong>: 10KHz+ processing + real-time anomaly detection + Python ML direct connection</li>
+</ul>
+<hr />
+<h2 id="6-autonomous-vehicles-av-infrastructure">6. Autonomous Vehicles / AV Infrastructure<a class="headerlink" href="#6-autonomous-vehicles-av-infrastructure" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_5">Market Size<a class="headerlink" href="#market-size_5" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Autonomous driving software market</td>
+<td>~$20B (2025) → $80B (2030)</td>
+</tr>
+<tr>
+<td>AV data management infrastructure</td>
+<td>~$3B → $15B</td>
+</tr>
+<tr>
+<td>Daily data generated per vehicle</td>
+<td>~4TB</td>
+</tr>
+<tr>
+<td>Growth rate</td>
+<td>CAGR 32%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_5">Current Pain Points<a class="headerlink" href="#current-pain-points_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>ROS bag dependency</strong>: Offline analysis only, no real-time feedback loop</li>
+<li><strong>Sensor synchronization</strong>: Complex to align LiDAR, camera, IMU, GPS timestamps</li>
+<li><strong>Data scale</strong>: 100 vehicles × 4TB/day = 400TB/day processing infrastructure</li>
+<li><strong>ML pipeline</strong>: Collect → label → train → deploy cycle is too slow</li>
+</ul>
+<h3 id="zeptodb-value-proposition_5">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_5" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1">-- Multi-sensor real-time synchronization (ASOF JOIN)</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">SELECT</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">frame_id</span><span class="p">,</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="n">scan_id</span><span class="p">,</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">       </span><span class="k">c</span><span class="p">.</span><span class="n">object_detections</span><span class="p">,</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="n">point_cloud_summary</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">FROM</span><span class="w"> </span><span class="n">camera_frames</span><span class="w"> </span><span class="k">c</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">ASOF</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">lidar_scans</span><span class="w"> </span><span class="n">l</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="k">ON</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">vehicle_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="n">vehicle_id</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="k">AND</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="k">timestamp</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="k">timestamp</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1">-- Surrounding sensor fusion (Window JOIN)</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">imu</span><span class="p">.</span><span class="k">timestamp</span><span class="p">,</span><span class="w"> </span><span class="n">imu</span><span class="p">.</span><span class="n">accel_x</span><span class="p">,</span><span class="w"> </span><span class="n">imu</span><span class="p">.</span><span class="n">accel_y</span><span class="p">,</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">       </span><span class="n">wj_avg</span><span class="p">(</span><span class="n">gps</span><span class="p">.</span><span class="n">latitude</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">gps_lat</span><span class="p">,</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">       </span><span class="n">wj_avg</span><span class="p">(</span><span class="n">gps</span><span class="p">.</span><span class="n">longitude</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">gps_lon</span>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="k">FROM</span><span class="w"> </span><span class="n">imu_data</span><span class="w"> </span><span class="n">imu</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="n">WINDOW</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">gps_data</span><span class="w"> </span><span class="n">gps</span>
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="k">ON</span><span class="w"> </span><span class="n">imu</span><span class="p">.</span><span class="n">vehicle_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">gps</span><span class="p">.</span><span class="n">vehicle_id</span>
+<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="k">AND</span><span class="w"> </span><span class="n">gps</span><span class="p">.</span><span class="k">timestamp</span><span class="w"> </span><span class="k">BETWEEN</span><span class="w"> </span><span class="n">imu</span><span class="p">.</span><span class="k">timestamp</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">50000000</span>
+<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">                       </span><span class="k">AND</span><span class="w"> </span><span class="n">imu</span><span class="p">.</span><span class="k">timestamp</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">50000000</span>
+</code></pre></div>
+<h3 id="sales-message_5">Sales Message<a class="headerlink" href="#sales-message_5" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"The era of storing data in ROS bag files for later analysis is over.
+Use ZeptoDB to fuse LiDAR-camera in real-time and
+connect to Python ML pipeline with zero-copy. 10x faster training cycle."</p>
+</blockquote>
+<h3 id="entry-strategy_4">Entry Strategy<a class="headerlink" href="#entry-strategy_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Target</strong>: Head of Autonomous Systems Engineering, Data Infrastructure Lead</li>
+<li><strong>Partners</strong>: NVIDIA DRIVE AGX, ROS2 ecosystem</li>
+<li><strong>References</strong>: Tier 1 auto parts suppliers (Hyundai Mobis, Bosch, Continental)</li>
+<li><strong>Competitors</strong>: InfluxDB, McapDB (ROS), custom Kafka + Parquet</li>
+<li><strong>Win conditions</strong>: ASOF/Window JOIN + real-time processing + Python zero-copy</li>
+</ul>
+<hr />
+<h2 id="7-robotics-physical-ai">7. Robotics / Physical AI<a class="headerlink" href="#7-robotics-physical-ai" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_6">Market Size<a class="headerlink" href="#market-size_6" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Industrial robot software</td>
+<td>~$12B → $60B (2030, CAGR 38%)</td>
+</tr>
+<tr>
+<td>Humanoid robot market</td>
+<td>~$2B → $38B (2030)</td>
+</tr>
+<tr>
+<td>Figure AI valuation</td>
+<td>$2.6B (2024)</td>
+</tr>
+<tr>
+<td>Boston Dynamics, FANUC, etc.</td>
+<td>Thousands of companies</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_6">Current Pain Points<a class="headerlink" href="#current-pain-points_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Reinforcement learning bottleneck</strong>: DB is the slow part in sensor data → feature calc → neural net → action cycle</li>
+<li><strong>Replay Buffer</strong>: Store and fast-sample millions of (state, action, reward)</li>
+<li><strong>Multi-robot</strong>: Central DB bottleneck when operating 100+ units simultaneously</li>
+<li><strong>Online learning</strong>: Learning new experiences in real-time → DB must be fast for both reads and writes</li>
+</ul>
+<h3 id="zeptodb-value-proposition_6">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_6" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">zeptodb</span><span class="o">,</span><span class="w"> </span><span class="nn">torch</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">db</span> <span class="o">=</span> <span class="n">zeptodb</span><span class="o">.</span><span class="n">Pipeline</span><span class="p">()</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">db</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># Robot joint data → real-time feature calculation</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">features</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="s2">&quot;&quot;&quot;</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="s2">    SELECT joint_id,</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="s2">           EMA(torque, 10) OVER (PARTITION BY joint_id ORDER BY ts) AS ema,</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="s2">           DELTA(position) OVER (PARTITION BY joint_id ORDER BY ts) AS velocity,</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="s2">           RATIO(torque) OVER (PARTITION BY joint_id ORDER BY ts) AS torque_ratio</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="s2">    FROM robot_joints WHERE ts &gt; now() - 1000000000</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="s2">&quot;&quot;&quot;</span><span class="p">)</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="c1"># zero-copy → PyTorch (522ns, no copy)</span>
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="n">state_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">db</span><span class="o">.</span><span class="n">get_column</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;ema&quot;</span><span class="p">))</span>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="n">action</span> <span class="o">=</span> <span class="n">policy_net</span><span class="p">(</span><span class="n">state_tensor</span><span class="p">)</span>  <span class="c1"># RL policy execution</span>
+</code></pre></div>
+<h3 id="sales-message_6">Sales Message<a class="headerlink" href="#sales-message_6" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"The bottleneck in robot reinforcement learning is the Feature Store.
+Connect joint sensors → EMA/DELTA → PyTorch in 522ns with ZeptoDB Python zero-copy,
+and accelerate training speed 10x."</p>
+</blockquote>
+<h3 id="entry-strategy_5">Entry Strategy<a class="headerlink" href="#entry-strategy_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Target</strong>: AI Research Engineer, Robotics Software Lead</li>
+<li><strong>Partners</strong>: NVIDIA Isaac, OpenAI Robotics ecosystem</li>
+<li><strong>Approach</strong>: GitHub open source → robotics community (ROS, HuggingFace Robotics)</li>
+<li><strong>Competitors</strong>: Redis (temporary storage), SQLite (slow), custom solutions</li>
+<li><strong>Win conditions</strong>: 522ns zero-copy + real-time EMA/Window + distributed multi-robot</li>
+</ul>
+<hr />
+<h2 id="8-drones-uav-swarms">8. Drones / UAV Swarms<a class="headerlink" href="#8-drones-uav-swarms" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_7">Market Size<a class="headerlink" href="#market-size_7" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Drone software market</td>
+<td>~$3B → $18B (2030, CAGR 43%)</td>
+</tr>
+<tr>
+<td>Defense drone swarm demand</td>
+<td>Rapidly growing (post-Ukraine)</td>
+</tr>
+<tr>
+<td>Logistics drones (Amazon, Zipline)</td>
+<td>Hundreds of millions each in investment</td>
+</tr>
+<tr>
+<td>Agricultural drones</td>
+<td>$5B → $20B</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_7">Current Pain Points<a class="headerlink" href="#current-pain-points_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Centralized bottleneck</strong>: 100 drones → central server → latency per drone increases</li>
+<li><strong>Collision avoidance</strong>: Real-time knowledge of nearby drone positions impossible with central DB</li>
+<li><strong>Edge computing</strong>: Existing DBs too heavy to embed per drone</li>
+<li><strong>Battery/routing</strong>: Real-time battery data → route re-optimization</li>
+</ul>
+<h3 id="zeptodb-distributed-architecture">ZeptoDB Distributed Architecture<a class="headerlink" href="#zeptodb-distributed-architecture" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Ground Station (coordinator)
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    ├── Edge Node 1 (drones 1~25)
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    ├── Edge Node 2 (drones 26~50)
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    └── Edge Node 3 (drones 51~75)
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>Each edge: ZeptoDB LocalQueryScheduler (low-power ARM)
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>Inter-node: UCX Transport (later 5G/CXL)
+</code></pre></div>
+<h3 id="sales-message_7">Sales Message<a class="headerlink" href="#sales-message_7" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"Operate a swarm of 500 drones without a central server.
+ZeptoDB distributed cluster lets each edge process independently,
+routing collision avoidance queries in 2ns with Consistent Hashing."</p>
+</blockquote>
+<hr />
+<h2 id="9-financial-fraud-detection-fds">9. Financial Fraud Detection (FDS)<a class="headerlink" href="#9-financial-fraud-detection-fds" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_8">Market Size<a class="headerlink" href="#market-size_8" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global fraud detection software</td>
+<td>~$40B (2025) → $100B (2030)</td>
+</tr>
+<tr>
+<td>Card company/bank FDS budget</td>
+<td>Large firms $100M+/year each</td>
+</tr>
+<tr>
+<td>Real-time fraud detection need</td>
+<td>Approve/deny within 0.1 seconds</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_8">Current Pain Points<a class="headerlink" href="#current-pain-points_8" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Batch processing</strong>: Fraud pattern detection at T+1 (next-day analysis)</li>
+<li><strong>Graph analysis integration</strong>: Hard to combine transaction network (graph) + time-series data</li>
+<li><strong>False positives</strong>: Low accuracy because real-time processing is unavailable</li>
+</ul>
+<h3 id="zeptodb-value-proposition_7">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_7" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1">-- Real-time anomalous transaction patterns</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">account_id</span><span class="p">,</span><span class="w"> </span><span class="k">timestamp</span><span class="p">,</span><span class="w"> </span><span class="n">amount</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">       </span><span class="n">RATIO</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">account_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">timestamp</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">amount_spike</span><span class="p">,</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">       </span><span class="k">AVG</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">account_id</span><span class="w"> </span><span class="k">ROWS</span><span class="w"> </span><span class="mi">100</span><span class="w"> </span><span class="n">PRECEDING</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">baseline</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="k">FROM</span><span class="w"> </span><span class="n">transactions</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="k">WHERE</span><span class="w"> </span><span class="n">RATIO</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(...)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">.</span><span class="mi">0</span><span class="w">  </span><span class="c1">-- 5x above normal</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="k">timestamp</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1000000000</span><span class="w">  </span><span class="c1">-- last 1 second</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="c1">-- Anomaly pattern WINDOW JOIN</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">transaction_id</span><span class="p">,</span><span class="w"> </span><span class="n">wj_count</span><span class="p">(</span><span class="n">prev</span><span class="p">.</span><span class="n">transaction_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">tx_count_5min</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="k">FROM</span><span class="w"> </span><span class="n">transactions</span><span class="w"> </span><span class="n">t</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="n">WINDOW</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">transactions</span><span class="w"> </span><span class="n">prev</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="k">ON</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">account_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">prev</span><span class="p">.</span><span class="n">account_id</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="k">AND</span><span class="w"> </span><span class="n">prev</span><span class="p">.</span><span class="k">timestamp</span><span class="w"> </span><span class="k">BETWEEN</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="k">timestamp</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">300000000000</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="k">timestamp</span>
+</code></pre></div>
+<h3 id="sales-message_8">Sales Message<a class="headerlink" href="#sales-message_8" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>"Card fraud decisions happen within 0.1 seconds.
+Detect real-time patterns with ZeptoDB 272μs queries,
+and instantly calculate anomalous transaction counts in 5 minutes with Window JOIN."</p>
+</blockquote>
+<hr />
+<h2 id="10-energy-utilities">10. Energy / Utilities<a class="headerlink" href="#10-energy-utilities" title="Permanent link">&para;</a></h2>
+<h3 id="market-size_9">Market Size<a class="headerlink" href="#market-size_9" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Smart grid software</td>
+<td>~$30B → $100B (2030)</td>
+</tr>
+<tr>
+<td>Power trading systems</td>
+<td>~$5B</td>
+</tr>
+<tr>
+<td>Renewable energy monitoring</td>
+<td>Rapid growth</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-pain-points_9">Current Pain Points<a class="headerlink" href="#current-pain-points_9" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Real-time supply-demand balance</strong>: Maintain grid frequency within ±0.5Hz of 60Hz</li>
+<li><strong>Solar/wind output prediction</strong>: Real-time analysis of weather data + generation output</li>
+<li><strong>Power trading</strong>: Day-ahead / Intraday markets — similar requirements to HFT</li>
+</ul>
+<h3 id="zeptodb-value-proposition_8">ZeptoDB Value Proposition<a class="headerlink" href="#zeptodb-value-proposition_8" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Real-time processing of grid sensors (thousands of PMUs) at 10KHz</li>
+<li>Solar panel output anomaly detection (EMA + DELTA)</li>
+<li>Power trading: VWAP, Window functions for pricing strategy</li>
+</ul>
+<hr />
+<h2 id="priority-matrix-summary">Priority Matrix Summary<a class="headerlink" href="#priority-matrix-summary" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Industry</th>
+<th>Market Size</th>
+<th>Willingness to Pay</th>
+<th>Technical Fit</th>
+<th>Competition</th>
+<th>Entry Ease</th>
+<th>Overall</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HFT / Hedge Funds</td>
+<td>★★★</td>
+<td>★★★★★</td>
+<td>★★★★★</td>
+<td>★★★</td>
+<td>★★★</td>
+<td><strong>1st</strong></td>
+</tr>
+<tr>
+<td>Smart Factory</td>
+<td>★★★★★</td>
+<td>★★★★</td>
+<td>★★★★</td>
+<td>★★</td>
+<td>★★★</td>
+<td><strong>2nd</strong></td>
+</tr>
+<tr>
+<td>Quant Research</td>
+<td>★★★★</td>
+<td>★★★★</td>
+<td>★★★★★</td>
+<td>★★★</td>
+<td>★★★★</td>
+<td><strong>3rd</strong></td>
+</tr>
+<tr>
+<td>Autonomous Vehicles</td>
+<td>★★★★</td>
+<td>★★★</td>
+<td>★★★★</td>
+<td>★★</td>
+<td>★★</td>
+<td><strong>4th</strong></td>
+</tr>
+<tr>
+<td>FDS (Fraud Detection)</td>
+<td>★★★★★</td>
+<td>★★★★</td>
+<td>★★★★</td>
+<td>★★★★</td>
+<td>★★</td>
+<td><strong>5th</strong></td>
+</tr>
+<tr>
+<td>Robotics / Physical AI</td>
+<td>★★★</td>
+<td>★★★</td>
+<td>★★★★★</td>
+<td>★</td>
+<td>★★★</td>
+<td><strong>6th</strong></td>
+</tr>
+<tr>
+<td>Crypto Exchanges</td>
+<td>★★★</td>
+<td>★★★</td>
+<td>★★★★★</td>
+<td>★★</td>
+<td>★★★★</td>
+<td><strong>7th</strong></td>
+</tr>
+<tr>
+<td>Risk/Compliance</td>
+<td>★★★</td>
+<td>★★★★</td>
+<td>★★★★</td>
+<td>★★★</td>
+<td>★★</td>
+<td><strong>8th</strong></td>
+</tr>
+<tr>
+<td>Drones</td>
+<td>★★★</td>
+<td>★★★</td>
+<td>★★★</td>
+<td>★</td>
+<td>★★</td>
+<td><strong>9th</strong></td>
+</tr>
+<tr>
+<td>Energy</td>
+<td>★★★★</td>
+<td>★★★</td>
+<td>★★★</td>
+<td>★★</td>
+<td>★★</td>
+<td><strong>10th</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="gtm-go-to-market-roadmap">GTM (Go-To-Market) Roadmap<a class="headerlink" href="#gtm-go-to-market-roadmap" title="Permanent link">&para;</a></h2>
+<h3 id="phase-1-06-months-finance-core">Phase 1 (0~6 months): Finance Core<a class="headerlink" href="#phase-1-06-months-finance-core" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Focus</strong>: HFT + quant research</li>
+<li><strong>Base</strong>: Singapore (SGX, MAS FinTech Festival)</li>
+<li><strong>Strategy</strong>: GitHub open source → 1K+ Stars → quant community word-of-mouth</li>
+<li><strong>Goal</strong>: 5 reference customers (small quant funds)</li>
+</ul>
+<h3 id="phase-2-618-months-industry-expansion">Phase 2 (6~18 months): Industry Expansion<a class="headerlink" href="#phase-2-618-months-industry-expansion" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Focus</strong>: Smart factory (Samsung, SK references)</li>
+<li><strong>Partners</strong>: Siemens, PTC ThingWorx ecosystem</li>
+<li><strong>Strategy</strong>: Semiconductor fab POC → ROI validation → enterprise contracts</li>
+<li><strong>Goal</strong>: 3 enterprise contracts, ARR $1M+</li>
+</ul>
+<h3 id="phase-3-1836-months-physical-ai">Phase 3 (18~36 months): Physical AI<a class="headerlink" href="#phase-3-1836-months-physical-ai" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Focus</strong>: Autonomous driving + robotics</li>
+<li><strong>Partners</strong>: NVIDIA Isaac ecosystem</li>
+<li><strong>Strategy</strong>: Open source community → ROS2 plugin → enterprise support sales</li>
+<li><strong>Goal</strong>: 5 Physical AI references, ARR $5M+</li>
+</ul>
+<hr />
+<h2 id="core-message-all-industries">Core Message (All Industries)<a class="headerlink" href="#core-message-all-industries" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>"ZeptoDB — wherever μs latency is needed."</strong></p>
+<p>5.52M events/sec, 272μs processing speed proven in HFT.
+Now for factory sensors, autonomous vehicles, and robot joint data too.</p>
+<ul>
+<li>Cheaper than kdb+</li>
+<li>Easy with Python</li>
+<li>Free with open source</li>
+</ul>
+</blockquote>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  맨위로
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeptodb/zeptodb" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\ud074\ub9bd\ubcf4\ub4dc\uc5d0 \ubcf5\uc0ac\ub428", "clipboard.copy": "\ud074\ub9bd\ubcf4\ub4dc\ub85c \ubcf5\uc0ac", "search.result.more.one": "\uc774 \ubb38\uc11c\uc5d0\uc11c 1\uac1c\uc758 \uac80\uc0c9 \uacb0\uacfc \ub354 \ubcf4\uae30", "search.result.more.other": "\uc774 \ubb38\uc11c\uc5d0\uc11c #\uac1c\uc758 \uac80\uc0c9 \uacb0\uacfc \ub354 \ubcf4\uae30", "search.result.none": "\uac80\uc0c9\uc5b4\uc640 \uc77c\uce58\ud558\ub294 \ubb38\uc11c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4", "search.result.one": "1\uac1c\uc758 \uc77c\uce58\ud558\ub294 \ubb38\uc11c", "search.result.other": "#\uac1c\uc758 \uc77c\uce58\ud558\ub294 \ubb38\uc11c", "search.result.placeholder": "\uac80\uc0c9\uc5b4\ub97c \uc785\ub825\ud558\uc138\uc694", "search.result.term.missing": "\ud3ec\ud568\ub418\uc9c0 \uc54a\uc740 \uac80\uc0c9\uc5b4", "select.version": "\ubc84\uc804 \uc120\ud0dd"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

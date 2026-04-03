@@ -1,0 +1,1767 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/BACKLOG/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/BACKLOG/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/BACKLOG/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/COMPLETED/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/COMPLETED/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/COMPLETED/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/API_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/API_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/API_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/CONFIG_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/CONFIG_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/CONFIG_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/CPP_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/CPP_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/CPP_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/FLIGHT_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/FLIGHT_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/FLIGHT_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/HTTP_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/HTTP_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/HTTP_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/PYTHON_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/PYTHON_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/PYTHON_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/SECURITY_OPERATIONS_GUIDE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/SECURITY_OPERATIONS_GUIDE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/SECURITY_OPERATIONS_GUIDE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/SQL_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/SQL_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/SQL_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/api/SSO_INTEGRATION_GUIDE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/SSO_INTEGRATION_GUIDE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/SSO_INTEGRATION_GUIDE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/eks_multinode_benchmark/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/eks_multinode_benchmark/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/eks_multinode_benchmark/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/kdb_reference/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/kdb_reference/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/kdb_reference/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/multinode_benchmark_guide/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/multinode_benchmark_guide/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/multinode_benchmark_guide/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/rdma_efa_benchmark/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/rdma_efa_benchmark/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/rdma_efa_benchmark/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/results_e2e_mvp/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_e2e_mvp/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_e2e_mvp/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/results_index_attributes/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_index_attributes/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_index_attributes/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/results_phase_a/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_phase_a/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_a/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/results_phase_b/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_phase_b/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_b/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/bench/results_phase_b_v2/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_phase_b_v2/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_b_v2/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/BUSINESS_STRATEGY/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/BUSINESS_STRATEGY/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/BUSINESS_STRATEGY/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/EXECUTIVE_SUMMARY/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/EXECUTIVE_SUMMARY/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/EXECUTIVE_SUMMARY/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/WEBSITE_PRD/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/WEBSITE_PRD/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/WEBSITE_PRD/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/brand_guidelines/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/brand_guidelines/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/brand_guidelines/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/competitive_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/competitive_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/competitive_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/industry_gap_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/industry_gap_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/industry_gap_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/business/product_positioning/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/product_positioning/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/product_positioning/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/community/COMMUNITY_SETUP/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/community/COMMUNITY_SETUP/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/community/COMMUNITY_SETUP/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/community/LAUNCH_POSTS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/community/LAUNCH_POSTS/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/community/LAUNCH_POSTS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/community/REGISTRY_SUBMISSIONS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/community/REGISTRY_SUBMISSIONS/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/community/REGISTRY_SUBMISSIONS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/deployment/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/deployment/BARE_METAL_TUNING/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/BARE_METAL_TUNING/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/BARE_METAL_TUNING/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/deployment/CLOUD_PERFORMANCE_TUNING/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/CLOUD_PERFORMANCE_TUNING/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/CLOUD_PERFORMANCE_TUNING/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/deployment/MULTI_NODE_CLUSTER/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/MULTI_NODE_CLUSTER/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/MULTI_NODE_CLUSTER/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/deployment/PARQUET_S3_ACTIVATION/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/PARQUET_S3_ACTIVATION/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/PARQUET_S3_ACTIVATION/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/deployment/PRODUCTION_DEPLOYMENT/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/PRODUCTION_DEPLOYMENT/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/PRODUCTION_DEPLOYMENT/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/WEB_UI/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/WEB_UI/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/WEB_UI/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/architecture_design/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/architecture_design/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/architecture_design/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/client_compatibility/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/client_compatibility/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/client_compatibility/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/feature_performance_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/feature_performance_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/feature_performance_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/high_level_architecture/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/high_level_architecture/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/high_level_architecture/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/industry_business_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/industry_business_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/industry_business_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/initial_doc/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/initial_doc/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/initial_doc/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/kafka_consumer_design/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/kafka_consumer_design/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/kafka_consumer_design/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/kdb_replacement_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/kdb_replacement_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/kdb_replacement_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/layer1_storage_memory/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer1_storage_memory/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer1_storage_memory/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/layer2_ingestion_network/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer2_ingestion_network/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer2_ingestion_network/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/layer3_execution_engine/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer3_execution_engine/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer3_execution_engine/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/layer4_transpiler_client/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer4_transpiler_client/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer4_transpiler_client/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/layer5_security_auth/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer5_security_auth/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer5_security_auth/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/logging_observability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/logging_observability/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/logging_observability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/multinode_stability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/multinode_stability/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/multinode_stability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/multinode_usecases/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/multinode_usecases/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/multinode_usecases/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/per_layer_inmemory_db_impact/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/per_layer_inmemory_db_impact/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/per_layer_inmemory_db_impact/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/phase_c_distributed/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/phase_c_distributed/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/phase_c_distributed/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/physical_ai_market/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/physical_ai_market/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/physical_ai_market/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/sql_dml/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/sql_dml/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/sql_dml/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/sso_identity_provider/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/sso_identity_provider/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/sso_identity_provider/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/string_column_plan/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/string_column_plan/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/string_column_plan/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/tech_stack/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/tech_stack/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/tech_stack/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/design/web_ui_prd/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/web_ui_prd/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/web_ui_prd/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/000_environment_setup/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/000_environment_setup/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/000_environment_setup/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/001_e2e_pipeline/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/001_e2e_pipeline/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/001_e2e_pipeline/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/002_simd_jit/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/002_simd_jit/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/002_simd_jit/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/003_optimization_v2/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/003_optimization_v2/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/003_optimization_v2/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/004_hdb_tiered_storage/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/004_hdb_tiered_storage/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/004_hdb_tiered_storage/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/005_python_bridge/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/005_python_bridge/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/005_python_bridge/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/006_distributed_cluster/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/006_distributed_cluster/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/006_distributed_cluster/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/007_sql_http_join/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/007_sql_http_join/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/007_sql_http_join/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/008_equi_join_window/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/008_equi_join_window/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/008_equi_join_window/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/009_groupby_timeindex/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/009_groupby_timeindex/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/009_groupby_timeindex/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/010_financial_functions/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/010_financial_functions/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/010_financial_functions/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/011_parallel_query/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/011_parallel_query/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/011_parallel_query/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/012_parquet_s3/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/012_parquet_s3/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/012_parquet_s3/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/013_python_ecosystem/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/013_python_ecosystem/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/013_python_ecosystem/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/014_sql_phase2_phase3/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/014_sql_phase2_phase3/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/014_sql_phase2_phase3/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/015_bare_metal_tuning/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/015_bare_metal_tuning/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/015_bare_metal_tuning/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/016_xbar_sortedcan_explain_null/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/016_xbar_sortedcan_explain_null/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/016_xbar_sortedcan_explain_null/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/017_connection_hooks_sorted_index_cli_timer/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/017_connection_hooks_sorted_index_cli_timer/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/017_connection_hooks_sorted_index_cli_timer/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/018_cluster_integrity/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/018_cluster_integrity/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/018_cluster_integrity/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/019_distributed_query_correctness/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/019_distributed_query_correctness/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/019_distributed_query_correctness/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/020_data_durability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/020_data_durability/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/020_data_durability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/021_ddl_schema_management/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/021_ddl_schema_management/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/021_ddl_schema_management/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/022_helm_rolling_upgrade/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/022_helm_rolling_upgrade/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/022_helm_rolling_upgrade/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/023_arm_graviton_verification/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/023_arm_graviton_verification/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/023_arm_graviton_verification/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/024_sql_insert/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/024_sql_insert/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/024_sql_insert/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/025_sql_update_delete/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/025_sql_update_delete/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/025_sql_update_delete/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/026_tiering_matview_multitenancy/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/026_tiering_matview_multitenancy/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/026_tiering_matview_multitenancy/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/027_string_column_support/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/027_string_column_support/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/027_string_column_support/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/028_repo_structure_cleanup/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/028_repo_structure_cleanup/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/028_repo_structure_cleanup/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/029_http_observability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/029_http_observability/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/029_http_observability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/030_login_port_conflict_fix/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/030_login_port_conflict_fix/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/030_login_port_conflict_fix/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/031_ring_consensus/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/031_ring_consensus/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/031_ring_consensus/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/032_p2_p3_governance_and_ux/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/032_p2_p3_governance_and_ux/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/032_p2_p3_governance_and_ux/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/033_coordinator_ha_lease/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/033_coordinator_ha_lease/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/033_coordinator_ha_lease/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/034_readme_rebrand_cluster_datetrunc/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/034_readme_rebrand_cluster_datetrunc/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/034_readme_rebrand_cluster_datetrunc/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/035_wal_replicator_reliability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/035_wal_replicator_reliability/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/035_wal_replicator_reliability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/036_failover_data_recovery/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/036_failover_data_recovery/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/036_failover_data_recovery/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/037_rpc_security/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/037_rpc_security/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/037_rpc_security/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/038_health_monitor_resilience/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/038_health_monitor_resilience/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/038_health_monitor_resilience/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/039_api_key_granular_control/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/039_api_key_granular_control/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/039_api_key_granular_control/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/040_sso_jwks_cli/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/040_sso_jwks_cli/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/040_sso_jwks_cli/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/041_p8_cluster_stability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/041_p8_cluster_stability/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/041_p8_cluster_stability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/042_arrow_flight_server/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/042_arrow_flight_server/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/042_arrow_flight_server/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/043_query_editor_chart_tabs_multistatement/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/043_query_editor_chart_tabs_multistatement/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/043_query_editor_chart_tabs_multistatement/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/044_getting_started_onboarding/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/044_getting_started_onboarding/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/044_getting_started_onboarding/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/045_web_ui_table_settings_login/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/045_web_ui_table_settings_login/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/045_web_ui_table_settings_login/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/046_vault_key_backend/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/046_vault_key_backend/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/046_vault_key_backend/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/047_sso_identity_provider/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/047_sso_identity_provider/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/047_sso_identity_provider/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/048_seo_community_setup/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/048_seo_community_setup/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/048_seo_community_setup/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/049_sso_identity_enhancement/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/049_sso_identity_enhancement/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/049_sso_identity_enhancement/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/devlog/050_flat_hash_map_join/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/050_flat_hash_map_join/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/050_flat_hash_map_join/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/feeds/FEED_HANDLER_COMPLETE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/feeds/FEED_HANDLER_COMPLETE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/feeds/FEED_HANDLER_COMPLETE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/feeds/FEED_HANDLER_GUIDE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/feeds/FEED_HANDLER_GUIDE/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/feeds/FEED_HANDLER_GUIDE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/feeds/PERFORMANCE_OPTIMIZATION/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/feeds/PERFORMANCE_OPTIMIZATION/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/feeds/PERFORMANCE_OPTIMIZATION/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/getting-started/EXAMPLE_DATASETS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/EXAMPLE_DATASETS/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/EXAMPLE_DATASETS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/getting-started/INTERACTIVE_PLAYGROUND/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/INTERACTIVE_PLAYGROUND/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/INTERACTIVE_PLAYGROUND/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/getting-started/QUICK_START/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/QUICK_START/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/QUICK_START/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/getting-started/build/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/build/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/build/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/getting-started/installation/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/installation/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/installation/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/operations/KUBERNETES_FAILURE_SCENARIOS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/KUBERNETES_FAILURE_SCENARIOS/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/KUBERNETES_FAILURE_SCENARIOS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/operations/KUBERNETES_OPERATIONS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/KUBERNETES_OPERATIONS/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/KUBERNETES_OPERATIONS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/operations/PRODUCTION_OPERATIONS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/PRODUCTION_OPERATIONS/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/PRODUCTION_OPERATIONS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/operations/rolling_upgrade/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/rolling_upgrade/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/rolling_upgrade/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/requirements/system_requirements/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/requirements/system_requirements/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/requirements/system_requirements/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/BACKLOG/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/BACKLOG/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/BACKLOG/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/COMPLETED/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/COMPLETED/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/COMPLETED/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/API_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/API_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/API_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/CONFIG_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/CONFIG_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/CONFIG_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/CPP_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/CPP_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/CPP_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/FLIGHT_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/FLIGHT_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/FLIGHT_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/HTTP_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/HTTP_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/HTTP_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/PYTHON_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/PYTHON_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/PYTHON_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/SECURITY_OPERATIONS_GUIDE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/SECURITY_OPERATIONS_GUIDE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/SECURITY_OPERATIONS_GUIDE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/SQL_REFERENCE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/SQL_REFERENCE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/SQL_REFERENCE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/api/SSO_INTEGRATION_GUIDE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/api/SSO_INTEGRATION_GUIDE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/api/SSO_INTEGRATION_GUIDE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/eks_multinode_benchmark/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/eks_multinode_benchmark/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/eks_multinode_benchmark/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/kdb_reference/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/kdb_reference/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/kdb_reference/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/multinode_benchmark_guide/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/multinode_benchmark_guide/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/multinode_benchmark_guide/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/rdma_efa_benchmark/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/rdma_efa_benchmark/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/rdma_efa_benchmark/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/results_e2e_mvp/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_e2e_mvp/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_e2e_mvp/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/results_index_attributes/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_index_attributes/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_index_attributes/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_a/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_a/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_phase_a/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_b/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_b/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_phase_b/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_b_v2/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/bench/results_phase_b_v2/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/bench/results_phase_b_v2/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/BUSINESS_STRATEGY/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/BUSINESS_STRATEGY/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/BUSINESS_STRATEGY/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/EXECUTIVE_SUMMARY/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/EXECUTIVE_SUMMARY/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/EXECUTIVE_SUMMARY/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/WEBSITE_PRD/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/WEBSITE_PRD/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/WEBSITE_PRD/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/brand_guidelines/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/brand_guidelines/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/brand_guidelines/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/competitive_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/competitive_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/competitive_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/industry_gap_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/industry_gap_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/industry_gap_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/business/product_positioning/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/business/product_positioning/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/business/product_positioning/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/community/COMMUNITY_SETUP/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/community/COMMUNITY_SETUP/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/community/COMMUNITY_SETUP/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/community/LAUNCH_POSTS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/community/LAUNCH_POSTS/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/community/LAUNCH_POSTS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/community/REGISTRY_SUBMISSIONS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/community/REGISTRY_SUBMISSIONS/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/community/REGISTRY_SUBMISSIONS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/deployment/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/deployment/BARE_METAL_TUNING/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/BARE_METAL_TUNING/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/BARE_METAL_TUNING/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/deployment/CLOUD_PERFORMANCE_TUNING/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/CLOUD_PERFORMANCE_TUNING/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/CLOUD_PERFORMANCE_TUNING/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/deployment/MULTI_NODE_CLUSTER/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/MULTI_NODE_CLUSTER/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/MULTI_NODE_CLUSTER/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/deployment/PARQUET_S3_ACTIVATION/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/PARQUET_S3_ACTIVATION/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/PARQUET_S3_ACTIVATION/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/deployment/PRODUCTION_DEPLOYMENT/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/deployment/PRODUCTION_DEPLOYMENT/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/deployment/PRODUCTION_DEPLOYMENT/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/WEB_UI/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/WEB_UI/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/WEB_UI/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/architecture_design/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/architecture_design/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/architecture_design/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/client_compatibility/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/client_compatibility/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/client_compatibility/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/feature_performance_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/feature_performance_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/feature_performance_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/high_level_architecture/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/high_level_architecture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/high_level_architecture/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/industry_business_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/industry_business_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/industry_business_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/initial_doc/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/initial_doc/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/initial_doc/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/kafka_consumer_design/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/kafka_consumer_design/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/kafka_consumer_design/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/kdb_replacement_analysis/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/kdb_replacement_analysis/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/kdb_replacement_analysis/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/layer1_storage_memory/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer1_storage_memory/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer1_storage_memory/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/layer2_ingestion_network/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer2_ingestion_network/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer2_ingestion_network/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/layer3_execution_engine/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer3_execution_engine/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer3_execution_engine/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/layer4_transpiler_client/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer4_transpiler_client/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer4_transpiler_client/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/layer5_security_auth/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/layer5_security_auth/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/layer5_security_auth/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/logging_observability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/logging_observability/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/logging_observability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/multinode_stability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/multinode_stability/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/multinode_stability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/multinode_usecases/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/multinode_usecases/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/multinode_usecases/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/per_layer_inmemory_db_impact/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/per_layer_inmemory_db_impact/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/per_layer_inmemory_db_impact/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/phase_c_distributed/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/phase_c_distributed/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/phase_c_distributed/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/physical_ai_market/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/physical_ai_market/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/physical_ai_market/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/sql_dml/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/sql_dml/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/sql_dml/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/sso_identity_provider/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/sso_identity_provider/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/sso_identity_provider/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/string_column_plan/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/string_column_plan/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/string_column_plan/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/tech_stack/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/tech_stack/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/tech_stack/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/design/web_ui_prd/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/design/web_ui_prd/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/design/web_ui_prd/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/000_environment_setup/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/000_environment_setup/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/000_environment_setup/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/001_e2e_pipeline/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/001_e2e_pipeline/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/001_e2e_pipeline/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/002_simd_jit/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/002_simd_jit/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/002_simd_jit/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/003_optimization_v2/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/003_optimization_v2/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/003_optimization_v2/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/004_hdb_tiered_storage/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/004_hdb_tiered_storage/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/004_hdb_tiered_storage/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/005_python_bridge/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/005_python_bridge/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/005_python_bridge/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/006_distributed_cluster/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/006_distributed_cluster/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/006_distributed_cluster/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/007_sql_http_join/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/007_sql_http_join/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/007_sql_http_join/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/008_equi_join_window/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/008_equi_join_window/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/008_equi_join_window/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/009_groupby_timeindex/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/009_groupby_timeindex/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/009_groupby_timeindex/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/010_financial_functions/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/010_financial_functions/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/010_financial_functions/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/011_parallel_query/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/011_parallel_query/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/011_parallel_query/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/012_parquet_s3/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/012_parquet_s3/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/012_parquet_s3/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/013_python_ecosystem/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/013_python_ecosystem/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/013_python_ecosystem/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/014_sql_phase2_phase3/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/014_sql_phase2_phase3/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/014_sql_phase2_phase3/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/015_bare_metal_tuning/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/015_bare_metal_tuning/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/015_bare_metal_tuning/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/016_xbar_sortedcan_explain_null/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/016_xbar_sortedcan_explain_null/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/016_xbar_sortedcan_explain_null/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/017_connection_hooks_sorted_index_cli_timer/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/017_connection_hooks_sorted_index_cli_timer/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/017_connection_hooks_sorted_index_cli_timer/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/018_cluster_integrity/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/018_cluster_integrity/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/018_cluster_integrity/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/019_distributed_query_correctness/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/019_distributed_query_correctness/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/019_distributed_query_correctness/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/020_data_durability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/020_data_durability/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/020_data_durability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/021_ddl_schema_management/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/021_ddl_schema_management/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/021_ddl_schema_management/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/022_helm_rolling_upgrade/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/022_helm_rolling_upgrade/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/022_helm_rolling_upgrade/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/023_arm_graviton_verification/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/023_arm_graviton_verification/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/023_arm_graviton_verification/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/024_sql_insert/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/024_sql_insert/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/024_sql_insert/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/025_sql_update_delete/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/025_sql_update_delete/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/025_sql_update_delete/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/026_tiering_matview_multitenancy/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/026_tiering_matview_multitenancy/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/026_tiering_matview_multitenancy/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/027_string_column_support/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/027_string_column_support/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/027_string_column_support/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/028_repo_structure_cleanup/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/028_repo_structure_cleanup/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/028_repo_structure_cleanup/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/029_http_observability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/029_http_observability/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/029_http_observability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/030_login_port_conflict_fix/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/030_login_port_conflict_fix/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/030_login_port_conflict_fix/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/031_ring_consensus/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/031_ring_consensus/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/031_ring_consensus/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/032_p2_p3_governance_and_ux/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/032_p2_p3_governance_and_ux/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/032_p2_p3_governance_and_ux/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/033_coordinator_ha_lease/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/033_coordinator_ha_lease/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/033_coordinator_ha_lease/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/034_readme_rebrand_cluster_datetrunc/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/034_readme_rebrand_cluster_datetrunc/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/034_readme_rebrand_cluster_datetrunc/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/035_wal_replicator_reliability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/035_wal_replicator_reliability/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/035_wal_replicator_reliability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/036_failover_data_recovery/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/036_failover_data_recovery/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/036_failover_data_recovery/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/037_rpc_security/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/037_rpc_security/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/037_rpc_security/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/038_health_monitor_resilience/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/038_health_monitor_resilience/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/038_health_monitor_resilience/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/039_api_key_granular_control/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/039_api_key_granular_control/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/039_api_key_granular_control/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/040_sso_jwks_cli/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/040_sso_jwks_cli/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/040_sso_jwks_cli/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/041_p8_cluster_stability/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/041_p8_cluster_stability/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/041_p8_cluster_stability/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/042_arrow_flight_server/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/042_arrow_flight_server/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/042_arrow_flight_server/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/043_query_editor_chart_tabs_multistatement/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/043_query_editor_chart_tabs_multistatement/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/043_query_editor_chart_tabs_multistatement/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/044_getting_started_onboarding/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/044_getting_started_onboarding/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/044_getting_started_onboarding/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/045_web_ui_table_settings_login/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/045_web_ui_table_settings_login/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/045_web_ui_table_settings_login/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/046_vault_key_backend/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/046_vault_key_backend/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/046_vault_key_backend/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/047_sso_identity_provider/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/047_sso_identity_provider/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/047_sso_identity_provider/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/048_seo_community_setup/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/048_seo_community_setup/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/048_seo_community_setup/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/049_sso_identity_enhancement/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/049_sso_identity_enhancement/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/049_sso_identity_enhancement/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/devlog/050_flat_hash_map_join/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/devlog/050_flat_hash_map_join/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/devlog/050_flat_hash_map_join/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/feeds/FEED_HANDLER_COMPLETE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/feeds/FEED_HANDLER_COMPLETE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/feeds/FEED_HANDLER_COMPLETE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/feeds/FEED_HANDLER_GUIDE/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/feeds/FEED_HANDLER_GUIDE/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/feeds/FEED_HANDLER_GUIDE/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/feeds/PERFORMANCE_OPTIMIZATION/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/feeds/PERFORMANCE_OPTIMIZATION/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/feeds/PERFORMANCE_OPTIMIZATION/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/getting-started/EXAMPLE_DATASETS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/EXAMPLE_DATASETS/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/EXAMPLE_DATASETS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/getting-started/INTERACTIVE_PLAYGROUND/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/INTERACTIVE_PLAYGROUND/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/INTERACTIVE_PLAYGROUND/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/getting-started/QUICK_START/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/QUICK_START/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/QUICK_START/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/getting-started/build/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/build/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/build/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/getting-started/installation/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/getting-started/installation/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/getting-started/installation/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/operations/KUBERNETES_FAILURE_SCENARIOS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/KUBERNETES_FAILURE_SCENARIOS/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/KUBERNETES_FAILURE_SCENARIOS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/operations/KUBERNETES_OPERATIONS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/KUBERNETES_OPERATIONS/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/KUBERNETES_OPERATIONS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/operations/PRODUCTION_OPERATIONS/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/PRODUCTION_OPERATIONS/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/PRODUCTION_OPERATIONS/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/operations/rolling_upgrade/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/operations/rolling_upgrade/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/operations/rolling_upgrade/"/>
+    </url>
+    <url>
+        <loc>https://zeptodb.github.io/ZeptoDB/ko/requirements/system_requirements/</loc>
+        <lastmod>2026-04-03</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://zeptodb.github.io/ZeptoDB/ko/requirements/system_requirements/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://zeptodb.github.io/ZeptoDB/requirements/system_requirements/"/>
+    </url>
+</urlset>
