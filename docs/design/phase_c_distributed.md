@@ -194,31 +194,31 @@ class PartitionRouter {
 };
 ```
 
-### 3-E. Ring Consensus (분산 동기화)
+### 3-E. Ring Consensus (Distributed Synchronization)
 
-PartitionRouter는 각 노드가 독립 사본을 보유한다. Ring 변경(노드 추가/제거) 시
-모든 노드의 router를 동기화해야 라우팅 불일치를 방지할 수 있다.
+Each node holds an independent copy of the PartitionRouter. When the ring changes (node add/remove),
+all nodes' routers must be synchronized to prevent routing inconsistencies.
 
-**인터페이스**: `RingConsensus` (추상 클래스)
+**Interface**: `RingConsensus` (abstract class)
 
 ```cpp
 class RingConsensus {
-    virtual bool propose_add(NodeId node) = 0;     // Coordinator: 노드 추가
-    virtual bool propose_remove(NodeId node) = 0;   // Coordinator: 노드 제거
-    virtual bool apply_update(const uint8_t* data, size_t len) = 0;  // Follower: 수신 적용
+    virtual bool propose_add(NodeId node) = 0;     // Coordinator: add node
+    virtual bool propose_remove(NodeId node) = 0;   // Coordinator: remove node
+    virtual bool apply_update(const uint8_t* data, size_t len) = 0;  // Follower: receive and apply
     virtual uint64_t current_epoch() const = 0;
 };
 ```
 
-**기본 구현**: `EpochBroadcastConsensus` (eventual consistency)
+**Default implementation**: `EpochBroadcastConsensus` (eventual consistency)
 
-- Coordinator가 ring 변경 시 `FencingToken::advance()` → epoch bump
-- 전체 peer에 `RING_UPDATE` RPC broadcast (RingSnapshot 직렬화)
-- Follower는 epoch ≥ last_seen일 때만 적용 (stale 거부)
-- 기존 dual-write (`migrating_`)로 전환 중 데이터 유실 방지
+- On ring change, Coordinator calls `FencingToken::advance()` → epoch bump
+- Broadcasts `RING_UPDATE` RPC to all peers (serialized RingSnapshot)
+- Followers apply only when epoch ≥ last_seen (reject stale updates)
+- Existing dual-write (`migrating_`) prevents data loss during transitions
 
-**향후 확장**: `RaftConsensus` 구현체로 교체 시 strong consistency 제공.
-`ClusterNode::set_consensus()` 로 런타임 주입 가능.
+**Future extension**: Replace with `RaftConsensus` implementation for strong consistency.
+Can be injected at runtime via `ClusterNode::set_consensus()`.
 
 ```
 Coordinator (epoch=5)

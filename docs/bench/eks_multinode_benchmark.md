@@ -6,15 +6,15 @@ Last updated: 2026-03-24
 
 ## Overview
 
-EKS 기반 멀티노드 벤치마크. 이미 만들어둔 Helm chart(`helm/zeptodb/`)를 활용해서 3-node 클러스터를 띄우고, 7가지 분산 성능을 측정한다.
+EKS-based multi-node benchmark. Uses the existing Helm chart (`helm/zeptodb/`) to deploy a 3-node cluster and measure 7 distributed performance scenarios.
 
 ### Why EKS
 
-- Helm chart 이미 있음 → `helm install` 한 줄로 클러스터 구성
-- Placement Group + Pod Anti-Affinity → 노드 분산 보장
-- PDB로 벤치 중 pod eviction 방지
-- 끝나면 `eksctl delete cluster`로 깔끔 정리
-- 비용: ~$6/hr (벤치 2시간 = ~$12)
+- Helm chart already exists → cluster setup with a single `helm install` command
+- Placement Group + Pod Anti-Affinity → guarantees node distribution
+- PDB prevents pod eviction during benchmarks
+- Clean teardown with `eksctl delete cluster` when finished
+- Cost: ~$6/hr (2-hour bench = ~$12)
 
 ---
 
@@ -209,7 +209,7 @@ echo "100K inserts in ${ELAPSED}ms → $(( 100000 * 1000 / ELAPSED )) inserts/se
 '
 ```
 
-실제 벤치에서는 C++ `bench_distributed_ingest` 바이너리를 사용:
+For actual benchmarks, use the C++ `bench_distributed_ingest` binary:
 
 ```bash
 kubectl exec -n zeptodb bench-loadgen -- \
@@ -220,7 +220,7 @@ kubectl exec -n zeptodb bench-loadgen -- \
     --batch-size 512
 ```
 
-**측정 항목:**
+**Metrics to measure:**
 | Metric | Target |
 |--------|--------|
 | Total ticks/sec (3 nodes) | >12M |
@@ -249,7 +249,7 @@ done | awk "{sum+=\$1; n++} END {printf \"avg=%.3fms (n=%d)\n\", sum/n*1000, n}"
 '
 ```
 
-**측정 항목:**
+**Metrics to measure:**
 | Query Type | Target |
 |-----------|--------|
 | Tier A (single-node routing) | <1ms overhead vs direct |
@@ -281,7 +281,7 @@ curl -s -X POST "http://$SVC/" \
 '
 ```
 
-**검증:** 단일 노드 결과와 비교. 숫자가 정확히 일치해야 함.
+**Verification:** Compare with single-node results. Numbers must match exactly.
 
 ### B4: Distributed ASOF JOIN
 
@@ -367,7 +367,7 @@ done
 
 ## 4. Result Template
 
-벤치 완료 후 `docs/bench/results_multinode.md`에 기록:
+After the benchmark is complete, record results in `docs/bench/results_multinode.md`:
 
 ```markdown
 # Multi-Node Benchmark Results (EKS)

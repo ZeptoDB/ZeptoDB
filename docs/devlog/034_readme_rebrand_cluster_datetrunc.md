@@ -74,7 +74,7 @@ Creates imported targets `PyArrow::arrow` and `PyArrow::parquet`, linked to `zep
 
 **zepto_http_server**: New flags `--data-nodes`, `--api-key`. Automatically initializes a `QueryCoordinator` and connects to specified data nodes for scatter-gather query execution.
 
-New docs: `docs/deployment/MULTI_NODE_CLUSTER.md`, `docs/PARQUET_S3_ACTIVATION.md`.
+New docs: `docs/deployment/MULTI_NODE_CLUSTER.md`, `docs/deployment/PARQUET_S3_ACTIVATION.md`.
 
 ## 6. Electric Indigo Brand Redesign
 
@@ -90,7 +90,7 @@ Migrated the entire visual identity from Neon Cyan/Purple to Electric Indigo.
 | Error | `#FF2A55` | `#FF1744` (Laser Red) |
 
 Applied across:
-- `docs/brand_guidelines.md` — full English rewrite with Electric Indigo palette
+- `docs/business/brand_guidelines.md` — full English rewrite with Electric Indigo palette
 - `docs/index.md` — redesigned landing page with styled hero and use-case cards
 - `web/src/theme/theme.ts` — MUI theme updated
 - `web/src/app/cluster/page.tsx` — border/status colors aligned

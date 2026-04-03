@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-24
 **Status:** Completed
-**Related code:** `helm/zeptodb/`, `docs/ops/rolling_upgrade.md`
+**Related code:** `helm/zeptodb/`, `docs/operations/rolling_upgrade.md`
 
 ---
 
@@ -28,7 +28,7 @@ Converted the existing `deploy/k8s/deployment.yaml` monolith into a proper Helm 
 4. `cluster.enabled` toggle — single values.yaml for both standalone and distributed mode
 5. Cluster ports (RPC, heartbeat) only exposed when `cluster.enabled: true`
 
-### Rolling Upgrade Guide (`docs/ops/rolling_upgrade.md`)
+### Rolling Upgrade Guide (`docs/operations/rolling_upgrade.md`)
 
 Four upgrade strategies documented:
 1. **Standard** — `helm upgrade --set image.tag=X` for routine releases

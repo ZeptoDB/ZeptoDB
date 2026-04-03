@@ -4,26 +4,26 @@
 
 ## Problem
 
-로그인 → 로그아웃 → 재로그인 시 "Invalid API key" 에러 발생.
-백엔드 콘솔에서 키를 복사해서 넣어도 동일 증상.
+When logging in → logging out → logging in again, an "Invalid API key" error occurred.
+The same symptom appeared even when copying and pasting the key from the backend console.
 
 ## Root Cause
 
-`httplib`이 `SO_REUSEPORT`를 기본 설정하고 있어서, `zepto_http_server`를 여러 번 실행하면
-같은 포트(8123)에 여러 인스턴스가 동시에 바인딩됨.
+`httplib` sets `SO_REUSEPORT` by default, so running `zepto_http_server` multiple times
+causes multiple instances to bind to the same port (8123) simultaneously.
 
-각 인스턴스는 시작 시점에 `dev_keys.txt`를 로드하고 새 키 3개를 생성하므로,
-**나중에 시작된 서버가 생성한 키는 먼저 시작된 서버가 모름.**
+Each instance loads `dev_keys.txt` at startup and generates 3 new keys,
+so **the server started later has keys that the earlier server does not know about.**
 
-커널이 `SO_REUSEPORT`로 요청을 분배하면서:
-- 첫 로그인: 서버 A로 라우팅 → 성공
-- 재로그인: 서버 B로 라우팅 → 해당 키를 모름 → 401
+As the kernel distributes requests via `SO_REUSEPORT`:
+- First login: routed to Server A → success
+- Re-login: routed to Server B → does not recognize the key → 401
 
 ## Changes
 
-### 1. `tools/zepto_http_server.cpp` — 포트 충돌 감지
+### 1. `tools/zepto_http_server.cpp` — Port conflict detection
 
-시작 전 `connect()`로 포트 사용 여부 체크. 이미 사용 중이면 에러 출력 후 종료.
+Checks port availability via `connect()` before starting. If already in use, prints an error and exits.
 
 ```cpp
 static bool is_port_in_use(uint16_t port) {
@@ -39,27 +39,27 @@ static bool is_port_in_use(uint16_t port) {
 }
 ```
 
-`bind()` 대신 `connect()`를 사용한 이유: `SO_REUSEPORT`가 설정되어 있으면
-`bind()`가 성공해버리므로 충돌을 감지할 수 없음.
+Reason for using `connect()` instead of `bind()`: When `SO_REUSEPORT` is set,
+`bind()` succeeds anyway, so it cannot detect the conflict.
 
-### 2. `src/common/logger.cpp` — spdlog 이중 등록 crash 방지
+### 2. `src/common/logger.cpp` — Prevent spdlog duplicate registration crash
 
-`spdlog::stdout_color_mt("zeptodb")` 호출 전 같은 이름의 로거가 이미 있으면 재사용.
+Before calling `spdlog::stdout_color_mt("zeptodb")`, reuses the existing logger if one with the same name already exists.
 
-### 3. `src/util/logger.cpp` — register 전 drop
+### 3. `src/util/logger.cpp` — Drop before register
 
-`spdlog::register_logger()` 전에 `spdlog::drop("zeptodb")`로 기존 로거 제거.
+Calls `spdlog::drop("zeptodb")` before `spdlog::register_logger()` to remove the existing logger.
 
-### 4. `web/src/lib/auth.tsx` — 프론트엔드 방어 코드
+### 4. `web/src/lib/auth.tsx` — Frontend defensive code
 
-- `fetch`에 `cache: "no-store"` 추가 (브라우저 캐시 방지)
-- API 키 `trim()` (복사-붙여넣기 시 공백 제거)
-- 백엔드 에러 메시지를 그대로 전달 (디버깅 용이)
-- `logout` 시 `cancelQueries()` → `clear()` 순서로 정리
+- Added `cache: "no-store"` to `fetch` (prevents browser caching)
+- `trim()` on API key (removes whitespace from copy-paste)
+- Passes backend error messages through as-is (easier debugging)
+- On `logout`, cleans up in order: `cancelQueries()` → `clear()`
 
-### 5. `web/src/app/login/page.tsx` — 실제 에러 메시지 표시
+### 5. `web/src/app/login/page.tsx` — Display actual error message
 
-`catch`에서 고정 문자열 대신 `err.message`를 표시하여 실제 원인 노출.
+Shows `err.message` in `catch` instead of a hardcoded string to expose the actual cause.
 
 ## Files Modified
 

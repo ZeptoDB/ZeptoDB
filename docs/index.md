@@ -199,6 +199,6 @@ prices = db.get_column(symbol=1, name="price")  # 522ns zero-copy numpy
 | **Quant** (backtesting + research) | **90%** | :white_check_mark: Production-ready |
 | **Risk/Compliance** | **95%** | :white_check_mark: Production-ready |
 
-[Get Started](getting-started/quickstart.md){ .md-button .md-button--primary }
+[Get Started](getting-started/QUICK_START.md){ .md-button .md-button--primary }
 [API Reference](api/SQL_REFERENCE.md){ .md-button }
 [Architecture](design/high_level_architecture.md){ .md-button }

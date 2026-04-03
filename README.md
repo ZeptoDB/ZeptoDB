@@ -110,7 +110,7 @@ db.drain()
 prices = db.get_column(symbol=1, name="price")
 ```
 
-📖 Full guide: [Quick Start](https://docs.zeptodb.io/getting-started/quickstart/) · [Python Reference](docs/api/PYTHON_REFERENCE.md) · [SQL Reference](docs/api/SQL_REFERENCE.md)
+📖 Full guide: [Quick Start](https://docs.zeptodb.io/getting-started/QUICK_START/) · [Python Reference](docs/api/PYTHON_REFERENCE.md) · [SQL Reference](docs/api/SQL_REFERENCE.md)
 
 ---
 

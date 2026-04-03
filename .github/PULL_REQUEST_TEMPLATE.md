@@ -1,25 +1,25 @@
 ## Summary
 
-<!-- 한 줄로 뭘 했는지 -->
+<!-- One-line description of what was done -->
 
 ## Type
 
-- [ ] Feature (새 기능)
-- [ ] Fix (버그 수정)
+- [ ] Feature
+- [ ] Fix (bug fix)
 - [ ] Refactor
 - [ ] Docs only
 
 ## Documentation Checklist
 
-> ⚠️ Feature PR은 아래 중 하나 이상 체크 필수 — CI가 검증합니다.
+> ⚠️ Feature PRs must check at least one item below — CI will verify.
 
-- [ ] `BACKLOG.md` 업데이트 (완료 항목 체크 or 새 항목 추가)
-- [ ] `docs/` 문서 추가/수정
-- [ ] `docs/devlog/` 개발 로그 작성
-- [ ] `README.md` 업데이트 (해당 시)
-- [ ] N/A — 문서 변경 불필요 (사유: _______________)
+- [ ] `BACKLOG.md` updated (checked off completed item or added new item)
+- [ ] `docs/` documentation added/modified
+- [ ] `docs/devlog/` devlog entry written
+- [ ] `README.md` updated (if applicable)
+- [ ] N/A — no documentation changes needed (reason: _______________)
 
 ## Test
 
-- [ ] 기존 테스트 통과
-- [ ] 새 테스트 추가 (해당 시)
+- [ ] Existing tests pass
+- [ ] New tests added (if applicable)
