@@ -146,6 +146,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
+          pattern: zeptodb-linux-*
           merge-multiple: true
 
       - name: Extract version
