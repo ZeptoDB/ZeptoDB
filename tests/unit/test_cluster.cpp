@@ -1759,10 +1759,14 @@ TEST(TcpRpcServerGracefulDrain, ForceCloseAfterTimeout) {
     server.set_thread_pool_size(1);
     server.set_drain_timeout_ms(100);  // very short timeout
 
+    std::atomic<bool> handler_started{false};
     server.start(19954,
         [&](const std::string&) {
-            // This handler takes longer than drain timeout
-            std::this_thread::sleep_for(2000ms);
+            handler_started.store(true);
+            // Simulate slow work in small steps so the thread can exit
+            // once the connection fd is force-closed and stop() joins.
+            for (int i = 0; i < 200 && server.is_running(); ++i)
+                std::this_thread::sleep_for(10ms);
             return zeptodb::sql::QueryResultSet{};
         });
     std::this_thread::sleep_for(20ms);
@@ -1774,15 +1778,17 @@ TEST(TcpRpcServerGracefulDrain, ForceCloseAfterTimeout) {
     });
 
     // Wait for handler to start
-    std::this_thread::sleep_for(50ms);
+    while (!handler_started.load())
+        std::this_thread::sleep_for(5ms);
 
-    // stop() should force-close after 100ms, not hang for 2s
+    // stop() should force-close after 100ms drain, then join workers
     auto t0 = std::chrono::steady_clock::now();
     server.stop();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
 
-    // Should complete well under 2000ms (the handler sleep)
+    // Handler checks is_running() every 10ms, so stop should complete
+    // well under the full 2000ms a pure sleep would take.
     EXPECT_LT(elapsed, 1500);
 
     // Client gets an error (connection was force-closed)

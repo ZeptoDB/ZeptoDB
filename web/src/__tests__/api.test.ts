@@ -45,7 +45,7 @@ describe("querySQL", () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(result) });
 
     const r = await querySQL("SELECT price FROM trades WHERE symbol = 1 LIMIT 1", "zepto_key");
-    expect(mockFetch).toHaveBeenCalledWith("/api", {
+    expect(mockFetch).toHaveBeenCalledWith("/api/", {
       method: "POST",
       body: "SELECT price FROM trades WHERE symbol = 1 LIMIT 1",
       headers: { Authorization: "Bearer zepto_key" },
@@ -58,7 +58,7 @@ describe("querySQL", () => {
   it("SHOW TABLES sends correct SQL", async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ columns: ["name"], data: [["trades"]] }) });
     await querySQL("SHOW TABLES");
-    expect(mockFetch).toHaveBeenCalledWith("/api", expect.objectContaining({
+    expect(mockFetch).toHaveBeenCalledWith("/api/", expect.objectContaining({
       method: "POST",
       body: "SHOW TABLES",
     }));
@@ -67,7 +67,7 @@ describe("querySQL", () => {
   it("DESCRIBE sends correct SQL", async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ columns: ["column", "type"], data: [] }) });
     await querySQL("DESCRIBE trades");
-    expect(mockFetch).toHaveBeenCalledWith("/api", expect.objectContaining({
+    expect(mockFetch).toHaveBeenCalledWith("/api/", expect.objectContaining({
       method: "POST",
       body: "DESCRIBE trades",
     }));

@@ -5,9 +5,9 @@ describe("Quantum Precision Theme", () => {
   it("provides dark mode palette with custom colors", () => {
     const theme = getTheme("dark");
     expect(theme.palette.mode).toBe("dark");
-    expect(theme.palette.primary.main).toBe("#00E5FF");
-    expect(theme.palette.secondary.main).toBe("#7C4DFF");
-    expect(theme.palette.background.default).toBe("#05080E");
+    expect(theme.palette.primary.main).toBe("#4D7CFF");
+    expect(theme.palette.secondary.main).toBe("#00F5D4");
+    expect(theme.palette.background.default).toBe("#0A0C10");
   });
 
   it("provides light mode palette with custom colors for toggle support", () => {
@@ -19,7 +19,6 @@ describe("Quantum Precision Theme", () => {
 
   it("configures backdrop filter (Glassmorphism) on Paper and Card components", () => {
     const theme = getTheme("dark");
-    // Check if styleOverrides exists for MuiPaper
     const paperOverrides = theme.components?.MuiPaper?.styleOverrides?.root;
     // @ts-ignore
     expect(paperOverrides?.backdropFilter).toBe("blur(16px)");

@@ -148,24 +148,12 @@ void TcpRpcServer::stop() {
         for (int fd : conn_fds_) ::shutdown(fd, SHUT_RDWR);
     }
 
-    // 5. Join or detach worker threads
-    //    If drain completed normally, join (clean). If force-closed, wait briefly
-    //    then detach stragglers so stop() doesn't block on stuck handlers.
+    // 5. Join all worker threads.
+    //    After force-closing sockets above, blocked recv/send will return
+    //    with an error, so workers will exit promptly.  Never detach —
+    //    detached threads may access destroyed members after ~TcpRpcServer.
     for (auto& w : workers_) {
-        if (!w.joinable()) continue;
-        if (!force) {
-            w.join();
-        } else {
-            // Give worker a short grace period after force-close
-            auto join_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
-            bool joined = false;
-            while (std::chrono::steady_clock::now() < join_deadline) {
-                // Try a timed check — no native timed join, so poll
-                if (active_conns_.load() == 0) { w.join(); joined = true; break; }
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            if (!joined) w.detach();
-        }
+        if (w.joinable()) w.join();
     }
     workers_.clear();
 }

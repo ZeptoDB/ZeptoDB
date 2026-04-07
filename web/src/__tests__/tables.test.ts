@@ -12,7 +12,7 @@ describe("TablesPage SQL usage", () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(result) });
 
     const r = await querySQL("SHOW TABLES", "zepto_key");
-    expect(mockFetch).toHaveBeenCalledWith("/api", {
+    expect(mockFetch).toHaveBeenCalledWith("/api/", {
       method: "POST",
       body: "SHOW TABLES",
       headers: { Authorization: "Bearer zepto_key" },
@@ -27,7 +27,7 @@ describe("TablesPage SQL usage", () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(result) });
 
     const r = await querySQL("DESCRIBE trades", "zepto_key");
-    expect(mockFetch).toHaveBeenCalledWith("/api", {
+    expect(mockFetch).toHaveBeenCalledWith("/api/", {
       method: "POST",
       body: "DESCRIBE trades",
       headers: { Authorization: "Bearer zepto_key" },

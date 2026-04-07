@@ -1,6 +1,6 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-04-01
+Last updated: 2026-04-07
 
 ---
 
@@ -122,7 +122,22 @@ Last updated: 2026-04-01
 - [x] **Settings page enhancement** — server info section (engine version, build date, health status) alongside runtime config
 - [x] **Login page polish** — gradient accent, tagline chip, keyboard hint, Quick Start link, footer branding
 
+## Web UI — Dashboard & Overview (P1)
+- [x] **Dashboard overview page** — Health status, version info, 5 stat cards (ingested/stored/queries/partitions/latency), drop rate warning, ingestion rate live chart, tables summary with row counts, rows-per-table bar chart, avg query cost
+- [x] **Cluster status dashboard** — Node topology ring visualization, partition distribution pie chart, node health table with store ratio bars, ticks-stored bar chart, time-series charts (ingestion/queries/latency per node), drop rate alert
+- [x] **Dashboard as default landing** — `/` redirects to `/dashboard`, Dashboard first in sidebar, visible to all roles (admin/writer/reader/analyst/metrics)
+
+## Bug Fixes
+- [x] **API client template literal fix** — Fixed broken string literals in `api.ts` and `auth.tsx` (backtick+double-quote mix from `API` variable introduction), all fetch URLs now use proper template literals with `${API}` prefix
+- [x] **API URL consistency** — All API calls use configurable `API` base path constant, supports both same-origin (Docker) and proxy (Next.js dev) modes
+
+## Website & Docs (P2)
+- [x] **Docs site (docs.zeptodb.io)** — mkdocs-material deployment
+- [x] **Docs nav update** — Added 40+ missing pages (devlog 024-040, Flight API, multinode_stability, etc.)
+- [x] **Performance comparison page** — vs kdb+/ClickHouse/TimescaleDB benchmark charts
+
 ## SEO & Community (P2)
+- [x] **SEO basics** — sitemap, Open Graph, meta tags (mkdocs-material auto-generated)
 - [x] **GitHub README renewal** — badges with logos, architecture diagram, emoji sections, GIF demo placeholder, navigation links, community section, updated test count (830+)
 - [x] **Community infrastructure** — CONTRIBUTING.md, CODE_OF_CONDUCT.md, GitHub Issue templates (bug/feature/perf), FUNDING.yml
 - [x] **Community setup guide** — Discord server structure (channels/roles/bots), GitHub Discussions categories — `docs/community/COMMUNITY_SETUP.md`

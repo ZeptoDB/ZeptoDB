@@ -1,16 +1,33 @@
 #!/bin/bash
-# Pre-push hook: warn if source changed without docs.
-# Install: cp scripts/hooks/pre-push .git/hooks/pre-push
+set -e
 
-CHANGED=$(git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only HEAD~1)
+REMOTE_HOST="ec2-user@172.31.71.135"
+SSH_KEY="$HOME/ec2-jinmp.pem"
+REMOTE_DIR="~/zeptodb"
+SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no"
+LOCAL_ROOT="$(git rev-parse --show-toplevel)"
 
-if echo "$CHANGED" | grep -qE '^(src/|include/)'; then
-  if ! echo "$CHANGED" | grep -qE '^(docs/|BACKLOG\.md|README\.md)'; then
-    echo ""
-    echo "⚠️  WARNING: Source files changed but no docs updated."
-    echo "   Consider updating BACKLOG.md or docs/ before pushing."
-    echo "   (This is a warning — push will proceed)"
-    echo ""
-  fi
+echo "=== Graviton (ARM64) pre-push build & test ==="
+
+rsync -az \
+  --exclude='build/' --exclude='build_clang/' --exclude='.git/' \
+  --exclude='node_modules/' --exclude='web/' --exclude='site/' \
+  --exclude='*.egg-info/' --exclude='dist/' --exclude='CMakePresets.json' \
+  -e "ssh $SSH_OPTS" \
+  "$LOCAL_ROOT/" "$REMOTE_HOST:$REMOTE_DIR/"
+
+RESULT=$(ssh $SSH_OPTS "$REMOTE_HOST" "
+  cd $REMOTE_DIR/build &&
+  ninja -j\$(nproc) zepto_tests 2>&1 | tail -1 &&
+  ./tests/zepto_tests --gtest_output=xml:/tmp/zepto_test_results.xml 2>&1 | tail -3
+" 2>&1)
+
+echo "$RESULT"
+
+if echo "$RESULT" | grep -q '\[  PASSED  \]'; then
+  echo "=== Graviton test passed. Pushing... ==="
+  exit 0
+else
+  echo "=== Graviton test FAILED. Push blocked. ==="
+  exit 1
 fi
-exit 0

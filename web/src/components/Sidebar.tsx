@@ -19,8 +19,8 @@ const WIDTH = 220;
 interface NavItem { label: string; href: string; icon: React.ReactNode; roles: string[] }
 
 const nav: NavItem[] = [
+  { label: "Dashboard", href: "/dashboard", icon: <DashboardIcon />, roles: ["admin", "writer", "reader", "analyst", "metrics"] },
   { label: "Query", href: "/query", icon: <TerminalIcon />, roles: ["admin", "writer", "reader", "analyst"] },
-  { label: "Dashboard", href: "/dashboard", icon: <DashboardIcon />, roles: ["admin", "writer", "reader", "metrics"] },
   { label: "Tables", href: "/tables", icon: <StorageIcon />, roles: ["admin", "writer", "reader", "analyst"] },
   { label: "Cluster", href: "/cluster", icon: <HubIcon />, roles: ["admin"] },
   { label: "Tenants", href: "/tenants", icon: <GroupsIcon />, roles: ["admin"] },

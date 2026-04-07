@@ -1,0 +1,38 @@
+name: Graviton ARM64 Build & Test
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', 'web/**', '*.md']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['docs/**', 'web/**', '*.md']
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: [self-hosted, linux, ARM64]
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: build
+        run: |
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER=clang-19 \
+                -DCMAKE_CXX_COMPILER=clang++-19 \
+                -G Ninja -S .. -B .
+          ninja -j$(nproc) zepto_tests
+
+      - name: Test
+        working-directory: build
+        run: ./tests/zepto_tests --gtest_output=xml:test-results.xml
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graviton-test-results
+          path: build/test-results.xml
