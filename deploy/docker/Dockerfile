@@ -14,15 +14,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" \
       > /etc/apt/sources.list.d/llvm.list && \
     apt-get update && apt-get install -y --no-install-recommends \
-    clang-19 llvm-19-dev cmake ninja-build git \
-    libhighway-dev libnuma-dev liblz4-dev liburing-dev \
+    clang-19 cmake ninja-build git \
+    pkg-config libnuma-dev liblz4-dev liburing-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Build Google Highway (SIMD) from source
+RUN git clone --depth 1 --branch 1.2.0 https://github.com/google/highway.git /tmp/highway && \
+    cmake -S /tmp/highway -B /tmp/highway/build -G Ninja \
+      -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+      -DCMAKE_BUILD_TYPE=Release -DHWY_ENABLE_TESTS=OFF -DHWY_ENABLE_EXAMPLES=OFF && \
+    ninja -C /tmp/highway/build -j$(nproc) && \
+    ninja -C /tmp/highway/build install && \
+    rm -rf /tmp/highway
 
 WORKDIR /build
 COPY CMakeLists.txt ./
 COPY include ./include
 COPY src ./src
+COPY tools ./tools
 COPY tests ./tests
+COPY third_party ./third_party
 
 RUN mkdir -p build && cd build && \
     cmake .. \
@@ -34,15 +45,19 @@ RUN mkdir -p build && cd build && \
         -DAPEX_CLOUD_NATIVE=ON \
         -DAPEX_USE_HUGEPAGES=OFF \
         -DAPEX_USE_RDMA=OFF \
+        -DZEPTO_USE_UCX=OFF \
+        -DZEPTO_USE_JIT=OFF \
+        -DZEPTO_BUILD_PYTHON=OFF \
         -DAPEX_USE_IO_URING=ON \
         -DBUILD_TESTS=OFF && \
-    ninja -j$(nproc) && \
-    strip zepto_server *.so
+    ninja -j$(nproc) zepto_http_server && \
+    strip zepto_http_server
 
-# Collect runtime shared libs needed by zepto_server
+# Collect runtime shared libs + prepare log dir
 RUN mkdir -p /runtime-libs && \
-    ldd build/zepto_server | grep "=> /" | awk '{print $3}' | \
-    xargs -I{} cp --parents {} /runtime-libs/
+    ldd build/zepto_http_server | grep "=> /" | awk '{print $3}' | \
+    xargs -I{} cp --parents {} /runtime-libs/ && \
+    mkdir -p /runtime-libs/var/log/zeptodb && chmod 777 /runtime-libs/var/log/zeptodb
 
 # ============================================================================
 # Stage 2: Runtime (distroless — minimal, no shell, no package manager)
@@ -58,9 +73,8 @@ LABEL org.opencontainers.image.vendor="ZeptoDB"
 
 WORKDIR /opt/zeptodb
 
-# Copy binary + shared libs
-COPY --from=builder /build/build/zepto_server .
-COPY --from=builder /build/build/*.so* .
+# Copy binary + shared libs + create log dir
+COPY --from=builder /build/build/zepto_http_server .
 COPY --from=builder /runtime-libs/ /
 
 EXPOSE 8123
@@ -69,5 +83,5 @@ ENV APEX_WORKER_THREADS=8 \
     APEX_ANALYTICS_MODE=true \
     APEX_PORT=8123
 
-ENTRYPOINT ["./zepto_server"]
-CMD ["--port", "8123", "--cloud-native"]
+ENTRYPOINT ["./zepto_http_server"]
+CMD ["--port", "8123", "--no-auth"]
