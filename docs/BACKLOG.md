@@ -18,13 +18,14 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Website (zeptodb.io)** | A GitHub README alone lacks credibility. PRD: `docs/business/WEBSITE_PRD.md` | S |
-| ↳ Landing page | Benchmark numbers are the key selling point | |
-| ↳ Features / Performance / Use Cases | Feature details, benchmark comparisons, industry-specific examples | |
-| ↳ Pricing / Blog / About | OSS vs Enterprise, devlog migration, company introduction | |
-| Docs site deployment automation | GitHub Actions → Cloudflare Pages / GitHub Pages CI/CD | XS |
-| Use Cases page | HFT, Quant, Crypto, IoT industry-specific examples. Keywords for search traffic | S |
-| Blog (devlog migration) | Migrate 040 existing devlogs → tech blog. SEO long-tail traffic | S |
+| ~~**Website (zeptodb.io)**~~ | ✅ Astro Starlight site built (`zeptodb-site/`). All pages complete | — |
+| ~~↳ Landing page~~ | ✅ Hero + benchmark comparison + use case cards + CTA | — |
+| ~~↳ Features / Performance / Use Cases~~ | ✅ Features, Benchmarks, 4 use-case pages, 4 competitor comparisons | — |
+| ~~↳ Pricing / Blog / About~~ | ✅ Pricing (Community/Enterprise), 4 blog posts, About, Contact | — |
+| ~~Docs site deployment automation~~ | ✅ GitHub Actions `build-deploy.yml` + `sync-docs.mjs` | — |
+| ~~Use Cases page~~ | ✅ Trading, IoT, Robotics, Autonomous Vehicles | — |
+| ~~Blog (devlog migration)~~ | ✅ 4 posts from devlogs (Intro, ASOF JOIN, Zero-Copy Python, Lock-Free Ingestion) | — |
+| Blog: additional devlog migration | Remaining 46 devlogs → blog posts for SEO long-tail | S |
 
 ### Onboarding
 
@@ -168,7 +169,7 @@
 | Priority | Category | Remaining | Next Action |
 |----------|----------|:---------:|-------------|
 | **P1** | Demo-ready UI | ✅ 0 | Complete |
-| **P2** | Website + Distribution | 11 + 8 manual | Website (zeptodb.io) is the gate |
+| **P2** | Website + Distribution | 5 + 8 manual | Blog expansion, Package distribution |
 | **P3** | Connectivity | ✅ 0 | Complete |
 | **P4** | Tool Integration | 2 | ClickHouse protocol, JDBC/ODBC |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
@@ -178,6 +179,6 @@
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 50 items + 8 manual tasks**
+**Total remaining: 44 items + 8 manual tasks**
 
-**Critical path: P2 (Website + Distribution) → P4 (Tool Integration)**
+**Critical path: P2 (Package Distribution) → P4 (Tool Integration)**

@@ -160,6 +160,20 @@ Last updated: 2026-04-07
 ## Package Distribution (P2)
 - [x] **Docker Hub official image** — `docker pull zeptodb/zeptodb:0.0.1`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint
 
+## Website (P2)
+- [x] **Product website** — Astro Starlight site (`zeptodb-site/`). Landing page with hero + benchmark comparison table + use case cards + CTA
+- [x] **Features page** — Ingestion engine, query engine, storage, client APIs, security, clustering, deployment
+- [x] **Benchmarks page** — Hardware specs, ingestion throughput, query latency, Python zero-copy numbers
+- [x] **Use Cases (4 pages)** — Trading & Finance, IoT, Robotics, Autonomous Vehicles with architecture diagrams and SQL examples
+- [x] **Competitor comparisons (4 pages)** — vs kdb+, vs ClickHouse, vs InfluxDB, vs TimescaleDB
+- [x] **Pricing page** — Community (Free/OSS) vs Enterprise tiers with FAQ
+- [x] **Blog (4 posts)** — Introducing ZeptoDB, How ASOF JOIN Works, Zero-Copy Python (522ns), Lock-Free Ingestion (5.52M/sec)
+- [x] **About / Contact / Community pages** — Mission, tech philosophy, contributing guide, roadmap
+- [x] **Security page** — TLS, Auth, RBAC, Rate Limiting, Audit, Compliance matrix (SOC2/MiFID II/GDPR/PCI)
+- [x] **Integrations page** — Feed handlers, client libraries, monitoring, storage/cloud, auth providers, roadmap integrations
+- [x] **Docs site deployment automation** — GitHub Actions `build-deploy.yml` (push + repository_dispatch), `sync-docs.mjs` for ZeptoDB docs sync
+- [x] **Custom header navigation** — Product/Solutions/Docs/Pricing/Community top nav with GitHub Stars badge
+
 ---
 
 > Client API Compatibility Matrix: [`docs/design/client_compatibility.md`](docs/design/client_compatibility.md)
