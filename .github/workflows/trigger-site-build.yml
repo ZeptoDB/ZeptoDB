@@ -1,0 +1,20 @@
+# Place this file in ZeptoDB/ZeptoDB repo at .github/workflows/trigger-site-build.yml
+# When docs/ changes are pushed, triggers ZeptoDB-site rebuild
+name: Trigger Site Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger ZeptoDB-site rebuild
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.SITE_DEPLOY_TOKEN }}
+          repository: ZeptoDB/ZeptoDB-site
+          event-type: docs-updated

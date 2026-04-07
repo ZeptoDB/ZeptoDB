@@ -1,10 +1,10 @@
-name: Deploy Docs
+# DEPRECATED: Replaced by Astro Starlight site (ZeptoDB-site repo)
+# Kept for reference. The trigger-site-build.yml workflow now dispatches
+# to ZeptoDB-site on docs/** changes.
+name: Deploy Docs (disabled)
 
 on:
-  push:
-    branches: [main]
-    paths: ['docs/**', 'mkdocs.yml']
-  workflow_dispatch:
+  workflow_dispatch:  # manual only, no longer auto-triggers
 
 permissions:
   contents: write
@@ -12,6 +12,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: false  # disabled
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
