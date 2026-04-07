@@ -1,44 +1,29 @@
 # ZeptoDB Cloud-Native Dockerfile
-# Multi-stage build for minimal image size
+# Multi-stage build: debian builder → distroless runtime (~30MB)
 
 # ============================================================================
 # Stage 1: Builder
 # ============================================================================
-FROM ubuntu:22.04 AS builder
-
-LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
-LABEL description="ZeptoDB Builder Stage"
+FROM debian:bookworm-slim AS builder
 
 # Install LLVM 19 + build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget gnupg software-properties-common ca-certificates && \
-    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-19 main" \
-      >> /etc/apt/sources.list.d/llvm.list && \
+    wget gnupg ca-certificates && \
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+      > /etc/apt/trusted.gpg.d/llvm.asc && \
+    echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" \
+      > /etc/apt/sources.list.d/llvm.list && \
     apt-get update && apt-get install -y --no-install-recommends \
-    clang-19 \
-    llvm-19-dev \
-    cmake \
-    ninja-build \
-    git \
-    libhighway-dev \
-    libnuma-dev \
-    liblz4-dev \
-    liburing-dev \
+    clang-19 llvm-19-dev cmake ninja-build git \
+    libhighway-dev libnuma-dev liblz4-dev liburing-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-
-# Copy source code
 COPY CMakeLists.txt ./
 COPY include ./include
 COPY src ./src
 COPY tests ./tests
 
-# Build with cloud-native optimizations
-# - march=x86-64-v3: AVX2 지원 (대부분 클라우드 인스턴스)
-# - O3: 최고 최적화
-# - DAPEX_CLOUD_NATIVE=ON: 클라우드 특화 설정
 RUN mkdir -p build && cd build && \
     cmake .. \
         -G Ninja \
@@ -54,10 +39,15 @@ RUN mkdir -p build && cd build && \
     ninja -j$(nproc) && \
     strip zepto_server *.so
 
+# Collect runtime shared libs needed by zepto_server
+RUN mkdir -p /runtime-libs && \
+    ldd build/zepto_server | grep "=> /" | awk '{print $3}' | \
+    xargs -I{} cp --parents {} /runtime-libs/
+
 # ============================================================================
-# Stage 2: Runtime
+# Stage 2: Runtime (distroless — minimal, no shell, no package manager)
 # ============================================================================
-FROM ubuntu:22.04
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
 LABEL description="ZeptoDB Analytics Edition - Cloud Native"
@@ -66,47 +56,18 @@ LABEL org.opencontainers.image.source="https://github.com/ZeptoDB/ZeptoDB"
 LABEL org.opencontainers.image.url="https://zeptodb.io"
 LABEL org.opencontainers.image.vendor="ZeptoDB"
 
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libhighway1 \
-    libnuma1 \
-    liblz4-1 \
-    liburing2 \
-    curl \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user for security
-RUN useradd -r -u 1000 -m -s /bin/bash apex && \
-    mkdir -p /opt/zeptodb/data /opt/zeptodb/config && \
-    chown -R apex:apex /opt/zeptodb
-
 WORKDIR /opt/zeptodb
 
-# Copy binaries from builder
+# Copy binary + shared libs
 COPY --from=builder /build/build/zepto_server .
 COPY --from=builder /build/build/*.so* .
+COPY --from=builder /runtime-libs/ /
 
-# Set ownership
-RUN chown -R apex:apex /opt/zeptodb
-
-# Switch to non-root user
-USER apex
-
-# Expose HTTP API port
 EXPOSE 8123
 
-# Health check endpoint
-HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8123/health || exit 1
-
-# Environment variables (can be overridden)
 ENV APEX_WORKER_THREADS=8 \
     APEX_ANALYTICS_MODE=true \
     APEX_PORT=8123
 
-# Entrypoint
 ENTRYPOINT ["./zepto_server"]
-
-# Default command (can be overridden)
 CMD ["--port", "8123", "--cloud-native"]
