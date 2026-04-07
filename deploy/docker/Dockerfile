@@ -4,17 +4,23 @@
 # ============================================================================
 # Stage 1: Builder
 # ============================================================================
-FROM clang:19 AS builder
+FROM ubuntu:22.04 AS builder
 
 LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
 LABEL description="ZeptoDB Builder Stage"
 
-# Install build dependencies
+# Install LLVM 19 + build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget gnupg software-properties-common ca-certificates && \
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
+    echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-19 main" \
+      >> /etc/apt/sources.list.d/llvm.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    clang-19 \
+    llvm-19-dev \
     cmake \
     ninja-build \
     git \
-    ca-certificates \
     libhighway-dev \
     libnuma-dev \
     liblz4-dev \
