@@ -53,8 +53,8 @@ Without a Web UI, demos are impossible. `web/` folder, React+Vite, static serve 
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Docker Hub official image** | Start with a single line: `docker pull zeptodb/zeptodb`. Currently only a Dockerfile exists, not registered in any registry | S |
-| ↳ Multi-arch (amd64 + arm64) | Graviton build already verified. Covers M1 Mac users | |
+| ~~**Docker Hub official image**~~ | ~~Start with a single line: `docker pull zeptodb/zeptodb`~~ | ✅ |
+| ↳ Multi-arch (amd64 + arm64) | Graviton build already verified. Covers M1 Mac users | S |
 | **PyPI package (`pip install zeptodb`)** | The first path Python quants try. Arrow Flight client wrapper | S |
 | **Homebrew Formula** | macOS developer accessibility. `brew install zeptodb` | S |
 | **GitHub Releases + binaries** | Download without building. Linux amd64/arm64 tarball, `.deb`, `.rpm` | S |

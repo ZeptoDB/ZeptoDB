@@ -55,7 +55,10 @@ FROM ubuntu:22.04
 
 LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
 LABEL description="ZeptoDB Analytics Edition - Cloud Native"
-LABEL version="1.0.0"
+LABEL version="0.0.1"
+LABEL org.opencontainers.image.source="https://github.com/ZeptoDB/ZeptoDB"
+LABEL org.opencontainers.image.url="https://zeptodb.io"
+LABEL org.opencontainers.image.vendor="ZeptoDB"
 
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
