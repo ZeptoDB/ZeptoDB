@@ -27,7 +27,7 @@ jobs:
           ninja -j$(nproc) zepto_tests
 
       - name: Test
-        run: ./build/tests/zepto_tests --gtest_output=xml:test-results.xml
+        run: ./build/tests/zepto_tests --gtest_output=xml:build/test-results.xml
 
       - name: Upload Test Results
         if: always()
