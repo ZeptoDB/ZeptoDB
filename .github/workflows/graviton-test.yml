@@ -18,8 +18,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build
-        working-directory: build
         run: |
+          mkdir -p build && cd build
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER=clang-19 \
                 -DCMAKE_CXX_COMPILER=clang++-19 \
@@ -27,8 +27,7 @@ jobs:
           ninja -j$(nproc) zepto_tests
 
       - name: Test
-        working-directory: build
-        run: ./tests/zepto_tests --gtest_output=xml:test-results.xml
+        run: ./build/tests/zepto_tests --gtest_output=xml:test-results.xml
 
       - name: Upload Test Results
         if: always()
