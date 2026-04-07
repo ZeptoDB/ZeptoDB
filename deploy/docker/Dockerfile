@@ -72,7 +72,7 @@ RUN mkdir -p build && cd build && \
         -DCMAKE_CXX_COMPILER=clang++-19 \
         -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -mtune=generic -O3" \
         -DAPEX_CLOUD_NATIVE=ON \
-        -DAPEX_USE_HUGEPAGES=OFF \
+        -DAPEX_USE_HUGEPAGES=ON \
         -DAPEX_USE_RDMA=OFF \
         -DZEPTO_USE_UCX=OFF \
         -DZEPTO_USE_JIT=ON \
