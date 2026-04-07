@@ -6,14 +6,22 @@ Guides for deploying ZeptoDB in production environments.
 
 ## Documentation
 
-### 1. [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) — Required Reading
+### 1. [DOCKER.md](DOCKER.md) — Getting Started
+**Docker Deployment Guide**
+- Quick start, all binaries, running different roles
+- Enabled/disabled features comparison
+- Bare metal vs Docker performance comparison
+- Docker performance tuning (CPU pinning, HugePages, NUMA)
+- Multi-node cluster with Docker Compose
+
+### 2. [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) — Required Reading
 **Bare Metal vs Cloud Selection Guide**
 - Deployment option selection by workload
 - Bare metal deployment (HFT Edition)
 - Cloud-native deployment (Analytics Edition)
 - Comparison table and migration paths
 
-### 2. [BARE_METAL_TUNING.md](BARE_METAL_TUNING.md)
+### 3. [BARE_METAL_TUNING.md](BARE_METAL_TUNING.md)
 **Bare Metal Optimization Detailed Guide**
 - CPU Pinning & isolation (`isolcpus`, `nohz_full`, IRQ affinity)
 - NUMA optimization (per-node binding, `numastat` verification)
@@ -24,14 +32,14 @@ Guides for deploying ZeptoDB in production environments.
 - Network tuning (busy_poll, buffer sizes)
 - Benchmarking & profiling methods
 
-### 3. [KUBERNETES_OPS.md](KUBERNETES_OPS.md)
+### 4. [KUBERNETES_OPS.md](KUBERNETES_OPS.md)
 **Kubernetes Operations Guide** (TODO)
 - Helm Chart usage
 - Rolling updates
 - Monitoring configuration
 - Troubleshooting
 
-### 4. [Rolling Upgrade Guide](../ops/rolling_upgrade.md)
+### 5. [Rolling Upgrade Guide](../ops/rolling_upgrade.md)
 **Zero-Downtime Upgrade Procedures**
 - Standard / Config-only / Canary / Cluster-mode upgrades
 - Rollback procedures

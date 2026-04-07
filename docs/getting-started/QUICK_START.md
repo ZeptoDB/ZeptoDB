@@ -14,6 +14,9 @@ docker run -p 8123:8123 -p 8815:8815 zeptodb/zeptodb:0.0.1 --demo
 
 The `--demo` flag preloads sample trade/quote data so you can query immediately.
 
+> Web UI available at [http://localhost:8123/ui/](http://localhost:8123/ui/)
+> For Docker-specific options, see [Docker Deployment Guide](../deployment/DOCKER.md).
+
 ### Option B: Build from source
 
 ```bash
