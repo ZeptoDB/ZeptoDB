@@ -1,8 +1,8 @@
 # ZeptoDB Cloud-Native Dockerfile
 # Single image for all roles: master, data-node, flight, cli
 #
-# Enabled:  SIMD (Highway), JIT (LLVM), TLS/JWT (OpenSSL), S3 (AWS SDK), LZ4, io_uring, Web UI
-# Disabled: UCX/RDMA (bare-metal only), Python binding (use pip install zeptodb)
+# Enabled:  SIMD, JIT, TLS/JWT, S3, Arrow Flight, Parquet, LZ4, io_uring, Web UI
+# Disabled: UCX/RDMA (bare-metal only), Python binding (pip install zeptodb)
 
 # ============================================================================
 # Stage 1: Web UI (Next.js static export)
@@ -21,19 +21,24 @@ RUN pnpm build
 # ============================================================================
 FROM debian:bookworm-slim AS builder
 
+# LLVM 19 + Apache Arrow apt repos + build deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget gnupg ca-certificates && \
+    wget gnupg ca-certificates lsb-release && \
     wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
       > /etc/apt/trusted.gpg.d/llvm.asc && \
     echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" \
       > /etc/apt/sources.list.d/llvm.list && \
+    wget https://packages.apache.org/artifactory/arrow/debian/apache-arrow-apt-source-latest-bookworm.deb && \
+    apt-get install -y -V ./apache-arrow-apt-source-latest-bookworm.deb && \
+    rm -f apache-arrow-apt-source-latest-bookworm.deb && \
     apt-get update && apt-get install -y --no-install-recommends \
     clang-19 llvm-19-dev \
     cmake ninja-build git pkg-config \
     libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
+    libarrow-dev libarrow-flight-dev libparquet-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Build Google Highway (SIMD)
+# Build Google Highway (SIMD) — not in Debian repos
 RUN git clone --depth 1 --branch 1.2.0 https://github.com/google/highway.git /tmp/highway && \
     cmake -S /tmp/highway -B /tmp/highway/build -G Ninja \
       -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
@@ -78,15 +83,17 @@ RUN mkdir -p build && cd build && \
         -DZEPTO_USE_JIT=ON \
         -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm \
         -DZEPTO_USE_S3=ON \
+        -DZEPTO_USE_PARQUET=ON \
+        -DZEPTO_USE_FLIGHT=ON \
         -DZEPTO_BUILD_PYTHON=OFF \
         -DAPEX_USE_IO_URING=ON \
         -DBUILD_TESTS=OFF && \
-    ninja -j$(nproc) zepto_http_server zepto_data_node zepto-cli && \
-    strip zepto_http_server zepto_data_node zepto-cli
+    ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli && \
+    strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli
 
 # Collect runtime shared libs
 RUN mkdir -p /runtime-libs && \
-    for bin in build/zepto_http_server build/zepto_data_node; do \
+    for bin in build/zepto_http_server build/zepto_data_node build/zepto_flight_server; do \
       ldd "$bin" | grep "=> /" | awk '{print $3}' | \
       xargs -I{} cp --parents {} /runtime-libs/ 2>/dev/null; \
     done && \
@@ -109,6 +116,7 @@ WORKDIR /opt/zeptodb
 # Binaries
 COPY --from=builder /build/build/zepto_http_server .
 COPY --from=builder /build/build/zepto_data_node .
+COPY --from=builder /build/build/zepto_flight_server .
 COPY --from=builder /build/build/zepto-cli .
 
 # Runtime shared libs + log dir
@@ -117,7 +125,7 @@ COPY --from=builder /runtime-libs/ /
 # Web UI static files
 COPY --from=webbuilder /web/out ./web/
 
-EXPOSE 8123
+EXPOSE 8123 8815
 
 ENV APEX_WORKER_THREADS=8 \
     APEX_ANALYTICS_MODE=true \

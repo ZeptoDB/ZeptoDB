@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  IMAGE_NAME: zeptodb/zeptodb
+
+jobs:
+  # ── Build binaries (matrix: amd64 + arm64) ──
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            march: x86-64-v3
+            artifact: zeptodb-linux-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            march: armv8-a
+            artifact: zeptodb-linux-arm64
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install LLVM 19
+      - name: Install LLVM 19
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm.asc
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm.list
+
+          # Apache Arrow apt repo
+          wget https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release -cs).deb
+          sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release -cs).deb
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-19 llvm-19-dev cmake ninja-build git pkg-config \
+            libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
+            libarrow-dev libarrow-flight-dev libparquet-dev
+
+      # Build Highway
+      - name: Build Highway
+        run: |
+          git clone --depth 1 --branch 1.2.0 https://github.com/google/highway.git /tmp/highway
+          cmake -S /tmp/highway -B /tmp/highway/build -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release -DHWY_ENABLE_TESTS=OFF -DHWY_ENABLE_EXAMPLES=OFF
+          sudo ninja -C /tmp/highway/build -j$(nproc) install
+
+      # Build AWS SDK
+      - name: Build AWS SDK (S3)
+        run: |
+          git clone --depth 1 --branch 1.11.510 --recurse-submodules \
+            https://github.com/aws/aws-sdk-cpp.git /tmp/aws-sdk
+          cmake -S /tmp/aws-sdk -B /tmp/aws-sdk/build -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_ONLY="s3" \
+            -DBUILD_SHARED_LIBS=OFF -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF
+          sudo ninja -C /tmp/aws-sdk/build -j$(nproc) install
+
+      # Build ZeptoDB
+      - name: Build ZeptoDB
+        run: |
+          LLVM_DIR_PATH="/usr/lib/llvm-19/lib/cmake/llvm"
+          [ -d "/usr/lib/aarch64-linux-gnu/cmake/llvm-19" ] && LLVM_DIR_PATH="/usr/lib/aarch64-linux-gnu/cmake/llvm-19"
+
+          mkdir -p build && cd build
+          cmake .. -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_CXX_FLAGS="-march=${{ matrix.march }} -mtune=generic -O3" \
+            -DAPEX_CLOUD_NATIVE=ON \
+            -DAPEX_USE_HUGEPAGES=ON \
+            -DAPEX_USE_RDMA=OFF \
+            -DZEPTO_USE_UCX=OFF \
+            -DZEPTO_USE_JIT=ON \
+            -DLLVM_DIR="$LLVM_DIR_PATH" \
+            -DZEPTO_USE_S3=ON \
+            -DZEPTO_USE_PARQUET=ON \
+            -DZEPTO_USE_FLIGHT=ON \
+            -DZEPTO_BUILD_PYTHON=OFF \
+            -DAPEX_USE_IO_URING=ON \
+            -DBUILD_TESTS=OFF
+          ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli
+          strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli
+
+      # Package
+      - name: Package binaries
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          DIR="${{ matrix.artifact }}-${VERSION}"
+          mkdir -p "$DIR"
+          cp build/zepto_http_server build/zepto_data_node \
+             build/zepto_flight_server build/zepto-cli "$DIR/"
+          tar czf "${{ matrix.artifact }}-${VERSION}.tar.gz" "$DIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: "*.tar.gz"
+
+  # ── Docker image (amd64 only for now) ──
+  docker:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── GitHub Release ──
+  release:
+    runs-on: ubuntu-latest
+    needs: [build, docker]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract version
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ZeptoDB v${{ steps.meta.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
+          body: |
+            ## Docker
+            ```bash
+            docker pull zeptodb/zeptodb:${{ steps.meta.outputs.version }}
+            docker run -p 8123:8123 zeptodb/zeptodb:${{ steps.meta.outputs.version }}
+            ```
+
+            ## Binaries
+            | Platform | File |
+            |----------|------|
+            | Linux x86_64 | `zeptodb-linux-amd64-${{ steps.meta.outputs.version }}.tar.gz` |
+            | Linux arm64 | `zeptodb-linux-arm64-${{ steps.meta.outputs.version }}.tar.gz` |
+
+            ## Features
+            SIMD (Highway), JIT (LLVM 19), TLS/JWT (OpenSSL), AWS S3, Arrow Flight, Parquet, LZ4, io_uring, Web UI
