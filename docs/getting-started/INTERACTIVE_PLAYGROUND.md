@@ -137,7 +137,7 @@ FROM sensors WHERE device_id = 'sensor_01'
 
 ```bash
 # Single container with playground mode
-docker run -p 8123:8123 zeptodb/zeptodb:latest \
+docker run -p 8123:8123 zeptodb/zeptodb:0.0.1 \
   --demo --playground \
   --playground-timeout-sec 5 \
   --playground-rate-limit 30 \

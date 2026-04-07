@@ -36,7 +36,7 @@ The codebase is ~830 tests, runs on x86_64 and ARM Graviton. BSL-1.1 licensed (A
 
 GitHub: https://github.com/zeptodb/zeptodb
 Docs: https://docs.zeptodb.io
-Try it: `docker run -p 8123:8123 zeptodb/zeptodb`
+Try it: `docker run -p 8123:8123 zeptodb/zeptodb:0.0.1`
 
 Happy to answer questions about the architecture, SIMD/JIT implementation, or benchmarking methodology.
 
@@ -78,7 +78,7 @@ Focus on finance use cases:
 **Title:** `ZeptoDB — self-hosted time-series database, single Docker command, Grafana-compatible`
 
 Focus on ease of deployment:
-- `docker run -p 8123:8123 zeptodb/zeptodb`
+- `docker run -p 8123:8123 zeptodb/zeptodb:0.0.1`
 - ClickHouse-compatible API (Grafana works natively)
 - Web UI included
 - Helm chart for Kubernetes
@@ -95,7 +95,7 @@ Focus on ease of deployment:
 
 ## Launch Day Checklist
 
-- [ ] Docker image works: `docker pull zeptodb/zeptodb && docker run -p 8123:8123 zeptodb/zeptodb`
+- [ ] Docker image works: `docker pull zeptodb/zeptodb:0.0.1 && docker run -p 8123:8123 zeptodb/zeptodb:0.0.1`
 - [ ] Quick Start guide tested end-to-end
 - [ ] Docs site live at docs.zeptodb.io
 - [ ] Website live at zeptodb.io (at minimum: landing page)

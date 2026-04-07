@@ -25,8 +25,8 @@
 ## Docker
 
 ```bash
-docker pull zeptodb/zeptodb:latest
-docker run -p 8123:8123 zeptodb/zeptodb:latest
+docker pull zeptodb/zeptodb:0.0.1
+docker run -p 8123:8123 zeptodb/zeptodb:0.0.1
 ```
 
 ## Helm (Kubernetes)

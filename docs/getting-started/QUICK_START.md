@@ -9,7 +9,7 @@
 ### Option A: Docker (recommended)
 
 ```bash
-docker run -p 8123:8123 -p 8815:8815 zeptodb/zeptodb:latest --demo
+docker run -p 8123:8123 -p 8815:8815 zeptodb/zeptodb:0.0.1 --demo
 ```
 
 The `--demo` flag preloads sample trade/quote data so you can query immediately.

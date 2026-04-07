@@ -70,7 +70,7 @@ The engine is hardware-software co-optimized: Highway SIMD vectorization, LLVM J
 ### Docker (fastest)
 
 ```bash
-docker run -p 8123:8123 zeptodb/zeptodb
+docker run -p 8123:8123 zeptodb/zeptodb:0.0.1
 
 # Insert data
 curl -X POST http://localhost:8123/ \
