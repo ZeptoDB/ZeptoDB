@@ -98,6 +98,10 @@ public:
     /// Set query execution timeout (0 = disabled).
     void set_query_timeout_ms(uint32_t ms) { query_timeout_ms_ = ms; }
 
+    /// Serve static files from directory (Web UI).
+    /// Must be called before start(). Mounts at "/".
+    void set_web_dir(const std::string& dir);
+
     /// Set tenant manager for multi-tenancy quota enforcement.
     void set_tenant_manager(std::shared_ptr<zeptodb::auth::TenantManager> mgr) {
         tenant_mgr_ = std::move(mgr);

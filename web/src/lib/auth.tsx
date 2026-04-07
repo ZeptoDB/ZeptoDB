@@ -2,6 +2,8 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import { getQueryClient } from "@/components/Providers";
 
+const API = typeof window !== "undefined" && window.location.pathname.startsWith("/ui") ? "" : "/api";
+
 interface AuthState {
   apiKey: string;
   role: string;
@@ -36,7 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (async () => {
       // Try session cookie (server-side session)
       try {
-        const res = await fetch("/api/auth/me", { credentials: "include" });
+        const res = await fetch(`${API}/auth/me`, { credentials: "include" });
         if (res.ok) {
           const { role, subject, source } = await res.json();
           setAuth({ apiKey: "", role, subject, source: source ?? "session" });
@@ -54,7 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (apiKey: string) => {
     const trimmed = apiKey.trim();
-    const res = await fetch("/api/whoami", {
+    const res = await fetch(`${API}/whoami`, {
       headers: { Authorization: `Bearer ${trimmed}` },
       cache: "no-store",
     });
@@ -67,7 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Try to create a server-side session
     try {
-      const sessionRes = await fetch("/api/auth/session", {
+      const sessionRes = await fetch(`${API}/auth/session`, {
         method: "POST",
         headers: { Authorization: `Bearer ${trimmed}` },
         credentials: "include",
@@ -87,14 +89,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loginSSO = useCallback(() => {
-    // Redirect to server's OIDC login endpoint
-    window.location.href = "/api/auth/login";
+    window.location.href = `${API}/auth/login`;
   }, []);
 
   const logout = useCallback(async () => {
-    // Try server-side logout
     try {
-      await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+      await fetch(`${API}/auth/logout`, { method: "POST", credentials: "include" });
     } catch { /* ignore */ }
 
     setAuth(null);
@@ -106,7 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/refresh", {
+      const res = await fetch(`${API}/auth/refresh`, {
         method: "POST",
         credentials: "include",
       });

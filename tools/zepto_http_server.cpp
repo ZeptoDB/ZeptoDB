@@ -21,6 +21,7 @@
 #include <iostream>
 #include <atomic>
 #include <fstream>
+#include <filesystem>
 
 #ifdef __linux__
 #include <cstring>
@@ -65,6 +66,7 @@ int main(int argc, char* argv[]) {
     std::string jwt_secret;       // HS256
     std::string jwt_public_key;   // RS256 PEM file path
     std::string jwks_url;         // JWKS endpoint URL
+    std::string web_dir;          // Web UI static files directory
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -95,6 +97,8 @@ int main(int argc, char* argv[]) {
             jwt_public_key = argv[++i];
         else if (arg == "--jwks-url" && i + 1 < argc)
             jwks_url = argv[++i];
+        else if (arg == "--web-dir" && i + 1 < argc)
+            web_dir = argv[++i];
         else if (arg == "--add-node" && i + 1 < argc) {
             std::string spec = argv[++i];
             auto p1 = spec.find(':');
@@ -233,6 +237,18 @@ int main(int argc, char* argv[]) {
     zeptodb::sql::QueryExecutor executor(pipeline);
     zeptodb::server::HttpServer server(executor, port, zeptodb::auth::TlsConfig{}, auth);
     server.set_ready(true);
+
+    // Web UI static files
+    if (web_dir.empty()) {
+        // Auto-detect: check common locations
+        for (const auto& candidate : {"/opt/zeptodb/web", "./web/out"}) {
+            if (std::filesystem::is_directory(candidate)) {
+                web_dir = candidate;
+                break;
+            }
+        }
+    }
+    if (!web_dir.empty()) server.set_web_dir(web_dir);
 
     // ── HA mode ──
     std::unique_ptr<zeptodb::cluster::CoordinatorHA> ha;

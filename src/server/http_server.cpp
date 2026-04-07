@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <atomic>
 #include <random>
+#include <filesystem>
 
 namespace zeptodb::server {
 
@@ -1547,6 +1548,23 @@ void HttpServer::setup_admin_routes() {
             res.set_content(MetricsCollector::to_json(snaps), "application/json");
         }
     });
+}
+
+// ============================================================================
+// set_web_dir — serve static files (Web UI)
+// ============================================================================
+void HttpServer::set_web_dir(const std::string& dir) {
+    if (!std::filesystem::is_directory(dir)) {
+        zeptodb::util::Logger::instance().warn(
+            "{\"event\":\"web_dir_not_found\",\"path\":\"" + dir + "\"}", "http");
+        return;
+    }
+    svr_->set_mount_point("/ui", dir);
+    svr_->Get("/", [](const httplib::Request& /*req*/, httplib::Response& res) {
+        res.set_redirect("/ui/");
+    });
+    zeptodb::util::Logger::instance().info(
+        "{\"event\":\"web_ui_enabled\",\"path\":\"" + dir + "\"}", "http");
 }
 
 // ============================================================================

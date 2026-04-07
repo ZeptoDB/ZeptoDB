@@ -1,3 +1,7 @@
+// API base path: empty when served from same origin (Docker/static),
+// "/api" when running behind Next.js dev proxy.
+const API = typeof window !== "undefined" && window.location.pathname.startsWith("/ui") ? "" : "/api";
+
 function headers(apiKey?: string): HeadersInit {
   return apiKey?.length ? { Authorization: `Bearer ${apiKey}` } : {};
 }
@@ -7,7 +11,7 @@ function fetchOpts(apiKey?: string, signal?: AbortSignal): RequestInit {
 }
 
 export async function querySQL(sql: string, apiKey?: string, signal?: AbortSignal) {
-  const res = await fetch("/api", { method: "POST", body: sql, ...fetchOpts(apiKey, signal) });
+  const res = await fetch(`${API}/`, { method: "POST", body: sql, ...fetchOpts(apiKey, signal) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -16,31 +20,31 @@ export async function querySQL(sql: string, apiKey?: string, signal?: AbortSigna
 }
 
 export async function fetchStats(apiKey?: string) {
-  const res = await fetch("/api/stats", fetchOpts(apiKey));
+  const res = await fetch(`${API}/stats`, fetchOpts(apiKey));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 export async function fetchHealth(apiKey?: string) {
-  const res = await fetch("/api/health", fetchOpts(apiKey));
+  const res = await fetch(`${API}/health`, fetchOpts(apiKey));
   if (!res.ok) return { status: "unhealthy" };
   return res.json();
 }
 
 export async function fetchVersion(apiKey?: string) {
-  const res = await fetch("/api/admin/version", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/version`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
 
 export async function fetchCluster(apiKey?: string) {
-  const res = await fetch("/api/admin/cluster", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/cluster`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
 
 export async function fetchNodes(apiKey?: string) {
-  const res = await fetch("/api/admin/nodes", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/nodes`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -50,7 +54,7 @@ export async function fetchMetricsHistory(apiKey?: string, sinceMs?: number, lim
   if (sinceMs) params.set("since", String(sinceMs));
   if (limit) params.set("limit", String(limit));
   const qs = params.toString();
-  const url = qs ? `/api/admin/metrics/history?${qs}` : "/api/admin/metrics/history";
+  const url = qs ? `${API}/admin/metrics/history?${qs}` : `${API}/admin/metrics/history`;
   const res = await fetch(url, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
@@ -59,7 +63,7 @@ export async function fetchMetricsHistory(apiKey?: string, sinceMs?: number, lim
 // ── Admin: API Keys ─────────────────────────────────────────────────────────
 
 export async function fetchKeys(apiKey?: string) {
-  const res = await fetch("/api/admin/keys", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/keys`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -79,7 +83,7 @@ export async function createKey(
   if (tenantId) body.tenant_id = tenantId;
   if (expiresAtNs) body.expires_at_ns = expiresAtNs;
 
-  const res = await fetch("/api/admin/keys", {
+  const res = await fetch(`${API}/admin/keys`, {
     method: "POST",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
     credentials: "include",
@@ -103,7 +107,7 @@ export async function updateKey(
   },
   apiKey?: string,
 ) {
-  const res = await fetch(`/api/admin/keys/${keyId}`, {
+  const res = await fetch(`${API}/admin/keys/${keyId}`, {
     method: "PATCH",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
     credentials: "include",
@@ -117,7 +121,7 @@ export async function updateKey(
 }
 
 export async function revokeKey(keyId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/keys/${keyId}`, { method: "DELETE", ...fetchOpts(apiKey) });
+  const res = await fetch(`${API}/admin/keys/${keyId}`, { method: "DELETE", ...fetchOpts(apiKey) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -128,13 +132,13 @@ export async function revokeKey(keyId: string, apiKey?: string) {
 // ── Admin: Queries ──────────────────────────────────────────────────────────
 
 export async function fetchQueries(apiKey?: string) {
-  const res = await fetch("/api/admin/queries", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/queries`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
 
 export async function killQuery(queryId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/queries/${queryId}`, { method: "DELETE", ...fetchOpts(apiKey) });
+  const res = await fetch(`${API}/admin/queries/${queryId}`, { method: "DELETE", ...fetchOpts(apiKey) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -145,7 +149,7 @@ export async function killQuery(queryId: string, apiKey?: string) {
 // ── Admin: Audit ────────────────────────────────────────────────────────────
 
 export async function fetchAudit(apiKey?: string, n = 100) {
-  const res = await fetch(`/api/admin/audit?n=${n}`, fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/audit?n=${n}`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -153,7 +157,7 @@ export async function fetchAudit(apiKey?: string, n = 100) {
 // ── Admin: API Key Usage ────────────────────────────────────────────────────
 
 export async function fetchKeyUsage(keyId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/keys/${keyId}/usage`, fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/keys/${keyId}/usage`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -161,7 +165,7 @@ export async function fetchKeyUsage(keyId: string, apiKey?: string) {
 // ── Admin: Tenants ──────────────────────────────────────────────────────────
 
 export async function fetchTenants(apiKey?: string) {
-  const res = await fetch("/api/admin/tenants", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/tenants`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -173,7 +177,7 @@ export async function fetchTenant(tenantId: string, apiKey?: string) {
 }
 
 export async function createTenant(tenantId: string, name: string, maxConcurrentQueries: number, tableNamespace: string, apiKey?: string) {
-  const res = await fetch("/api/admin/tenants", {
+  const res = await fetch(`${API}/admin/tenants`, {
     method: "POST",
     headers: { ...headers(apiKey), "Content-Type": "application/json" },
     credentials: "include",
@@ -187,7 +191,7 @@ export async function createTenant(tenantId: string, name: string, maxConcurrent
 }
 
 export async function deleteTenant(tenantId: string, apiKey?: string) {
-  const res = await fetch(`/api/admin/tenants/${tenantId}`, { method: "DELETE", ...fetchOpts(apiKey) });
+  const res = await fetch(`${API}/admin/tenants/${tenantId}`, { method: "DELETE", ...fetchOpts(apiKey) });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${res.status}`);
@@ -198,7 +202,7 @@ export async function deleteTenant(tenantId: string, apiKey?: string) {
 // ── Admin: Sessions ─────────────────────────────────────────────────────────
 
 export async function fetchSessions(apiKey?: string) {
-  const res = await fetch("/api/admin/sessions", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/sessions`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
@@ -206,7 +210,7 @@ export async function fetchSessions(apiKey?: string) {
 // ── Admin: Settings ─────────────────────────────────────────────────────────
 
 export async function fetchSettings(apiKey?: string) {
-  const res = await fetch("/api/admin/settings", fetchOpts(apiKey));
+  const res = await fetch(`${API}/admin/settings`, fetchOpts(apiKey));
   if (!res.ok) return null;
   return res.json();
 }
