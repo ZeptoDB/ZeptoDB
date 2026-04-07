@@ -438,13 +438,20 @@ if(ZEPTO_USE_HIGHWAY)
 endif()
 if(ZEPTO_USE_JIT)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # LLVM-19 shared lib + GCC libstdc++ 경로 (아키텍처 자동 감지)
+        # LLVM shared lib (auto-detect path) + GCC libstdc++
+        find_library(LLVM_SHARED_LIB NAMES LLVM-19 LLVM
+            PATHS ${LLVM_LIBRARY_DIRS} /usr/lib64/llvm19/lib /usr/lib/llvm-19/lib
+            NO_DEFAULT_PATH
+        )
+        if(NOT LLVM_SHARED_LIB)
+            find_library(LLVM_SHARED_LIB NAMES LLVM-19 LLVM)
+        endif()
         execute_process(
             COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
             OUTPUT_VARIABLE STDCXX_PATH OUTPUT_STRIP_TRAILING_WHITESPACE
         )
         target_link_libraries(zepto_execution PUBLIC
-            /usr/lib64/llvm19/lib/libLLVM-19.so
+            ${LLVM_SHARED_LIB}
             ${STDCXX_PATH}
         )
     else()
