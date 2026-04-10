@@ -1,0 +1,94 @@
+# tests/k8s/test-values.yaml — Lightweight values for K8s compatibility testing
+# No hugepages, small resources, no HPA — fits on t3.xlarge nodes
+
+replicaCount: 2
+
+image:
+  repository: nginx          # Use nginx as a stand-in until real image is built
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+    hugepages-2Mi: "0"
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+    hugepages-2Mi: "0"
+
+config:
+  port: 80
+  workerThreads: 2
+  analyticsMode: true
+  cloudNative: true
+  dataDir: /opt/zeptodb/data
+  hdbCompression: lz4
+  queryCacheSize: 100
+  parallelThreshold: 10000
+
+cluster:
+  enabled: false
+
+persistence:
+  enabled: false              # Skip PVC for basic compat tests
+
+probes:
+  liveness:
+    path: /                   # nginx returns 200 on /
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    path: /
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+gracefulShutdown:
+  preStopSleepSeconds: 5
+  terminationGracePeriodSeconds: 15
+
+autoscaling:
+  enabled: false
+
+podAntiAffinity:
+  enabled: true
+  weight: 100
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+updateStrategy:
+  maxSurge: 1
+  maxUnavailable: 0
+
+prometheus:
+  scrape: false
+  port: 80
+  path: /metrics
+
+serviceMonitor:
+  enabled: false
+
+performanceTuning:
+  hostNetwork: false
+  hugepages:
+    enabled: false
+    size: "2Mi"
+    amount: "0"
+
+karpenter:
+  enabled: false
+
+service:
+  type: ClusterIP
+  port: 80
+  sessionAffinity: ClientIP
+
+headless:
+  enabled: true

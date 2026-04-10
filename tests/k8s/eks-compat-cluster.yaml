@@ -1,0 +1,38 @@
+# tests/k8s/eks-compat-cluster.yaml — Lightweight EKS cluster for K8s compatibility testing
+# Usage: eksctl create cluster -f tests/k8s/eks-compat-cluster.yaml
+#
+# Cost estimate: ~$0.30/hr (1x t3.xlarge On-Demand + EKS control plane $0.10/hr)
+# Tear down after testing: eksctl delete cluster -f tests/k8s/eks-compat-cluster.yaml --disable-nodegroup-eviction
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: zepto-k8s-compat
+  region: us-east-1
+  version: "1.32"
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: test-nodes
+    instanceType: t3.xlarge       # 4 vCPU, 16 GiB — enough for 3 lightweight pods
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    volumeSize: 50
+    volumeType: gp3
+    labels:
+      role: test
+    tags:
+      purpose: k8s-compat-test
+      auto-delete: "true"
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true
