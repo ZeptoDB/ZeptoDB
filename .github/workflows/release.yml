@@ -10,6 +10,7 @@ permissions:
 
 env:
   IMAGE_NAME: zeptodb/zeptodb
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── Build binaries (matrix: amd64 + arm64) ──

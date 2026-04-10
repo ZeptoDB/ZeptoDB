@@ -9,6 +9,9 @@ on:
     paths-ignore: ['docs/**', 'web/**', '*.md']
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-and-test:
     runs-on: [self-hosted, linux, ARM64]

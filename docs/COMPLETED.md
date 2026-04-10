@@ -159,6 +159,13 @@ Last updated: 2026-04-07
 
 ## Package Distribution (P2)
 - [x] **Docker Hub official image** — `docker pull zeptodb/zeptodb:0.0.1`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint
+- [x] **GitHub Releases + binaries** — Release workflow builds amd64 + arm64 tarballs, creates GitHub Release with download links on tag push
+- [x] **Homebrew Formula** — `homebrew-tap` repo with auto-update workflow triggered on release via repository_dispatch
+
+## CI/CD (P2)
+- [x] **Node.js 24 migration** — All workflows set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` to preempt June 2026 deprecation
+- [x] **Deprecated docs.yml cleanup** — Removed legacy MkDocs deploy workflow (replaced by Astro Starlight site)
+- [x] **TestPyPI workflow fix** — Changed `test-pypi.yml` to target TestPyPI (test.pypi.org) with separate `testpypi` environment
 
 ## Website (P2)
 - [x] **Product website** — Astro Starlight site (`zeptodb-site/`). Landing page with hero + benchmark comparison table + use case cards + CTA
