@@ -2,7 +2,7 @@
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | 830 tests passing
 >
-> Last cleaned: 2026-04-07
+> Last cleaned: 2026-04-10
 
 ---
 
@@ -37,15 +37,17 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| Multi-arch Docker (amd64 + arm64) | Graviton build already verified. Covers M1 Mac users | S |
-| **PyPI package (`pip install zeptodb`)** | The first path Python quants try. Arrow Flight client wrapper | S |
-| **Homebrew Formula** | macOS developer accessibility. `brew install zeptodb` | S |
-| **GitHub Releases + binaries** | Download without building. Linux amd64/arm64 tarball, `.deb`, `.rpm` | S |
+| ~~Multi-arch Docker (amd64 + arm64)~~ | ✅ Release workflow builds amd64. arm64 build in CI | — |
+| ~~**GitHub Releases + binaries**~~ | ✅ Release workflow: amd64 + arm64 tarballs on tag push | — |
+| ~~**Homebrew Formula**~~ | ✅ `homebrew-tap` repo + auto-update workflow on release | — |
+| **PyPI package (`pip install zeptodb`)** | ⚠️ Workflow ready, but PyPI trusted publisher not configured. Manual: pypi.org → Manage → Publishing → add `ZeptoDB/ZeptoDB` workflow `release.yml` environment `pypi` | XS |
 
 ### Manual TODO (requires manual execution)
 
 | Task | Guide Document | Prerequisites | Effort |
 |------|---------------|---------------|--------|
+| **Configure PyPI trusted publisher** | pypi.org → Manage → Publishing | PyPI account with `zeptodb` project | XS |
+| **Configure TestPyPI trusted publisher** | test.pypi.org → Manage → Publishing (env: `testpypi`, workflow: `test-pypi.yml`) | TestPyPI account | XS |
 | Create Discord server | `docs/community/COMMUNITY_SETUP.md` | — | XS |
 | Enable GitHub Discussions | repo Settings → Features → Discussions | — | XS |
 | Submit Awesome Time-Series DB PR | `docs/community/REGISTRY_SUBMISSIONS.md` | GitHub repo public | XS |
@@ -131,6 +133,7 @@
 | Task | Why | Effort |
 |------|-----|--------|
 | **Live rebalancing** | Zero-downtime partition migration | L |
+| **Dual-write ingestion wiring** | `migration_target()` is defined but never called in ingestion path — dual-write is dead code (devlog 054) | M |
 | **Tier C cold query offload** | Historical data → DuckDB on S3 | M |
 | **PTP clock sync detection** | ASOF JOIN strict mode | S |
 | **Global symbol registry** | Distributed string symbol routing | M |
@@ -169,16 +172,16 @@
 | Priority | Category | Remaining | Next Action |
 |----------|----------|:---------:|-------------|
 | **P1** | Demo-ready UI | ✅ 0 | Complete |
-| **P2** | Website + Distribution | 5 + 8 manual | Blog expansion, Package distribution |
+| **P2** | Website + Distribution | 2 + 10 manual | PyPI trusted publisher, Blog expansion |
 | **P3** | Connectivity | ✅ 0 | Complete |
 | **P4** | Tool Integration | 2 | ClickHouse protocol, JDBC/ODBC |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
 | **P6** | Enterprise / Cloud | 3 | SAML, Geo-replication, Marketplace |
 | **P7** | Engine Performance | 8 | Composite index, Cost-based planner |
-| **P8** | Cluster | 10 | RDMA transport, Live rebalancing |
+| **P8** | Cluster | 11 | RDMA transport, Live rebalancing |
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 44 items + 8 manual tasks**
+**Total remaining: 42 items + 10 manual tasks**
 
-**Critical path: P2 (Package Distribution) → P4 (Tool Integration)**
+**Critical path: P2 (PyPI trusted publisher) → P4 (Tool Integration)**

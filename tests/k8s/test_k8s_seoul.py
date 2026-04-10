@@ -201,7 +201,7 @@ def t_env_prestop_resources(s):
         s.add(TestResult("T10_pod_spec", False, "no pods", time.monotonic() - t0)); return
     c = pods[0]["spec"]["containers"][0]
     env_names = {e["name"] for e in c.get("env", [])}
-    has_env = {"POD_NAME", "POD_IP", "APEX_WORKER_THREADS"}.issubset(env_names)
+    has_env = {"POD_NAME", "POD_IP", "ZEPTO_WORKER_THREADS"}.issubset(env_names)
     has_prestop = c.get("lifecycle", {}).get("preStop") is not None
     has_res = "requests" in c.get("resources", {})
     ok = has_env and has_prestop and has_res

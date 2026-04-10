@@ -7,7 +7,9 @@ metadata:
   labels:
     {{- include "zeptodb.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "zeptodb.selectorLabels" . | nindent 6 }}
@@ -74,9 +76,9 @@ spec:
               protocol: UDP
             {{- end }}
           env:
-            - name: APEX_WORKER_THREADS
+            - name: ZEPTO_WORKER_THREADS
               value: {{ .Values.config.workerThreads | quote }}
-            - name: APEX_ANALYTICS_MODE
+            - name: ZEPTO_ANALYTICS_MODE
               value: {{ .Values.config.analyticsMode | quote }}
             - name: POD_NAME
               valueFrom:

@@ -28,8 +28,9 @@ cluster:
   heartbeatPort: 9100
 
 persistence:
-  enabled: false           # Deployment + single PVC doesn't work with 3 replicas (ReadWriteOnce)
-                           # TODO: migrate to StatefulSet with volumeClaimTemplates
+  enabled: true
+  storageClass: gp3
+  size: 100Gi
 
 autoscaling:
   enabled: false           # Manual scaling for initial deployment

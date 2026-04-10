@@ -287,7 +287,7 @@ def test_env_vars(suite: TestSuite):
         return
     containers = pods[0].get("spec", {}).get("containers", [])
     env_names = {e["name"] for c in containers for e in c.get("env", [])}
-    required = {"POD_NAME", "POD_NAMESPACE", "POD_IP", "APEX_WORKER_THREADS"}
+    required = {"POD_NAME", "POD_NAMESPACE", "POD_IP", "ZEPTO_WORKER_THREADS"}
     missing = required - env_names
     passed = len(missing) == 0
     suite.add(TestResult("T12_env_vars", passed, f"missing: {missing}" if missing else "OK", time.monotonic() - t0))
