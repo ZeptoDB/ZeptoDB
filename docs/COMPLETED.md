@@ -176,5 +176,13 @@ Last updated: 2026-04-07
 
 ---
 
+## Kubernetes Compatibility & HA Testing
+- [x] **K8s compatibility test suite** — 27 automated tests covering Helm lint/template, pod lifecycle, networking, rolling updates, PDB, scale up/down (`tests/k8s/test_k8s_compat.py`)
+- [x] **K8s HA + performance test suite** — 6 HA tests (3-node spread, node drain, concurrent drain PDB block, pod kill recovery, zero-downtime rolling update, scale 3→5→3) + 5 performance benchmarks (`tests/k8s/test_k8s_ha_perf.py`)
+- [x] **EKS test cluster config** — Lightweight cluster definition for automated testing (`tests/k8s/eks-compat-cluster.yaml`)
+- [x] **K8s test report** — Full results, benchmark numbers, Helm chart issues found (`docs/operations/K8S_TEST_REPORT.md`)
+
+---
+
 > Client API Compatibility Matrix: [`docs/design/client_compatibility.md`](docs/design/client_compatibility.md)
  ❌ | ❌ | ✅ `/admin/audit` | ❌ | ❌ | ✅ `/admin/audit` | ❌ | ❌ | ✅ `/admin/audit` |

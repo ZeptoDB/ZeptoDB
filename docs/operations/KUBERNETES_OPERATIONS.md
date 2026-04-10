@@ -311,6 +311,36 @@ Grafana can connect directly as a ClickHouse data source (port 8123, ClickHouse 
 
 ## 5. Scaling
 
+### Cluster Requirements
+
+See [EKS Cluster Requirements](../deployment/EKS_CLUSTER_REQUIREMENTS.md) for full cluster setup including K8s version, Auto Mode, and custom NodePool configuration.
+
+### EKS Auto Mode (Node Auto-Scaling)
+
+EKS Auto Mode includes built-in Karpenter — no separate install needed. Nodes are provisioned via EC2 Fleet API when pods are pending.
+
+```bash
+# Check node pools (built-in + custom)
+kubectl get nodepools
+kubectl get nodeclasses
+
+# Check node claims (active nodes)
+kubectl get nodeclaims
+
+# Monitor scaling events
+kubectl describe nodepool zepto-realtime
+kubectl describe nodepool zepto-analytics
+```
+
+Two custom node pools are configured:
+
+| Pool | Trigger | Capacity | Consolidation |
+|------|---------|----------|---------------|
+| **zepto-realtime** | Pending pods with `zeptodb.io/role: realtime` | On-Demand only | WhenEmpty, after 30m |
+| **zepto-analytics** | Pending pods with `zeptodb.io/role: analytics` | Spot + On-Demand | WhenEmptyOrUnderutilized, after 5m |
+
+Scaling flow: HPA increases replicas → pods pending → Auto Mode provisions node (30-60s) → pods scheduled.
+
 ### Horizontal Pod Autoscaler (HPA)
 
 Default configuration: Auto-scales between 3–10 replicas based on CPU 70% / Memory 80% thresholds.
