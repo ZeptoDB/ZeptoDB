@@ -284,7 +284,7 @@ protected:
         server_->stop();
     }
 
-    static constexpr uint16_t test_port_ = 19871;
+    static constexpr uint16_t test_port_ = 18881;
 
     std::unique_ptr<ZeptoPipeline>            pipeline_;
     std::unique_ptr<QueryExecutor>           executor_;
@@ -388,7 +388,7 @@ protected:
         server_->stop();
     }
 
-    static constexpr uint16_t test_port_ = 19872;
+    static constexpr uint16_t test_port_ = 18882;
 
     std::unique_ptr<ZeptoPipeline>             pipeline_;
     std::unique_ptr<QueryExecutor>            executor_;
