@@ -67,7 +67,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: zeptodb
-        image: your-registry/zeptodb:v1.0.0
+        image: zeptodb/zeptodb:v1.0.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8123

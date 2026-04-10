@@ -9,7 +9,7 @@ metadata:
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
-    kind: Deployment
+    kind: {{ if .Values.cluster.enabled }}StatefulSet{{ else }}Deployment{{ end }}
     name: {{ include "zeptodb.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}

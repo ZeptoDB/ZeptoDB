@@ -1,4 +1,4 @@
-# k8s/eks-bench-cluster.yaml — EKS cluster for multi-node benchmark
+# k8s/eks-bench-cluster.yaml — EKS Auto Mode cluster for multi-node benchmark
 # Usage: eksctl create cluster -f k8s/eks-bench-cluster.yaml
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
@@ -6,26 +6,9 @@ kind: ClusterConfig
 metadata:
   name: zepto-bench
   region: ap-northeast-2
-  version: "1.29"
+  version: "1.35"
 
-managedNodeGroups:
-  - name: data-nodes
-    instanceType: r7i.2xlarge
-    desiredCapacity: 3
-    minSize: 3
-    maxSize: 3
-    volumeSize: 100
-    volumeType: gp3
-    labels:
-      role: data-node
-    availabilityZones: ["ap-northeast-2a"]
-
-  - name: loadgen
-    instanceType: c7i.xlarge
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 1
-    volumeSize: 50
-    labels:
-      role: loadgen
-    availabilityZones: ["ap-northeast-2a"]
+autoModeConfig:
+  enabled: true
+  # Uses default node pools (general-purpose + system)
+  # Custom NodePools for realtime/analytics applied via kubectl after creation

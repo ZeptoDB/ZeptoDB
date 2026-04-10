@@ -1,0 +1,54 @@
+# deploy/helm/values-seoul-prod.yaml — Seoul production deployment
+# Usage: helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f deploy/helm/values-seoul-prod.yaml
+
+replicaCount: 3
+
+image:
+  repository: "060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb"
+  tag: "0.0.2"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: "6"
+    memory: "48Gi"
+    hugepages-2Mi: "0"
+  limits:
+    cpu: "8"
+    memory: "60Gi"
+    hugepages-2Mi: "0"
+
+performanceTuning:
+  hugepages:
+    enabled: false
+
+cluster:
+  enabled: true
+  rpcPortOffset: 100
+  heartbeatPort: 9100
+
+persistence:
+  enabled: false           # Deployment + single PVC doesn't work with 3 replicas (ReadWriteOnce)
+                           # TODO: migrate to StatefulSet with volumeClaimTemplates
+
+autoscaling:
+  enabled: false           # Manual scaling for initial deployment
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+nodeSelector:
+  role: data-node
+
+config:
+  workerThreads: 6
+  parallelThreshold: 50000
+
+karpenter:
+  enabled: false           # Install Karpenter separately later
+
+service:
+  type: LoadBalancer
+  port: 8123
+  sessionAffinity: None    # ClientIP not supported on EKS classic LB
