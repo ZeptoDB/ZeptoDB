@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
 
 [project]
 name = "zeptodb"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Python client and DataFrame integration for ZeptoDB — ultra-low latency columnar time-series database"
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "ZeptoDB Contributors" }]
 keywords = ["database", "timeseries", "columnar", "HFT", "finance", "analytics"]
@@ -61,13 +62,27 @@ dev = [
 ]
 
 [project.urls]
-Homepage   = "https://zeptodb.io"
-Repository = "https://github.com/ZeptoDB/ZeptoDB"
+Homepage      = "https://zeptodb.io"
+Repository    = "https://github.com/ZeptoDB/ZeptoDB"
 Documentation = "https://docs.zeptodb.io"
 
-[tool.setuptools.packages.find]
-where   = ["."]
-include = ["zepto_py*"]
+# ============================================================================
+# hatch build
+# ============================================================================
+
+[tool.hatch.version]
+path = "zepto_py/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/zepto_py/",
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["zepto_py"]
 
 # ============================================================================
 # pytest
