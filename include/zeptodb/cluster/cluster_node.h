@@ -19,16 +19,19 @@
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/ring_consensus.h"
 #include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/ptp_clock_detector.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/server/metrics_collector.h"
 #include "zeptodb/sql/executor.h"
+#include "zeptodb/common/logger.h"
 
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -53,6 +56,7 @@ struct ClusterConfig {
     uint16_t          rpc_port = 0;      // TCP RPC port (0 = self.port + 100)
     bool              is_coordinator = false;  // true = ring 변경 권한 보유
     RpcSecurityConfig rpc_security;      // 내부 RPC 보안 (설정 시 자동 전파)
+    PtpConfig         ptp;               // PTP clock sync detection config
 };
 
 // ============================================================================
@@ -65,6 +69,7 @@ public:
         : config_(cfg)
         , health_(cfg.health)
         , local_pipeline_(cfg.pipeline)
+        , ptp_detector_(cfg.ptp)
     {}
 
     ~ClusterNode() { leave_cluster(); }
@@ -108,7 +113,10 @@ public:
                 if (config_.rpc_security.enabled) {
                     rpc->set_security(config_.rpc_security);
                 }
-                peer_rpc_clients_[seed.id] = std::move(rpc);
+                {
+                    std::unique_lock lock(peer_rpc_mutex_);
+                    peer_rpc_clients_[seed.id] = std::move(rpc);
+                }
                 ++seed_connected;
             } catch (...) {
                 // 연결 실패 시 무시 (나중에 재시도)
@@ -234,7 +242,10 @@ public:
             transport_.disconnect(conn);
         }
         peer_connections_.clear();
-        peer_rpc_clients_.clear();
+        {
+            std::unique_lock lock(peer_rpc_mutex_);
+            peer_rpc_clients_.clear();
+        }
         transport_.shutdown();
     }
 
@@ -243,15 +254,30 @@ public:
     // ----------------------------------------------------------------
 
     /// 틱 데이터 수신 → 담당 노드로 라우팅
+    /// During partition migration, dual-writes to both source and destination
+    /// nodes to prevent data loss.
     /// @return true if ingested (local or remote), false if failed
     bool ingest_tick(TickMessage msg) {
+        // Check migration_target FIRST (uses cache_mutex_, not router_mutex_)
+        auto mig = router_.migration_target(msg.symbol_id);
+        if (mig) {
+            // Dual-write: send to both from and to nodes
+            auto [from, to] = *mig;
+            bool ok_from = send_to_node(from, msg);
+            bool ok_to   = send_to_node(to, msg);
+            if (ok_from != ok_to) {
+                ZEPTO_WARN("Dual-write partial failure: symbol={}, from_ok={}, to_ok={}",
+                           msg.symbol_id, ok_from, ok_to);
+            }
+            return ok_from || ok_to;
+        }
+
+        // Normal path: single route
         NodeId owner = route(msg.symbol_id);
 
         if (owner == config_.self.id) {
-            // 로컬 처리
             return local_pipeline_.ingest_tick(msg);
         } else if (config_.enable_remote_ingest) {
-            // 원격 노드로 전송
             return remote_ingest(owner, msg);
         }
         return false;
@@ -323,6 +349,8 @@ public:
 
     HealthMonitor& health() { return health_; }
     ZeptoPipeline& pipeline() { return local_pipeline_; }
+    PtpClockDetector& ptp_detector() { return ptp_detector_; }
+    const PtpClockDetector& ptp_detector() const { return ptp_detector_; }
 
     /// Access the RingConsensus (nullptr if not initialized)
     RingConsensus* consensus() { return consensus_.get(); }
@@ -365,24 +393,45 @@ private:
     // 내부 구현
     // ----------------------------------------------------------------
 
+    /// Send tick to a specific node (local or remote).
+    bool send_to_node(NodeId target, const TickMessage& msg) {
+        if (target == config_.self.id)
+            return local_pipeline_.ingest_tick(msg);
+        if (config_.enable_remote_ingest)
+            return remote_ingest(target, msg);
+        return false;
+    }
+
     /// 원격 노드로 틱 전송 — TCP RPC TICK_INGEST
     bool remote_ingest(NodeId target, const TickMessage& msg) {
-        auto it = peer_rpc_clients_.find(target);
-        if (it == peer_rpc_clients_.end()) {
-            // Peer not yet known (joined after us); try to create client lazily
+        TcpRpcClient* client = nullptr;
+        {
+            std::shared_lock lock(peer_rpc_mutex_);
+            auto it = peer_rpc_clients_.find(target);
+            if (it != peer_rpc_clients_.end()) {
+                client = it->second.get();
+            }
+        }
+
+        if (!client) {
+            // Peer not yet known; try to create client lazily
             auto addr_it = peer_addresses_.find(target);
             if (addr_it == peer_addresses_.end()) return false;
 
             uint16_t peer_rpc_port = static_cast<uint16_t>(addr_it->second.port + 100);
-            auto [ins, _] = peer_rpc_clients_.emplace(
-                target,
-                std::make_unique<TcpRpcClient>(addr_it->second.host, peer_rpc_port, 2000));
+            auto rpc = std::make_unique<TcpRpcClient>(
+                addr_it->second.host, peer_rpc_port, 2000);
             if (config_.rpc_security.enabled) {
-                ins->second->set_security(config_.rpc_security);
+                rpc->set_security(config_.rpc_security);
             }
-            it = ins;
+            client = rpc.get();
+            {
+                std::unique_lock lock(peer_rpc_mutex_);
+                auto [ins, inserted] = peer_rpc_clients_.emplace(target, std::move(rpc));
+                if (!inserted) client = ins->second.get();  // another thread beat us
+            }
         }
-        return it->second->ingest_tick(msg);
+        return client->ingest_tick(msg);
     }
 
     /// 원격 VWAP 쿼리 (stub — 실제는 gRPC)
@@ -433,6 +482,7 @@ private:
     PartitionRouter                            router_;
     HealthMonitor                              health_;
     ZeptoPipeline                               local_pipeline_;
+    PtpClockDetector                           ptp_detector_;
     TcpRpcServer                               rpc_server_;
     uint16_t                                   rpc_port_ = 0;
     FencingToken                               fencing_token_;
@@ -445,6 +495,7 @@ private:
     std::unordered_map<NodeId, NodeAddress>               peer_addresses_;
 
     // TCP RPC clients for remote tick ingest (pre-created per seed in join_cluster)
+    mutable std::shared_mutex peer_rpc_mutex_;
     std::unordered_map<NodeId, std::unique_ptr<TcpRpcClient>> peer_rpc_clients_;
 
     // 원격 ingest용 RDMA 영역 (target NodeId → RemoteRegion, future UCX path)

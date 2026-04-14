@@ -12,11 +12,13 @@
 // ============================================================================
 
 #include "zeptodb/cluster/partition_router.h"
+#include "zeptodb/cluster/bandwidth_throttler.h"
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/ingestion/tick_plant.h"
 
 #include <atomic>
 #include <fstream>
+#include <future>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -172,6 +174,12 @@ public:
     /// Set max retry attempts per move (default 3).
     void set_max_retries(int n) { max_retries_ = n; }
 
+    /// Set per-move timeout in seconds (0 = no timeout, default 300).
+    void set_move_timeout(uint32_t sec) { move_timeout_sec_ = sec; }
+
+    /// Set bandwidth throttler (owned externally, e.g. by RebalanceManager).
+    void set_throttler(BandwidthThrottler* t) { throttler_ = t; }
+
     /// Set checkpoint file path. When set, checkpoint is saved to disk
     /// after each move completes (for crash recovery).
     void set_checkpoint_path(const std::string& path) { checkpoint_path_ = path; }
@@ -202,7 +210,9 @@ private:
     std::unordered_map<NodeId, std::unique_ptr<TcpRpcClient>> nodes_;
     MigrationStats stats_;
     int max_retries_ = 3;
+    uint32_t move_timeout_sec_ = 300;
     std::string checkpoint_path_;
+    BandwidthThrottler* throttler_ = nullptr;
 };
 
 } // namespace zeptodb::cluster

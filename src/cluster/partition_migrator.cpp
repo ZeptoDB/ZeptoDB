@@ -1,6 +1,8 @@
 #include "zeptodb/cluster/partition_migrator.h"
 #include "zeptodb/common/logger.h"
 
+#include <future>
+
 namespace zeptodb::cluster {
 
 void PartitionMigrator::add_node(NodeId id, const std::string& host,
@@ -48,6 +50,8 @@ bool PartitionMigrator::migrate_symbol(SymbolId symbol, NodeId from,
         rows_out = batch.size();
         stats_.moves_completed.fetch_add(1);
         stats_.rows_migrated.fetch_add(batch.size());
+        // Throttle: estimate ~64 bytes per tick (3 int64 fields + overhead)
+        if (throttler_) throttler_->record(batch.size() * 64);
     } else {
         stats_.moves_failed.fetch_add(1);
     }
@@ -61,10 +65,30 @@ void PartitionMigrator::execute_move(MoveStatus& ms, PartitionRouter& router) {
     ms.state = MoveState::DUAL_WRITE;
     router.begin_migration(ms.move.symbol, ms.move.from, ms.move.to);
 
-    // DUAL_WRITE → COPYING
+    // DUAL_WRITE → COPYING (with timeout enforcement)
     ms.state = MoveState::COPYING;
     uint64_t rows = 0;
-    bool ok = migrate_symbol(ms.move.symbol, ms.move.from, ms.move.to, rows);
+    bool ok = false;
+
+    if (move_timeout_sec_ > 0) {
+        auto fut = std::async(std::launch::async, [&]() {
+            return migrate_symbol(ms.move.symbol, ms.move.from, ms.move.to, rows);
+        });
+        auto status = fut.wait_for(std::chrono::seconds(move_timeout_sec_));
+        if (status == std::future_status::ready) {
+            ok = fut.get();
+        } else {
+            // Timeout — treat as failure
+            ms.state = MoveState::FAILED;
+            ms.error = "move timed out after " + std::to_string(move_timeout_sec_) + "s";
+            router.end_migration(ms.move.symbol);
+            ZEPTO_WARN("PartitionMigrator: move symbol={} {}→{} timed out ({}s)",
+                       ms.move.symbol, ms.move.from, ms.move.to, move_timeout_sec_);
+            return;
+        }
+    } else {
+        ok = migrate_symbol(ms.move.symbol, ms.move.from, ms.move.to, rows);
+    }
 
     if (ok) {
         ms.state = MoveState::COMMITTED;

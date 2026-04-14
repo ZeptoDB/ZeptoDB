@@ -17,6 +17,7 @@
 #include "zeptodb/cluster/transport.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -196,10 +197,16 @@ public:
         migrating_[symbol] = {from, to};
     }
 
-    /// End migration for a symbol: dual-write stops.
+    /// End migration for a symbol: dual-write stops, grace period begins.
+    /// During the grace period, recently_migrated() returns {from, to}
+    /// so queries can read from both nodes.
     void end_migration(SymbolId symbol) {
         std::lock_guard<std::mutex> lock(cache_mutex_);
-        migrating_.erase(symbol);
+        auto it = migrating_.find(symbol);
+        if (it != migrating_.end()) {
+            recently_migrated_[symbol] = {it->second, std::chrono::steady_clock::now()};
+            migrating_.erase(it);
+        }
     }
 
     /// If symbol is migrating, returns {from, to}. Otherwise nullopt.
@@ -208,6 +215,25 @@ public:
         auto it = migrating_.find(symbol);
         if (it != migrating_.end()) return it->second;
         return std::nullopt;
+    }
+
+    /// If symbol was recently migrated (within grace period), returns {from, to}.
+    /// Queries should read from both nodes during this period.
+    std::optional<std::pair<NodeId, NodeId>> recently_migrated(SymbolId symbol) const {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        auto it = recently_migrated_.find(symbol);
+        if (it == recently_migrated_.end()) return std::nullopt;
+        auto elapsed = std::chrono::steady_clock::now() - it->second.second;
+        if (elapsed > migration_grace_period_) {
+            recently_migrated_.erase(it);
+            return std::nullopt;
+        }
+        return it->second.first;
+    }
+
+    /// Set the grace period for recently migrated symbols (default 30s).
+    void set_migration_grace_period(std::chrono::seconds sec) {
+        migration_grace_period_ = sec;
     }
 
     /// Symbol → replica NodeId (next distinct physical node on the ring).
@@ -399,6 +425,12 @@ private:
     // Dual-write during migration: symbol → {from, to} while migration is in progress.
     // Ticks for these symbols should be written to BOTH nodes.
     mutable std::unordered_map<SymbolId, std::pair<NodeId, NodeId>> migrating_;
+
+    // Recently migrated symbols: symbol → {{from, to}, end_time}.
+    // Queries should read from both nodes during the grace period.
+    mutable std::unordered_map<SymbolId,
+        std::pair<std::pair<NodeId, NodeId>, std::chrono::steady_clock::time_point>> recently_migrated_;
+    std::chrono::seconds migration_grace_period_{30};
 
     static constexpr size_t MAX_CACHE_SIZE = 65536;
 };
