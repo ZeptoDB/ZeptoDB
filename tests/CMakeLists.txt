@@ -24,6 +24,9 @@ add_executable(zepto_tests
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_flat_hash_map.cpp
+    unit/test_rebalance.cpp
+    unit/test_bandwidth_throttler.cpp
+    unit/test_ptp_clock_detector.cpp
 )
 target_include_directories(zepto_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h access

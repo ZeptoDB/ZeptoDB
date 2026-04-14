@@ -440,8 +440,13 @@ and split-brain scenarios had incomplete protection.
 | Cancel propagation | TODO | Coordinator timeout → cancel RPC to nodes |
 | Partial failure policy | TODO | Some nodes fail: partial result vs error |
 | In-flight query safety | TODO | Node add/remove during scatter → race |
-| Dual-write during migration | TODO | Data loss gap during partition move |
 | Distributed query timeout | TODO | Remote-side timeout enforcement |
+
+**Completed infrastructure gaps:**
+
+| Gap | Resolved In | Notes |
+|-----|-------------|-------|
+| Dual-write during migration | devlog 055 | Wired into `ClusterNode::ingest_tick()` via `migration_target()` |
 
 **Remaining precision gaps:**
 
@@ -466,3 +471,144 @@ and split-brain scenarios had incomplete protection.
 4. **No Kubernetes** — Fleet API + DynamoDB is sufficient
 5. **Warm Pool** — add nodes in seconds, no boot wait
 6. **Consistent Hashing** — minimum partition movement on node changes
+
+---
+
+## 9. Live Rebalancing (RebalanceManager)
+
+Implemented in `include/zeptodb/cluster/rebalance_manager.h` + `src/cluster/rebalance_manager.cpp`.
+Full implementation details: [`docs/devlog/055_live_rebalancing.md`](../devlog/055_live_rebalancing.md)
+
+### Overview
+
+```mermaid
+graph TB
+    subgraph Coordinator
+        RM[RebalanceManager]
+        PR[PartitionRouter]
+        PM[PartitionMigrator]
+        RC[RingConsensus]
+    end
+
+    subgraph Source Node
+        SrcPipe[Ingest Pipeline]
+        SrcStore[ColumnStore]
+    end
+
+    subgraph Destination Node
+        DstPipe[Ingest Pipeline]
+        DstStore[ColumnStore]
+    end
+
+    RM -->|1. plan_add/remove| PR
+    RM -->|2. execute moves| PM
+    PM -->|3. begin_migration| PR
+    PM -->|4. SELECT data| SrcStore
+    PM -->|5. replicate_wal| DstPipe
+    PM -->|6. end_migration| PR
+    RM -->|7. broadcast| RC
+```
+
+### Dual-Write During Migration
+
+`ClusterNode::ingest_tick()` checks `PartitionRouter::migration_target()` before normal routing. If a symbol is migrating, ticks are sent to both source and destination nodes (dual-write). This prevents data loss during partition moves.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant CN as ClusterNode
+    participant Router as PartitionRouter
+    participant A as Node A (source)
+    participant B as Node B (dest)
+
+    Note over Router: migration active: sym → {A, B}
+    Client->>CN: ingest_tick(sym)
+    CN->>Router: migration_target(sym)
+    Router-->>CN: {from=A, to=B}
+    CN->>A: send_to_node(A, tick) ✅
+    CN->>B: send_to_node(B, tick) ✅
+```
+
+### RebalanceManager State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> RUNNING : start_add_node() / start_remove_node()
+    RUNNING --> PAUSED : pause()
+    RUNNING --> CANCELLING : cancel()
+    RUNNING --> IDLE : all moves done
+    PAUSED --> RUNNING : resume()
+    PAUSED --> CANCELLING : cancel()
+    CANCELLING --> IDLE : worker exits
+```
+
+- `start_add_node(NodeId)` — plans migration via `router_.plan_add()`, executes in background thread
+- `start_remove_node(NodeId)` — plans migration via `router_.plan_remove()`, executes in background thread
+- Each move is delegated to `PartitionMigrator::execute_plan()` (handles dual-write begin/end, copy, retry)
+- Supports pause/resume/cancel via `std::atomic<RebalanceState>` + condition variable
+- Checkpoint support via `PartitionMigrator::set_checkpoint_path()`
+
+### Per-Move State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> DUAL_WRITE : begin_migration()
+    DUAL_WRITE --> COPYING : start transfer
+    COPYING --> COMMITTED : success
+    COPYING --> FAILED : error + rollback
+    FAILED --> PENDING : retry (max 3)
+```
+
+### 9.1 Load-Based Auto-Trigger (RebalancePolicy)
+
+`RebalancePolicy` enables automatic rebalancing when cluster load becomes imbalanced.
+
+```cpp
+struct RebalancePolicy {
+    bool     enabled = false;
+    double   imbalance_ratio = 2.0;    // trigger if max/min partition count > 2x
+    uint32_t check_interval_sec = 60;
+    uint32_t cooldown_sec = 300;       // min time between auto-rebalances
+};
+```
+
+A background `policy_thread_` periodically calls a `LoadProvider` callback to get per-node partition counts. If `max_count / min_count > imbalance_ratio` and the cooldown has elapsed, it calls `start_remove_node()` on the most overloaded node.
+
+```mermaid
+graph TD
+    A[Sleep check_interval_sec] --> B{IDLE?}
+    B -->|no| A
+    B -->|yes| C{Cooldown elapsed?}
+    C -->|no| A
+    C -->|yes| D[load_provider → per-node counts]
+    D --> E{max/min > ratio?}
+    E -->|no| A
+    E -->|yes| F[start_remove_node on max node]
+    F --> A
+```
+
+### 9.2 Admin HTTP API
+
+Five REST endpoints for rebalance control, registered in `HttpServer::setup_admin_routes()`:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/rebalance/status` | GET | JSON status snapshot |
+| `/admin/rebalance/start` | POST | Start add_node or remove_node |
+| `/admin/rebalance/pause` | POST | Pause current rebalance |
+| `/admin/rebalance/resume` | POST | Resume paused rebalance |
+| `/admin/rebalance/cancel` | POST | Cancel current rebalance |
+
+All require admin role. Returns 503 if `RebalanceManager` is not configured.
+Full API reference: [`docs/api/HTTP_REFERENCE.md`](../api/HTTP_REFERENCE.md#admin-rebalance)
+
+### Partial-Move API
+
+In addition to full add/remove node operations, `start_move_partitions()` accepts an explicit list of `{symbol, from, to}` moves. This enables:
+- Hot-symbol rebalancing without draining an entire node
+- Manual capacity planning and partition placement
+- Surgical moves for maintenance windows
+
+Partial moves reuse the same `start_plan()` → `run_loop()` execution path. The key difference: `action_` is set to `NONE`, so no `RingConsensus` broadcast occurs after completion (the ring topology doesn't change — only data placement does).

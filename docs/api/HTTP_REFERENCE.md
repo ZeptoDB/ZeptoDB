@@ -24,6 +24,7 @@ using the ClickHouse data source plugin with no modification.
   - [Cluster Nodes](#admin-cluster-nodes)
   - [Cluster Overview](#admin-cluster-overview)
   - [Metrics History](#admin-metrics-history)
+  - [Rebalance](#admin-rebalance)
   - [Version](#admin-version)
 - [Roles & Permissions](#roles--permissions)
 
@@ -140,6 +141,12 @@ print(df)
 | `DELETE` | `/admin/nodes/:id` | admin | Remove node from cluster |
 | `GET` | `/admin/cluster` | admin | Cluster overview |
 | `GET` | `/admin/metrics/history` | admin | Metrics time-series history |
+| `GET` | `/admin/rebalance/status` | admin | Current rebalance status |
+| `POST` | `/admin/rebalance/start` | admin | Start rebalance (add/remove node) |
+| `POST` | `/admin/rebalance/pause` | admin | Pause current rebalance |
+| `POST` | `/admin/rebalance/resume` | admin | Resume paused rebalance |
+| `POST` | `/admin/rebalance/cancel` | admin | Cancel current rebalance |
+| `GET` | `/admin/rebalance/history` | admin | Past rebalance events (up to 50, most recent last) |
 
 Public paths (`/ping`, `/health`, `/ready`) are always exempt from authentication.
 
@@ -762,6 +769,139 @@ curl "http://localhost:8123/admin/metrics/history?since=1711234567000&limit=100"
 
 Query parameter: `?since=<epoch_ms>` — returns only snapshots with `timestamp_ms >= since`.
 Query parameter: `?limit=<N>` — max snapshots to return (default: 600).
+
+---
+
+### Admin: Rebalance
+
+Live partition rebalancing control. Requires `set_rebalance_manager()` to be called on the server. Returns `503` if rebalance is not available (standalone mode without RebalanceManager).
+
+#### `GET /admin/rebalance/status` — Current rebalance status
+
+```bash
+curl http://localhost:8123/admin/rebalance/status -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "state": "RUNNING",
+  "total_moves": 10,
+  "completed_moves": 3,
+  "failed_moves": 0,
+  "current_symbol": "42"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | string | `IDLE`, `RUNNING`, `PAUSED`, or `CANCELLING` |
+| `total_moves` | int | Total partition moves planned |
+| `completed_moves` | int | Moves successfully committed |
+| `failed_moves` | int | Moves that failed (after retries) |
+| `current_symbol` | string | Symbol currently being migrated (empty if idle) |
+
+#### `POST /admin/rebalance/start` — Start rebalance
+
+```bash
+# Scale-out: add a new node
+curl -X POST http://localhost:8123/admin/rebalance/start \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"action":"add_node","node_id":4}'
+
+# Scale-in: remove a node
+curl -X POST http://localhost:8123/admin/rebalance/start \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"action":"remove_node","node_id":2}'
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | `"add_node"`, `"remove_node"`, or `"move_partitions"` |
+| `node_id` | int | Target node ID (required for `add_node`/`remove_node`) |
+| `moves` | array | Array of `{symbol, from, to}` objects (required for `move_partitions`) |
+
+**Partial move example:**
+
+```bash
+# Move specific partitions between existing nodes
+curl -X POST http://localhost:8123/admin/rebalance/start \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"action":"move_partitions","moves":[{"symbol":42,"from":1,"to":2},{"symbol":99,"from":2,"to":3}]}'
+```
+
+Success: `{"ok": true}`
+Already running: `{"ok": false, "error": "already running"}`
+
+#### `POST /admin/rebalance/pause` — Pause rebalance
+
+Pauses after the current in-flight move completes.
+
+```bash
+curl -X POST http://localhost:8123/admin/rebalance/pause \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"ok": true}
+```
+
+#### `POST /admin/rebalance/resume` — Resume rebalance
+
+Resumes a paused rebalance.
+
+```bash
+curl -X POST http://localhost:8123/admin/rebalance/resume \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"ok": true}
+```
+
+#### `POST /admin/rebalance/cancel` — Cancel rebalance
+
+Cancels the current rebalance. Already-committed moves stay committed.
+
+```bash
+curl -X POST http://localhost:8123/admin/rebalance/cancel \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"ok": true}
+```
+
+---
+
+#### GET /admin/rebalance/history
+
+Returns an array of past rebalance events:
+
+```json
+[
+  {
+    "action": "add_node",
+    "node_id": 4,
+    "total_moves": 3,
+    "completed_moves": 3,
+    "failed_moves": 0,
+    "start_time_ms": 1712930400000,
+    "duration_ms": 1523,
+    "cancelled": false
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | `add_node`, `remove_node`, or `move_partitions` |
+| `node_id` | number | Target node (0 for move_partitions) |
+| `total_moves` | number | Total partition moves planned |
+| `completed_moves` | number | Successfully completed moves |
+| `failed_moves` | number | Failed moves |
+| `start_time_ms` | number | Start time (epoch milliseconds) |
+| `duration_ms` | number | Total duration in milliseconds |
+| `cancelled` | boolean | Whether the rebalance was cancelled |
 
 ---
 

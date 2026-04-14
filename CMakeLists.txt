@@ -577,10 +577,12 @@ add_library(zepto_cluster STATIC
     src/cluster/query_coordinator.cpp
     src/cluster/wal_replicator.cpp
     src/cluster/partition_migrator.cpp
+    src/cluster/rebalance_manager.cpp
     src/cluster/failover_manager.cpp
     src/cluster/coordinator_ha.cpp
     src/cluster/snapshot_coordinator.cpp
     src/cluster/compute_node.cpp
+    src/cluster/ptp_clock_detector.cpp
 )
 target_include_directories(zepto_cluster PUBLIC
     ${CMAKE_SOURCE_DIR}/include
@@ -824,6 +826,21 @@ if(ZEPTO_BUILD_BENCH)
         zepto_execution
     )
     target_compile_options(bench_parallel PRIVATE
+        -O3 -march=native
+    )
+
+    # Live rebalancing load test (HTTP client, runs on EKS loadgen pod)
+    add_executable(bench_rebalance
+        tests/bench/bench_rebalance.cpp
+    )
+    target_include_directories(bench_rebalance PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+    target_link_libraries(bench_rebalance PRIVATE Threads::Threads)
+    if(OPENSSL_FOUND)
+        target_link_libraries(bench_rebalance PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    target_compile_options(bench_rebalance PRIVATE
         -O3 -march=native
     )
 endif()

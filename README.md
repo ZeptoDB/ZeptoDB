@@ -12,23 +12,16 @@
 [![Tests](https://img.shields.io/badge/tests-830%2B%20passing-brightgreen?logo=googletest)](tests/)
 [![License](https://img.shields.io/badge/License-BSL_1.1-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-docs.zeptodb.io-blue?logo=readthedocs)](https://docs.zeptodb.io)
-
-<!-- Uncomment when ready:
 [![Discord](https://img.shields.io/discord/DISCORD_SERVER_ID?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
 [![Docker Pulls](https://img.shields.io/docker/pulls/zeptodb/zeptodb?logo=docker)](https://hub.docker.com/r/zeptodb/zeptodb)
 [![PyPI](https://img.shields.io/pypi/v/zeptodb?logo=python&logoColor=white)](https://pypi.org/project/zeptodb/)
--->
 
-[Quick Start](#-quick-start) · [Performance](#-performance) · [SQL Examples](#-sql-examples) · [Docs](https://docs.zeptodb.io) · [Contributing](CONTRIBUTING.md)
+[Quick Start](#-quick-start) · [Why ZeptoDB](#-why-zeptodb) · [Performance](#-performance) · [SQL Examples](#-sql-examples) · [Docs](https://docs.zeptodb.io) · [Community](#-community)
 
 </div>
 
 ---
 
-<!-- TODO: Replace with actual GIF recording (asciinema or screen capture)
-     Record: docker run → INSERT → SELECT → Web UI query editor
-     Tool: asciinema rec demo.cast && agg demo.cast demo.gif
--->
 <!--
 <div align="center">
   <img src="docs/assets/demo.gif" alt="ZeptoDB Demo" width="720">
@@ -65,9 +58,46 @@ The engine is hardware-software co-optimized: Highway SIMD vectorization, LLVM J
 
 ---
 
+## 🔍 Why ZeptoDB?
+
+| | **ZeptoDB** | **kdb+** | **ClickHouse** | **TimescaleDB** | **QuestDB** |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Ingestion** | 5.52M evt/s | ~5M evt/s | ~100K evt/s | ~50K evt/s | ~1M evt/s |
+| **Filter 1M rows** | 272μs | ~300μs | ~10ms | ~50ms | ~2ms |
+| **ASOF JOIN** | ✅ Native | ✅ Native | ❌ UDF | ❌ Manual | ✅ Native |
+| **SQL** | ✅ Standard | ❌ q lang | ✅ Dialect | ✅ PostgreSQL | ✅ Dialect |
+| **Python zero-copy** | 522ns | ❌ IPC only | ❌ | ❌ | ❌ |
+| **License cost** | Free (BSL-1.1) | $100K–500K/yr | Free (Apache 2.0) | Free (Apache 2.0) | Free (Apache 2.0) |
+
+**TL;DR:** kdb+ performance, standard SQL, zero-copy Python, open-source pricing.
+
+---
+
 ## 🚀 Quick Start
 
-### Docker (fastest)
+| Method | Command |
+|--------|---------|
+| **Binary** | Download from [GitHub Releases](https://github.com/ZeptoDB/ZeptoDB/releases) |
+| **Homebrew** | `brew install ZeptoDB/tap/zeptodb` |
+| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.0.1` |
+| **PyPI** | `pip install zeptodb` |
+| **Source** | [Build instructions below](#build-from-source) |
+
+### Binary
+
+```bash
+# amd64
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-linux-amd64-0.0.1.tar.gz
+tar xzf zeptodb-linux-amd64-0.0.1.tar.gz
+./zeptodb-linux-amd64-0.0.1/zepto_http_server --port 8123
+
+# arm64 (AWS Graviton)
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-linux-arm64-0.0.1.tar.gz
+```
+
+> **Note:** Prebuilt binaries require runtime libraries (LLVM 19, Arrow, etc.). See the [Binary Installation Guide](docs/getting-started/BINARY_INSTALL.md) for prerequisites and troubleshooting.
+
+### Docker
 
 ```bash
 docker run -p 8123:8123 zeptodb/zeptodb:0.0.1
@@ -79,6 +109,20 @@ curl -X POST http://localhost:8123/ \
 # Query
 curl -X POST http://localhost:8123/ \
   -d "SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 'AAPL'"
+```
+
+### Python
+
+```python
+import zeptodb
+
+db = zeptodb.Pipeline()
+db.start()
+db.ingest(symbol=1, price=185.50, volume=100)
+db.drain()
+
+# Zero-copy numpy access (522ns)
+prices = db.get_column(symbol=1, name="price")
 ```
 
 ### Build from Source
@@ -94,20 +138,6 @@ cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
 ninja -j$(nproc)
 
 ./zepto_http_server --port 8123
-```
-
-### Python
-
-```python
-import zeptodb
-
-db = zeptodb.Pipeline()
-db.start()
-db.ingest(symbol=1, price=185.50, volume=100)
-db.drain()
-
-# Zero-copy numpy access (522ns)
-prices = db.get_column(symbol=1, name="price")
 ```
 
 📖 Full guide: [Quick Start](https://docs.zeptodb.io/getting-started/QUICK_START/) · [Python Reference](docs/api/PYTHON_REFERENCE.md) · [SQL Reference](docs/api/SQL_REFERENCE.md)
@@ -260,17 +290,29 @@ Supported: **kdb+** (HDB loader, q→SQL) · **ClickHouse** (DDL/query conversio
 
 ---
 
-## 🤝 Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-<!-- Uncomment when Discord is set up:
 ## 💬 Community
 
-- [Discord](https://discord.gg/zeptodb) — questions, discussions, help
-- [GitHub Discussions](https://github.com/zeptodb/zeptodb/discussions) — design proposals, RFCs
-- [Twitter/X](https://twitter.com/zeptodb) — announcements
--->
+- [Discord](https://discord.gg/zeptodb) — questions, discussions, real-time help
+- [GitHub Discussions](https://github.com/ZeptoDB/ZeptoDB/discussions) — design proposals, Q&A, ideas
+- [Twitter/X](https://twitter.com/zeptodb) — release announcements, benchmarks
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions of all sizes — from typo fixes to new features.
+
+- 🏷️ Check out issues labeled [`good-first-issue`](https://github.com/ZeptoDB/ZeptoDB/labels/good-first-issue) for easy starting points
+- 📖 Read [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions and guidelines
+- 💬 Join [Discord](https://discord.gg/zeptodb) to discuss ideas before starting large changes
+
+---
+
+<div align="center">
+
+If ZeptoDB is useful to you, consider giving it a ⭐ — it helps others discover the project.
+
+</div>
 
 ---
 

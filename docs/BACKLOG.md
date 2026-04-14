@@ -1,8 +1,8 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 830 tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 933 tests passing
 >
-> Last cleaned: 2026-04-10
+> Last cleaned: 2026-04-11
 
 ---
 
@@ -132,12 +132,19 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Live rebalancing** | Zero-downtime partition migration | L |
-| **Dual-write ingestion wiring** | `migration_target()` is defined but never called in ingestion path — dual-write is dead code (devlog 054) | M |
+| ~~**Live rebalancing**~~ | ✅ Done (devlog 055) | — |
+| ~~**Dual-write ingestion wiring**~~ | ✅ Done (devlog 055) | — |
+| ~~**Multi-node benchmark execution**~~ | ✅ Rebalance load test done (devlog 056) | — |
+| ~~**Partial-move rebalance API**~~ | ✅ Done (devlog 058) — `start_move_partitions()` + HTTP `move_partitions` action | — |
+| ~~**Rebalance query routing safety**~~ | ✅ Done (devlog 057) — `recently_migrated()` grace period | — |
+| ~~**`peer_rpc_clients_` thread safety**~~ | ✅ Done (devlog 057) — `shared_mutex` in `ClusterNode` | — |
+| ~~**Move timeout enforcement**~~ | ✅ Done (devlog 057) — `move_timeout_sec` in `RebalanceConfig` | — |
+| ~~**Rebalance progress in Web UI**~~ | ✅ Done (devlog 059) — cluster dashboard rebalance panel | — |
+| ~~**Rebalance bandwidth throttling**~~ | ✅ Done (devlog 062) — `BandwidthThrottler` rate limiter, 10 tests | — |
+| ~~**Rebalance history endpoint**~~ | ✅ Done (devlog 060) — `/admin/rebalance/history` + Web UI table | — |
 | **Tier C cold query offload** | Historical data → DuckDB on S3 | M |
-| **PTP clock sync detection** | ASOF JOIN strict mode | S |
-| **Global symbol registry** | Distributed string symbol routing | M |
-| **Multi-node benchmark execution** | EKS guide ready, ~$12/run | S |
+| ~~**PTP clock sync detection**~~ | ✅ Done (devlog 063) — `PtpClockDetector` with strict mode | — |
+| **Global symbol registry** | Distributed string symbol routing — rebalance must migrate symbol dictionary | M |
 
 ---
 
@@ -178,10 +185,10 @@
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
 | **P6** | Enterprise / Cloud | 3 | SAML, Geo-replication, Marketplace |
 | **P7** | Engine Performance | 8 | Composite index, Cost-based planner |
-| **P8** | Cluster | 11 | RDMA transport, Live rebalancing |
+| **P8** | Cluster | 14 | RDMA transport, Rebalance hardening |
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 42 items + 10 manual tasks**
+**Total remaining: 45 items + 10 manual tasks**
 
-**Critical path: P2 (PyPI trusted publisher) → P4 (Tool Integration)**
+**Critical path: P8 (rebalance hardening) → P4 (Tool Integration)**

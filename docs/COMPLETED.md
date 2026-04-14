@@ -72,6 +72,20 @@ Last updated: 2026-04-07
 - [x] **SnapshotCoordinator consistency (P8-Medium)** — 2PC (PREPARE→COMMIT/ABORT). Pauses ingest on all nodes then flushes at a consistent point-in-time. ABORT on all nodes on failure. `take_snapshot_legacy()` backward compatible
 - [x] **K8sNodeRegistry actual implementation (P8-Medium)** — poll_loop() performs K8s Endpoints API HTTP GET. Auto-detects environment variables, SA token authentication, parse_endpoints_json()+reconcile() diff→JOINED/LEFT events
 - [x] **PartitionMigrator atomicity (P8-Medium)** — MoveState state machine (PENDING→DUAL_WRITE→COPYING→COMMITTED/FAILED), MigrationCheckpoint JSON disk persistence (save/load), resume_plan() retry (max_retries=3), rollback_move() — sends DELETE to dest on failure
+- [x] **Dual-write ingestion wiring (P8-Feature)** — `ClusterNode::ingest_tick()` checks `migration_target()` before routing; during partition migration, ticks are sent to both source and destination nodes to prevent data loss
+- [x] **Live rebalancing (P8-Feature)** — `RebalanceManager` orchestrates zero-downtime partition migration on node add/remove. Background thread with pause/resume/cancel, checkpoint support, sequential move execution via `PartitionMigrator`
+- [x] **Load-based auto-rebalancing (P8-Feature)** — `RebalancePolicy` with configurable imbalance ratio, check interval, and cooldown. Background policy thread monitors per-node partition counts via `LoadProvider` callback and auto-triggers `start_remove_node()` on overloaded nodes
+- [x] **Rebalance admin HTTP API (P8-Feature)** — 5 REST endpoints (`/admin/rebalance/{status,start,pause,resume,cancel}`) for live rebalance control. Admin RBAC enforced, JSON request/response, 503 when not in cluster mode
+- [x] **Rebalance hardening: `peer_rpc_clients_` thread safety (P8-Feature)** — `std::shared_mutex` protects `peer_rpc_clients_` map in `ClusterNode`. `shared_lock` for reads in `remote_ingest()` hot path, `unique_lock` for writes. Race-safe lazy client creation — 1 test
+- [x] **Rebalance hardening: move timeout (P8-Feature)** — `move_timeout_sec` in `RebalanceConfig` (default 300s). `PartitionMigrator::execute_move()` wraps `migrate_symbol()` in `std::async` + `wait_for`. On timeout: FAILED + dual-write ended — 2 tests
+- [x] **Rebalance hardening: query routing safety (P8-Feature)** — `recently_migrated_` map in `PartitionRouter`. After `end_migration()`, `recently_migrated(symbol)` returns `{from, to}` during grace period (default 30s). Auto-expires. Query layer reads from both nodes during transition — 5 tests
+- [x] **Partial-move rebalance API (P8-Feature)** — `start_move_partitions(vector<Move>)` moves specific symbols between existing nodes without full drain. HTTP `move_partitions` action in `/admin/rebalance/start`. No ring topology broadcast — 6 tests
+- [x] **Rebalance progress in Web UI (P8-Feature)** — cluster dashboard panel showing live rebalance state, progress bar, completed/failed/total moves, current symbol. Auto-refreshes every 2s via `/admin/rebalance/status`
+- [x] **Rebalance history endpoint (P8-Feature)** — `GET /admin/rebalance/history` returns past rebalance events (action, node, moves, duration, cancelled). In-memory ring buffer (max 50). Web UI history table on cluster dashboard — 5 tests
+- [x] **Rebalance ring broadcast (P8-Feature)** — `RebalanceManager` calls `RingConsensus::propose_add/remove()` after all moves complete, synchronizing hash ring across all cluster nodes. Skipped on cancel. `set_consensus()` setter, `RebalanceAction` enum — 3 tests
+- [x] **Rebalance bandwidth throttling (P8-Feature)** — `BandwidthThrottler` rate-limits partition migration data transfer. Configurable `max_bandwidth_mbps` (0=unlimited). Sliding window with sleep-based backpressure. Thread-safe atomic counters — 10 tests
+- [x] **PTP clock sync detection (P8-Feature)** — `PtpClockDetector` checks PTP hardware/chrony/timesyncd synchronization quality. 4 states (SYNCED/DEGRADED/UNSYNC/UNAVAILABLE). `strict_mode` rejects distributed ASOF JOIN on bad sync. `GET /admin/clock` endpoint — 22 tests
+- [x] **Rebalance bandwidth throttling (P8-Feature)** — `BandwidthThrottler` rate-limits partition migration data transfer. Sliding 1-second window, thread-safe atomics, runtime adjustable via `set_max_bandwidth_mbps()`. Wired into `PartitionMigrator::migrate_symbol()`. Exposed in `/admin/rebalance/status` JSON — 10 tests
 
 ## Operations & Deployment
 - [x] **Production operations** — monitoring, backup, systemd service
@@ -188,6 +202,14 @@ Last updated: 2026-04-07
 - [x] **K8s HA + performance test suite** — 6 HA tests (3-node spread, node drain, concurrent drain PDB block, pod kill recovery, zero-downtime rolling update, scale 3→5→3) + 5 performance benchmarks (`tests/k8s/test_k8s_ha_perf.py`)
 - [x] **EKS test cluster config** — Lightweight cluster definition for automated testing (`tests/k8s/eks-compat-cluster.yaml`)
 - [x] **K8s test report** — Full results, benchmark numbers, Helm chart issues found (`docs/operations/K8S_TEST_REPORT.md`)
+
+---
+
+## Live Rebalancing Load Test
+- [x] **bench_rebalance binary** — HTTP-based load test measuring rebalance impact on throughput/latency (`tests/bench/bench_rebalance.cpp`)
+- [x] **Helm rebalance config** — bench-rebalance-values.yaml with RebalanceManager enabled (`deploy/helm/bench-rebalance-values.yaml`)
+- [x] **Orchestration script** — Automated test execution on EKS (`deploy/scripts/run_rebalance_bench.sh`)
+- [x] **Benchmark guide** — Prerequisites, execution, expected results, cost estimate (`docs/bench/rebalance_benchmark_guide.md`)
 
 ---
 
