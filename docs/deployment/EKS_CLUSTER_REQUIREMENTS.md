@@ -170,10 +170,26 @@ Pod demand increases
 - [ ] Enable control plane logging (api, audit, authenticator)
 - [ ] Use Pod Identity for service accounts
 
-## 8. Related Files
+## 8. Cost Optimization: Sleep/Wake
+
+For bench clusters, scale node groups to 0 when not in use:
+
+```bash
+./tools/eks-bench.sh sleep    # Scale to 0 → ~$0.10/hr (control plane only)
+./tools/eks-bench.sh wake     # Restore nodes → ready in 3-5 min
+./tools/eks-bench.sh status   # Check current state
+```
+
+| State | Hourly Cost | Nodes |
+|-------|-------------|-------|
+| Wake | ~$3.60/hr | 6 (3× r7i.2xlarge + 2× m7i.large + 1× c7i.xlarge) |
+| Sleep | ~$0.10/hr | 0 (control plane only) |
+
+## 9. Related Files
 
 | File | Description |
 |------|-------------|
+| `tools/eks-bench.sh` | Sleep/wake script for cost optimization |
 | `deploy/scripts/setup_eks.sh` | EKS Auto Mode setup script |
 | `deploy/k8s/eks-bench-cluster.yaml` | eksctl cluster config |
 | `deploy/helm/zeptodb/values.yaml` | Helm values |

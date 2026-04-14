@@ -90,12 +90,16 @@ def kubectl_json(args: str) -> dict | list | None:
     return json.loads(r.stdout)
 
 
-def wait_for_rollout(deploy: str = RELEASE + "-zeptodb", timeout: int = 180) -> bool:
+def wait_for_rollout(deploy: str = "", timeout: int = 180) -> bool:
+    if not deploy:
+        deploy = f"{RELEASE}-zeptodb"
     r = kubectl(f"rollout status deployment/{deploy} --timeout={timeout}s", timeout=timeout + 10)
     return r.returncode == 0
 
 
-def get_pods(label: str = f"app.kubernetes.io/instance={RELEASE}") -> list[dict]:
+def get_pods(label: str = "") -> list[dict]:
+    if not label:
+        label = f"app.kubernetes.io/instance={RELEASE}"
     data = kubectl_json(f"get pods -l {label}")
     if not data:
         return []
@@ -123,14 +127,20 @@ def setup():
     run(f"kubectl create namespace {NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -")
     r = run(
         f"helm install {RELEASE} {CHART_PATH} -n {NAMESPACE} "
-        f"-f {VALUES_PATH} --wait --timeout 3m",
-        timeout=200,
+        f"-f {VALUES_PATH} --wait --timeout 5m",
+        timeout=320,
         check=False,
     )
     if r.returncode != 0:
         print(f"Helm install failed:\n{r.stderr}\n{r.stdout}")
         sys.exit(1)
-    print("Helm install succeeded.\n")
+    # Wait for pods to be fully ready (Karpenter may need extra time)
+    for _ in range(60):
+        ready = get_ready_pods()
+        if len(ready) >= 2:
+            break
+        time.sleep(3)
+    print(f"Helm install succeeded ({len(get_ready_pods())} pods ready).\n")
 
 
 def cleanup():

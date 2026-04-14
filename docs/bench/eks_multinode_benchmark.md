@@ -426,6 +426,23 @@ aws ecr delete-repository --repository-name zeptodb --force --region ap-northeas
 
 Total cost estimate: **~$12** (4 nodes × $1.50/hr × 2 hours).
 
+### Cost Optimization: Sleep/Wake
+
+Instead of deleting the cluster after each benchmark, scale node groups to 0 to stop paying for instances while keeping the cluster intact:
+
+```bash
+# Stop all nodes (saves ~$3.5/hr, only control plane $0.10/hr remains)
+./tools/eks-bench.sh sleep
+
+# Bring nodes back for benchmarking (~3-5 min to ready)
+./tools/eks-bench.sh wake
+
+# Check current state
+./tools/eks-bench.sh status
+```
+
+This avoids the 15-minute cluster creation overhead on each benchmark run.
+
 ### Related Guides
 - **RDMA / EFA benchmark (bare-metal, lowest latency):** `docs/bench/rdma_efa_benchmark.md`
 - **Bare-metal TCP benchmark:** `docs/bench/multinode_benchmark_guide.md`
@@ -452,5 +469,5 @@ Total cost estimate: **~$12** (4 nodes × $1.50/hr × 2 hours).
 - [ ] Results saved to `docs/bench/results_multinode.md`
 - [ ] README.md updated with distributed numbers
 - [ ] BACKLOG.md updated
-- [ ] `eksctl delete cluster` executed
+- [ ] **`./tools/eks-bench.sh sleep`** executed (or `eksctl delete cluster` if no longer needed)
 - [ ] ECR cleaned up

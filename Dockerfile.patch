@@ -1,0 +1,2 @@
+FROM 060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb:rebalance
+COPY build/zepto_http_server /opt/zeptodb/zepto_http_server

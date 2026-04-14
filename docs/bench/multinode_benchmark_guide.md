@@ -41,6 +41,11 @@ Total: 5 instances. Estimated cost: ~$4.50/hr ($108/day).
 - 4× `m7a.4xlarge` Spot — RDMA read+write (Nitro v4), ~$2.25/2h total
 - Full guide: `docs/bench/rdma_efa_benchmark.md`
 
+**Cost optimization (EKS bench cluster):**
+- Use `./tools/eks-bench.sh sleep` to scale nodes to 0 when idle
+- Use `./tools/eks-bench.sh wake` to bring back (~3-5 min)
+- Saves ~$3.5/hr when not benchmarking
+
 **For Graviton comparison (optional):**
 - Add 3x `r8g.2xlarge` data nodes (ARM, Highway SVE)
 - Run same benchmarks, compare x86 vs ARM

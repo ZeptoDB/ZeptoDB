@@ -1,0 +1,45 @@
+# helm/bench-rebalance-values.yaml — EKS live rebalancing benchmark override
+# Usage: helm install zepto ./deploy/helm/zeptodb -n zeptodb -f deploy/helm/bench-rebalance-values.yaml
+#
+# Starts with 3 replicas. The bench binary triggers scale-out to 4 via admin API.
+#
+# IMPORTANT: Replace ACCOUNT_ID and REGION below with your actual ECR coordinates.
+# Example: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb
+
+replicaCount: 3
+
+image:
+  repository: "060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb"
+  tag: "latest"
+
+resources:
+  requests:
+    cpu: "6"
+    memory: "48Gi"
+  limits:
+    cpu: "8"
+    memory: "60Gi"
+
+cluster:
+  enabled: true
+  rpcPortOffset: 100
+  heartbeatPort: 9100
+
+persistence:
+  enabled: true
+  storageClass: gp3
+  size: 100Gi
+
+autoscaling:
+  enabled: false
+
+nodeSelector:
+  role: data-node
+
+config:
+  workerThreads: 6
+  parallelThreshold: 50000
+  # Enable rebalance manager
+  rebalanceEnabled: true
+  rebalanceCheckInterval: 30
+  rebalanceImbalanceRatio: 2.0
