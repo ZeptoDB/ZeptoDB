@@ -34,6 +34,8 @@
 #include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/server/metrics_collector.h"
 #include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/cluster/rebalance_manager.h"
+#include "zeptodb/cluster/ptp_clock_detector.h"
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -154,6 +156,16 @@ public:
             metrics_collector_->set_node_id(node_id);
     }
 
+    /// Set rebalance manager for /admin/rebalance/* endpoints.
+    void set_rebalance_manager(zeptodb::cluster::RebalanceManager* mgr) {
+        rebalance_mgr_ = mgr;
+    }
+
+    /// Set PTP clock detector for /admin/clock endpoint.
+    void set_ptp_detector(zeptodb::cluster::PtpClockDetector* det) {
+        ptp_detector_ = det;
+    }
+
 private:
     void setup_routes();
     void setup_auth_middleware();
@@ -209,6 +221,12 @@ private:
 
     // Cluster coordinator (null = standalone mode)
     zeptodb::cluster::QueryCoordinator*                     coordinator_ = nullptr;
+
+    // Rebalance manager (null = rebalance not available)
+    zeptodb::cluster::RebalanceManager*                     rebalance_mgr_ = nullptr;
+
+    // PTP clock detector (null = not configured)
+    zeptodb::cluster::PtpClockDetector*                     ptp_detector_ = nullptr;
 };
 
 } // namespace zeptodb::server

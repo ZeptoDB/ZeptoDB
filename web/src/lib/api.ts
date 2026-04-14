@@ -214,3 +214,17 @@ export async function fetchSettings(apiKey?: string) {
   if (!res.ok) return null;
   return res.json();
 }
+
+// ── Admin: Rebalance ────────────────────────────────────────────────────────
+
+export async function fetchRebalanceStatus(apiKey?: string) {
+  const res = await fetch(`${API}/admin/rebalance/status`, fetchOpts(apiKey));
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchRebalanceHistory(apiKey?: string) {
+  const res = await fetch(`${API}/admin/rebalance/history`, fetchOpts(apiKey));
+  if (!res.ok) return null;
+  return res.json();
+}

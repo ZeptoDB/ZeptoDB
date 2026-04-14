@@ -1,7 +1,7 @@
 "use client";
 import { Box, Paper, Typography, Grid, Chip, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, Tooltip as MuiTooltip, LinearProgress } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
-import { fetchNodes, fetchCluster, fetchMetricsHistory } from "@/lib/api";
+import { fetchNodes, fetchCluster, fetchMetricsHistory, fetchRebalanceStatus, fetchRebalanceHistory } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend, PieChart, Pie } from "recharts";
 
@@ -38,6 +38,25 @@ interface MetricsPoint {
   total_rows_scanned: number;
   partitions_created: number;
   last_ingest_latency_ns: number;
+}
+
+interface RebalanceInfo {
+  state: string;
+  total_moves: number;
+  completed_moves: number;
+  failed_moves: number;
+  current_symbol: string;
+}
+
+interface RebalanceHistoryEntry {
+  action: string;
+  node_id: number;
+  total_moves: number;
+  completed_moves: number;
+  failed_moves: number;
+  start_time_ms: number;
+  duration_ms: number;
+  cancelled: boolean;
 }
 
 const stateColor: Record<string, "success" | "warning" | "error" | "default" | "info"> = {
@@ -212,6 +231,105 @@ function PartitionDistribution({ nodes }: { nodes: NodeInfo[] }) {
   );
 }
 
+function RebalanceStatus({ status }: { status: RebalanceInfo }) {
+  if (status.state === "IDLE" && status.total_moves === 0) return null;
+
+  const isActive = status.state === "RUNNING" || status.state === "PAUSED" || status.state === "CANCELLING";
+  const progress = status.total_moves > 0
+    ? ((status.completed_moves + status.failed_moves) / status.total_moves) * 100
+    : 0;
+
+  const stateChipColor: Record<string, "info" | "warning" | "error" | "success" | "default"> = {
+    RUNNING: "info", PAUSED: "warning", CANCELLING: "error", IDLE: "success",
+  };
+
+  return (
+    <Paper sx={{ p: 2, border: "1px solid", borderColor: isActive ? "info.main" : "rgba(255, 255, 255, 0.08)" }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1.5 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>Rebalance Progress</Typography>
+        <Chip label={status.state} size="small" variant="outlined"
+          color={stateChipColor[status.state] ?? "default"}
+          sx={{ ...MONO, fontSize: 10 }} />
+      </Box>
+      {isActive && (
+        <LinearProgress variant="determinate" value={progress}
+          sx={{ height: 8, borderRadius: 4, mb: 1.5, bgcolor: "rgba(255,255,255,0.06)" }} />
+      )}
+      <Box sx={{ display: "flex", gap: 3 }}>
+        <Box>
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>Completed</Typography>
+          <Typography variant="body2" sx={{ ...MONO, fontWeight: 700 }}>
+            {status.completed_moves} / {status.total_moves}
+          </Typography>
+        </Box>
+        {status.failed_moves > 0 && (
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>Failed</Typography>
+            <Typography variant="body2" sx={{ ...MONO, fontWeight: 700, color: "error.main" }}>
+              {status.failed_moves}
+            </Typography>
+          </Box>
+        )}
+        {status.current_symbol && (
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>Current Symbol</Typography>
+            <Typography variant="body2" sx={{ ...MONO, fontWeight: 700 }}>
+              {status.current_symbol}
+            </Typography>
+          </Box>
+        )}
+      </Box>
+    </Paper>
+  );
+}
+
+function RebalanceHistory({ entries }: { entries: RebalanceHistoryEntry[] }) {
+  if (entries.length === 0) return null;
+
+  return (
+    <Paper sx={{ border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+      <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
+        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>Rebalance History</Typography>
+      </Box>
+      <TableContainer>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ fontWeight: 600 }}>Time</TableCell>
+              <TableCell sx={{ fontWeight: 600 }}>Action</TableCell>
+              <TableCell sx={{ fontWeight: 600 }} align="right">Node</TableCell>
+              <TableCell sx={{ fontWeight: 600 }} align="right">Moves</TableCell>
+              <TableCell sx={{ fontWeight: 600 }} align="right">Failed</TableCell>
+              <TableCell sx={{ fontWeight: 600 }} align="right">Duration</TableCell>
+              <TableCell sx={{ fontWeight: 600 }}>Result</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {[...entries].reverse().map((e, i) => (
+              <TableRow key={i} hover>
+                <TableCell sx={{ ...MONO, fontSize: 12 }}>
+                  {new Date(e.start_time_ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </TableCell>
+                <TableCell sx={{ ...MONO, fontSize: 12 }}>{e.action}</TableCell>
+                <TableCell align="right" sx={{ ...MONO, fontSize: 12 }}>{e.node_id || "—"}</TableCell>
+                <TableCell align="right" sx={{ ...MONO, fontSize: 12 }}>{e.completed_moves}/{e.total_moves}</TableCell>
+                <TableCell align="right" sx={{ ...MONO, fontSize: 12, color: e.failed_moves > 0 ? "error.main" : "text.secondary" }}>{e.failed_moves}</TableCell>
+                <TableCell align="right" sx={{ ...MONO, fontSize: 12 }}>{e.duration_ms < 1000 ? `${e.duration_ms}ms` : `${(e.duration_ms / 1000).toFixed(1)}s`}</TableCell>
+                <TableCell>
+                  <Chip size="small" variant="outlined"
+                    label={e.cancelled ? "CANCELLED" : e.failed_moves > 0 ? "PARTIAL" : "OK"}
+                    color={e.cancelled ? "warning" : e.failed_moves > 0 ? "error" : "success"}
+                    sx={{ ...MONO, fontSize: 9 }} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Paper>
+  );
+}
+
 export default function ClusterPage() {
   const { auth } = useAuth();
 
@@ -234,6 +352,18 @@ export default function ClusterPage() {
       return fetchMetricsHistory(auth?.apiKey, thirtyMinAgo, 600);
     },
     refetchInterval: 3000,
+  });
+
+  const { data: rebalanceData } = useQuery({
+    queryKey: ["rebalance-status"],
+    queryFn: () => fetchRebalanceStatus(auth?.apiKey),
+    refetchInterval: 2000,
+  });
+
+  const { data: rebalanceHistory } = useQuery({
+    queryKey: ["rebalance-history"],
+    queryFn: () => fetchRebalanceHistory(auth?.apiKey),
+    refetchInterval: 5000,
   });
 
   const nodes: NodeInfo[] = nodesData?.nodes ?? [];
@@ -290,6 +420,14 @@ export default function ClusterPage() {
             Drop rate: {dropRate.toFixed(2)}% ({cl!.ticks_dropped.toLocaleString()} / {cl!.ticks_ingested.toLocaleString()})
           </Typography>
         </Paper>
+      )}
+
+      {/* Rebalance progress */}
+      {rebalanceData && <RebalanceStatus status={rebalanceData as RebalanceInfo} />}
+
+      {/* Rebalance history */}
+      {rebalanceHistory && (rebalanceHistory as RebalanceHistoryEntry[]).length > 0 && (
+        <RebalanceHistory entries={rebalanceHistory as RebalanceHistoryEntry[]} />
       )}
 
       {/* Topology + Distribution */}

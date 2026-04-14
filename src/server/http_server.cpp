@@ -1514,6 +1514,241 @@ void HttpServer::setup_admin_routes() {
     });
 
     // -------------------------------------------------------------------------
+    // Rebalance Admin API
+    // -------------------------------------------------------------------------
+
+    // GET /admin/rebalance/status — current rebalance status
+    svr_->Get("/admin/rebalance/status", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!rebalance_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("rebalance not available"), "application/json");
+            return;
+        }
+        auto s = rebalance_mgr_->status();
+        const char* state_str = "IDLE";
+        switch (s.state) {
+            case zeptodb::cluster::RebalanceState::RUNNING:    state_str = "RUNNING"; break;
+            case zeptodb::cluster::RebalanceState::PAUSED:     state_str = "PAUSED"; break;
+            case zeptodb::cluster::RebalanceState::CANCELLING: state_str = "CANCELLING"; break;
+            default: break;
+        }
+        std::ostringstream os;
+        os << "{\"state\":\"" << state_str << "\""
+           << ",\"total_moves\":" << s.total_moves
+           << ",\"completed_moves\":" << s.completed_moves
+           << ",\"failed_moves\":" << s.failed_moves
+           << ",\"current_symbol\":\"" << s.current_symbol << "\""
+           << ",\"max_bandwidth_mbps\":" << rebalance_mgr_->config().max_bandwidth_mbps
+           << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // POST /admin/rebalance/start — start rebalance
+    svr_->Post("/admin/rebalance/start", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!rebalance_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("rebalance not available"), "application/json");
+            return;
+        }
+        // Parse action and node_id from body
+        auto extract_str = [&](const std::string& field) -> std::string {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return "";
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return "";
+            auto q1 = req.body.find('"', colon + 1);
+            if (q1 == std::string::npos) return "";
+            auto q2 = req.body.find('"', q1 + 1);
+            if (q2 == std::string::npos) return "";
+            return req.body.substr(q1 + 1, q2 - q1 - 1);
+        };
+        auto extract_int = [&](const std::string& field) -> int64_t {
+            std::string pat = "\"" + field + "\"";
+            auto pos = req.body.find(pat);
+            if (pos == std::string::npos) return 0;
+            auto colon = req.body.find(':', pos + pat.size());
+            if (colon == std::string::npos) return 0;
+            try { return std::stoll(req.body.substr(colon + 1)); } catch (...) { return 0; }
+        };
+
+        std::string action = extract_str("action");
+        auto node_id = static_cast<uint32_t>(extract_int("node_id"));
+
+        bool ok = false;
+        if (action == "add_node") {
+            if (node_id == 0) {
+                res.status = 400;
+                res.set_content(build_error_json("Missing or invalid node_id"), "application/json");
+                return;
+            }
+            ok = rebalance_mgr_->start_add_node(node_id);
+        } else if (action == "remove_node") {
+            if (node_id == 0) {
+                res.status = 400;
+                res.set_content(build_error_json("Missing or invalid node_id"), "application/json");
+                return;
+            }
+            ok = rebalance_mgr_->start_remove_node(node_id);
+        } else if (action == "move_partitions") {
+            // Parse moves array: [{"symbol":N,"from":N,"to":N}, ...]
+            auto moves_pos = req.body.find("\"moves\"");
+            auto arr_start = (moves_pos != std::string::npos) ? req.body.find('[', moves_pos) : std::string::npos;
+            auto arr_end = (arr_start != std::string::npos) ? req.body.find(']', arr_start) : std::string::npos;
+            if (arr_start == std::string::npos || arr_end == std::string::npos) {
+                res.status = 400;
+                res.set_content(build_error_json("Missing 'moves' array"), "application/json");
+                return;
+            }
+            std::vector<cluster::PartitionRouter::Move> moves;
+            auto cur = arr_start;
+            while (cur < arr_end) {
+                auto obj_start = req.body.find('{', cur);
+                if (obj_start == std::string::npos || obj_start >= arr_end) break;
+                auto obj_end = req.body.find('}', obj_start);
+                if (obj_end == std::string::npos || obj_end > arr_end) break;
+                auto obj = req.body.substr(obj_start, obj_end - obj_start + 1);
+                auto find_val = [&](const std::string& key) -> int64_t {
+                    auto p = obj.find("\"" + key + "\"");
+                    if (p == std::string::npos) return -1;
+                    auto c = obj.find(':', p);
+                    if (c == std::string::npos) return -1;
+                    try { return std::stoll(obj.substr(c + 1)); } catch (...) { return -1; }
+                };
+                auto sym = find_val("symbol");
+                auto from = find_val("from");
+                auto to = find_val("to");
+                if (sym < 0 || from < 0 || to < 0) {
+                    res.status = 400;
+                    res.set_content(build_error_json("Invalid move object"), "application/json");
+                    return;
+                }
+                if (from == to) {
+                    res.status = 400;
+                    res.set_content(build_error_json("Invalid move: 'from' and 'to' must differ"), "application/json");
+                    return;
+                }
+                moves.push_back({static_cast<uint32_t>(sym), static_cast<uint32_t>(from), static_cast<uint32_t>(to)});
+                cur = obj_end + 1;
+            }
+            if (moves.empty()) {
+                res.status = 400;
+                res.set_content(build_error_json("Empty moves array"), "application/json");
+                return;
+            }
+            ok = rebalance_mgr_->start_move_partitions(std::move(moves));
+        } else {
+            res.status = 400;
+            res.set_content(build_error_json("Invalid action: use 'add_node', 'remove_node', or 'move_partitions'"),
+                            "application/json");
+            return;
+        }
+
+        if (ok) {
+            res.set_content(R"({"ok":true})", "application/json");
+        } else {
+            res.set_content(R"({"ok":false,"error":"already running"})", "application/json");
+        }
+    });
+
+    // POST /admin/rebalance/pause
+    svr_->Post("/admin/rebalance/pause", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!rebalance_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("rebalance not available"), "application/json");
+            return;
+        }
+        rebalance_mgr_->pause();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
+
+    // POST /admin/rebalance/resume
+    svr_->Post("/admin/rebalance/resume", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!rebalance_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("rebalance not available"), "application/json");
+            return;
+        }
+        rebalance_mgr_->resume();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
+
+    // POST /admin/rebalance/cancel
+    svr_->Post("/admin/rebalance/cancel", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!rebalance_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("rebalance not available"), "application/json");
+            return;
+        }
+        rebalance_mgr_->cancel();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
+
+    // GET /admin/rebalance/history — past rebalance events
+    svr_->Get("/admin/rebalance/history", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!rebalance_mgr_) {
+            res.status = 503;
+            res.set_content(build_error_json("rebalance not available"), "application/json");
+            return;
+        }
+        auto entries = rebalance_mgr_->history();
+        std::ostringstream os;
+        os << "[";
+        for (size_t i = 0; i < entries.size(); ++i) {
+            auto& e = entries[i];
+            const char* act = "move_partitions";
+            if (e.action == zeptodb::cluster::RebalanceAction::ADD_NODE) act = "add_node";
+            else if (e.action == zeptodb::cluster::RebalanceAction::REMOVE_NODE) act = "remove_node";
+            if (i > 0) os << ",";
+            os << "{\"action\":\"" << act << "\""
+               << ",\"node_id\":" << e.node_id
+               << ",\"total_moves\":" << e.total_moves
+               << ",\"completed_moves\":" << e.completed_moves
+               << ",\"failed_moves\":" << e.failed_moves
+               << ",\"start_time_ms\":" << e.start_time_ms
+               << ",\"duration_ms\":" << e.duration_ms
+               << ",\"cancelled\":" << (e.cancelled ? "true" : "false")
+               << "}";
+        }
+        os << "]";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/clock — PTP clock sync status
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/clock", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!ptp_detector_) {
+            res.status = 503;
+            res.set_content(build_error_json("PTP detector not configured"), "application/json");
+            return;
+        }
+        ptp_detector_->refresh();
+        res.set_content(ptp_detector_->to_json(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
     // Metrics collector — start background capture (3s interval, 1h buffer)
     // -------------------------------------------------------------------------
     metrics_collector_ = std::make_unique<MetricsCollector>(executor_.stats());

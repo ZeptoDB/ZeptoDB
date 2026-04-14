@@ -14,6 +14,12 @@
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/coordinator_ha.h"
 #include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/rebalance_manager.h"
+#include "zeptodb/cluster/partition_migrator.h"
+#include "zeptodb/cluster/partition_router.h"
+#include "zeptodb/cluster/rebalance_manager.h"
+#include "zeptodb/cluster/partition_migrator.h"
+#include "zeptodb/cluster/partition_router.h"
 #include "zeptodb/util/logger.h"
 
 #include <csignal>
@@ -325,6 +331,29 @@ int main(int argc, char* argv[]) {
         std::cout << "=================================\n";
     } else {
         std::cout << "\n=== Dev API Keys: already exist (skipped creation) ===\n";
+    }
+
+    // ── Rebalance manager (when remote nodes exist) ──
+    std::unique_ptr<zeptodb::cluster::PartitionRouter> rebalance_router;
+    std::unique_ptr<zeptodb::cluster::PartitionMigrator> rebalance_migrator;
+    std::unique_ptr<zeptodb::cluster::RebalanceManager> rebalance_mgr;
+
+    if (!remote_nodes.empty()) {
+        rebalance_router = std::make_unique<zeptodb::cluster::PartitionRouter>();
+        rebalance_migrator = std::make_unique<zeptodb::cluster::PartitionMigrator>();
+
+        rebalance_router->add_node(node_id);
+        rebalance_migrator->add_node(node_id, "127.0.0.1", static_cast<uint16_t>(port + 100));
+
+        for (auto& rn : remote_nodes) {
+            rebalance_router->add_node(rn.id);
+            rebalance_migrator->add_node(rn.id, rn.host, static_cast<uint16_t>(rn.port + 100));
+        }
+
+        rebalance_mgr = std::make_unique<zeptodb::cluster::RebalanceManager>(
+            *rebalance_router, *rebalance_migrator);
+        server.set_rebalance_manager(rebalance_mgr.get());
+        std::cout << "Rebalance manager: enabled (" << (remote_nodes.size() + 1) << " nodes)\n";
     }
 
     server.start_async();
