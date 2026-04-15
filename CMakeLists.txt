@@ -506,6 +506,7 @@ add_library(zepto_auth STATIC
     src/auth/oidc_discovery.cpp
     src/auth/session_store.cpp
     src/auth/oauth2_token_exchange.cpp
+    src/auth/license_validator.cpp
 )
 target_include_directories(zepto_auth PUBLIC
     ${CMAKE_SOURCE_DIR}/include

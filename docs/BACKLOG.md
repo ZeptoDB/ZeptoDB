@@ -66,8 +66,8 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **License key validator** | Signed JWT license key — verify edition/expiry at startup. `include/zeptodb/auth/license_validator.h` | M |
-| **Feature gate helper** | `license::hasFeature(Feature::Cluster)` check + 402 error response helper | S |
+| ~~**License key validator**~~ | ✅ Done (devlog 065) — RS256 JWT license validation, env/file/direct loading, grace period | — |
+| ~~**Feature gate helper**~~ | ✅ Done (devlog 065) — `license().hasFeature(Feature::X)` bitmask check + expiry-aware | — |
 | **Startup banner with edition** | `[INFO] ZeptoDB v0.x.x (Community Edition)` + upgrade hints in log | XS |
 | **Trial key support** | 30-day Enterprise trial key generation + expiry enforcement | S |
 
@@ -230,7 +230,7 @@
 |----------|----------|:---------:|-------------|
 | **P1** | Demo-ready UI | ✅ 0 | Complete |
 | **P2** | Website + Distribution | 2 + 8 manual | PyPI trusted publisher, Blog expansion |
-| **P2.5** | Monetization (Edition) | 18 | License validator, Feature gates |
+| **P2.5** | Monetization (Edition) | 16 | Startup banner, Trial key support |
 | **P3** | Connectivity | ✅ 0 | Complete |
 | **P4** | Tool Integration | 2 | ClickHouse protocol, JDBC/ODBC |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
@@ -240,6 +240,6 @@
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 62 items + 8 manual tasks**
+**Total remaining: 60 items + 8 manual tasks**
 
 **Critical path: P2.5 (license system) → P8 (cluster) → P4 (Tool Integration)**

@@ -53,6 +53,7 @@ Last updated: 2026-04-07
 - [x] **Enterprise Security** — TLS/HTTPS, API Key + JWT/OIDC, RBAC, Rate Limiting, Admin REST API, Query Timeout/Kill, Secrets Management (Vault/File/Env), Audit Log (SOC2/EMIR/MiFID II) — 69 tests
 - [x] **Vault-backed API Key Store** — Write-through sync of API keys to HashiCorp Vault KV v2, multi-node key sharing via Vault, graceful degradation when Vault unavailable — 8 tests
 - [x] **Multi-tenancy** — TenantManager, per-tenant query concurrency quota, table namespace isolation, usage tracking
+- [x] **License validator** — RS256-signed JWT license keys, Edition tiers (Community/Pro/Enterprise), Feature bitmask gating, env/file/direct key loading, 30-day grace period, `license().hasFeature()` singleton API (devlog 065)
 
 ## Cluster & HA
 - [x] **Cluster Integrity** — Unified PartitionRouter, FencingToken in RPC (24-byte header), split-brain defense (K8s Lease), CoordinatorHA auto re-registration — 13 tests

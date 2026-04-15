@@ -82,6 +82,8 @@ private:
     Config config_;
     KeyResolver key_resolver_;
 
+    friend class LicenseValidator;  // License validator reuses JSON helpers
+
     bool verify_hs256(const std::string& header_payload,
                       const std::string& b64sig) const;
     bool verify_rs256(const std::string& header_payload,
