@@ -81,9 +81,7 @@ Instructions for setting up ZeptoDB's community channels.
 ## 4. Community Badges for README
 
 ```markdown
-[![Discord](https://img.shields.io/discord/DISCORD_SERVER_ID?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
+[![Discord](https://img.shields.io/discord/1492174712359354590?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
 [![GitHub Discussions](https://img.shields.io/github/discussions/zeptodb/zeptodb?logo=github)](https://github.com/zeptodb/zeptodb/discussions)
 [![Twitter Follow](https://img.shields.io/twitter/follow/zeptodb?style=social)](https://twitter.com/zeptodb)
 ```
-
-Replace `DISCORD_SERVER_ID` with actual server ID after creation.

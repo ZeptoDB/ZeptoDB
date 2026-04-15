@@ -89,6 +89,9 @@ public:
     /// List all registered view names.
     std::vector<std::string> list_views() const;
 
+    /// Get all registered view definitions (for query rewrite matching).
+    std::vector<MVDef> get_all_defs() const;
+
 private:
     struct ViewState {
         MVDef def;

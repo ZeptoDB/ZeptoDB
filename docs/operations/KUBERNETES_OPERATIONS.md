@@ -336,8 +336,8 @@ Two custom node pools are configured:
 
 | Pool | Trigger | Capacity | Consolidation |
 |------|---------|----------|---------------|
-| **zepto-realtime** | Pending pods with `zeptodb.io/role: realtime` | On-Demand only | WhenEmpty, after 30m |
-| **zepto-analytics** | Pending pods with `zeptodb.io/role: analytics` | Spot + On-Demand | WhenEmptyOrUnderutilized, after 5m |
+| **zepto-realtime** | Pending pods with `zeptodb.com/role: realtime` | On-Demand only | WhenEmpty, after 30m |
+| **zepto-analytics** | Pending pods with `zeptodb.com/role: analytics` | Spot + On-Demand | WhenEmptyOrUnderutilized, after 5m |
 
 Scaling flow: HPA increases replicas → pods pending → Auto Mode provisions node (30-60s) → pods scheduled.
 

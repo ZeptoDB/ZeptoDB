@@ -573,7 +573,7 @@ Timing ON
 - [ ] PyPI publish (requires PyPI account + token)
 - [ ] Cost-based planner — see §9 Impact Assessment (major engine impact)
 - [ ] Composite index — see §9 Impact Assessment (major engine impact)
-- [ ] MV query rewrite — see §9 Impact Assessment (major engine impact)
+- [x] MV query rewrite — ✅ Done (devlog 064). Rewrites GROUP BY queries into MV lookups.
 - [ ] Prepared statements — see §9 Impact Assessment (moderate engine impact)
 - [ ] Query result cache — see §9 Impact Assessment (indirect engine impact)
 - [ ] SAMPLE clause — see §9 Impact Assessment (positive engine impact)

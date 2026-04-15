@@ -62,9 +62,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage      = "https://zeptodb.io"
+Homepage      = "https://zeptodb.com"
 Repository    = "https://github.com/ZeptoDB/ZeptoDB"
-Documentation = "https://docs.zeptodb.io"
+Documentation = "https://docs.zeptodb.com"
 
 # ============================================================================
 # hatch build

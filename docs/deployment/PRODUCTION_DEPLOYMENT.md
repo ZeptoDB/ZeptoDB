@@ -652,8 +652,8 @@ Development -> Docker local test -> K8s staging -> Validation
 
 ## Support
 
-- **Bare metal deployment support**: enterprise@zeptodb.io
-- **Cloud deployment support**: cloud@zeptodb.io
+- **Bare metal deployment support**: enterprise@zeptodb.com
+- **Cloud deployment support**: cloud@zeptodb.com
 - **Community**: https://discord.gg/zeptodb
 
 ---

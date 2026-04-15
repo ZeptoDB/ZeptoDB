@@ -31,6 +31,7 @@ Last updated: 2026-04-07
 - [x] **Time range index** — O(log n) binary search within partitions, O(1) partition skip
 - [x] **Sorted column index** — `p#`/`g#` style sorted attribute, O(log n) binary search range scan, 269x vs full scan — 13 tests
 - [x] **Materialized View** — CREATE/DROP MATERIALIZED VIEW, incremental aggregation on ingest, OHLCV/SUM/COUNT/MIN/MAX/FIRST/LAST, xbar time bucket
+- [x] **MV query rewrite** — Automatic rewrite of SELECT GROUP BY into direct MV lookup when matching MV exists. O(n) → O(1) for aggregation queries — 6 tests (devlog 064)
 
 ## Storage
 - [x] **Parquet HDB** — SNAPPY/ZSTD/LZ4_RAW, DuckDB/Polars/Spark direct query (Arrow C++ API)
@@ -146,7 +147,7 @@ Last updated: 2026-04-07
 - [x] **API URL consistency** — All API calls use configurable `API` base path constant, supports both same-origin (Docker) and proxy (Next.js dev) modes
 
 ## Website & Docs (P2)
-- [x] **Docs site (docs.zeptodb.io)** — mkdocs-material deployment
+- [x] **Docs site (docs.zeptodb.com)** — mkdocs-material deployment
 - [x] **Docs nav update** — Added 40+ missing pages (devlog 024-040, Flight API, multinode_stability, etc.)
 - [x] **Performance comparison page** — vs kdb+/ClickHouse/TimescaleDB benchmark charts
 
@@ -157,6 +158,8 @@ Last updated: 2026-04-07
 - [x] **Community setup guide** — Discord server structure (channels/roles/bots), GitHub Discussions categories — `docs/community/COMMUNITY_SETUP.md`
 - [x] **Registry submission content** — Awesome Time-Series DB PR text, DB-Engines form data, DBDB/AlternativeTo/StackShare — `docs/community/REGISTRY_SUBMISSIONS.md`
 - [x] **Launch post drafts** — Show HN, Reddit (r/programming, r/cpp, r/algotrading, r/selfhosted), timing strategy, launch day checklist — `docs/community/LAUNCH_POSTS.md`
+- [x] **Discord server created** — Server ID 1492174712359354590, invite link https://discord.gg/zeptodb
+- [x] **Discord links added to Web UI** — Join Discord button on home page, Discord link in sidebar
 
 ## SSO / Identity Enhancement (P6)
 - [x] **OIDC Discovery** — `OidcDiscovery::fetch(issuer_url)` auto-populates jwks_uri, authorization/token endpoints from `/.well-known/openid-configuration`. AuthManager auto-registers IdP + JWT validator — 2 tests

@@ -104,11 +104,11 @@ RUN mkdir -p /runtime-libs && \
 # ============================================================================
 FROM gcr.io/distroless/cc-debian12:nonroot
 
-LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
+LABEL maintainer="ZeptoDB Team <contact@zeptodb.com>"
 LABEL description="ZeptoDB — Ultra-Low Latency Time-Series Database"
 LABEL version="0.0.1"
 LABEL org.opencontainers.image.source="https://github.com/ZeptoDB/ZeptoDB"
-LABEL org.opencontainers.image.url="https://zeptodb.io"
+LABEL org.opencontainers.image.url="https://zeptodb.com"
 LABEL org.opencontainers.image.vendor="ZeptoDB"
 
 WORKDIR /opt/zeptodb

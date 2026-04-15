@@ -34,8 +34,8 @@ Target: https://db-engines.com/en/system/new
 | Field | Value |
 |-------|-------|
 | Name | ZeptoDB |
-| Website | https://zeptodb.io |
-| Documentation | https://docs.zeptodb.io |
+| Website | https://zeptodb.com |
+| Documentation | https://docs.zeptodb.com |
 | Source Code | https://github.com/zeptodb/zeptodb |
 | Category | Time Series DBMS |
 | Database Model | Columnar |

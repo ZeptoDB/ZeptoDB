@@ -35,7 +35,7 @@ Built for finance (tick data, VWAP, EMA), IoT (sensor streams), and observabilit
 The codebase is ~830 tests, runs on x86_64 and ARM Graviton. BSL-1.1 licensed (Apache 2.0 in 2030).
 
 GitHub: https://github.com/zeptodb/zeptodb
-Docs: https://docs.zeptodb.io
+Docs: https://docs.zeptodb.com
 Try it: `docker run -p 8123:8123 zeptodb/zeptodb:0.0.1`
 
 Happy to answer questions about the architecture, SIMD/JIT implementation, or benchmarking methodology.
@@ -97,8 +97,8 @@ Focus on ease of deployment:
 
 - [ ] Docker image works: `docker pull zeptodb/zeptodb:0.0.1 && docker run -p 8123:8123 zeptodb/zeptodb:0.0.1`
 - [ ] Quick Start guide tested end-to-end
-- [ ] Docs site live at docs.zeptodb.io
-- [ ] Website live at zeptodb.io (at minimum: landing page)
+- [ ] Docs site live at docs.zeptodb.com
+- [ ] Website live at zeptodb.com (at minimum: landing page)
 - [ ] GitHub README has badges, architecture diagram, GIF demo
 - [ ] Discord invite link working
 - [ ] Someone available to respond to comments for 12+ hours

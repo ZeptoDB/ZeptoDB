@@ -36,7 +36,7 @@ Users can then:
 | Azure AD (Entra ID) | ✅ | `groups` (GUID) or `roles` | ✅ |
 | Google Workspace | ✅ | N/A (use directory API) | ✅ |
 | Keycloak | ✅ | `groups` or `realm_access.roles` | ✅ |
-| Auth0 | ✅ | `https://zeptodb.io/roles` (custom) | ✅ |
+| Auth0 | ✅ | `https://zeptodb.com/roles` (custom) | ✅ |
 | AWS Cognito | ✅ | `cognito:groups` | ✅ |
 
 ---
@@ -139,7 +139,7 @@ Note: Google does not include groups in the ID token by default. Use `zepto_role
 // Auth0 Action: Add roles to ID token
 exports.onExecutePostLogin = async (event, api) => {
   const roles = event.authorization?.roles || [];
-  api.idToken.setCustomClaim('https://zeptodb.io/roles', roles);
+  api.idToken.setCustomClaim('https://zeptodb.com/roles', roles);
 };
 ```
 

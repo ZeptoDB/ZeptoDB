@@ -5,7 +5,7 @@
 ZeptoDB product marketing website. A separate site from the technical documentation (mkdocs),
 with the purpose of conveying product value and acquiring leads.
 
-- **URL**: `zeptodb.io` (product) / `docs.zeptodb.io` (technical docs)
+- **URL**: `zeptodb.com` (product) / `docs.zeptodb.com` (technical docs)
 - **Repo**: `~/zeptodb-web/` (separate from main repo)
 
 ## 2. Target Audience
@@ -19,7 +19,7 @@ with the purpose of conveying product value and acquiring leads.
 ## 3. Page Structure
 
 ```
-zeptodb.io/
+zeptodb.com/
 ├── /                    # Landing — Hero + core value + benchmark highlights
 ├── /features            # Feature details (SIMD, JIT, SQL, Python, Security)
 ├── /performance         # Benchmark comparison table (vs kdb+, ClickHouse)
@@ -27,7 +27,7 @@ zeptodb.io/
 ├── /pricing             # OSS vs Enterprise vs Cloud (placeholder)
 ├── /blog                # Technical blog (leveraging existing devlog)
 ├── /about               # Company info, contact, GitHub
-└── /docs → redirect     # docs.zeptodb.io (mkdocs)
+└── /docs → redirect     # docs.zeptodb.com (mkdocs)
 ```
 
 ### 3.1 Landing Page (/)
@@ -87,7 +87,7 @@ zeptodb.io/
 | Components | **React** (if needed) | Only interactive elements as islands |
 | Content | **MDX** | Embed components in blog/content |
 | Deploy | **Cloudflare Pages** | Free, global CDN, fast |
-| Domain | `zeptodb.io` | Product / `docs.zeptodb.io` docs |
+| Domain | `zeptodb.com` | Product / `docs.zeptodb.com` docs |
 
 ### 4.2 Non-functional
 

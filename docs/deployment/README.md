@@ -101,6 +101,6 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=1.1.0 --wa
 
 ## Support
 
-- **Enterprise support**: enterprise@zeptodb.io
+- **Enterprise support**: enterprise@zeptodb.com
 - **Community**: https://discord.gg/zeptodb
-- **Documentation**: https://docs.zeptodb.io
+- **Documentation**: https://docs.zeptodb.com

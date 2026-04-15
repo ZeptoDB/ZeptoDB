@@ -8,7 +8,7 @@
 
 The ZeptoDB Playground is a browser-based SQL editor backed by a sandboxed server instance. Users can execute queries against preloaded sample datasets without installing anything.
 
-**URL:** `https://play.zeptodb.io` (or self-hosted at `/playground`)
+**URL:** `https://play.zeptodb.com` (or self-hosted at `/playground`)
 
 ---
 

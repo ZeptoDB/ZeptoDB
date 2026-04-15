@@ -100,7 +100,7 @@ RUN mkdir -p /runtime-libs && \
 # ============================================================================
 FROM gcr.io/distroless/cc-debian12:nonroot
 
-LABEL maintainer="ZeptoDB Team <contact@zeptodb.io>"
+LABEL maintainer="ZeptoDB Team <contact@zeptodb.com>"
 LABEL description="ZeptoDB — Ultra-Low Latency Time-Series Database (ARM64/Graviton)"
 
 WORKDIR /opt/zeptodb

@@ -11,6 +11,7 @@ import HubIcon from "@mui/icons-material/HubOutlined";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import SettingsIcon from "@mui/icons-material/Settings";
 import ExitToAppIcon from "@mui/icons-material/ExitToApp";
+import ForumIcon from "@mui/icons-material/Forum";
 import GroupsIcon from "@mui/icons-material/Groups";
 import { useAuth } from "@/lib/auth";
 
@@ -64,6 +65,10 @@ export default function Sidebar() {
       </List>
       <Divider sx={{ mx: 2, my: 1, opacity: 0.5 }} />
       <List sx={{ px: 1, pb: 2 }}>
+        <ListItemButton component="a" href="https://discord.gg/zeptodb" target="_blank" rel="noopener noreferrer">
+          <ListItemIcon sx={{ minWidth: 40, color: "text.secondary" }}><ForumIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Discord" primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500, color: "text.secondary" }} />
+        </ListItemButton>
         <ListItemButton onClick={handleLogout}>
           <ListItemIcon sx={{ minWidth: 40, color: "text.secondary" }}><ExitToAppIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Logout" primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500, color: "text.secondary" }} />

@@ -11,7 +11,10 @@ export default function Home() {
       <Typography variant="h5" color="text.secondary" maxWidth={600}>
         The next-generation, ultra-low latency in-memory database tailored for the financial and HFT markets.
       </Typography>
-      <Button component={Link} href="/login" variant="contained" size="large" sx={{ mt: 2 }}>Go to Console</Button>
+      <Box sx={{ display: "flex", gap: 2, mt: 2 }}>
+        <Button component={Link} href="/login" variant="contained" size="large">Go to Console</Button>
+        <Button component="a" href="https://discord.gg/zeptodb" target="_blank" rel="noopener noreferrer" variant="outlined" size="large" sx={{ borderColor: "#5865F2", color: "#5865F2", "&:hover": { borderColor: "#4752C4", bgcolor: "#5865F210" } }}>Join Discord</Button>
+      </Box>
     </Box>
   );
 }

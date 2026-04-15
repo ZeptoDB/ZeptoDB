@@ -187,7 +187,7 @@ ss -tlnp | grep 8123
 
 ## Next Steps
 
-- [Quick Start](https://docs.zeptodb.io/getting-started/QUICK_START/) — insert data and run queries
+- [Quick Start](https://docs.zeptodb.com/getting-started/QUICK_START/) — insert data and run queries
 - [SQL Reference](../api/SQL_REFERENCE.md) — full SQL syntax
 - [Production Deployment](../deployment/PRODUCTION_DEPLOYMENT.md) — tuning, TLS, clustering
 - [Bare-metal Tuning](../deployment/BARE_METAL_TUNING.md) — CPU pinning, NUMA, hugepages

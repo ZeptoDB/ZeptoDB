@@ -516,7 +516,7 @@ auth:
 **For issues:**
 - GitHub Issues: https://github.com/zeptodb/zeptodb/issues
 - Slack: #zeptodb-support
-- Email: support@zeptodb.io
+- Email: support@zeptodb.com
 
 **Critical incidents:**
 - PagerDuty: ZeptoDB Critical Alerts

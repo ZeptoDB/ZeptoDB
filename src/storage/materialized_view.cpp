@@ -131,4 +131,12 @@ std::vector<std::string> MaterializedViewManager::list_views() const {
     return names;
 }
 
+std::vector<MVDef> MaterializedViewManager::get_all_defs() const {
+    std::lock_guard lk(mu_);
+    std::vector<MVDef> defs;
+    defs.reserve(views_.size());
+    for (auto& [_, vs] : views_) defs.push_back(vs.def);
+    return defs;
+}
+
 } // namespace zeptodb::storage

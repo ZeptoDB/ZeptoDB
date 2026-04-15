@@ -9,9 +9,9 @@ keywords:
   - hft
   - timeseries
   - in-memory
-home: https://zeptodb.io
+home: https://zeptodb.com
 sources:
   - https://github.com/zeptodb/zeptodb
 maintainers:
   - name: ZeptoDB Team
-    email: contact@zeptodb.io
+    email: contact@zeptodb.com

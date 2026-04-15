@@ -215,7 +215,7 @@ spec:
   template:
     metadata:
       labels:
-        zeptodb.io/role: analytics
+        zeptodb.com/role: analytics
     spec:
       expireAfter: 720h
       nodeClassRef:

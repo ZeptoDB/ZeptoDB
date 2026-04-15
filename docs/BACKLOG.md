@@ -18,7 +18,7 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| ~~**Website (zeptodb.io)**~~ | ✅ Astro Starlight site built (`zeptodb-site/`). All pages complete | — |
+| ~~**Website (zeptodb.com)**~~ | ✅ Astro Starlight site built (`zeptodb-site/`). All pages complete | — |
 | ~~↳ Landing page~~ | ✅ Hero + benchmark comparison + use case cards + CTA | — |
 | ~~↳ Features / Performance / Use Cases~~ | ✅ Features, Benchmarks, 4 use-case pages, 4 competitor comparisons | — |
 | ~~↳ Pricing / Blog / About~~ | ✅ Pricing (Community/Enterprise), 4 blog posts, About, Contact | — |
@@ -48,14 +48,12 @@
 |------|---------------|---------------|--------|
 | **Configure PyPI trusted publisher** | pypi.org → Manage → Publishing | PyPI account with `zeptodb` project | XS |
 | **Configure TestPyPI trusted publisher** | test.pypi.org → Manage → Publishing (env: `testpypi`, workflow: `test-pypi.yml`) | TestPyPI account | XS |
-| Create Discord server | `docs/community/COMMUNITY_SETUP.md` | — | XS |
 | Enable GitHub Discussions | repo Settings → Features → Discussions | — | XS |
 | Submit Awesome Time-Series DB PR | `docs/community/REGISTRY_SUBMISSIONS.md` | GitHub repo public | XS |
-| Submit DB-Engines registration form | `docs/community/REGISTRY_SUBMISSIONS.md` | zeptodb.io live | XS |
+| Submit DB-Engines registration form | `docs/community/REGISTRY_SUBMISSIONS.md` | zeptodb.com live | XS |
 | Record demo GIF | `asciinema rec` → convert to GIF → uncomment in README | Docker image | XS |
 | Post Show HN | `docs/community/LAUNCH_POSTS.md` | Docker image + website + Discord | XS |
 | Post on Reddit (5 subreddits) | `docs/community/LAUNCH_POSTS.md` | 1-2 day gap after Show HN | XS |
-| Uncomment README Discord badge | Top comment block in `README.md` | After Discord server creation | XS |
 
 ---
 
@@ -102,7 +100,7 @@
 | Task | Engine Impact | Effort |
 |------|---------------|--------|
 | **Composite index** | 🔴 Major | M |
-| **MV query rewrite** | 🔴 Major | M |
+| ~~**MV query rewrite**~~ | ✅ Done (devlog 064) | — |
 | **Cost-based planner** | 🔴 Major | L |
 | **JOINs/Window on virtual tables** | 🟠 Moderate | M |
 | **SIMD-ify WindowJoin aggregate loop** | 🟠 Moderate | M |
@@ -179,16 +177,16 @@
 | Priority | Category | Remaining | Next Action |
 |----------|----------|:---------:|-------------|
 | **P1** | Demo-ready UI | ✅ 0 | Complete |
-| **P2** | Website + Distribution | 2 + 10 manual | PyPI trusted publisher, Blog expansion |
+| **P2** | Website + Distribution | 2 + 8 manual | PyPI trusted publisher, Blog expansion |
 | **P3** | Connectivity | ✅ 0 | Complete |
 | **P4** | Tool Integration | 2 | ClickHouse protocol, JDBC/ODBC |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
 | **P6** | Enterprise / Cloud | 3 | SAML, Geo-replication, Marketplace |
-| **P7** | Engine Performance | 8 | Composite index, Cost-based planner |
+| **P7** | Engine Performance | 7 | Composite index, Cost-based planner |
 | **P8** | Cluster | 14 | RDMA transport, Rebalance hardening |
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 45 items + 10 manual tasks**
+**Total remaining: 44 items + 8 manual tasks**
 
 **Critical path: P8 (rebalance hardening) → P4 (Tool Integration)**

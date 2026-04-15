@@ -6,6 +6,7 @@
 
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/sql/parser.h"
+#include "zeptodb/sql/mv_rewriter.h"
 #include "zeptodb/execution/join_operator.h"
 #include "zeptodb/execution/window_function.h"
 #include "zeptodb/execution/vectorized_engine.h"
@@ -974,6 +975,33 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
             auto res = exec_select(*cte.stmt);
             if (!res.ok()) { tl_cte_map.clear(); return res; }
             tl_cte_map[cte.name] = std::move(res);
+        }
+
+        // ── MV query rewrite: skip full scan if a matching MV exists ─────
+        auto mv_hit = MVRewriter::try_rewrite(stmt, pipeline_.mat_view_manager());
+        if (mv_hit) {
+            QueryResultSet result;
+            result.column_names = std::move(mv_hit->view_result.column_names);
+            result.rows = std::move(mv_hit->view_result.rows);
+            result.column_types.resize(result.column_names.size(),
+                                       storage::ColumnType::INT64);
+            result.execution_time_us = now_us() - t0;
+            result.symbol_dict = &pipeline_.symbol_dict();
+            if (stmt.order_by) apply_order_by(result, stmt);
+            if (stmt.limit) {
+                int64_t lim = *stmt.limit;
+                int64_t off = stmt.offset.value_or(0);
+                if (off < static_cast<int64_t>(result.rows.size())) {
+                    auto b = result.rows.begin() + off;
+                    auto e = (off + lim < static_cast<int64_t>(result.rows.size()))
+                             ? b + lim : result.rows.end();
+                    result.rows = {b, e};
+                } else {
+                    result.rows.clear();
+                }
+            }
+            tl_cte_map.clear();
+            return result;
         }
 
         auto result = exec_select(stmt);

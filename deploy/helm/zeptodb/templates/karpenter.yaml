@@ -35,7 +35,7 @@ spec:
     {{- . | nindent 4 }}
   {{- end }}
   tags:
-    zeptodb.io/role: realtime
+    zeptodb.com/role: realtime
     {{- with .Values.karpenter.nodeClass.tags }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -70,7 +70,7 @@ spec:
   instanceStorePolicy: {{ .Values.karpenter.analytics.instanceStorePolicy }}
   {{- end }}
   tags:
-    zeptodb.io/role: analytics
+    zeptodb.com/role: analytics
     {{- with .Values.karpenter.nodeClass.tags }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -95,7 +95,7 @@ spec:
   template:
     metadata:
       labels:
-        zeptodb.io/role: realtime
+        zeptodb.com/role: realtime
     spec:
       requirements:
         - key: kubernetes.io/arch
@@ -152,7 +152,7 @@ spec:
   template:
     metadata:
       labels:
-        zeptodb.io/role: analytics
+        zeptodb.com/role: analytics
     spec:
       requirements:
         - key: kubernetes.io/arch

@@ -11,12 +11,12 @@
 [![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)](https://github.com/google/highway)
 [![Tests](https://img.shields.io/badge/tests-830%2B%20passing-brightgreen?logo=googletest)](tests/)
 [![License](https://img.shields.io/badge/License-BSL_1.1-blue)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-docs.zeptodb.io-blue?logo=readthedocs)](https://docs.zeptodb.io)
-[![Discord](https://img.shields.io/discord/DISCORD_SERVER_ID?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
+[![Docs](https://img.shields.io/badge/docs-docs.zeptodb.com-blue?logo=readthedocs)](https://docs.zeptodb.com)
+[![Discord](https://img.shields.io/discord/1492174712359354590?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
 [![Docker Pulls](https://img.shields.io/docker/pulls/zeptodb/zeptodb?logo=docker)](https://hub.docker.com/r/zeptodb/zeptodb)
 [![PyPI](https://img.shields.io/pypi/v/zeptodb?logo=python&logoColor=white)](https://pypi.org/project/zeptodb/)
 
-[Quick Start](#-quick-start) · [Why ZeptoDB](#-why-zeptodb) · [Performance](#-performance) · [SQL Examples](#-sql-examples) · [Docs](https://docs.zeptodb.io) · [Community](#-community)
+[Quick Start](#-quick-start) · [Why ZeptoDB](#-why-zeptodb) · [Performance](#-performance) · [SQL Examples](#-sql-examples) · [Docs](https://docs.zeptodb.com) · [Community](#-community)
 
 </div>
 
@@ -140,7 +140,7 @@ ninja -j$(nproc)
 ./zepto_http_server --port 8123
 ```
 
-📖 Full guide: [Quick Start](https://docs.zeptodb.io/getting-started/QUICK_START/) · [Python Reference](docs/api/PYTHON_REFERENCE.md) · [SQL Reference](docs/api/SQL_REFERENCE.md)
+📖 Full guide: [Quick Start](https://docs.zeptodb.com/getting-started/QUICK_START/) · [Python Reference](docs/api/PYTHON_REFERENCE.md) · [SQL Reference](docs/api/SQL_REFERENCE.md)
 
 ---
 

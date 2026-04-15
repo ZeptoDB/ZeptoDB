@@ -51,7 +51,7 @@ spec:
     iops: 6000
     throughput: 400
   tags:
-    zeptodb.io/role: realtime
+    zeptodb.com/role: realtime
 ---
 apiVersion: eks.amazonaws.com/v1
 kind: NodeClass
@@ -61,7 +61,7 @@ spec:
   ephemeralStorage:
     size: "200Gi"
   tags:
-    zeptodb.io/role: analytics
+    zeptodb.com/role: analytics
 ---
 # Realtime pool: ingestion + low-latency queries (On-Demand only)
 apiVersion: karpenter.sh/v1
@@ -73,7 +73,7 @@ spec:
   template:
     metadata:
       labels:
-        zeptodb.io/role: realtime
+        zeptodb.com/role: realtime
     spec:
       nodeClassRef:
         group: eks.amazonaws.com
@@ -111,7 +111,7 @@ spec:
   template:
     metadata:
       labels:
-        zeptodb.io/role: analytics
+        zeptodb.com/role: analytics
     spec:
       nodeClassRef:
         group: eks.amazonaws.com
