@@ -43,7 +43,7 @@ option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
 
 # ============================================================================
-# macOS Homebrew — expose installed packages to find_package()
+# Platform-specific prefix paths for find_package()
 # ============================================================================
 if(APPLE)
     execute_process(
@@ -60,6 +60,9 @@ if(APPLE)
             "${HOMEBREW_PREFIX}/opt/openssl@3"
         )
     endif()
+elseif(UNIX)
+    # AWS SDK, librdkafka etc. install to /usr/local on Linux
+    list(APPEND CMAKE_PREFIX_PATH "/usr/local")
 endif()
 
 # ============================================================================
