@@ -57,6 +57,58 @@
 
 ---
 
+## P2.5 — Monetization (Edition System)
+
+> Runtime license-gated feature tiers. Single binary, license key activates features.
+> Design principle: features are **visible but gated** — CLI, Web UI, HTTP API all show upgrade prompts.
+
+### License System (Foundation)
+
+| Task | Why | Effort |
+|------|-----|--------|
+| **License key validator** | Signed JWT license key — verify edition/expiry at startup. `include/zeptodb/auth/license_validator.h` | M |
+| **Feature gate helper** | `license::hasFeature(Feature::Cluster)` check + 402 error response helper | S |
+| **Startup banner with edition** | `[INFO] ZeptoDB v0.x.x (Community Edition)` + upgrade hints in log | XS |
+| **Trial key support** | 30-day Enterprise trial key generation + expiry enforcement | S |
+
+### Community → Pro Gate
+
+| Feature to Gate | Where | Effort |
+|-----------------|-------|--------|
+| **SSO / SAML / OIDC login** | `auth/sso_provider.h` — return 402 on Community | S |
+| **Audit log export** | `auth/audit_buffer.h` — buffer works, export endpoint gated | S |
+| **Advanced RBAC** | Row-level security, column masking — gate in executor | M |
+| **Per-tenant rate limiting** | `server/rate_limiter.h` — basic=Free, per-tenant=Pro | S |
+| **Kafka/Pulsar connectors** | `feeds/kafka_consumer.h` — gate on startup | XS |
+
+### Pro → Enterprise Gate
+
+| Feature to Gate | Where | Effort |
+|-----------------|-------|--------|
+| **Multi-node cluster** | `cluster/*` — gate `ClusterNode::start()`, `addNode()` | S |
+| **Live rebalancing** | `cluster/rebalance_*` — gate rebalance API endpoints | S |
+| **Geo-replication** | Gate when implemented | — |
+| **EKS/K8s operator** | Helm chart available, operator gated | S |
+| **Rolling upgrade** | Gate upgrade coordinator endpoint | S |
+| **kdb+/ClickHouse migration** | `migration/*` — gate migrator startup | XS |
+
+### Web UI Upgrade Prompts
+
+| Task | Why | Effort |
+|------|-----|--------|
+| **Gated feature cards** | Sidebar shows Cluster/SSO/Audit menus → click shows upgrade modal with [View Plans] | S |
+| **`/api/license` endpoint** | Returns current edition + feature list for UI to render gates | XS |
+| **Pricing page link** | zeptodb.com/pricing in all gate messages | XS |
+
+### HTTP API Gate Responses
+
+| Task | Why | Effort |
+|------|-----|--------|
+| **402 response standard** | `{"error":"enterprise_required","message":"...","upgrade_url":"https://zeptodb.com/pricing"}` | XS |
+| **`/admin/license` endpoint** | Show current license info, accept license key upload | S |
+
+---
+
 ## P3 — High-Performance Connectivity
 
 > ✅ Fully complete (Arrow Flight server). No remaining items.
@@ -178,6 +230,7 @@
 |----------|----------|:---------:|-------------|
 | **P1** | Demo-ready UI | ✅ 0 | Complete |
 | **P2** | Website + Distribution | 2 + 8 manual | PyPI trusted publisher, Blog expansion |
+| **P2.5** | Monetization (Edition) | 18 | License validator, Feature gates |
 | **P3** | Connectivity | ✅ 0 | Complete |
 | **P4** | Tool Integration | 2 | ClickHouse protocol, JDBC/ODBC |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
@@ -187,6 +240,6 @@
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 44 items + 8 manual tasks**
+**Total remaining: 62 items + 8 manual tasks**
 
-**Critical path: P8 (rebalance hardening) → P4 (Tool Integration)**
+**Critical path: P2.5 (license system) → P8 (cluster) → P4 (Tool Integration)**
