@@ -25,6 +25,7 @@
 #include "zeptodb/server/metrics_collector.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/common/logger.h"
+#include "zeptodb/auth/license_validator.h"
 
 #include <atomic>
 #include <functional>
@@ -85,6 +86,9 @@ public:
     /// 클러스터 참가
     /// seeds: 이미 클러스터에 있는 노드 주소 목록
     void join_cluster(const std::vector<NodeAddress>& seeds = {}) {
+        if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::CLUSTER)) {
+            throw std::runtime_error("Multi-node cluster requires Enterprise license");
+        }
         if (joined_.load()) return;
 
         // 1. Transport 초기화

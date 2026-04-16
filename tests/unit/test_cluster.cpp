@@ -16,6 +16,7 @@
 #include "zeptodb/cluster/partition_router.h"
 #include "zeptodb/cluster/health_monitor.h"
 #include "zeptodb/cluster/cluster_node.h"
+#include "zeptodb/auth/license_validator.h"
 
 // SharedMem backend (src/cluster 디렉토리)
 #include "shm_backend.h"
@@ -31,6 +32,37 @@
 using namespace zeptodb;
 using namespace zeptodb::cluster;
 using namespace std::chrono_literals;
+
+// Helper: load an all-features Enterprise license into the global singleton
+static void ensure_enterprise_license() {
+    static bool loaded = false;
+    if (loaded) return;
+    auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string payload = R"({"edition":"enterprise","features":255,"max_nodes":64,"exp":)" +
+        std::to_string(now + 86400) + "}";
+    // base64url encode
+    auto b64 = [](const std::string& s) {
+        static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string out;
+        auto data = reinterpret_cast<const unsigned char*>(s.data());
+        size_t len = s.size();
+        for (size_t i = 0; i < len; i += 3) {
+            uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+            if (i+1 < len) n |= static_cast<uint32_t>(data[i+1]) << 8;
+            if (i+2 < len) n |= static_cast<uint32_t>(data[i+2]);
+            out += tbl[(n>>18)&63]; out += tbl[(n>>12)&63];
+            out += (i+1<len) ? tbl[(n>>6)&63] : '=';
+            out += (i+2<len) ? tbl[n&63] : '=';
+        }
+        for (char& c : out) { if (c=='+') c='-'; else if (c=='/') c='_'; }
+        while (!out.empty() && out.back()=='=') out.pop_back();
+        return out;
+    };
+    std::string jwt = b64(R"({"alg":"RS256","typ":"JWT"})") + "." + b64(payload) + ".fakesig";
+    zeptodb::auth::license().load_from_jwt_string_for_testing(jwt);
+    loaded = true;
+}
 
 // ============================================================================
 // 테스트 1: SharedMem Transport — Write/Read 라운드트립
@@ -282,6 +314,7 @@ TEST(HealthMonitor, GetActiveNodes) {
 // 테스트 5: 2-노드 로컬 클러스터 (SharedMem 기반)
 // ============================================================================
 TEST(ClusterNode, TwoNodeLocalCluster) {
+    ensure_enterprise_license();
     using ShmNode = ClusterNode<SharedMemBackend>;
 
     ClusterConfig cfg1, cfg2;
@@ -1086,6 +1119,7 @@ TEST(HttpCluster, DynamicMode_StandaloneToCluster) {
 
 // ── Test: runtime node add via POST /admin/nodes ──
 TEST(HttpCluster, RuntimeNodeAdd_ViaPostAPI) {
+    ensure_enterprise_license();
     TestNode coord_node;
     coord_node.ingest(50);
 
@@ -1932,6 +1966,7 @@ TEST(K8sNodeRegistryDeadlock, CallbackDuringRegisterDoesNotDeadlock) {
 }
 
 TEST(ClusterNodeSeedFailure, BootstrapWithNoSeedsSucceeds) {
+    ensure_enterprise_license();
     using namespace zeptodb::cluster;
     using ShmNode = ClusterNode<SharedMemBackend>;
 
@@ -1949,6 +1984,7 @@ TEST(ClusterNodeSeedFailure, BootstrapWithNoSeedsSucceeds) {
 }
 
 TEST(ClusterNodeSeedFailure, PartialSeedConnectionSucceeds) {
+    ensure_enterprise_license();
     using namespace zeptodb::cluster;
     using ShmNode = ClusterNode<SharedMemBackend>;
 
