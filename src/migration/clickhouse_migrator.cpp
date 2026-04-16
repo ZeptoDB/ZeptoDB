@@ -2,6 +2,8 @@
 // ZeptoDB: ClickHouse Migration Toolkit Implementation
 // ============================================================================
 #include "zeptodb/migration/clickhouse_migrator.h"
+#include "zeptodb/auth/license_validator.h"
+#include "zeptodb/common/logger.h"
 #include <sstream>
 #include <fstream>
 #include <iostream>
@@ -605,6 +607,10 @@ ClickHouseMigrator::ClickHouseMigrator(const MigrationConfig& config)
 {}
 
 bool ClickHouseMigrator::run() {
+    if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::MIGRATION)) {
+        ZEPTO_WARN("Migration tools require Enterprise license");
+        return false;
+    }
     auto start = std::chrono::high_resolution_clock::now();
 
     std::cout << "Starting ClickHouse migration...\n";

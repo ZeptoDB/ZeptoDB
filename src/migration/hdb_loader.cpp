@@ -2,6 +2,8 @@
 // ZeptoDB: kdb+ HDB Loader Implementation
 // ============================================================================
 #include "zeptodb/migration/hdb_loader.h"
+#include "zeptodb/auth/license_validator.h"
+#include "zeptodb/common/logger.h"
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -22,6 +24,10 @@ HDBLoader::HDBLoader(const std::filesystem::path& hdb_root)
 {}
 
 bool HDBLoader::scan() {
+    if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::MIGRATION)) {
+        ZEPTO_WARN("Migration tools require Enterprise license");
+        return false;
+    }
     if (!std::filesystem::exists(hdb_root_)) {
         std::cerr << "HDB root does not exist: " << hdb_root_ << std::endl;
         return false;

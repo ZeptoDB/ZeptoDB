@@ -3,6 +3,8 @@
 // ============================================================================
 
 #include "zeptodb/feeds/kafka_consumer.h"
+#include "zeptodb/auth/license_validator.h"
+#include "zeptodb/common/logger.h"
 #include "spdlog/spdlog.h"
 
 #include <cerrno>
@@ -298,6 +300,10 @@ bool KafkaConsumer::on_message(const char* data, size_t len) {
 // ============================================================================
 
 bool KafkaConsumer::start() {
+    if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::KAFKA)) {
+        ZEPTO_WARN("Kafka consumer requires Enterprise license — not starting");
+        return false;
+    }
 #ifdef ZEPTO_KAFKA_AVAILABLE
     if (running_.exchange(true)) return true;  // already running
 
