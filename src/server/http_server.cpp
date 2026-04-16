@@ -20,6 +20,7 @@
 #include "zeptodb/auth/oauth2_token_exchange.h"
 #include "zeptodb/sql/parser.h"
 #include "zeptodb/util/logger.h"
+#include "zeptodb/auth/license_validator.h"
 
 #include <sstream>
 #include <string>
@@ -79,6 +80,12 @@ static std::string build_access_log(
         os << ",\"subject\":\"" << subject << "\"";
     os << "}";
     return os.str();
+}
+
+/// Build a standard 402 JSON response for enterprise-gated features.
+static std::string build_402_json(const std::string& feature_name) {
+    return R"({"error":"enterprise_required","message":")" + feature_name +
+           R"( requires Enterprise license","upgrade_url":"https://zeptodb.com/pricing"})";
 }
 
 // ============================================================================
@@ -377,6 +384,51 @@ void HttpServer::setup_routes() {
         res.set_content(json, "application/json");
     });
 
+    // GET /api/license — public license info
+    svr_->Get("/api/license", [](const httplib::Request& /*req*/,
+                                  httplib::Response& res) {
+        auto& lic = zeptodb::auth::license();
+        std::ostringstream os;
+        os << "{\"edition\":\"" << (lic.edition() == zeptodb::auth::Edition::ENTERPRISE ? "enterprise" : "community") << "\"";
+        os << ",\"features\":[";
+        static const struct { zeptodb::auth::Feature f; const char* name; } feat_map[] = {
+            {zeptodb::auth::Feature::CLUSTER, "cluster"},
+            {zeptodb::auth::Feature::SSO, "sso"},
+            {zeptodb::auth::Feature::AUDIT_EXPORT, "audit_export"},
+            {zeptodb::auth::Feature::ADVANCED_RBAC, "advanced_rbac"},
+            {zeptodb::auth::Feature::KAFKA, "kafka"},
+            {zeptodb::auth::Feature::MIGRATION, "migration"},
+            {zeptodb::auth::Feature::GEO_REPLICATION, "geo_replication"},
+            {zeptodb::auth::Feature::ROLLING_UPGRADE, "rolling_upgrade"},
+        };
+        bool first = true;
+        for (auto& [f, name] : feat_map) {
+            if (lic.hasFeature(f)) {
+                if (!first) os << ",";
+                os << "\"" << name << "\"";
+                first = false;
+            }
+        }
+        os << "]";
+        os << ",\"max_nodes\":" << lic.maxNodes();
+        os << ",\"trial\":" << (lic.isTrial() ? "true" : "false");
+        os << ",\"expired\":" << (lic.isExpired() ? "true" : "false");
+        if (lic.edition() == zeptodb::auth::Edition::ENTERPRISE) {
+            if (!lic.claims().company.empty())
+                os << ",\"company\":\"" << lic.claims().company << "\"";
+            if (lic.claims().expiry > 0) {
+                std::time_t t = static_cast<std::time_t>(lic.claims().expiry);
+                std::tm tm{}; gmtime_r(&t, &tm);
+                char buf[16]; std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+                os << ",\"expires\":\"" << buf << "\"";
+            }
+        } else {
+            os << ",\"upgrade_url\":\"https://zeptodb.com/pricing\"";
+        }
+        os << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
     // POST / — execute SQL query (ClickHouse compatible)
     svr_->Post("/", [this](const httplib::Request& req,
                             httplib::Response& res) {
@@ -539,6 +591,98 @@ void HttpServer::setup_admin_routes() {
         }
         return true;
     };
+
+    // Feature gate helper — returns 402 if feature not available
+    auto require_feature = [](httplib::Response& res, zeptodb::auth::Feature f, const std::string& name) -> bool {
+        if (!zeptodb::auth::license().hasFeature(f)) {
+            res.status = 402;
+            res.set_content(build_402_json(name), "application/json");
+            return false;
+        }
+        return true;
+    };
+
+    // -------------------------------------------------------------------------
+    // GET /admin/license — full license details (admin only)
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/license", [require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        auto& lic = zeptodb::auth::license();
+        std::ostringstream os;
+        os << "{\"edition\":\"" << (lic.edition() == zeptodb::auth::Edition::ENTERPRISE ? "enterprise" : "community") << "\"";
+        os << ",\"features\":[";
+        static const struct { zeptodb::auth::Feature f; const char* name; } feat_map[] = {
+            {zeptodb::auth::Feature::CLUSTER, "cluster"},
+            {zeptodb::auth::Feature::SSO, "sso"},
+            {zeptodb::auth::Feature::AUDIT_EXPORT, "audit_export"},
+            {zeptodb::auth::Feature::ADVANCED_RBAC, "advanced_rbac"},
+            {zeptodb::auth::Feature::KAFKA, "kafka"},
+            {zeptodb::auth::Feature::MIGRATION, "migration"},
+            {zeptodb::auth::Feature::GEO_REPLICATION, "geo_replication"},
+            {zeptodb::auth::Feature::ROLLING_UPGRADE, "rolling_upgrade"},
+        };
+        bool first = true;
+        for (auto& [f, name] : feat_map) {
+            if (lic.hasFeature(f)) {
+                if (!first) os << ",";
+                os << "\"" << name << "\"";
+                first = false;
+            }
+        }
+        os << "]";
+        os << ",\"max_nodes\":" << lic.maxNodes();
+        os << ",\"trial\":" << (lic.isTrial() ? "true" : "false");
+        os << ",\"expired\":" << (lic.isExpired() ? "true" : "false");
+        os << ",\"company\":\"" << lic.claims().company << "\"";
+        os << ",\"tenant_id\":\"" << lic.claims().tenant_id << "\"";
+        os << ",\"grace_days\":" << lic.claims().grace_days;
+        os << ",\"issued_at\":" << lic.claims().issued_at;
+        if (lic.claims().expiry > 0) {
+            std::time_t t = static_cast<std::time_t>(lic.claims().expiry);
+            std::tm tm{}; gmtime_r(&t, &tm);
+            char buf[16]; std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            os << ",\"expires\":\"" << buf << "\"";
+        }
+        os << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/license — upload a license key
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/license", [require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        auto& lic = zeptodb::auth::license();
+        if (lic.load(req.body)) {
+            res.set_content("{\"loaded\":true,\"edition\":\"" +
+                std::string(lic.edition() == zeptodb::auth::Edition::ENTERPRISE ? "enterprise" : "community") +
+                "\",\"company\":\"" + lic.claims().company + "\"}", "application/json");
+        } else {
+            res.status = 400;
+            res.set_content(R"({"loaded":false,"error":"Invalid license key"})", "application/json");
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/license/trial — generate and load a trial key
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/license/trial", [require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        std::string trial_jwt = zeptodb::auth::LicenseValidator::generate_trial_key();
+        auto& lic = zeptodb::auth::license();
+        lic.load(trial_jwt);
+        std::time_t t = static_cast<std::time_t>(lic.claims().expiry);
+        std::tm tm{}; gmtime_r(&t, &tm);
+        char buf[16]; std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+        res.set_content("{\"loaded\":true,\"edition\":\"enterprise\",\"trial\":true,\"expires\":\"" +
+            std::string(buf) + "\"}", "application/json");
+    });
 
     // -------------------------------------------------------------------------
     // POST /admin/keys — create API key
@@ -822,6 +966,11 @@ void HttpServer::setup_admin_routes() {
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::AUDIT_EXPORT)) {
+            res.status = 402;
+            res.set_content(build_402_json("Audit log export"), "application/json");
+            return;
+        }
         if (!auth_) {
             res.set_content("[]", "application/json");
             return;
@@ -966,10 +1115,11 @@ void HttpServer::setup_admin_routes() {
     // POST /admin/nodes — add a remote node to the cluster
     // Body: {"id":2,"host":"10.0.1.2","port":8123}
     // -------------------------------------------------------------------------
-    svr_->Post("/admin/nodes", [this, require_admin](
+    svr_->Post("/admin/nodes", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Multi-node cluster")) return;
         if (!coordinator_) {
             res.status = 400;
             res.set_content(build_error_json("Not in cluster mode — set_coordinator() first"),
@@ -1017,10 +1167,11 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // DELETE /admin/nodes/:id — remove a node from the cluster
     // -------------------------------------------------------------------------
-    svr_->Delete(R"(/admin/nodes/(\d+))", [this, require_admin](
+    svr_->Delete(R"(/admin/nodes/(\d+))", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Multi-node cluster")) return;
         if (!coordinator_) {
             res.status = 400;
             res.set_content(build_error_json("Not in cluster mode"), "application/json");
@@ -1077,10 +1228,11 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // GET /admin/tenants — list all tenants and their quotas
     // -------------------------------------------------------------------------
-    svr_->Get("/admin/tenants", [this, require_admin](
+    svr_->Get("/admin/tenants", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::ADVANCED_RBAC, "Per-tenant rate limiting")) return;
         if (!tenant_mgr_) {
             res.set_content("[]", "application/json");
             return;
@@ -1112,10 +1264,11 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // POST /admin/tenants — create a new tenant
     // -------------------------------------------------------------------------
-    svr_->Post("/admin/tenants", [this, require_admin](
+    svr_->Post("/admin/tenants", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::ADVANCED_RBAC, "Per-tenant rate limiting")) return;
         if (!tenant_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("Tenant manager not configured"), "application/json");
@@ -1171,10 +1324,11 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // DELETE /admin/tenants/:id — remove a tenant
     // -------------------------------------------------------------------------
-    svr_->Delete(R"(/admin/tenants/([^/]+))", [this, require_admin](
+    svr_->Delete(R"(/admin/tenants/([^/]+))", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::ADVANCED_RBAC, "Per-tenant rate limiting")) return;
         if (!tenant_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("Tenant manager not configured"), "application/json");
@@ -1239,6 +1393,11 @@ void HttpServer::setup_admin_routes() {
     svr_->Get("/auth/login", [this](
         const httplib::Request& /*req*/, httplib::Response& res)
     {
+        if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
+            res.status = 402;
+            res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
+            return;
+        }
         if (!auth_ || !auth_->oidc_metadata()) {
             res.status = 503;
             res.set_content(build_error_json("OIDC not configured"), "application/json");
@@ -1261,6 +1420,11 @@ void HttpServer::setup_admin_routes() {
     svr_->Get("/auth/callback", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
+            res.status = 402;
+            res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
+            return;
+        }
         if (!auth_ || !auth_->oidc_metadata()) {
             res.status = 503;
             res.set_content(build_error_json("OIDC not configured"), "application/json");
@@ -1330,6 +1494,11 @@ void HttpServer::setup_admin_routes() {
     svr_->Post("/auth/session", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
+            res.status = 402;
+            res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
+            return;
+        }
         if (!auth_) {
             res.status = 503;
             res.set_content(build_error_json("Auth not configured"), "application/json");
@@ -1406,6 +1575,11 @@ void HttpServer::setup_admin_routes() {
     svr_->Post("/auth/refresh", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
+            res.status = 402;
+            res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
+            return;
+        }
         auto* store = auth_ ? auth_->session_store() : nullptr;
         if (!store || !auth_->oidc_metadata()) {
             res.status = 503;
@@ -1518,10 +1692,11 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
 
     // GET /admin/rebalance/status — current rebalance status
-    svr_->Get("/admin/rebalance/status", [this, require_admin](
+    svr_->Get("/admin/rebalance/status", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Live rebalancing")) return;
         if (!rebalance_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("rebalance not available"), "application/json");
@@ -1547,10 +1722,11 @@ void HttpServer::setup_admin_routes() {
     });
 
     // POST /admin/rebalance/start — start rebalance
-    svr_->Post("/admin/rebalance/start", [this, require_admin](
+    svr_->Post("/admin/rebalance/start", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Live rebalancing")) return;
         if (!rebalance_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("rebalance not available"), "application/json");
@@ -1658,10 +1834,11 @@ void HttpServer::setup_admin_routes() {
     });
 
     // POST /admin/rebalance/pause
-    svr_->Post("/admin/rebalance/pause", [this, require_admin](
+    svr_->Post("/admin/rebalance/pause", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Live rebalancing")) return;
         if (!rebalance_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("rebalance not available"), "application/json");
@@ -1672,10 +1849,11 @@ void HttpServer::setup_admin_routes() {
     });
 
     // POST /admin/rebalance/resume
-    svr_->Post("/admin/rebalance/resume", [this, require_admin](
+    svr_->Post("/admin/rebalance/resume", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Live rebalancing")) return;
         if (!rebalance_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("rebalance not available"), "application/json");
@@ -1686,10 +1864,11 @@ void HttpServer::setup_admin_routes() {
     });
 
     // POST /admin/rebalance/cancel
-    svr_->Post("/admin/rebalance/cancel", [this, require_admin](
+    svr_->Post("/admin/rebalance/cancel", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Live rebalancing")) return;
         if (!rebalance_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("rebalance not available"), "application/json");
@@ -1700,10 +1879,11 @@ void HttpServer::setup_admin_routes() {
     });
 
     // GET /admin/rebalance/history — past rebalance events
-    svr_->Get("/admin/rebalance/history", [this, require_admin](
+    svr_->Get("/admin/rebalance/history", [this, require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::CLUSTER, "Live rebalancing")) return;
         if (!rebalance_mgr_) {
             res.status = 503;
             res.set_content(build_error_json("rebalance not available"), "application/json");
@@ -1730,6 +1910,18 @@ void HttpServer::setup_admin_routes() {
         }
         os << "]";
         res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/upgrade/start — rolling upgrade (placeholder, gated)
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/upgrade/start", [this, require_admin, require_feature](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!require_feature(res, zeptodb::auth::Feature::ROLLING_UPGRADE, "Rolling upgrade")) return;
+        res.status = 501;
+        res.set_content(R"({"error":"Rolling upgrade not yet implemented"})", "application/json");
     });
 
     // -------------------------------------------------------------------------

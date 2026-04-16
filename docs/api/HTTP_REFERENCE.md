@@ -129,6 +129,10 @@ print(df)
 | `GET` | `/stats` | yes | Pipeline statistics (JSON) |
 | `GET` | `/metrics` | no | Prometheus OpenMetrics |
 | `GET` | `/admin/keys` | admin | List API keys |
+| `GET` | `/api/license` | no | Current license edition and features |
+| `GET` | `/admin/license` | admin | Full license details |
+| `POST` | `/admin/license` | admin | Upload license key |
+| `POST` | `/admin/license/trial` | admin | Generate and load 30-day trial |
 | `POST` | `/admin/keys` | admin | Create API key |
 | `DELETE` | `/admin/keys/:id` | admin | Revoke API key |
 | `GET` | `/admin/queries` | admin | List running queries |
@@ -365,6 +369,99 @@ HTTP status codes: `200` on success (even for SQL errors — check `error` field
 ## Admin API
 
 All admin endpoints require the `admin` role. Returns `401` without credentials, `403` with non-admin credentials.
+
+### Admin: License
+
+#### `GET /api/license` — Current license info (public)
+
+No authentication required. Returns the current edition, enabled features, and trial/expiry status.
+
+```bash
+curl http://localhost:8123/api/license
+```
+
+Community edition (no key):
+```json
+{
+  "edition": "community",
+  "features": [],
+  "max_nodes": 1,
+  "trial": false,
+  "expired": false,
+  "upgrade_url": "https://zeptodb.com/pricing"
+}
+```
+
+Enterprise edition:
+```json
+{
+  "edition": "enterprise",
+  "features": ["cluster","sso","audit_export","advanced_rbac","kafka","migration","geo_replication","rolling_upgrade"],
+  "max_nodes": 16,
+  "trial": false,
+  "expired": false,
+  "company": "Acme Corp",
+  "expires": "2027-04-01"
+}
+```
+
+#### `GET /admin/license` — Full license details (admin)
+
+Same as `/api/license` but includes additional fields: `company`, `tenant_id`, `grace_days`, `issued_at`.
+
+```bash
+curl http://localhost:8123/admin/license -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "edition": "enterprise",
+  "features": ["cluster","sso"],
+  "max_nodes": 16,
+  "trial": false,
+  "expired": false,
+  "company": "Acme Corp",
+  "tenant_id": "",
+  "grace_days": 30,
+  "issued_at": 1711234567,
+  "expires": "2027-04-01"
+}
+```
+
+#### `POST /admin/license` — Upload license key (admin)
+
+Accepts a raw JWT license key string as the request body. Loads and validates it.
+
+```bash
+curl -X POST http://localhost:8123/admin/license \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+
+Success:
+```json
+{"loaded": true, "edition": "enterprise", "company": "Acme Corp"}
+```
+
+Failure:
+```json
+{"loaded": false, "error": "Invalid license key"}
+```
+
+#### `POST /admin/license/trial` — Generate 30-day trial (admin)
+
+Generates and loads an unsigned 30-day Enterprise trial key. Trial keys are single-node only (`max_nodes=1`) with all features enabled.
+
+```bash
+curl -X POST http://localhost:8123/admin/license/trial \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{"loaded": true, "edition": "enterprise", "trial": true, "expires": "2026-05-15"}
+```
+
+---
 
 ### Admin: API Keys
 
