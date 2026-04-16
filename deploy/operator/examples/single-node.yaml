@@ -1,0 +1,9 @@
+# Single-node Community edition — no license required
+apiVersion: zeptodb.com/v1alpha1
+kind: ZeptoDBCluster
+metadata:
+  name: dev-single
+spec:
+  replicas: 1
+  version: "0.0.3"
+  storage: "100Gi"

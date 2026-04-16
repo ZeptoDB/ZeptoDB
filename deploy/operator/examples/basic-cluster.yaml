@@ -1,0 +1,16 @@
+# 3-node Enterprise cluster with license key
+apiVersion: zeptodb.com/v1alpha1
+kind: ZeptoDBCluster
+metadata:
+  name: trading-cluster
+spec:
+  replicas: 3
+  version: "0.0.3"
+  storage: "500Gi"
+  license:
+    secretName: zeptodb-license
+    secretKey: license-key
+---
+# Create the license secret first:
+#   kubectl create secret generic zeptodb-license \
+#     --from-literal=license-key='<your-enterprise-jwt>'

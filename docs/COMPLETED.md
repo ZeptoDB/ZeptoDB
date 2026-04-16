@@ -1,6 +1,6 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-04-07
+Last updated: 2026-04-16
 
 ---
 
@@ -53,7 +53,9 @@ Last updated: 2026-04-07
 - [x] **Enterprise Security** — TLS/HTTPS, API Key + JWT/OIDC, RBAC, Rate Limiting, Admin REST API, Query Timeout/Kill, Secrets Management (Vault/File/Env), Audit Log (SOC2/EMIR/MiFID II) — 69 tests
 - [x] **Vault-backed API Key Store** — Write-through sync of API keys to HashiCorp Vault KV v2, multi-node key sharing via Vault, graceful degradation when Vault unavailable — 8 tests
 - [x] **Multi-tenancy** — TenantManager, per-tenant query concurrency quota, table namespace isolation, usage tracking
-- [x] **License validator** — RS256-signed JWT license keys, Edition tiers (Community/Pro/Enterprise), Feature bitmask gating, env/file/direct key loading, 30-day grace period, `license().hasFeature()` singleton API (devlog 065)
+- [x] **License validator** — RS256-signed JWT license keys, 2-tier edition system (Community/Enterprise), Feature bitmask gating, env/file/direct key loading, 30-day grace period, `license().hasFeature()` singleton API (devlog 065, 066)
+- [x] **Edition foundation** — Startup banner with edition/upgrade hint, trial key support (unsigned JWT, 30-day, single-node), HTTP 402 response standard, `GET /api/license` public endpoint, `GET/POST /admin/license` + `POST /admin/license/trial` admin endpoints (devlog 068)
+- [x] **Web UI upgrade prompts** — UpgradeCard component with lock icon + "View Plans" link to zeptodb.com/pricing. Cluster page gated on `cluster` feature, Tenants page gated on `advanced_rbac`. Sidebar shows "Enterprise" chip on gated items. `useLicense()` hook + `fetchLicense()` API client (devlog 071)
 
 ## Cluster & HA
 - [x] **Cluster Integrity** — Unified PartitionRouter, FencingToken in RPC (24-byte header), split-brain defense (K8s Lease), CoordinatorHA auto re-registration — 13 tests
@@ -92,6 +94,7 @@ Last updated: 2026-04-07
 ## Operations & Deployment
 - [x] **Production operations** — monitoring, backup, systemd service
 - [x] **Kubernetes operations** — Helm chart (PDB/HPA/ServiceMonitor), rolling upgrade, K8s operations guide, Karpenter Fleet API
+- [x] **K8s Operator** — Bash-based operator for `ZeptoDBCluster` CRD (`zeptodb.com/v1alpha1`). Reconciles CR spec → Helm release. Enterprise license gating for multi-node clusters (secret must exist, mounted as `ZEPTODB_LICENSE_KEY`). RBAC, Deployment, example CRs (devlog 072)
 - [x] **ARM Graviton build verification** — aarch64 (Amazon Linux 2023, Clang 19.1.7), 766/766 tests passing, xbar 7.99ms (1M rows)
 - [x] **Metrics provider** — pluggable Prometheus metrics, Kafka stats integration — 4 tests
 - [x] **Task scheduler** — interval/once jobs, cancel, exception-safe, monotonic clock — 18 tests
@@ -169,6 +172,7 @@ Last updated: 2026-04-07
 - [x] **JWT Refresh Token** — `OAuth2TokenExchange::refresh()` exchanges refresh_token for new access_token. `POST /auth/refresh` server endpoint. Session store tracks refresh_token per session. Web UI `useAuth().refresh()` hook — 4 tests
 
 ## Engine Performance (P7 Tier A)
+- [x] **Composite index (index intersection)** — Multi-predicate WHERE queries now combine all applicable s#/g#/p# indexes via intersection instead of single-winner waterfall. `IndexResult` accumulator intersects ranges and row sets. Applied to `exec_simple_select`, `exec_agg`, `exec_group_agg`. Zero regression on single-predicate queries — devlog 067
 - [x] **INTERVAL syntax** — `INTERVAL 'N unit'` in SELECT and WHERE expressions. Supports seconds/minutes/hours/days/weeks/ms/μs/ns. Evaluates to nanoseconds. Works with `NOW() - INTERVAL '5 minutes'` in WHERE clauses — 3 tests
 - [x] **Prepared statement cache** — Parsed AST cached by SQL hash (up to 4096 entries). Eliminates tokenize+parse overhead (~2-5μs) on repeated queries. Thread-safe with `clear_prepared_cache()` API — 1 test
 - [x] **Query result cache** — TTL-based result cache for SELECT queries. `enable_result_cache(max_entries, ttl_seconds)`. Auto-invalidated on INSERT/UPDATE/DELETE. Oldest-entry eviction when full — 2 tests

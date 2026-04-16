@@ -98,6 +98,7 @@ serviceMonitor:
 
 nodeSelector: {}
 tolerations: []
+extraEnv: []
 
 # ---------------------------------------------------------------------------
 # Performance tuning for latency-sensitive workloads

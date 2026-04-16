@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zeptodb-operator
+  namespace: zeptodb-system
+  labels:
+    app: zeptodb-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zeptodb-operator
+  template:
+    metadata:
+      labels:
+        app: zeptodb-operator
+    spec:
+      serviceAccountName: zeptodb-operator
+      initContainers:
+        - name: fetch-chart
+          image: alpine/helm:3.16.3
+          command: ["sh", "-c"]
+          args:
+            - |
+              helm pull oci://ghcr.io/zeptodb/charts/zeptodb --version 0.1.0 --untar --untardir /opt/operator || \
+              echo "Chart pull failed — ensure chart is published or mount manually"
+          volumeMounts:
+            - name: chart
+              mountPath: /opt/operator
+      containers:
+        - name: operator
+          image: alpine:3.20
+          command: ["/bin/bash", "/opt/operator/reconciler.sh"]
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CHART_PATH
+              value: /opt/operator/zeptodb
+            - name: POLL_INTERVAL
+              value: "10"
+          volumeMounts:
+            - name: reconciler
+              mountPath: /opt/operator/reconciler.sh
+              subPath: reconciler.sh
+            - name: chart
+              mountPath: /opt/operator
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: reconciler
+          configMap:
+            name: zeptodb-operator-script
+            defaultMode: 0755
+        - name: chart
+          emptyDir: {}
+---
+# Package reconciler.sh as a ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zeptodb-operator-script
+  namespace: zeptodb-system
+data:
+  reconciler.sh: |
+    # Mounted from deploy/operator/reconciler.sh
+    # In production, build a custom image with the script baked in.
+    # For dev: kubectl create configmap zeptodb-operator-script --from-file=reconciler.sh -n zeptodb-system
+---
+# Install tools needed by reconciler (kubectl, helm, jq, bash)
+# Build: docker build -t zeptodb/operator:latest -f deploy/operator/Dockerfile .
+# Or use the init container approach above with alpine base + apk add.
