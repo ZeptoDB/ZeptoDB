@@ -714,6 +714,15 @@ target_include_directories(zepto_data_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_data_node PRIVATE
     zepto_cluster zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion)
 
+# License key generator
+add_executable(zepto-license-gen tools/zepto-license-gen.cpp)
+target_include_directories(zepto-license-gen PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(ZEPTO_HAS_OPENSSL)
+    target_link_libraries(zepto-license-gen PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(zepto-license-gen PRIVATE ZEPTO_AUTH_OPENSSL=1)
+endif()
+target_compile_options(zepto-license-gen PRIVATE -O2)
+
 # ============================================================================
 # Tests
 # ============================================================================

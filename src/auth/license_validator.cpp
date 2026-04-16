@@ -16,16 +16,49 @@ namespace zeptodb::auth {
 // ============================================================================
 // Helpers
 // ============================================================================
+static std::string base64url_encode(const std::string& input) {
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    auto* d = reinterpret_cast<const unsigned char*>(input.data());
+    size_t len = input.size();
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t n = static_cast<uint32_t>(d[i]) << 16;
+        if (i + 1 < len) n |= static_cast<uint32_t>(d[i+1]) << 8;
+        if (i + 2 < len) n |= static_cast<uint32_t>(d[i+2]);
+        out += tbl[(n >> 18) & 63];
+        out += tbl[(n >> 12) & 63];
+        out += (i + 1 < len) ? tbl[(n >> 6) & 63] : '=';
+        out += (i + 2 < len) ? tbl[n & 63]         : '=';
+    }
+    for (char& c : out) {
+        if (c == '+') c = '-';
+        else if (c == '/') c = '_';
+    }
+    while (!out.empty() && out.back() == '=') out.pop_back();
+    return out;
+}
+
+static bool get_json_bool(const std::string& json, const std::string& key) {
+    std::string pat = "\"" + key + "\"";
+    auto pos = json.find(pat);
+    if (pos == std::string::npos) return false;
+    auto colon = json.find(':', pos + pat.size());
+    if (colon == std::string::npos) return false;
+    auto rest = json.substr(colon + 1, 10);
+    return rest.find("true") != std::string::npos;
+}
+
 static Edition edition_from_string(const std::string& s) {
     if (s == "enterprise") return Edition::ENTERPRISE;
-    if (s == "pro")        return Edition::PRO;
+    // Backward compat: old "pro" license keys are treated as Enterprise (2-tier consolidation)
+    if (s == "pro")        return Edition::ENTERPRISE;
     return Edition::COMMUNITY;
 }
 
 static const char* edition_to_string(Edition e) {
     switch (e) {
         case Edition::ENTERPRISE: return "Enterprise";
-        case Edition::PRO:        return "Pro";
         default:                  return "Community";
     }
 }
@@ -147,6 +180,10 @@ bool LicenseValidator::load_from_jwt_string_for_testing(const std::string& jwt) 
 
     if (claims_.max_nodes <= 0) claims_.max_nodes = 1;
 
+    // Trial detection
+    trial_ = get_json_bool(payload, "trial");
+    if (trial_) claims_.max_nodes = 1;
+
     loaded_ = true;
     return true;
 }
@@ -155,33 +192,44 @@ bool LicenseValidator::load_from_jwt_string_for_testing(const std::string& jwt) 
 // decode_and_verify — split JWT, verify RS256, extract claims
 // ============================================================================
 bool LicenseValidator::decode_and_verify(const std::string& jwt) {
-    // Reject if no public key — cannot verify signature
-    if (public_key_pem_.empty()) return false;
-
-    // Split into 3 parts
+    // Split into parts
     auto p1 = jwt.find('.');
     if (p1 == std::string::npos) return false;
     auto p2 = jwt.find('.', p1 + 1);
     if (p2 == std::string::npos) return false;
 
-    std::string header_payload = jwt.substr(0, p2);
-    std::string b64_payload    = jwt.substr(p1 + 1, p2 - p1 - 1);
+    std::string b64_header  = jwt.substr(0, p1);
+    std::string b64_payload = jwt.substr(p1 + 1, p2 - p1 - 1);
 
-    // Verify RS256 signature if we have a public key
-    if (!public_key_pem_.empty()) {
+    // Decode header to check for trial (alg:none)
+    std::string header = JwtValidator::base64url_decode(b64_header);
+    std::string payload = JwtValidator::base64url_decode(b64_payload);
+    bool is_alg_none = JwtValidator::get_json_string(header, "alg") == "none";
+    bool is_trial = get_json_bool(payload, "trial");
+
+    if (is_alg_none && is_trial) {
+        // Trial key: accept without signature, but enforce expiry
+        int64_t exp = JwtValidator::get_json_int64(payload, "exp");
+        if (exp > 0 && now_unix() > exp) {
+            // Check grace period
+            int64_t gd = JwtValidator::get_json_int64(payload, "grace_days");
+            if (gd <= 0) gd = 30;
+            if (now_unix() > exp + gd * 86400) return false;
+        }
+    } else {
+        // Reject if no public key — cannot verify signature
+        if (public_key_pem_.empty()) return false;
+
+        std::string header_payload = jwt.substr(0, p2);
         JwtValidator::Config cfg;
         cfg.rs256_public_key_pem = public_key_pem_;
         cfg.verify_expiry = false;  // We handle expiry ourselves (grace period)
         JwtValidator v(cfg);
-        // Use full validate — but we only care about signature verification
-        // Since we disabled expiry check, it will pass if sig is valid
         auto result = v.validate(jwt);
         if (!result) return false;
     }
 
     // Decode payload and extract license claims
-    std::string payload = JwtValidator::base64url_decode(b64_payload);
-
     std::string ed = JwtValidator::get_json_string(payload, "edition");
     claims_.edition    = edition_from_string(ed);
     claims_.features   = static_cast<uint32_t>(JwtValidator::get_json_int64(payload, "features"));
@@ -195,6 +243,10 @@ bool LicenseValidator::decode_and_verify(const std::string& jwt) {
     claims_.grace_days = (gd > 0) ? static_cast<int>(gd) : 30;
 
     if (claims_.max_nodes <= 0) claims_.max_nodes = 1;
+
+    // Trial detection
+    trial_ = is_trial;
+    if (trial_) claims_.max_nodes = 1;
 
     return true;
 }
@@ -222,6 +274,7 @@ bool LicenseValidator::inGracePeriod() const {
 std::string LicenseValidator::statusLine() const {
     std::ostringstream ss;
     ss << "ZeptoDB v0.1.0 (" << edition_to_string(claims_.edition);
+    if (trial_) ss << " Trial";
     if (loaded_ && !claims_.company.empty())
         ss << " — " << claims_.company;
     if (loaded_ && claims_.max_nodes > 1)
@@ -230,6 +283,27 @@ std::string LicenseValidator::statusLine() const {
         ss << ", expires " << format_date(claims_.expiry);
     ss << ")";
     return ss.str();
+}
+
+std::string LicenseValidator::startupBanner() const {
+    std::string banner = statusLine();
+    if (claims_.edition == Edition::COMMUNITY)
+        banner += "\n  Upgrade to Enterprise: https://zeptodb.com/pricing";
+    return banner;
+}
+
+// ============================================================================
+// generate_trial_key — unsigned JWT with trial=true
+// ============================================================================
+std::string LicenseValidator::generate_trial_key(const std::string& company) {
+    std::string header = base64url_encode(R"({"alg":"none","typ":"JWT"})");
+    int64_t exp = now_unix() + 30 * 86400;
+    std::string payload_json = R"({"edition":"enterprise","features":255,"max_nodes":1,"company":")"
+        + company + R"(","exp":)" + std::to_string(exp)
+        + R"(,"iat":)" + std::to_string(now_unix())
+        + R"(,"trial":true})";
+    std::string payload = base64url_encode(payload_json);
+    return header + "." + payload + ".";
 }
 
 // ============================================================================

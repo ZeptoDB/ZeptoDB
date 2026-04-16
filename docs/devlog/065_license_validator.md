@@ -9,7 +9,7 @@ Implemented edition-based license validation using RS256-signed JWT keys.
 
 ## What was done
 
-- **`include/zeptodb/auth/license_validator.h`** — `Edition` enum (Community/Pro/Enterprise), `Feature` bitmask (8 gated features), `LicenseClaims` struct, `LicenseValidator` class, `license()` global singleton
+- **`include/zeptodb/auth/license_validator.h`** — `Edition` enum (Community/Enterprise), `Feature` bitmask (8 gated features), `LicenseClaims` struct, `LicenseValidator` class, `license()` global singleton
 - **`src/auth/license_validator.cpp`** — JWT decode + RS256 verification (reuses `JwtValidator` infrastructure), env/file/direct key loading, expiry with 30-day grace period, 7-day warning log
 - **`docs/design/license_system.md`** — Design doc covering tiers, JWT claims, loading priority, expiry policy, HTTP 402 gating
 
@@ -34,3 +34,5 @@ Implemented edition-based license validation using RS256-signed JWT keys.
 | `src/auth/license_validator.cpp` | New — implementation |
 | `docs/design/license_system.md` | New — design doc |
 | `CMakeLists.txt` | Added `license_validator.cpp` to `zepto_auth` |
+
+> Updated 2026-04-15: Edition references updated to reflect 2-tier consolidation (see devlog 066).

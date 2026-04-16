@@ -622,9 +622,9 @@ RDB (real-time) + HDB (historical)
 - DuckDB: https://duckdb.org
 
 ### C. Contact
-- Product inquiries: product@zeptodb.com
-- Sales inquiries: sales@zeptodb.com
-- Partnerships: partners@zeptodb.com
+- Product inquiries: skswlsaks@gmail.com
+- Sales inquiries: skswlsaks@gmail.com
+- Partnerships: skswlsaks@gmail.com
 
 ---
 

@@ -9,8 +9,9 @@ ZeptoDB ships as a single binary. Edition-based feature gating is controlled at 
 | Edition | Key Required | Max Nodes | Features |
 |---------|:---:|:---:|---|
 | Community | No | 1 | Core engine, SQL, HTTP API, Python DSL |
-| Pro | Yes | 4 | + SSO, Audit Export, Advanced RBAC, Kafka, Migration |
-| Enterprise | Yes | Unlimited | + Cluster, Geo-Replication, Rolling Upgrade |
+| Enterprise | Yes | Unlimited | + SSO, Audit Export, Advanced RBAC, Kafka, Migration, Cluster, Geo-Replication, Rolling Upgrade |
+
+> **Backward compatibility:** Old license keys with `"edition": "pro"` are automatically treated as Enterprise. No action required from existing Pro licensees.
 
 ## License Key Format
 
@@ -20,7 +21,7 @@ Payload claims:
 
 | Claim | Type | Description |
 |-------|------|-------------|
-| `edition` | string | `"pro"` or `"enterprise"` |
+| `edition` | string | `"enterprise"` or `"pro"` (backward compat); absent or other value = Community |
 | `features` | uint32 | Bitmask of enabled Feature flags |
 | `max_nodes` | int | Maximum cluster nodes allowed |
 | `company` | string | Licensee company name |
@@ -81,3 +82,39 @@ Gated endpoints return:
 - License public key is embedded at compile time
 - RS256 signature prevents key forgery
 - No phone-home; validation is fully offline
+
+## Trial Keys
+
+Trial keys allow 30-day evaluation of Enterprise features without requiring a signed license key.
+
+### Format
+
+Unsigned JWT with `"alg":"none"` header and `"trial":true` claim:
+
+| Claim | Value |
+|-------|-------|
+| `alg` | `"none"` (no signature) |
+| `edition` | `"enterprise"` |
+| `features` | `0xFF` (all features) |
+| `max_nodes` | `1` (single-node only) |
+| `trial` | `true` |
+| `exp` | now + 30 days |
+
+### Validation Rules
+
+- The validator accepts unsigned JWTs only when both `alg=none` AND `trial=true`
+- Expiry is still enforced — expired trial keys are rejected (with grace period)
+- Trial keys are limited to single-node (`max_nodes=1`)
+- `isTrial()` returns true; `statusLine()` includes "(Trial)" suffix
+
+### Generation
+
+```cpp
+std::string key = LicenseValidator::generate_trial_key("MyCompany");
+license().load(key);
+```
+
+Or via HTTP:
+```bash
+curl -X POST http://localhost:8123/admin/license/trial
+```

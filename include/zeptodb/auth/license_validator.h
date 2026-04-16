@@ -4,7 +4,7 @@
 // ============================================================================
 // Edition-based feature gating via RS256-signed JWT license keys.
 //
-// Editions: Community (default, no key), Pro, Enterprise
+// Editions: Community (default, no key), Enterprise
 // Loading:  env ZEPTODB_LICENSE_KEY → file /etc/zeptodb/license.key → direct
 // Expiry:   7-day warning, 30-day grace, then downgrade to Community
 //
@@ -20,7 +20,7 @@ namespace zeptodb::auth {
 // ============================================================================
 // Edition — product tier
 // ============================================================================
-enum class Edition : uint8_t { COMMUNITY = 0, PRO = 1, ENTERPRISE = 2 };
+enum class Edition : uint8_t { COMMUNITY = 0, ENTERPRISE = 1 };
 
 // ============================================================================
 // Feature — gated capability bitmask
@@ -55,8 +55,17 @@ struct LicenseClaims {
 // ============================================================================
 class LicenseValidator {
 public:
-    /// Embedded public key — replace with actual signing key for production.
-    static constexpr const char* DEFAULT_PUBLIC_KEY = "";
+    /// Embedded public key for license verification.
+    static constexpr const char* DEFAULT_PUBLIC_KEY =
+        "-----BEGIN PUBLIC KEY-----\n"
+        "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw7GwRM7KiilznM33R0lv\n"
+        "IALADJAw/monlh/rR4sxFoL9q8mV+g8wxUL170NYlT80MGnJmNHyaaSdmxXuYfia\n"
+        "F/acTxCpMKrO0O2/YpRjlRxo0JTmVSwX5LLIYmG5UPGqaxwiGNToRcLkE0vBQkZe\n"
+        "lfZGw39LMKXdYPPGmS6nb7jQpx2ch3jmoKlnTCUm8j+KfQnjltkUYBDijZLPf7Dc\n"
+        "+pL6obF0yvjD09dhejGITTViiWrNcRD5sAQH/zejQwWUtzb2Bb/kw8t0V5mYritL\n"
+        "+WX0rbaAqSD6DhPvxJhvxxH9ib0ZR8IBNmr5HYINENlxjbVFlS6nXn3Z5PQv0P/u\n"
+        "zQIDAQAB\n"
+        "-----END PUBLIC KEY-----\n";
 
     explicit LicenseValidator(std::string public_key_pem = "");
 
@@ -83,10 +92,20 @@ public:
     /// Startup banner line, e.g. "ZeptoDB v0.1.0 (Enterprise — Acme Corp, 16 nodes, expires 2027-04-01)"
     std::string statusLine() const;
 
+    /// Multi-line startup banner with optional upgrade hint for Community.
+    std::string startupBanner() const;
+
+    /// Generate a 30-day trial license JWT (unsigned, trial=true).
+    static std::string generate_trial_key(const std::string& company = "Trial");
+
+    /// Check if current license is a trial.
+    bool isTrial() const { return trial_; }
+
 private:
     LicenseClaims claims_;
     std::string   public_key_pem_;
     bool          loaded_ = false;
+    bool          trial_  = false;
 
     bool decode_and_verify(const std::string& jwt);
 };

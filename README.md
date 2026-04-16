@@ -10,7 +10,7 @@
 [![LLVM 19](https://img.shields.io/badge/LLVM-19-orange?logo=llvm)](https://llvm.org/)
 [![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)](https://github.com/google/highway)
 [![Tests](https://img.shields.io/badge/tests-830%2B%20passing-brightgreen?logo=googletest)](tests/)
-[![License](https://img.shields.io/badge/License-BSL_1.1-blue)](LICENSE)
+[![License](https://img.shields.io/badge/License-BUSL_1.1-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-docs.zeptodb.com-blue?logo=readthedocs)](https://docs.zeptodb.com)
 [![Discord](https://img.shields.io/discord/1492174712359354590?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
 [![Docker Pulls](https://img.shields.io/docker/pulls/zeptodb/zeptodb?logo=docker)](https://hub.docker.com/r/zeptodb/zeptodb)
@@ -67,7 +67,7 @@ The engine is hardware-software co-optimized: Highway SIMD vectorization, LLVM J
 | **ASOF JOIN** | ✅ Native | ✅ Native | ❌ UDF | ❌ Manual | ✅ Native |
 | **SQL** | ✅ Standard | ❌ q lang | ✅ Dialect | ✅ PostgreSQL | ✅ Dialect |
 | **Python zero-copy** | 522ns | ❌ IPC only | ❌ | ❌ | ❌ |
-| **License cost** | Free (BSL-1.1) | $100K–500K/yr | Free (Apache 2.0) | Free (Apache 2.0) | Free (Apache 2.0) |
+| **License cost** | Free (BUSL-1.1) | $100K–500K/yr | Free (Apache 2.0) | Free (Apache 2.0) | Free (Apache 2.0) |
 
 **TL;DR:** kdb+ performance, standard SQL, zero-copy Python, open-source pricing.
 
@@ -318,6 +318,9 @@ If ZeptoDB is useful to you, consider giving it a ⭐ — it helps others discov
 
 ## 📄 License
 
-[Business Source License 1.1](LICENSE) — Production use permitted, except offering as a commercial DBaaS. Changes to Apache 2.0 on 2030-04-01.
+[Business Source License 1.1 (BUSL-1.1)](LICENSE) — You can use, modify, and distribute ZeptoDB freely, including in production. The only restriction: you cannot offer it as a commercial database-as-a-service (DBaaS).
 
-For commercial licensing: skswlsaks@gmail.com
+- **Change Date:** 2030-04-01 — on this date, the license automatically converts to Apache 2.0
+- **SPDX:** `BUSL-1.1`
+
+For commercial licensing inquiries: skswlsaks@gmail.com

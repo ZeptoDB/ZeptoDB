@@ -138,6 +138,6 @@ An open-source time-series database that replaces kdb+, targeting the HFT (High-
 **Goal:** $3.6M ARR, break-even
 
 **Contact:**
-- Email: founders@zeptodb.com
+- Email: skswlsaks@gmail.com
 - Deck: https://zeptodb.com/deck
 - Demo: https://demo.zeptodb.com
