@@ -32,6 +32,9 @@ Last updated: 2026-04-16
 - [x] **Sorted column index** — `p#`/`g#` style sorted attribute, O(log n) binary search range scan, 269x vs full scan — 13 tests
 - [x] **Materialized View** — CREATE/DROP MATERIALIZED VIEW, incremental aggregation on ingest, OHLCV/SUM/COUNT/MIN/MAX/FIRST/LAST, xbar time bucket
 - [x] **MV query rewrite** — Automatic rewrite of SELECT GROUP BY into direct MV lookup when matching MV exists. O(n) → O(1) for aggregation queries — 6 tests (devlog 064)
+- [x] **Cost-based planner (Phase 1+2)** — TableStatistics (HyperLogLog distinct, incremental min/max/count), CostModel (selectivity estimation, scan/join/sort/aggregate cost), observation-only infrastructure — 27 tests (devlog 066)
+- [x] **Cost-based planner (Phase 3-6)** — LogicalPlan (AST→operator tree, predicate/projection pushdown), PhysicalPlan (cost-based scan/join/sort selection), 2-tier adaptive routing (simple→fast path, complex→cost-based), EXPLAIN v2 with cost estimates — 20 tests (devlog 067)
+- [x] **Cost-based planner (Phase 7)** — Wired PhysicalPlan HASH_JOIN build side decision to exec_hash_join, TOPN_SORT already wired via apply_order_by, INDEX_SCAN already wired via collect_and_intersect. Planning overhead ~1μs. (devlog 075)
 
 ## Storage
 - [x] **Parquet HDB** — SNAPPY/ZSTD/LZ4_RAW, DuckDB/Polars/Spark direct query (Arrow C++ API)

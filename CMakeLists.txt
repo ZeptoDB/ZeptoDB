@@ -422,6 +422,8 @@ add_library(zepto_execution STATIC
     src/execution/local_scheduler.cpp
     src/execution/distributed_scheduler.cpp
     src/execution/resource_isolation.cpp
+    src/execution/table_statistics.cpp
+    src/execution/cost_model.cpp
 )
 if(ZEPTO_USE_JIT)
     target_sources(zepto_execution PRIVATE src/execution/jit_engine.cpp)
@@ -824,6 +826,36 @@ if(ZEPTO_BUILD_BENCH)
         zepto_execution
     )
     target_compile_options(bench_sql PRIVATE
+        -O3 -march=native
+    )
+
+    # Cost-based planner overhead benchmark
+    add_executable(bench_planner
+        tests/bench/bench_planner.cpp
+    )
+    target_link_libraries(bench_planner PRIVATE
+        zepto_sql
+        zepto_core
+        zepto_storage
+        zepto_ingestion
+        zepto_execution
+    )
+    target_compile_options(bench_planner PRIVATE
+        -O3 -march=native
+    )
+
+    # Cost-based planner benefit benchmark
+    add_executable(bench_planner_benefit
+        tests/bench/bench_planner_benefit.cpp
+    )
+    target_link_libraries(bench_planner_benefit PRIVATE
+        zepto_sql
+        zepto_core
+        zepto_storage
+        zepto_ingestion
+        zepto_execution
+    )
+    target_compile_options(bench_planner_benefit PRIVATE
         -O3 -march=native
     )
 

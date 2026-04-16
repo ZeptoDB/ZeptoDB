@@ -30,6 +30,9 @@ add_executable(zepto_tests
     unit/test_mv_rewrite.cpp
     unit/test_license.cpp
     unit/test_composite_index.cpp
+    unit/test_table_statistics.cpp
+    unit/test_cost_model.cpp
+    unit/test_query_planner.cpp
 )
 target_include_directories(zepto_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h access

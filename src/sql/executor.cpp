@@ -952,7 +952,7 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
             // For complex queries, build cost-based physical plan
             if (needs_cost_planning(stmt)) {
                 for (auto* p : pipeline_.partition_manager().get_all_partitions()) {
-                    if (table_stats_.partition_stats().find(p) == table_stats_.partition_stats().end())
+                    if (!table_stats_.has_partition(p))
                         table_stats_.update_partition(p);
                 }
 
@@ -1086,17 +1086,17 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
     }
 
     // ── Cost-based planner: build physical plan for complex queries ──────────
-    last_physical_plan_ = nullptr;
+    std::shared_ptr<execution::PhysicalNode> physical_plan;
     if (needs_cost_planning(stmt)) {
         // Lazily update statistics only for partitions not yet tracked
         for (auto* p : pipeline_.partition_manager().get_all_partitions()) {
-            if (table_stats_.partition_stats().find(p) == table_stats_.partition_stats().end())
+            if (!table_stats_.has_partition(p))
                 table_stats_.update_partition(p);
         }
 
         auto logical = execution::LogicalPlan::build(stmt);
         execution::LogicalPlan::optimize(logical);
-        last_physical_plan_ = execution::PhysicalPlanner::plan(logical, table_stats_);
+        physical_plan = execution::PhysicalPlanner::plan(logical, table_stats_);
         ZEPTO_INFO("QueryPlanner: built physical plan for complex query");
     }
 
@@ -1226,7 +1226,7 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
                                    || stmt.join->type == JoinClause::Type::RIGHT
                                    || stmt.join->type == JoinClause::Type::FULL)) {
             auto right_parts = find_partitions(stmt.join->table);
-            return exec_hash_join(stmt, left_parts, right_parts);
+            return exec_hash_join(stmt, left_parts, right_parts, physical_plan);
         }
 
         // UNION JOIN (kdb+ uj — merge columns from both tables)
@@ -1325,7 +1325,7 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
                                || stmt.join->type == JoinClause::Type::RIGHT
                                || stmt.join->type == JoinClause::Type::FULL)) {
         auto right_parts = find_partitions(stmt.join->table);
-        return exec_hash_join(stmt, left_parts, right_parts);
+        return exec_hash_join(stmt, left_parts, right_parts, physical_plan);
     }
 
     // UNION JOIN
@@ -3866,10 +3866,10 @@ QueryResultSet QueryExecutor::exec_asof_join(
 // ============================================================================
 // find_hash_join_node — walk physical plan tree to find HASH_JOIN node
 // ============================================================================
-const zeptodb::execution::PhysicalNode* QueryExecutor::find_hash_join_node() const {
-    if (!last_physical_plan_) return nullptr;
-    // BFS/DFS to find first HASH_JOIN node
-    std::vector<const execution::PhysicalNode*> stack{last_physical_plan_.get()};
+const zeptodb::execution::PhysicalNode* QueryExecutor::find_hash_join_node(
+    const std::shared_ptr<execution::PhysicalNode>& plan) {
+    if (!plan) return nullptr;
+    std::vector<const execution::PhysicalNode*> stack{plan.get()};
     while (!stack.empty()) {
         auto* n = stack.back(); stack.pop_back();
         if (n->type == execution::PhysicalNode::Type::HASH_JOIN) return n;
@@ -3890,7 +3890,8 @@ const zeptodb::execution::PhysicalNode* QueryExecutor::find_hash_join_node() con
 QueryResultSet QueryExecutor::exec_hash_join(
     const SelectStmt& stmt,
     const std::vector<Partition*>& left_parts,
-    const std::vector<Partition*>& right_parts)
+    const std::vector<Partition*>& right_parts,
+    const std::shared_ptr<execution::PhysicalNode>& physical_plan)
 {
     QueryResultSet result;
     size_t rows_scanned = 0;
@@ -3952,7 +3953,7 @@ QueryResultSet QueryExecutor::exec_hash_join(
     bool is_full_join  = (stmt.join->type == JoinClause::Type::FULL);
     bool planner_swap  = false;  // true = planner says build on left for INNER/FULL
     if (!is_left_join && !is_right_join) {
-        auto* hj_node = find_hash_join_node();
+        auto* hj_node = find_hash_join_node(physical_plan);
         if (hj_node && !hj_node->build_right) {
             planner_swap = true;
             ZEPTO_INFO("HashJoin: planner-directed build side swap (build=left, L={}rows R={}rows)",

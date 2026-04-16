@@ -74,7 +74,7 @@
 
 | Task | Engine Impact | Effort |
 |------|---------------|--------|
-| ~~**Cost-based planner**~~ | ✅ Phase 1-6 done (devlog 066-067) — TableStatistics + CostModel + LogicalPlan + PhysicalPlan + EXPLAIN v2, 47 tests | — |
+| ~~**Cost-based planner**~~ | ✅ Phase 1-7 done (devlog 066-067, 075) — TableStatistics + CostModel + LogicalPlan + PhysicalPlan + EXPLAIN v2 + Wiring (HASH_JOIN build side), 47 tests | — |
 | **JOINs/Window on virtual tables** | 🟠 Moderate | M |
 | **SIMD-ify WindowJoin aggregate loop** | 🟠 Moderate | M |
 | **JIT SIMD emit** | — | L |

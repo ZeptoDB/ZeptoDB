@@ -138,7 +138,6 @@ private:
 
     // ── Cost-based planner state ─────────────────────────────────────────────
     zeptodb::execution::TableStatistics table_stats_;
-    std::shared_ptr<zeptodb::execution::PhysicalNode> last_physical_plan_;
 
     // ── Prepared statement cache (parse result reuse) ────────────────────────
     mutable std::mutex stmt_cache_mu_;
@@ -221,7 +220,8 @@ private:
     QueryResultSet exec_hash_join(
         const SelectStmt& stmt,
         const std::vector<zeptodb::storage::Partition*>& left_partitions,
-        const std::vector<zeptodb::storage::Partition*>& right_partitions);
+        const std::vector<zeptodb::storage::Partition*>& right_partitions,
+        const std::shared_ptr<zeptodb::execution::PhysicalNode>& physical_plan = nullptr);
 
     // WINDOW JOIN 실행 (kdb+ wj 스타일)
     QueryResultSet exec_window_join(
@@ -379,9 +379,10 @@ private:
 
     // ── Cost-based planner wiring helpers ────────────────────────────────────
 
-    /// Walk last_physical_plan_ tree to find the HASH_JOIN PhysicalNode.
+    /// Walk a physical plan tree to find the HASH_JOIN PhysicalNode.
     /// Returns nullptr if no plan or no HASH_JOIN node found.
-    const zeptodb::execution::PhysicalNode* find_hash_join_node() const;
+    static const zeptodb::execution::PhysicalNode* find_hash_join_node(
+        const std::shared_ptr<zeptodb::execution::PhysicalNode>& plan);
 };
 
 } // namespace zeptodb::sql
