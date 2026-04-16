@@ -11,7 +11,9 @@
 #include "zeptodb/storage/column_store.h"
 #include "zeptodb/storage/string_dictionary.h"
 #include "zeptodb/core/pipeline.h"
+#include "zeptodb/execution/query_planner.h"
 #include "zeptodb/execution/query_scheduler.h"
+#include "zeptodb/execution/table_statistics.h"
 #include "zeptodb/execution/worker_pool.h"
 #include "zeptodb/auth/cancellation_token.h"
 #include <memory>
@@ -20,6 +22,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <functional>
 
 namespace zeptodb::sql {
@@ -115,6 +118,15 @@ public:
     /// 파이프라인 통계 반환 (HTTP /stats 용)
     const zeptodb::core::PipelineStats& stats() const;
 
+    /// 2-tier routing: returns true if the query needs cost-based planning
+    static bool needs_cost_planning(const SelectStmt& stmt) {
+        if (stmt.join)                                  return true;
+        if (stmt.from_subquery)                         return true;
+        if (!stmt.cte_defs.empty())                     return true;
+        if (stmt.set_op != SelectStmt::SetOp::NONE)    return true;
+        return false;
+    }
+
 private:
     zeptodb::core::ZeptoPipeline& pipeline_;
     ParallelOptions par_opts_;
@@ -123,6 +135,10 @@ private:
     // 로컬 병렬 경로(exec_agg_parallel 등)에서 직접 사용.
     // 비-로컬 스케줄러 주입 시 nullptr → 직렬 폴백.
     zeptodb::execution::WorkerPool* pool_raw_ = nullptr;
+
+    // ── Cost-based planner state ─────────────────────────────────────────────
+    zeptodb::execution::TableStatistics table_stats_;
+    std::shared_ptr<zeptodb::execution::PhysicalNode> last_physical_plan_;
 
     // ── Prepared statement cache (parse result reuse) ────────────────────────
     mutable std::mutex stmt_cache_mu_;
@@ -311,6 +327,61 @@ private:
     // 총 행 수 추정 (병렬 임계값 판단용)
     size_t estimate_total_rows(
         const std::vector<zeptodb::storage::Partition*>& partitions) const;
+
+    // ── Composite Index (Index Intersection) ─────────────────────────────────
+
+    /// Accumulates intersected row ranges and sets from multiple index lookups.
+    struct IndexResult {
+        size_t range_begin = 0;
+        size_t range_end   = SIZE_MAX;
+        std::vector<uint32_t> row_set;
+        bool has_set = false;
+
+        void set_range(size_t b, size_t e);
+        void intersect_range(size_t b, size_t e);
+        void intersect_set(const std::vector<uint32_t>& s);
+        std::vector<uint32_t> materialize() const;
+    };
+
+    struct SortedRangePred { std::string col; int64_t lo; int64_t hi; };
+    struct IndexEqPred     { std::string col; int64_t val; };
+
+    /// Extract ALL s#-sorted column range predicates from WHERE (AND-connected).
+    std::vector<SortedRangePred> extract_all_sorted_ranges(
+        const SelectStmt& stmt,
+        const zeptodb::storage::Partition& part) const;
+
+    /// Extract ALL g#/p# equality predicates from WHERE (AND-connected).
+    std::vector<IndexEqPred> extract_all_index_eqs(
+        const SelectStmt& stmt,
+        const zeptodb::storage::Partition& part) const;
+
+    /// Evaluate a single WHERE Expr node for one row. Returns true if the row matches.
+    bool eval_expr_single_row(
+        const std::shared_ptr<Expr>& expr,
+        const zeptodb::storage::Partition& part,
+        uint32_t row_idx) const;
+
+    /// Evaluate WHERE on candidate rows, skipping predicates on indexed_cols.
+    std::vector<uint32_t> eval_remaining_where(
+        const SelectStmt& stmt,
+        const zeptodb::storage::Partition& part,
+        const std::vector<uint32_t>& candidates,
+        const std::unordered_set<std::string>& indexed_cols);
+
+    /// Collect-and-intersect: build IndexResult from all applicable indexes,
+    /// then evaluate remaining WHERE predicates on the intersection.
+    /// Returns filtered row indices and updates rows_scanned.
+    std::vector<uint32_t> collect_and_intersect(
+        const SelectStmt& stmt,
+        const zeptodb::storage::Partition& part,
+        size_t& rows_scanned);
+
+    // ── Cost-based planner wiring helpers ────────────────────────────────────
+
+    /// Walk last_physical_plan_ tree to find the HASH_JOIN PhysicalNode.
+    /// Returns nullptr if no plan or no HASH_JOIN node found.
+    const zeptodb::execution::PhysicalNode* find_hash_join_node() const;
 };
 
 } // namespace zeptodb::sql

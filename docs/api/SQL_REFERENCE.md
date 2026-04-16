@@ -1077,8 +1077,39 @@ ALTER TABLE trades SET ATTRIBUTE timestamp SORTED   -- s# binary search
 |-------|----------|----------|---------|
 | `WHERE price = 15500` (1M rows) | 904μs | **3.3μs** | **274x** |
 
-The executor automatically uses the best available index for WHERE conditions.
-Index selection priority: timestamp range → s# sorted → g#/p# equality → full scan.
+The executor automatically uses all applicable indexes for WHERE conditions.
+When multiple indexed predicates are present (connected by AND), their results are combined via intersection for maximum selectivity. When only one index applies, it is used directly. If no index is applicable, a full scan is performed.
+
+### Composite Index Intersection
+
+When a WHERE clause contains predicates on **multiple indexed columns**, the executor automatically combines all applicable indexes via intersection — no special syntax needed.
+
+```sql
+-- All three indexes are used and intersected:
+--   timestamp s# range → price s# range → exchange p# range
+SELECT * FROM trades
+WHERE timestamp BETWEEN t1 AND t2
+  AND price BETWEEN 15000 AND 16000
+  AND exchange = 3
+```
+
+**How it works:**
+1. Collect all applicable index results (timestamp range, s# ranges, g#/p# equalities)
+2. Intersect ranges via `[max(begin₁,begin₂), min(end₁,end₂))`
+3. Intersect row sets (g# lookups) with ranges by filtering
+4. Evaluate remaining non-indexed predicates on the intersection only
+
+**Supported combinations:**
+
+| Combination | Intersection Type | Example |
+|-------------|------------------|---------|
+| s# + s# | Range ∩ Range | `timestamp BETWEEN ... AND price BETWEEN ...` |
+| s# + p# | Range ∩ Range | `timestamp BETWEEN ... AND exchange = 3` |
+| s# + g# | Range ∩ Set | `price BETWEEN ... AND order_type = 5` |
+| g# + g# | Set ∩ Set | `order_type = 5 AND venue = 2` |
+| p# + g# | Range ∩ Set | `exchange = 3 AND order_type = 5` |
+
+Single-predicate queries behave identically to before (zero regression).
 
 ---
 

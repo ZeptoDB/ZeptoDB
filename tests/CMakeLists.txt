@@ -29,6 +29,7 @@ add_executable(zepto_tests
     unit/test_ptp_clock_detector.cpp
     unit/test_mv_rewrite.cpp
     unit/test_license.cpp
+    unit/test_composite_index.cpp
 )
 target_include_directories(zepto_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h access
@@ -109,4 +110,5 @@ target_link_libraries(test_migration PRIVATE
     GTest::gtest
 )
 gtest_discover_tests(test_migration)
+
 

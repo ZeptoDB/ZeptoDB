@@ -8,6 +8,7 @@
 #include "zeptodb/sql/parser.h"
 #include "zeptodb/sql/mv_rewriter.h"
 #include "zeptodb/execution/join_operator.h"
+#include "zeptodb/execution/query_planner.h"
 #include "zeptodb/execution/window_function.h"
 #include "zeptodb/execution/vectorized_engine.h"
 #include "zeptodb/execution/parallel_scan.h"
@@ -25,6 +26,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
 
 namespace zeptodb::sql {
@@ -947,6 +949,25 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
 
         // EXPLAIN: return query plan without executing
         if (stmt.explain) {
+            // For complex queries, build cost-based physical plan
+            if (needs_cost_planning(stmt)) {
+                for (auto* p : pipeline_.partition_manager().get_all_partitions()) {
+                    if (table_stats_.partition_stats().find(p) == table_stats_.partition_stats().end())
+                        table_stats_.update_partition(p);
+                }
+
+                auto logical = execution::LogicalPlan::build(stmt);
+                execution::LogicalPlan::optimize(logical);
+                auto physical = execution::PhysicalPlanner::plan(logical, table_stats_);
+
+                QueryResultSet result;
+                result.column_names = {"plan"};
+                result.column_types = {ColumnType::INT64};
+                execution::format_explain_tree(physical, result.string_rows);
+                result.execution_time_us = now_us() - t0;
+                return result;
+            }
+            // Simple queries: use existing text-based EXPLAIN
             auto result = build_explain_plan(stmt, pipeline_);
             result.execution_time_us = now_us() - t0;
             return result;
@@ -1062,6 +1083,21 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
             r.error = e.what();
             return r;
         }
+    }
+
+    // ── Cost-based planner: build physical plan for complex queries ──────────
+    last_physical_plan_ = nullptr;
+    if (needs_cost_planning(stmt)) {
+        // Lazily update statistics only for partitions not yet tracked
+        for (auto* p : pipeline_.partition_manager().get_all_partitions()) {
+            if (table_stats_.partition_stats().find(p) == table_stats_.partition_stats().end())
+                table_stats_.update_partition(p);
+        }
+
+        auto logical = execution::LogicalPlan::build(stmt);
+        execution::LogicalPlan::optimize(logical);
+        last_physical_plan_ = execution::PhysicalPlanner::plan(logical, table_stats_);
+        ZEPTO_INFO("QueryPlanner: built physical plan for complex query");
     }
 
     // Set operations: UNION [ALL] / INTERSECT / EXCEPT
@@ -1709,6 +1745,328 @@ bool QueryExecutor::extract_index_eq(
         return false;
     };
     return find_eq(stmt.where->expr);
+}
+
+// ============================================================================
+// IndexResult: composite index intersection accumulator
+// ============================================================================
+void QueryExecutor::IndexResult::set_range(size_t b, size_t e) {
+    range_begin = b;
+    range_end   = e;
+}
+
+void QueryExecutor::IndexResult::intersect_range(size_t b, size_t e) {
+    range_begin = std::max(range_begin, b);
+    range_end   = std::min(range_end, e);
+    if (has_set) {
+        // Filter existing row_set to keep only indices within new range
+        std::vector<uint32_t> filtered;
+        filtered.reserve(row_set.size());
+        for (auto idx : row_set) {
+            if (idx >= static_cast<uint32_t>(range_begin) &&
+                idx < static_cast<uint32_t>(range_end))
+                filtered.push_back(idx);
+        }
+        row_set = std::move(filtered);
+    }
+}
+
+void QueryExecutor::IndexResult::intersect_set(const std::vector<uint32_t>& s) {
+    if (!has_set) {
+        // First set: filter by current range
+        row_set.reserve(s.size());
+        for (auto idx : s) {
+            if (idx >= static_cast<uint32_t>(range_begin) &&
+                idx < static_cast<uint32_t>(range_end))
+                row_set.push_back(idx);
+        }
+        has_set = true;
+    } else {
+        // Intersect two sets: put smaller into a set, scan larger
+        const auto& smaller = (row_set.size() <= s.size()) ? row_set : s;
+        const auto& larger  = (row_set.size() <= s.size()) ? s : row_set;
+        std::unordered_set<uint32_t> lookup(smaller.begin(), smaller.end());
+        std::vector<uint32_t> result;
+        result.reserve(std::min(smaller.size(), larger.size()));
+        for (auto idx : larger) {
+            if (lookup.count(idx)) result.push_back(idx);
+        }
+        row_set = std::move(result);
+    }
+}
+
+std::vector<uint32_t> QueryExecutor::IndexResult::materialize() const {
+    if (has_set) return row_set;
+    size_t b = range_begin;
+    size_t e = (range_end == SIZE_MAX) ? b : range_end;
+    if (b >= e) return {};
+    std::vector<uint32_t> out(e - b);
+    for (size_t i = b; i < e; ++i) out[i - b] = static_cast<uint32_t>(i);
+    return out;
+}
+
+// ============================================================================
+// extract_all_sorted_ranges: collect ALL s#-sorted range predicates
+// ============================================================================
+std::vector<QueryExecutor::SortedRangePred>
+QueryExecutor::extract_all_sorted_ranges(
+    const SelectStmt& stmt,
+    const Partition& part) const
+{
+    if (!stmt.where.has_value()) return {};
+
+    std::unordered_map<std::string, SortedRangePred> col_bounds;
+
+    std::function<void(const std::shared_ptr<Expr>&)> collect =
+        [&](const std::shared_ptr<Expr>& e) {
+        if (!e) return;
+        if (e->kind == Expr::Kind::BETWEEN && part.is_sorted(e->column)) {
+            auto [it, inserted] = col_bounds.try_emplace(
+                e->column, SortedRangePred{e->column, INT64_MIN, INT64_MAX});
+            auto& b = it->second;
+            b.lo = std::max(b.lo, e->lo);
+            b.hi = std::min(b.hi, e->hi);
+            return;
+        }
+        if (e->kind == Expr::Kind::COMPARE && !e->is_float &&
+            part.is_sorted(e->column)) {
+            auto [it, inserted] = col_bounds.try_emplace(
+                e->column, SortedRangePred{e->column, INT64_MIN, INT64_MAX});
+            auto& b = it->second;
+            switch (e->op) {
+                case CompareOp::GE: b.lo = std::max(b.lo, e->value); break;
+                case CompareOp::GT: b.lo = std::max(b.lo, e->value + 1); break;
+                case CompareOp::LE: b.hi = std::min(b.hi, e->value); break;
+                case CompareOp::LT: b.hi = std::min(b.hi, e->value - 1); break;
+                case CompareOp::EQ: b.lo = std::max(b.lo, e->value);
+                                    b.hi = std::min(b.hi, e->value); break;
+                default: break;
+            }
+            return;
+        }
+        if (e->kind == Expr::Kind::AND) {
+            collect(e->left);
+            collect(e->right);
+        }
+    };
+    collect(stmt.where->expr);
+
+    std::vector<SortedRangePred> result;
+    for (auto& [col, pred] : col_bounds) {
+        result.push_back(std::move(pred));
+    }
+    return result;
+}
+
+// ============================================================================
+// extract_all_index_eqs: collect ALL g#/p# equality predicates
+// ============================================================================
+std::vector<QueryExecutor::IndexEqPred>
+QueryExecutor::extract_all_index_eqs(
+    const SelectStmt& stmt,
+    const Partition& part) const
+{
+    if (!stmt.where.has_value()) return {};
+
+    std::vector<IndexEqPred> result;
+
+    std::function<void(const std::shared_ptr<Expr>&)> collect =
+        [&](const std::shared_ptr<Expr>& e) {
+        if (!e) return;
+        if (e->kind == Expr::Kind::COMPARE && e->op == CompareOp::EQ &&
+            !e->is_float &&
+            (part.is_grouped(e->column) || part.is_parted(e->column))) {
+            result.push_back({e->column, e->value});
+            return;
+        }
+        if (e->kind == Expr::Kind::AND) {
+            collect(e->left);
+            collect(e->right);
+        }
+    };
+    collect(stmt.where->expr);
+    return result;
+}
+
+// ============================================================================
+// eval_expr_single_row: evaluate a WHERE Expr for a single row index
+// ============================================================================
+bool QueryExecutor::eval_expr_single_row(
+    const std::shared_ptr<Expr>& expr,
+    const Partition& part,
+    uint32_t row_idx) const
+{
+    if (!expr) return true;
+
+    switch (expr->kind) {
+        case Expr::Kind::AND:
+            return eval_expr_single_row(expr->left, part, row_idx) &&
+                   eval_expr_single_row(expr->right, part, row_idx);
+        case Expr::Kind::OR:
+            return eval_expr_single_row(expr->left, part, row_idx) ||
+                   eval_expr_single_row(expr->right, part, row_idx);
+        case Expr::Kind::NOT:
+            return !eval_expr_single_row(expr->left, part, row_idx);
+        case Expr::Kind::BETWEEN: {
+            if (expr->column == "symbol") return true;
+            const int64_t* data = get_col_data(part, expr->column);
+            if (!data) return false;
+            return data[row_idx] >= expr->lo && data[row_idx] <= expr->hi;
+        }
+        case Expr::Kind::COMPARE: {
+            if (expr->column == "symbol") return true;
+            const ColumnVector* cv = part.get_column(expr->column);
+            if (!cv) return false;
+            if (expr->is_float) {
+                const double* d = static_cast<const double*>(cv->raw_data());
+                return compare_val(d[row_idx], expr->op, expr->value_f);
+            }
+            const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
+            return compare_val(d[row_idx], expr->op, expr->value);
+        }
+        case Expr::Kind::IN: {
+            int64_t v;
+            if (expr->column == "symbol") {
+                v = static_cast<int64_t>(part.key().symbol_id);
+            } else {
+                const int64_t* data = get_col_data(part, expr->column);
+                if (!data) return false;
+                v = data[row_idx];
+            }
+            bool found = false;
+            for (int64_t iv : expr->in_values) {
+                if (v == iv) { found = true; break; }
+            }
+            return found != expr->negated;
+        }
+        case Expr::Kind::IS_NULL: {
+            const int64_t* data = get_col_data(part, expr->column);
+            bool is_null = !data || (data[row_idx] == INT64_MIN);
+            return expr->negated ? !is_null : is_null;
+        }
+        case Expr::Kind::LIKE: {
+            int64_t v;
+            if (expr->column == "symbol") {
+                v = static_cast<int64_t>(part.key().symbol_id);
+            } else {
+                const int64_t* data = get_col_data(part, expr->column);
+                v = data ? data[row_idx] : 0;
+            }
+            std::string s = std::to_string(v);
+            const auto& pat = expr->like_pattern;
+            // Simple dp glob match
+            size_t m = s.size(), n = pat.size();
+            std::vector<std::vector<bool>> dp(m+1, std::vector<bool>(n+1, false));
+            dp[0][0] = true;
+            for (size_t j = 1; j <= n; ++j)
+                dp[0][j] = dp[0][j-1] && pat[j-1] == '%';
+            for (size_t i = 1; i <= m; ++i)
+                for (size_t j = 1; j <= n; ++j) {
+                    if (pat[j-1] == '%')
+                        dp[i][j] = dp[i-1][j] || dp[i][j-1];
+                    else if (pat[j-1] == '_' || pat[j-1] == s[i-1])
+                        dp[i][j] = dp[i-1][j-1];
+                }
+            bool matched = dp[m][n];
+            return expr->negated ? !matched : matched;
+        }
+        default:
+            return true;
+    }
+}
+
+// ============================================================================
+// eval_remaining_where: evaluate WHERE skipping already-indexed predicates
+// ============================================================================
+std::vector<uint32_t> QueryExecutor::eval_remaining_where(
+    const SelectStmt& stmt,
+    const Partition& part,
+    const std::vector<uint32_t>& candidates,
+    const std::unordered_set<std::string>& indexed_cols)
+{
+    if (!stmt.where.has_value() || candidates.empty())
+        return candidates;
+
+    // Check if a predicate node is fully covered by indexed columns
+    std::function<bool(const std::shared_ptr<Expr>&)> all_indexed =
+        [&](const std::shared_ptr<Expr>& e) -> bool {
+        if (!e) return false;
+        if (e->kind == Expr::Kind::COMPARE || e->kind == Expr::Kind::BETWEEN)
+            return indexed_cols.count(e->column) > 0;
+        if (e->kind == Expr::Kind::AND)
+            return all_indexed(e->left) && all_indexed(e->right);
+        return false;
+    };
+
+    // If entire WHERE is indexed, no remaining filtering needed
+    if (all_indexed(stmt.where->expr)) return candidates;
+
+    // Evaluate WHERE on candidate rows only (not full partition)
+    std::vector<uint32_t> result;
+    result.reserve(candidates.size());
+    for (uint32_t idx : candidates) {
+        if (eval_expr_single_row(stmt.where->expr, part, idx))
+            result.push_back(idx);
+    }
+    return result;
+}
+
+// ============================================================================
+// collect_and_intersect: composite index intersection for a single partition
+// ============================================================================
+std::vector<uint32_t> QueryExecutor::collect_and_intersect(
+    const SelectStmt& stmt,
+    const Partition& part,
+    size_t& rows_scanned)
+{
+    size_t n = part.num_rows();
+    IndexResult combined;
+    std::unordered_set<std::string> indexed_cols;
+    bool any_index_used = false;
+
+    // Phase 1a: timestamp range
+    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
+    if (extract_time_range(stmt, ts_lo, ts_hi)) {
+        if (!part.overlaps_time_range(ts_lo, ts_hi)) return {};
+        auto [rb, re] = part.timestamp_range(ts_lo, ts_hi);
+        combined.set_range(rb, re);
+        indexed_cols.insert("timestamp");
+        indexed_cols.insert("recv_ts");
+        any_index_used = true;
+    }
+
+    // Phase 1b: ALL s# sorted column ranges
+    for (auto& pred : extract_all_sorted_ranges(stmt, part)) {
+        auto [rb, re] = part.sorted_range(pred.col, pred.lo, pred.hi);
+        combined.intersect_range(rb, re);
+        indexed_cols.insert(pred.col);
+        any_index_used = true;
+    }
+
+    // Phase 1c: ALL g#/p# equality predicates
+    for (auto& pred : extract_all_index_eqs(stmt, part)) {
+        if (part.is_grouped(pred.col)) {
+            combined.intersect_set(part.grouped_lookup(pred.col, pred.val));
+        } else {
+            auto [rb, re] = part.parted_range(pred.col, pred.val);
+            combined.intersect_range(rb, re);
+        }
+        indexed_cols.insert(pred.col);
+        any_index_used = true;
+    }
+
+    // No index applicable → full scan fallback
+    if (!any_index_used) {
+        rows_scanned += n;
+        return eval_where(stmt, part, n);
+    }
+
+    // Phase 2: materialize candidate rows
+    auto candidates = combined.materialize();
+    rows_scanned += candidates.size();
+
+    // Phase 3: evaluate remaining non-indexed predicates
+    return eval_remaining_where(stmt, part, candidates, indexed_cols);
 }
 
 // ============================================================================
@@ -2537,51 +2895,12 @@ QueryResultSet QueryExecutor::exec_simple_select(
         }
     }
 
-    // 타임스탬프 범위 이진탐색 최적화 여부 확인
-    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
-    bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
-
     for (auto* part : partitions) {
         if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
-        size_t n = part->num_rows();
 
-        std::vector<uint32_t> sel_indices;
-        if (use_ts_index) {
-            // O(1): 파티션이 범위와 겹치지 않으면 스킵
-            if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-            // O(log n): 이진탐색으로 범위 추출
-            auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-            rows_scanned += r_end - r_begin;
-            sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-        } else {
-            // s# sorted column range optimization
-            std::string sorted_col;
-            int64_t slo = INT64_MIN, shi = INT64_MAX;
-            if (extract_sorted_col_range(stmt, *part, sorted_col, slo, shi)) {
-                auto [r_begin, r_end] = part->sorted_range(sorted_col, slo, shi);
-                rows_scanned += r_end - r_begin;
-                sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-            } else {
-                // g#/p# index equality optimization
-                std::string idx_col;
-                int64_t idx_val;
-                if (extract_index_eq(stmt, *part, idx_col, idx_val)) {
-                    if (part->is_grouped(idx_col)) {
-                        // g# hash index: O(1) lookup → only scan matching rows
-                        const auto& hits = part->grouped_lookup(idx_col, idx_val);
-                        rows_scanned += hits.size();
-                        sel_indices.assign(hits.begin(), hits.end());
-                    } else {
-                        // p# parted index: O(1) range lookup
-                        auto [r_begin, r_end] = part->parted_range(idx_col, idx_val);
-                        rows_scanned += r_end - r_begin;
-                        sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-                    }
-                } else {
-                    rows_scanned += n;
-                    sel_indices = eval_where(stmt, *part, n);
-                }
-            }
+        std::vector<uint32_t> sel_indices = collect_and_intersect(stmt, *part, rows_scanned);
+        if (sel_indices.empty() && part->num_rows() > 0) {
+            // collect_and_intersect may skip via overlaps_time_range; continue
         }
 
         // SAMPLE: reduce sel_indices before row collection
@@ -2710,10 +3029,6 @@ QueryResultSet QueryExecutor::exec_agg(
     // Track which columns are float
     std::vector<bool> is_fcol(stmt.columns.size(), false);
 
-    // 타임스탬프 이진탐색 최적화
-    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
-    bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
-
     // Detect float columns from first partition
     if (!partitions.empty()) {
         for (size_t ci = 0; ci < stmt.columns.size(); ++ci) {
@@ -2725,40 +3040,8 @@ QueryResultSet QueryExecutor::exec_agg(
 
     for (auto* part : partitions) {
         if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
-        size_t n = part->num_rows();
 
-        std::vector<uint32_t> sel_indices;
-        if (use_ts_index) {
-            if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-            auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-            rows_scanned += r_end - r_begin;
-            sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-        } else {
-            std::string sorted_col;
-            int64_t slo = INT64_MIN, shi = INT64_MAX;
-            if (extract_sorted_col_range(stmt, *part, sorted_col, slo, shi)) {
-                auto [r_begin, r_end] = part->sorted_range(sorted_col, slo, shi);
-                rows_scanned += r_end - r_begin;
-                sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-            } else {
-                std::string idx_col;
-                int64_t idx_val;
-                if (extract_index_eq(stmt, *part, idx_col, idx_val)) {
-                    if (part->is_grouped(idx_col)) {
-                        const auto& hits = part->grouped_lookup(idx_col, idx_val);
-                        rows_scanned += hits.size();
-                        sel_indices.assign(hits.begin(), hits.end());
-                    } else {
-                        auto [r_begin, r_end] = part->parted_range(idx_col, idx_val);
-                        rows_scanned += r_end - r_begin;
-                        sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-                    }
-                } else {
-                    rows_scanned += n;
-                    sel_indices = eval_where(stmt, *part, n);
-                }
-            }
-        }
+        std::vector<uint32_t> sel_indices = collect_and_intersect(stmt, *part, rows_scanned);
 
         // SAMPLE: reduce sel_indices before aggregation
         if (stmt.sample_rate.has_value())
@@ -2978,10 +3261,6 @@ QueryResultSet QueryExecutor::exec_group_agg(
         std::vector<int64_t> vals; // STDDEV/VARIANCE/MEDIAN/PERCENTILE
     };
 
-    // 타임스탬프 범위 이진탐색 최적화
-    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
-    bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
-
     // ─────────────────────────────────────────────────────────────────────
     // 최적화 경로 1: GROUP BY symbol
     // 파티션은 이미 symbol 단위로 분리되어 있음.
@@ -2997,20 +3276,10 @@ QueryResultSet QueryExecutor::exec_group_agg(
 
         for (auto* part : partitions) {
             if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
-            size_t n = part->num_rows();
             // symbol group key: 파티션 키에서 O(1)로 추출
             int64_t symbol_gkey = static_cast<int64_t>(part->key().symbol_id);
 
-            std::vector<uint32_t> sel_indices;
-            if (use_ts_index) {
-                if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-                auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-                rows_scanned += r_end - r_begin;
-                sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-            } else {
-                rows_scanned += n;
-                sel_indices = eval_where(stmt, *part, n);
-            }
+            std::vector<uint32_t> sel_indices = collect_and_intersect(stmt, *part, rows_scanned);
 
             // SAMPLE: reduce sel_indices before group aggregation
             if (stmt.sample_rate.has_value())
@@ -3165,18 +3434,8 @@ QueryResultSet QueryExecutor::exec_group_agg(
 
         for (auto* part : partitions) {
             if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
-            size_t n = part->num_rows();
 
-            std::vector<uint32_t> sel_indices;
-            if (use_ts_index) {
-                if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-                auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-                rows_scanned += r_end - r_begin;
-                sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-            } else {
-                rows_scanned += n;
-                sel_indices = eval_where(stmt, *part, n);
-            }
+            std::vector<uint32_t> sel_indices = collect_and_intersect(stmt, *part, rows_scanned);
 
             // SAMPLE: reduce sel_indices before group aggregation
             if (stmt.sample_rate.has_value())
@@ -3364,18 +3623,8 @@ QueryResultSet QueryExecutor::exec_group_agg(
 
     for (auto* part : partitions) {
         if (is_cancelled()) { QueryResultSet r; r.error = "Query cancelled"; return r; }
-        size_t n = part->num_rows();
 
-        std::vector<uint32_t> sel_indices;
-        if (use_ts_index) {
-            if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-            auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-            rows_scanned += r_end - r_begin;
-            sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-        } else {
-            rows_scanned += n;
-            sel_indices = eval_where(stmt, *part, n);
-        }
+        std::vector<uint32_t> sel_indices = collect_and_intersect(stmt, *part, rows_scanned);
 
         // SAMPLE: reduce sel_indices before group aggregation
         if (stmt.sample_rate.has_value())
@@ -3615,6 +3864,22 @@ QueryResultSet QueryExecutor::exec_asof_join(
 }
 
 // ============================================================================
+// find_hash_join_node — walk physical plan tree to find HASH_JOIN node
+// ============================================================================
+const zeptodb::execution::PhysicalNode* QueryExecutor::find_hash_join_node() const {
+    if (!last_physical_plan_) return nullptr;
+    // BFS/DFS to find first HASH_JOIN node
+    std::vector<const execution::PhysicalNode*> stack{last_physical_plan_.get()};
+    while (!stack.empty()) {
+        auto* n = stack.back(); stack.pop_back();
+        if (n->type == execution::PhysicalNode::Type::HASH_JOIN) return n;
+        if (n->right) stack.push_back(n->right.get());
+        if (n->left)  stack.push_back(n->left.get());
+    }
+    return nullptr;
+}
+
+// ============================================================================
 // Hash JOIN 실행 (equi join: INNER / LEFT)
 // ============================================================================
 // 알고리즘:
@@ -3679,21 +3944,35 @@ QueryResultSet QueryExecutor::exec_hash_join(
         }
     }
 
-    // ── HashJoinOperator 사용: Arena 없이 ColumnVector가 필요하므로
-    //    직접 unordered_map 방식으로 처리 ──
+    // ── Cost-based planner: check if build side should be swapped ──
+    // For INNER/FULL joins, the planner may recommend building on the left
+    // (smaller) side instead of the default right side.
+    bool is_left_join  = (stmt.join->type == JoinClause::Type::LEFT);
+    bool is_right_join = (stmt.join->type == JoinClause::Type::RIGHT);
+    bool is_full_join  = (stmt.join->type == JoinClause::Type::FULL);
+    bool planner_swap  = false;  // true = planner says build on left for INNER/FULL
+    if (!is_left_join && !is_right_join) {
+        auto* hj_node = find_hash_join_node();
+        if (hj_node && !hj_node->build_right) {
+            planner_swap = true;
+            ZEPTO_INFO("HashJoin: planner-directed build side swap (build=left, L={}rows R={}rows)",
+                       l_keys_flat.size(), r_keys_flat.size());
+        }
+    }
+
+    // ── Build hash map on the chosen side ──
+    // Default: build on right. With planner_swap: build on left.
+    auto& build_keys = planner_swap ? l_keys_flat : r_keys_flat;
     std::unordered_map<int64_t, std::vector<size_t>> hash_map;
-    hash_map.reserve(r_keys_flat.size() * 2);
-    for (size_t ri = 0; ri < r_keys_flat.size(); ++ri) {
-        hash_map[r_keys_flat[ri]].push_back(ri);
+    hash_map.reserve(build_keys.size() * 2);
+    for (size_t i = 0; i < build_keys.size(); ++i) {
+        hash_map[build_keys[i]].push_back(i);
     }
 
     // 매칭 인덱스 쌍 생성
     // LEFT JOIN:  unmatched left  rows → r_index = SIZE_MAX (right  NULL)
     // RIGHT JOIN: unmatched right rows → l_index = SIZE_MAX (left NULL)
     // FULL JOIN:  both unmatched sides included
-    bool is_left_join  = (stmt.join->type == JoinClause::Type::LEFT);
-    bool is_right_join = (stmt.join->type == JoinClause::Type::RIGHT);
-    bool is_full_join  = (stmt.join->type == JoinClause::Type::FULL);
     std::vector<size_t> matched_l; // SIZE_MAX = left-side NULL (RIGHT JOIN)
     std::vector<size_t> matched_r; // SIZE_MAX = right-side NULL (LEFT JOIN)
 
@@ -3717,42 +3996,58 @@ QueryResultSet QueryExecutor::exec_hash_join(
             }
         }
     } else if (is_full_join) {
-        // FULL OUTER JOIN: LEFT JOIN + unmatched right rows
-        std::vector<bool> right_matched(r_keys_flat.size(), false);
-        for (size_t li = 0; li < l_keys_flat.size(); ++li) {
-            auto it = hash_map.find(l_keys_flat[li]);
+        // FULL OUTER JOIN: probe side iterates, build side in hash_map
+        auto& probe_keys = planner_swap ? r_keys_flat : l_keys_flat;
+        auto& build_keys_ref = planner_swap ? l_keys_flat : r_keys_flat;
+        std::vector<bool> build_matched(build_keys_ref.size(), false);
+        for (size_t pi = 0; pi < probe_keys.size(); ++pi) {
+            auto it = hash_map.find(probe_keys[pi]);
             if (it == hash_map.end()) {
-                matched_l.push_back(li);
-                matched_r.push_back(SIZE_MAX); // right NULL
+                // probe side unmatched
+                if (planner_swap) { matched_l.push_back(SIZE_MAX); matched_r.push_back(pi); }
+                else              { matched_l.push_back(pi); matched_r.push_back(SIZE_MAX); }
                 continue;
             }
-            for (size_t ri : it->second) {
-                matched_l.push_back(li);
-                matched_r.push_back(ri);
-                right_matched[ri] = true;
+            for (size_t bi : it->second) {
+                if (planner_swap) { matched_l.push_back(bi); matched_r.push_back(pi); }
+                else              { matched_l.push_back(pi); matched_r.push_back(bi); }
+                build_matched[bi] = true;
             }
         }
-        // Append unmatched right rows
-        for (size_t ri = 0; ri < r_keys_flat.size(); ++ri) {
-            if (!right_matched[ri]) {
-                matched_l.push_back(SIZE_MAX); // left NULL
-                matched_r.push_back(ri);
+        // Append unmatched build side rows
+        for (size_t bi = 0; bi < build_keys_ref.size(); ++bi) {
+            if (!build_matched[bi]) {
+                if (planner_swap) { matched_l.push_back(bi); matched_r.push_back(SIZE_MAX); }
+                else              { matched_l.push_back(SIZE_MAX); matched_r.push_back(bi); }
             }
         }
     } else {
-        // INNER / LEFT: iterate left rows, probe right hash map
-        for (size_t li = 0; li < l_keys_flat.size(); ++li) {
-            auto it = hash_map.find(l_keys_flat[li]);
-            if (it == hash_map.end()) {
-                if (is_left_join) {
+        // INNER / LEFT: probe side iterates, build side in hash_map
+        // Default: probe=left, build=right. planner_swap: probe=right, build=left.
+        if (planner_swap) {
+            // INNER only (LEFT excluded by planner_swap guard above)
+            for (size_t ri = 0; ri < r_keys_flat.size(); ++ri) {
+                auto it = hash_map.find(r_keys_flat[ri]);
+                if (it == hash_map.end()) continue;
+                for (size_t li : it->second) {
                     matched_l.push_back(li);
-                    matched_r.push_back(SIZE_MAX); // right NULL
+                    matched_r.push_back(ri);
                 }
-                continue;
             }
-            for (size_t ri : it->second) {
-                matched_l.push_back(li);
-                matched_r.push_back(ri);
+        } else {
+            for (size_t li = 0; li < l_keys_flat.size(); ++li) {
+                auto it = hash_map.find(l_keys_flat[li]);
+                if (it == hash_map.end()) {
+                    if (is_left_join) {
+                        matched_l.push_back(li);
+                        matched_r.push_back(SIZE_MAX); // right NULL
+                    }
+                    continue;
+                }
+                for (size_t ri : it->second) {
+                    matched_l.push_back(li);
+                    matched_r.push_back(ri);
+                }
             }
         }
     }
@@ -4373,10 +4668,6 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
             work_items.push_back({std::move(c), 0, SIZE_MAX});
     }
 
-    // 타임스탬프 범위 최적화
-    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
-    bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
-
     size_t ncols = stmt.columns.size();
 
     // PartialAgg: 스레드별 부분 집계 상태
@@ -4431,21 +4722,15 @@ QueryResultSet QueryExecutor::exec_agg_parallel(
         init_partial,
         [&, is_chunked](const std::vector<Partition*>& chunk, size_t tid, PartialAgg& pa) {
             for (auto* part : chunk) {
-                size_t n = part->num_rows();
-
                 std::vector<uint32_t> sel_indices;
                 if (is_chunked && tid < row_ranges.size()) {
                     auto [rb, re] = row_ranges[tid];
                     pa.rows_scanned += re - rb;
                     sel_indices = eval_where_ranged(stmt, *part, rb, re);
-                } else if (use_ts_index) {
-                    if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-                    auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-                    pa.rows_scanned += r_end - r_begin;
-                    sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
                 } else {
-                    pa.rows_scanned += n;
-                    sel_indices = eval_where(stmt, *part, n);
+                    size_t scanned = 0;
+                    sel_indices = collect_and_intersect(stmt, *part, scanned);
+                    pa.rows_scanned += scanned;
                 }
 
                 for (size_t ci = 0; ci < ncols; ++ci) {
@@ -4607,9 +4892,6 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
 
     const auto& gb = stmt.group_by.value();
 
-    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
-    bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
-
     size_t ncols = stmt.columns.size();
 
     struct GroupState {
@@ -4656,16 +4938,11 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
                 int64_t  pg_cached_key  = INT64_MIN;
                 uint32_t pg_cached_slot = 0;
                 for (auto* part : chunk) {
-                    size_t n = part->num_rows();
                     std::vector<uint32_t> sel_indices;
-                    if (use_ts_index) {
-                        if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-                        auto [rb, re] = part->timestamp_range(ts_lo, ts_hi);
-                        pg.rows_scanned += re - rb;
-                        sel_indices = eval_where_ranged(stmt, *part, rb, re);
-                    } else {
-                        pg.rows_scanned += n;
-                        sel_indices = eval_where(stmt, *part, n);
+                    {
+                        size_t scanned = 0;
+                        sel_indices = collect_and_intersect(stmt, *part, scanned);
+                        pg.rows_scanned += scanned;
                     }
 
                     // Hoist key column + aggregate column pointers to partition scope
@@ -4872,17 +5149,12 @@ QueryResultSet QueryExecutor::exec_group_agg_parallel(
         [&](const std::vector<Partition*>& chunk, size_t /*tid*/, PartialGroup& pg) {
             pg.map.reserve(1024);
             for (auto* part : chunk) {
-                size_t n = part->num_rows();
                 std::vector<uint32_t> sel_indices;
 
-                if (use_ts_index) {
-                    if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-                    auto [r_begin, r_end] = part->timestamp_range(ts_lo, ts_hi);
-                    pg.rows_scanned += r_end - r_begin;
-                    sel_indices = eval_where_ranged(stmt, *part, r_begin, r_end);
-                } else {
-                    pg.rows_scanned += n;
-                    sel_indices = eval_where(stmt, *part, n);
+                {
+                    size_t scanned = 0;
+                    sel_indices = collect_and_intersect(stmt, *part, scanned);
+                    pg.rows_scanned += scanned;
                 }
 
                 for (auto idx : sel_indices) {
@@ -5095,8 +5367,6 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
             chunks.push_back({partitions[0]});
     }
 
-    int64_t ts_lo = INT64_MIN, ts_hi = INT64_MAX;
-    bool use_ts_index = extract_time_range(stmt, ts_lo, ts_hi);
     bool is_star = stmt.columns.size() == 1 && stmt.columns[0].is_star;
 
     auto worker = [&, is_chunked](const std::vector<Partition*>& chunk,
@@ -5105,42 +5375,15 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
                      : stmt.limit.value_or(SIZE_MAX);
 
         for (auto* part : chunk) {
-            size_t n = part->num_rows();
             std::vector<uint32_t> sel;
             if (is_chunked && tid < row_ranges.size()) {
                 auto [rb, re] = row_ranges[tid];
                 out.rows_scanned += re - rb;
                 sel = eval_where_ranged(stmt, *part, rb, re);
-            } else if (use_ts_index) {
-                if (!part->overlaps_time_range(ts_lo, ts_hi)) continue;
-                auto [rb, re] = part->timestamp_range(ts_lo, ts_hi);
-                out.rows_scanned += re - rb;
-                sel = eval_where_ranged(stmt, *part, rb, re);
             } else {
-                std::string sc; int64_t slo, shi;
-                if (extract_sorted_col_range(stmt, *part, sc, slo, shi)) {
-                    auto [rb, re] = part->sorted_range(sc, slo, shi);
-                    out.rows_scanned += re - rb;
-                    sel = eval_where_ranged(stmt, *part, rb, re);
-                } else {
-                    // g#/p# index equality optimization
-                    std::string idx_col;
-                    int64_t idx_val;
-                    if (extract_index_eq(stmt, *part, idx_col, idx_val)) {
-                        if (part->is_grouped(idx_col)) {
-                            const auto& hits = part->grouped_lookup(idx_col, idx_val);
-                            out.rows_scanned += hits.size();
-                            sel.assign(hits.begin(), hits.end());
-                        } else {
-                            auto [rb, re] = part->parted_range(idx_col, idx_val);
-                            out.rows_scanned += re - rb;
-                            sel = eval_where_ranged(stmt, *part, rb, re);
-                        }
-                    } else {
-                        out.rows_scanned += n;
-                        sel = eval_where(stmt, *part, n);
-                    }
-                }
+                size_t scanned = 0;
+                sel = collect_and_intersect(stmt, *part, scanned);
+                out.rows_scanned += scanned;
             }
 
             for (uint32_t idx : sel) {
