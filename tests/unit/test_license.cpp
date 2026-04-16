@@ -156,16 +156,16 @@ TEST(LicenseTest, ValidEnterpriseLicense) {
     EXPECT_FALSE(v.isExpired());
 }
 
-TEST(LicenseTest, ValidProLicense) {
+TEST(LicenseTest, ValidEnterpriseLicenseSmall) {
     unsetenv("ZEPTODB_LICENSE_KEY");
     LicenseValidator v("");
     uint32_t feats = static_cast<uint32_t>(Feature::KAFKA) |
                      static_cast<uint32_t>(Feature::MIGRATION);
-    std::string payload = R"({"edition":"pro","features":)" + std::to_string(feats) +
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
         R"(,"max_nodes":4,"company":"SmallCo","exp":)" + std::to_string(unix_now(86400)) + "}";
 
     EXPECT_TRUE(v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload)));
-    EXPECT_EQ(v.edition(), Edition::PRO);
+    EXPECT_EQ(v.edition(), Edition::ENTERPRISE);
     EXPECT_EQ(v.maxNodes(), 4);
     EXPECT_TRUE(v.hasFeature(Feature::KAFKA));
     EXPECT_TRUE(v.hasFeature(Feature::MIGRATION));
@@ -297,7 +297,7 @@ TEST(LicenseTest, FeatureBitmaskSingleBit) {
     LicenseValidator v("");
     // Only KAFKA enabled
     uint32_t feats = static_cast<uint32_t>(Feature::KAFKA);
-    std::string payload = R"({"edition":"pro","features":)" + std::to_string(feats) +
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
         R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
 
     v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
@@ -310,7 +310,7 @@ TEST(LicenseTest, FeatureBitmaskSingleBit) {
 TEST(LicenseTest, FeatureZeroBitmask) {
     unsetenv("ZEPTODB_LICENSE_KEY");
     LicenseValidator v("");
-    std::string payload = R"({"edition":"pro","features":0,"max_nodes":2,"exp":)" +
+    std::string payload = R"({"edition":"enterprise","features":0,"max_nodes":2,"exp":)" +
         std::to_string(unix_now(86400)) + "}";
 
     v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
@@ -349,12 +349,12 @@ TEST(LicenseTest, StatusLineEnterprise) {
 TEST(LicenseTest, StatusLineSingleNodeNoNodeCount) {
     unsetenv("ZEPTODB_LICENSE_KEY");
     LicenseValidator v("");
-    std::string payload = R"({"edition":"pro","features":0,"max_nodes":1,"company":"Solo","exp":)" +
+    std::string payload = R"({"edition":"enterprise","features":0,"max_nodes":1,"company":"Solo","exp":)" +
         std::to_string(unix_now(86400)) + "}";
 
     v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
     std::string line = v.statusLine();
-    EXPECT_NE(line.find("Pro"), std::string::npos);
+    EXPECT_NE(line.find("Enterprise"), std::string::npos);
     // max_nodes=1 should NOT show "nodes" in status
     EXPECT_EQ(line.find("nodes"), std::string::npos);
 }
@@ -377,7 +377,7 @@ TEST(LicenseTest, DefaultGraceDays30) {
     unsetenv("ZEPTODB_LICENSE_KEY");
     LicenseValidator v("");
     // No grace_days in payload → default 30
-    std::string payload = R"({"edition":"pro","features":1,"max_nodes":1,"exp":)" +
+    std::string payload = R"({"edition":"enterprise","features":1,"max_nodes":1,"exp":)" +
         std::to_string(unix_now(-10 * 86400)) + "}";
     v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
     EXPECT_EQ(v.claims().grace_days, 30);
@@ -388,7 +388,7 @@ TEST(LicenseTest, MaxNodesDefaultsToOne) {
     unsetenv("ZEPTODB_LICENSE_KEY");
     LicenseValidator v("");
     // No max_nodes in payload
-    std::string payload = R"({"edition":"pro","features":0,"exp":)" +
+    std::string payload = R"({"edition":"enterprise","features":0,"exp":)" +
         std::to_string(unix_now(86400)) + "}";
     v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
     EXPECT_EQ(v.maxNodes(), 1);
@@ -408,4 +408,224 @@ TEST(LicenseTest, EnvVarLoading) {
     EXPECT_FALSE(v.load(""));
     EXPECT_EQ(v.edition(), Edition::COMMUNITY);
     unsetenv("ZEPTODB_LICENSE_KEY");
+}
+
+// ============================================================================
+// Feature Gate: SSO
+// ============================================================================
+TEST(LicenseTest, FeatureGateSSO) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    // Community (no features) → SSO gated
+    LicenseValidator v_community("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_community.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_community.hasFeature(Feature::SSO));
+
+    // Enterprise with SSO bit → allowed
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::SSO);
+    std::string payload_sso = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_sso));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::SSO));
+}
+
+// ============================================================================
+// Feature Gate: Audit Export
+// ============================================================================
+TEST(LicenseTest, FeatureGateAuditExport) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v_community("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_community.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_community.hasFeature(Feature::AUDIT_EXPORT));
+
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::AUDIT_EXPORT);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::AUDIT_EXPORT));
+}
+
+// ============================================================================
+// Feature Gate: Kafka
+// ============================================================================
+TEST(LicenseTest, FeatureGateKafka) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v_community("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_community.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_community.hasFeature(Feature::KAFKA));
+
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::KAFKA);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::KAFKA));
+}
+
+// ============================================================================
+// Feature Gate: Migration
+// ============================================================================
+TEST(LicenseTest, FeatureGateMigration) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v_community("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_community.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_community.hasFeature(Feature::MIGRATION));
+
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::MIGRATION);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::MIGRATION));
+}
+
+// ============================================================================
+// Backward compat: "pro" edition string → Enterprise (2-tier consolidation)
+// ============================================================================
+TEST(LicenseTest, ProEditionMapsToEnterprise) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v("");
+    uint32_t feats = static_cast<uint32_t>(Feature::CLUSTER);
+    std::string payload = R"({"edition":"pro","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":8,"company":"LegacyCo","exp":)" + std::to_string(unix_now(86400)) + "}";
+
+    EXPECT_TRUE(v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload)));
+    EXPECT_EQ(v.edition(), Edition::ENTERPRISE);
+    EXPECT_EQ(v.maxNodes(), 8);
+    EXPECT_TRUE(v.hasFeature(Feature::CLUSTER));
+}
+
+// ============================================================================
+// Startup Banner tests
+// ============================================================================
+TEST(LicenseTest, StartupBannerCommunity) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v;
+    v.load("");
+    std::string banner = v.startupBanner();
+    EXPECT_NE(banner.find("Community"), std::string::npos);
+    EXPECT_NE(banner.find("Upgrade"), std::string::npos);
+    EXPECT_NE(banner.find("https://zeptodb.com/pricing"), std::string::npos);
+}
+
+TEST(LicenseTest, StartupBannerEnterprise) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v("");
+    uint32_t feats = static_cast<uint32_t>(Feature::CLUSTER);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":16,"company":"Acme Corp","exp":)" + std::to_string(unix_now(86400)) + "}";
+    v.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    std::string banner = v.startupBanner();
+    EXPECT_NE(banner.find("Enterprise"), std::string::npos);
+    EXPECT_NE(banner.find("Acme Corp"), std::string::npos);
+    EXPECT_EQ(banner.find("Upgrade"), std::string::npos);
+}
+
+// ============================================================================
+// Trial Key tests
+// ============================================================================
+TEST(LicenseTest, TrialKeyGeneration) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    std::string trial_jwt = LicenseValidator::generate_trial_key("TestTrial");
+    EXPECT_FALSE(trial_jwt.empty());
+    // Should have two dots (header.payload.)
+    EXPECT_NE(trial_jwt.find('.'), std::string::npos);
+
+    LicenseValidator v;
+    EXPECT_TRUE(v.load(trial_jwt));
+    EXPECT_EQ(v.edition(), Edition::ENTERPRISE);
+    EXPECT_TRUE(v.isTrial());
+    EXPECT_EQ(v.maxNodes(), 1);
+    EXPECT_TRUE(v.hasFeature(Feature::CLUSTER));
+    EXPECT_TRUE(v.hasFeature(Feature::SSO));
+}
+
+TEST(LicenseTest, TrialKeyExpiry) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    // Build a trial JWT with expiry in the past (beyond grace)
+    auto header = b64url_str(R"({"alg":"none","typ":"JWT"})");
+    std::string payload_json = R"({"edition":"enterprise","features":255,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(-60 * 86400)) + R"(,"trial":true,"grace_days":30})";
+    auto payload = b64url_str(payload_json);
+    std::string expired_trial = header + "." + payload + ".";
+
+    LicenseValidator v;
+    // Should fail to load — expired beyond grace
+    EXPECT_FALSE(v.load(expired_trial));
+}
+
+TEST(LicenseTest, StatusLineTrialSuffix) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    std::string trial_jwt = LicenseValidator::generate_trial_key();
+    LicenseValidator v;
+    v.load(trial_jwt);
+    std::string line = v.statusLine();
+    EXPECT_NE(line.find("Trial"), std::string::npos);
+    EXPECT_NE(line.find("Enterprise"), std::string::npos);
+}
+
+// ============================================================================
+// Feature Gate: Cluster (Batch 3)
+// ============================================================================
+TEST(LicenseTest, FeatureGateCluster) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v_none("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_none.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_none.hasFeature(Feature::CLUSTER));
+
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::CLUSTER);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":8,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::CLUSTER));
+}
+
+// ============================================================================
+// Feature Gate: Rolling Upgrade (Batch 3)
+// ============================================================================
+TEST(LicenseTest, FeatureGateRollingUpgrade) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v_none("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_none.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_none.hasFeature(Feature::ROLLING_UPGRADE));
+
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::ROLLING_UPGRADE);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::ROLLING_UPGRADE));
+}
+
+// ============================================================================
+// Feature Gate: Advanced RBAC (Batch 3)
+// ============================================================================
+TEST(LicenseTest, FeatureGateAdvancedRBAC) {
+    unsetenv("ZEPTODB_LICENSE_KEY");
+    LicenseValidator v_none("");
+    std::string payload_none = R"({"edition":"enterprise","features":0,"max_nodes":1,"exp":)" +
+        std::to_string(unix_now(86400)) + "}";
+    v_none.load_from_jwt_string_for_testing(make_unsigned_jwt(payload_none));
+    EXPECT_FALSE(v_none.hasFeature(Feature::ADVANCED_RBAC));
+
+    LicenseValidator v_ent("");
+    uint32_t feats = static_cast<uint32_t>(Feature::ADVANCED_RBAC);
+    std::string payload = R"({"edition":"enterprise","features":)" + std::to_string(feats) +
+        R"(,"max_nodes":1,"exp":)" + std::to_string(unix_now(86400)) + "}";
+    v_ent.load_from_jwt_string_for_testing(make_unsigned_jwt(payload));
+    EXPECT_TRUE(v_ent.hasFeature(Feature::ADVANCED_RBAC));
 }
