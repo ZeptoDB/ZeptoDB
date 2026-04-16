@@ -2,7 +2,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import {
   Drawer, List, ListItemButton, ListItemIcon, ListItemText,
-  Toolbar, Typography, Box, Divider,
+  Toolbar, Typography, Box, Divider, Chip,
 } from "@mui/material";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import DashboardIcon from "@mui/icons-material/Dashboard";
@@ -14,17 +14,18 @@ import ExitToAppIcon from "@mui/icons-material/ExitToApp";
 import ForumIcon from "@mui/icons-material/Forum";
 import GroupsIcon from "@mui/icons-material/Groups";
 import { useAuth } from "@/lib/auth";
+import { useLicense, hasFeature } from "@/lib/useLicense";
 
 const WIDTH = 220;
 
-interface NavItem { label: string; href: string; icon: React.ReactNode; roles: string[] }
+interface NavItem { label: string; href: string; icon: React.ReactNode; roles: string[]; gatedFeature?: string }
 
 const nav: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: <DashboardIcon />, roles: ["admin", "writer", "reader", "analyst", "metrics"] },
   { label: "Query", href: "/query", icon: <TerminalIcon />, roles: ["admin", "writer", "reader", "analyst"] },
   { label: "Tables", href: "/tables", icon: <StorageIcon />, roles: ["admin", "writer", "reader", "analyst"] },
-  { label: "Cluster", href: "/cluster", icon: <HubIcon />, roles: ["admin"] },
-  { label: "Tenants", href: "/tenants", icon: <GroupsIcon />, roles: ["admin"] },
+  { label: "Cluster", href: "/cluster", icon: <HubIcon />, roles: ["admin"], gatedFeature: "cluster" },
+  { label: "Tenants", href: "/tenants", icon: <GroupsIcon />, roles: ["admin"], gatedFeature: "advanced_rbac" },
   { label: "Admin", href: "/admin", icon: <AdminPanelSettingsIcon />, roles: ["admin"] },
   { label: "Settings", href: "/settings", icon: <SettingsIcon />, roles: ["admin"] },
 ];
@@ -37,6 +38,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { auth, logout } = useAuth();
+  const license = useLicense();
 
   const handleLogout = () => { logout().then(() => router.push("/login")); };
   const visible = getVisibleNav(auth?.role ?? "reader");
@@ -56,12 +58,16 @@ export default function Sidebar() {
       </Toolbar>
       <Divider sx={{ mx: 2, mb: 2, opacity: 0.5 }} />
       <List sx={{ flex: 1, px: 1 }}>
-        {visible.map((n) => (
-          <ListItemButton key={n.href} selected={pathname === n.href} onClick={() => router.push(n.href)}>
-            <ListItemIcon sx={{ minWidth: 40, color: pathname === n.href ? "primary.main" : "text.secondary" }}>{n.icon}</ListItemIcon>
-            <ListItemText primary={n.label} primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: pathname === n.href ? 600 : 500 }} />
-          </ListItemButton>
-        ))}
+        {visible.map((n) => {
+          const gated = n.gatedFeature && !hasFeature(license, n.gatedFeature);
+          return (
+            <ListItemButton key={n.href} selected={pathname === n.href} onClick={() => router.push(n.href)}>
+              <ListItemIcon sx={{ minWidth: 40, color: pathname === n.href ? "primary.main" : "text.secondary" }}>{n.icon}</ListItemIcon>
+              <ListItemText primary={n.label} primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: pathname === n.href ? 600 : 500 }} />
+              {gated && <Chip label="Enterprise" size="small" variant="outlined" sx={{ height: 20, fontSize: 9 }} />}
+            </ListItemButton>
+          );
+        })}
       </List>
       <Divider sx={{ mx: 2, my: 1, opacity: 0.5 }} />
       <List sx={{ px: 1, pb: 2 }}>

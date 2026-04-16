@@ -3,6 +3,8 @@ import { Box, Paper, Typography, Grid, Chip, Table, TableHead, TableRow, TableCe
 import { useQuery } from "@tanstack/react-query";
 import { fetchNodes, fetchCluster, fetchMetricsHistory, fetchRebalanceStatus, fetchRebalanceHistory } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useLicense, hasFeature } from "@/lib/useLicense";
+import UpgradeCard from "@/components/UpgradeCard";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend, PieChart, Pie } from "recharts";
 
 interface NodeInfo {
@@ -332,6 +334,7 @@ function RebalanceHistory({ entries }: { entries: RebalanceHistoryEntry[] }) {
 
 export default function ClusterPage() {
   const { auth } = useAuth();
+  const license = useLicense();
 
   const { data: cluster } = useQuery({
     queryKey: ["cluster"],
@@ -379,6 +382,10 @@ export default function ClusterPage() {
   const timeSeries = buildTimeSeries(metrics, nodeIds);
 
   const dropRate = cl && cl.ticks_ingested > 0 ? ((cl.ticks_dropped / cl.ticks_ingested) * 100) : 0;
+
+  if (!hasFeature(license, "cluster")) {
+    return <UpgradeCard feature="Multi-node Cluster" description="Distributed clustering with automatic partition routing requires Enterprise license." />;
+  }
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>

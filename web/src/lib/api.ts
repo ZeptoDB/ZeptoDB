@@ -228,3 +228,24 @@ export async function fetchRebalanceHistory(apiKey?: string) {
   if (!res.ok) return null;
   return res.json();
 }
+
+// ── License ─────────────────────────────────────────────────────────────────
+
+export interface LicenseInfo {
+  edition: string;
+  features: string[];
+  max_nodes: number;
+  trial: boolean;
+  expired: boolean;
+  upgrade_url: string;
+  company?: string;
+  expires?: string;
+}
+
+export async function fetchLicense(apiKey?: string): Promise<LicenseInfo | null> {
+  try {
+    const res = await fetch(`${API}/api/license`, fetchOpts(apiKey));
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}

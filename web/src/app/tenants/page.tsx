@@ -4,15 +4,22 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchTenants } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useRouter } from "next/navigation";
+import { useLicense, hasFeature } from "@/lib/useLicense";
+import UpgradeCard from "@/components/UpgradeCard";
 
 const MONO = { fontFamily: "'JetBrains Mono', monospace", fontSize: 13 };
 
 export default function TenantsPage() {
   const { auth } = useAuth();
   const router = useRouter();
+  const license = useLicense();
   const { data: tenants } = useQuery({
     queryKey: ["tenants"], queryFn: () => fetchTenants(auth?.apiKey), refetchInterval: 5000,
   });
+
+  if (!hasFeature(license, "advanced_rbac")) {
+    return <UpgradeCard feature="Multi-tenant Isolation" description="Per-tenant rate limiting and namespace isolation requires Enterprise license." />;
+  }
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
