@@ -20,12 +20,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install optional connector libs (Kafka, MQTT)
+        run: |
+          if command -v apt-get >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y librdkafka-dev libpaho-mqttpp-dev libpaho-mqtt-dev
+          elif command -v dnf >/dev/null; then
+            sudo dnf install -y librdkafka-devel paho-c-devel paho-cpp-devel || \
+              sudo dnf install -y librdkafka-devel
+          fi
+
       - name: Build
         run: |
           mkdir -p build && cd build
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER=clang-19 \
                 -DCMAKE_CXX_COMPILER=clang++-19 \
+                -DZEPTO_USE_KAFKA=ON \
+                -DZEPTO_USE_MQTT=ON \
                 -G Ninja -S .. -B .
           ninja -j$(nproc) zepto_tests
 

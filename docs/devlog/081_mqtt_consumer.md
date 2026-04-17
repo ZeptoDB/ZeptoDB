@@ -160,3 +160,15 @@ engine-code logging consistency (per KIRO.md logging rules). The direct
 `#include "spdlog/spdlog.h"` was removed from both files — `ZEPTO_*` macros are
 provided via `zeptodb/common/logger.h`. Format strings, log levels, and
 messages are identical; no behavioral change.
+
+
+## Cross-arch CI parity (2026-04-17)
+
+Graviton (ARM64) CI previously ran with all optional connector flags OFF, so
+Kafka/MQTT tests were compile-gated out on aarch64 — a silent coverage gap.
+
+Fix: `.github/workflows/graviton-test.yml` now installs `librdkafka-dev` and
+`libpaho-mqttpp-dev` and builds with `-DZEPTO_USE_KAFKA=ON -DZEPTO_USE_MQTT=ON`.
+Both consumers are now exercised on every push to `main` on both x86_64 and
+ARM64. No source code changes were required — the feed consumer code is
+arch-neutral C++20.
