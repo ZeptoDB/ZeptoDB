@@ -70,12 +70,14 @@ COPY tests ./tests
 COPY third_party ./third_party
 
 RUN mkdir -p build && cd build && \
+    sed -i 's/-march=native/-march=x86-64-v2 -mtune=generic/g' ../CMakeLists.txt && \
     cmake .. \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER=clang-19 \
         -DCMAKE_CXX_COMPILER=clang++-19 \
-        -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -mtune=generic -O3" \
+        -DCMAKE_CXX_FLAGS="-march=x86-64-v2 -mtune=generic -O3" \
+        -DCMAKE_CXX_FLAGS_RELEASE="-O3 -march=x86-64-v2 -mtune=generic -DNDEBUG" \
         -DAPEX_CLOUD_NATIVE=ON \
         -DAPEX_USE_HUGEPAGES=ON \
         -DAPEX_USE_RDMA=OFF \

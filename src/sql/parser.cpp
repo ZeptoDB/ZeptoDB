@@ -598,6 +598,11 @@ SelectExpr Parser::parse_select_expr() {
                     }
                 } else {
                     expr.window_offset = parse_integer_literal();
+                    // Optional 3rd arg: default value — LAG(col, offset, default)
+                    if (check(TokenType::COMMA)) {
+                        advance();
+                        expr.window_default = parse_integer_literal();
+                    }
                 }
             }
         }

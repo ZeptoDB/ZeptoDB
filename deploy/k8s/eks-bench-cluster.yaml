@@ -1,5 +1,5 @@
-# k8s/eks-bench-cluster.yaml — EKS Auto Mode cluster for multi-node benchmark
-# Usage: eksctl create cluster -f k8s/eks-bench-cluster.yaml
+# k8s/eks-bench-cluster.yaml — EKS Auto Mode cluster for ZeptoDB
+# Usage: eksctl create cluster -f deploy/k8s/eks-bench-cluster.yaml
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
@@ -10,5 +10,3 @@ metadata:
 
 autoModeConfig:
   enabled: true
-  # Uses default node pools (general-purpose + system)
-  # Custom NodePools for realtime/analytics applied via kubectl after creation

@@ -1,0 +1,53 @@
+# deploy/helm/values-automode.yaml — EKS Auto Mode deployment values
+# Usage: helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f deploy/helm/values-automode.yaml
+
+replicaCount: 3
+
+image:
+  repository: "060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb"
+  tag: "latest-arm64"
+  pullPolicy: Always
+
+resources:
+  requests:
+    cpu: "2"
+    memory: "4Gi"
+    hugepages-2Mi: "0"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+    hugepages-2Mi: "0"
+
+performanceTuning:
+  hugepages:
+    enabled: false
+
+cluster:
+  enabled: true
+  rpcPortOffset: 100
+  heartbeatPort: 9100
+
+persistence:
+  enabled: false    # Use emptyDir for testing
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# No nodeSelector — let Auto Mode schedule on general-purpose pool
+nodeSelector: {}
+
+config:
+  workerThreads: 2
+  parallelThreshold: 50000
+
+karpenter:
+  enabled: false    # Auto Mode manages Karpenter internally
+
+service:
+  type: LoadBalancer
+  port: 8123
+  sessionAffinity: None

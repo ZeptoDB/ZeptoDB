@@ -400,6 +400,7 @@ void HttpServer::setup_routes() {
             {zeptodb::auth::Feature::MIGRATION, "migration"},
             {zeptodb::auth::Feature::GEO_REPLICATION, "geo_replication"},
             {zeptodb::auth::Feature::ROLLING_UPGRADE, "rolling_upgrade"},
+            {zeptodb::auth::Feature::IOT_CONNECTORS, "iot_connectors"},
         };
         bool first = true;
         for (auto& [f, name] : feat_map) {
@@ -622,6 +623,7 @@ void HttpServer::setup_admin_routes() {
             {zeptodb::auth::Feature::MIGRATION, "migration"},
             {zeptodb::auth::Feature::GEO_REPLICATION, "geo_replication"},
             {zeptodb::auth::Feature::ROLLING_UPGRADE, "rolling_upgrade"},
+            {zeptodb::auth::Feature::IOT_CONNECTORS, "iot_connectors"},
         };
         bool first = true;
         for (auto& [f, name] : feat_map) {

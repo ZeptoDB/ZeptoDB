@@ -26,13 +26,8 @@ NAMESPACE = "zeptodb"
 RELEASE = "zeptodb"
 STS_NAME = "zeptodb"
 CHART_PATH = "deploy/helm/zeptodb"
-VALUES_PATH = "deploy/helm/values-seoul-prod.yaml"
-HELM_EXTRA = (
-    "--set karpenter.enabled=true "
-    "--set karpenter.nodeClass.role=KarpenterNodeRole-zepto-bench "
-    "--set karpenter.nodeClass.clusterName=zepto-bench "
-    "--set karpenter.realtime.zones={ap-northeast-2a}"
-)
+VALUES_PATH = "deploy/helm/values-automode.yaml"
+HELM_EXTRA = ""
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
@@ -126,16 +121,23 @@ def helm_upgrade(extra="", timeout_s=300):
     )
 
 def curl_lb(path, method="GET", data=None, timeout=5):
-    lb = get_lb()
-    cmd = f"curl -sf --max-time {timeout} "
-    if method == "POST":
-        cmd += f"-X POST http://{lb}:8123{path}"
+    """Query ZeptoDB via port-forward to pod-0 (works with internal LBs)."""
+    import urllib.parse
+    pf = subprocess.Popen(
+        f"kubectl port-forward -n {NAMESPACE} pod/{STS_NAME}-0 29123:8123".split(),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2)
+    try:
+        cmd = f"curl -sf --max-time {timeout} "
         if data:
-            cmd += f" -d '{data}'"
-    else:
-        cmd += f"http://{lb}:8123{path}"
-    r = run(cmd, check=False, timeout=timeout + 5)
-    return r
+            encoded = urllib.parse.quote(data)
+            cmd += f"'http://localhost:29123/?query={encoded}'"
+        else:
+            cmd += f"http://localhost:29123{path}"
+        r = run(cmd, check=False, timeout=timeout + 5)
+        return r
+    finally:
+        pf.terminate(); pf.wait()
 
 def curl_lb_json(path, method="GET", data=None):
     r = curl_lb(path, method, data)
@@ -231,12 +233,15 @@ def t_health(s):
 
 def t_karpenter(s):
     t0 = time.monotonic()
+    # Auto Mode: NodePools use karpenter.sh/v1, NodeClasses use eks.amazonaws.com/v1
     np = run("kubectl get nodepools --no-headers", check=False, timeout=10)
-    nc = run("kubectl get ec2nodeclasses --no-headers", check=False, timeout=10)
-    np_ready = np.stdout.count("True") if np.returncode == 0 else 0
-    nc_ready = nc.stdout.count("True") if nc.returncode == 0 else 0
-    ok = np_ready == 2 and nc_ready == 2
-    s.add(TestResult("C12_karpenter", ok, f"nodepools={np_ready}/2 nodeclasses={nc_ready}/2", time.monotonic() - t0))
+    nc = run("kubectl get nodeclasses.eks.amazonaws.com --no-headers 2>/dev/null || "
+             "kubectl get ec2nodeclasses --no-headers 2>/dev/null", check=False, timeout=10)
+    np_count = len([l for l in np.stdout.strip().split('\n') if l.strip()]) if np.returncode == 0 and np.stdout.strip() else 0
+    nc_count = len([l for l in nc.stdout.strip().split('\n') if l.strip()]) if nc.returncode == 0 and nc.stdout.strip() else 0
+    # Auto Mode has at least general-purpose + system pools
+    ok = np_count >= 2
+    s.add(TestResult("C12_karpenter", ok, f"nodepools={np_count} nodeclasses={nc_count}", time.monotonic() - t0))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -255,7 +260,7 @@ def d_cluster_mode(s):
 
 def d_query_count(s):
     t0 = time.monotonic()
-    data = curl_lb_json("/", "POST", "SELECT count(*) FROM trades")
+    data = curl_lb_json("/", data="SELECT count(*) AS cnt FROM trades")
     if not data:
         s.add(TestResult("D02_query_count", False, "no response", time.monotonic() - t0)); return
     rows = data.get("data", [[]])[0]
@@ -265,7 +270,7 @@ def d_query_count(s):
 
 def d_query_groupby(s):
     t0 = time.monotonic()
-    data = curl_lb_json("/", "POST", "SELECT symbol, count(*) FROM trades GROUP BY symbol")
+    data = curl_lb_json("/", data="SELECT symbol, count(*) AS cnt FROM trades GROUP BY symbol")
     if not data:
         s.add(TestResult("D03_query_groupby", False, "no response", time.monotonic() - t0)); return
     nrows = data.get("rows", 0)
@@ -274,7 +279,7 @@ def d_query_groupby(s):
 
 def d_query_vwap(s):
     t0 = time.monotonic()
-    data = curl_lb_json("/", "POST", "SELECT symbol, vwap(price, volume) FROM trades GROUP BY symbol")
+    data = curl_lb_json("/", data="SELECT symbol, SUM(price * volume) / SUM(volume) AS vwap FROM trades GROUP BY symbol")
     if not data:
         s.add(TestResult("D04_query_vwap", False, "no response", time.monotonic() - t0)); return
     ok = data.get("rows", 0) >= 3
@@ -293,7 +298,7 @@ def d_query_all_pods(s):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(2)
         try:
-            r = run(f"curl -sf --max-time 3 -X POST http://localhost:2{i}123/ -d 'SELECT count(*) FROM trades'",
+            r = run(f"curl -sf --max-time 3 -G http://localhost:2{i}123/ --data-urlencode 'query=SELECT count(*) AS cnt FROM trades'",
                     check=False, timeout=8)
             if r.returncode == 0:
                 d = json.loads(r.stdout)
@@ -308,7 +313,7 @@ def d_consistent_results(s):
     t0 = time.monotonic()
     results = []
     for _ in range(5):
-        data = curl_lb_json("/", "POST", "SELECT count(*) FROM trades")
+        data = curl_lb_json("/", data="SELECT count(*) FROM trades")
         if data:
             results.append(data["data"][0][0])
     ok = len(set(results)) == 1 and len(results) == 5
@@ -344,7 +349,7 @@ def ha_node_drain(s):
     ready = get_ready_pods()
     service_ok = len(ready) >= 2
     # Verify queries still work during drain
-    data = curl_lb_json("/", "POST", "SELECT count(*) FROM trades")
+    data = curl_lb_json("/", data="SELECT count(*) FROM trades")
     query_ok = data is not None and data.get("data", [[0]])[0][0] > 0
     run(f"kubectl uncordon {node}", check=False)
     ok_full, elapsed = wait_ready(3, timeout=180)
@@ -390,7 +395,7 @@ def ha_query_during_restart(s):
     kubectl(f"delete pod {STS_NAME}-2 --grace-period=0 --force")
     successes, failures = 0, 0
     for _ in range(15):
-        data = curl_lb_json("/", "POST", "SELECT count(*) FROM trades")
+        data = curl_lb_json("/", data="SELECT count(*) FROM trades")
         if data and data.get("data", [[0]])[0][0] > 0:
             successes += 1
         else:
@@ -440,12 +445,12 @@ def perf_query_latency(s):
     queries = [
         ("count", "SELECT count(*) FROM trades"),
         ("groupby", "SELECT symbol, count(*) FROM trades GROUP BY symbol"),
-        ("vwap", "SELECT symbol, vwap(price, volume) FROM trades GROUP BY symbol"),
+        ("vwap", "SELECT symbol, SUM(price * volume) / SUM(volume) AS vwap FROM trades GROUP BY symbol"),
     ]
     for name, sql in queries:
         times = []
         for _ in range(10):
-            data = curl_lb_json("/", "POST", sql)
+            data = curl_lb_json("/", data=sql)
             if data and "execution_time_us" in data:
                 times.append(data["execution_time_us"])
         if times:

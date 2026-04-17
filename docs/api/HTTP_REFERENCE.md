@@ -396,7 +396,7 @@ Enterprise edition:
 ```json
 {
   "edition": "enterprise",
-  "features": ["cluster","sso","audit_export","advanced_rbac","kafka","migration","geo_replication","rolling_upgrade"],
+  "features": ["cluster","sso","audit_export","advanced_rbac","kafka","migration","geo_replication","rolling_upgrade","iot_connectors"],
   "max_nodes": 16,
   "trial": false,
   "expired": false,
