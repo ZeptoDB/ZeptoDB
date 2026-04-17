@@ -1102,6 +1102,31 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
         return sub;
     }
 
+    // Literal comparison: e.g. WHERE 1 = 0, WHERE 1 = 1
+    if (check(TokenType::NUMBER)) {
+        int64_t lhs = parse_integer_literal();
+        auto op = parse_compare_op();
+        int64_t rhs = parse_integer_literal();
+        bool result = false;
+        switch (op) {
+            case CompareOp::EQ: result = (lhs == rhs); break;
+            case CompareOp::NE: result = (lhs != rhs); break;
+            case CompareOp::GT: result = (lhs >  rhs); break;
+            case CompareOp::GE: result = (lhs >= rhs); break;
+            case CompareOp::LT: result = (lhs <  rhs); break;
+            case CompareOp::LE: result = (lhs <= rhs); break;
+        }
+        if (result) {
+            return nullptr;  // always-true → no filter
+        }
+        auto node = std::make_shared<Expr>();
+        node->kind   = Expr::Kind::COMPARE;
+        node->column = "__never_match__";
+        node->op     = CompareOp::EQ;
+        node->value  = 0;
+        return node;  // always-false → no rows match
+    }
+
     // col [op val | BETWEEN lo AND hi | IN (...) | IS [NOT] NULL]
     auto node = std::make_shared<Expr>();
     parse_qualified_name(node->table_alias, node->column);

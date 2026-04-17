@@ -1415,8 +1415,12 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
 // 파티션 목록 조회
 // ============================================================================
 std::vector<Partition*> QueryExecutor::find_partitions(
-    const std::string& /*table_name*/)
+    const std::string& table_name)
 {
+    auto& reg = pipeline_.schema_registry();
+    if (!table_name.empty() && reg.table_count() > 0 && !reg.exists(table_name)) {
+        return {};  // Table not found in registry
+    }
     auto& pm = pipeline_.partition_manager();
     return pm.get_all_partitions();
 }
