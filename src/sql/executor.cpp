@@ -1421,23 +1421,11 @@ std::vector<Partition*> QueryExecutor::find_partitions(
     const std::string& table_name)
 {
     auto& reg = pipeline_.schema_registry();
-    if (!table_name.empty() && reg.table_count() > 0) {
-        if (!reg.exists(table_name)) return {};       // Unknown table
+    if (!table_name.empty() && reg.table_count() > 0 && !reg.exists(table_name)) {
+        return {};  // Table not found in registry
     }
     auto& pm = pipeline_.partition_manager();
-    auto parts = pm.get_all_partitions();
-    // If table is in schema but has no data (never inserted via any path),
-    // check if any partition actually has rows. Schema-only tables with
-    // 0 total rows return empty.
-    if (!table_name.empty() && reg.exists(table_name) && !reg.has_data(table_name)) {
-        // Double-check: maybe data was ingested via pipeline (not exec_insert)
-        size_t total = 0;
-        for (auto* p : parts) total += p->num_rows();
-        if (total == 0) return {};
-        // Data exists via pipeline ingest — mark it
-        reg.mark_has_data(table_name);
-    }
-    return parts;
+    return pm.get_all_partitions();
 }
 
 // ============================================================================

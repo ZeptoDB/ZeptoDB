@@ -105,6 +105,16 @@
 - Memory: +1% per partition metadata (2 bytes on ~200 byte struct)
 - Fully backward compatible (table_id=0 for legacy single-table mode)
 
+**Test plan** (multi-table ingest + isolation verification):
+- Unit: CREATE 5 tables (temperature, vibration, pressure, gps, lidar), INSERT 1000 rows each with different schemas, verify `SELECT * FROM temperature` returns only temperature data
+- Unit: ASOF JOIN between two different tables (trades JOIN quotes ON symbol, timestamp)
+- Unit: GROUP BY on one table doesn't include rows from other tables
+- Unit: DROP TABLE removes only that table's partitions
+- Unit: Empty table returns 0 rows even when other tables have data
+- Bench: 50 tables × 10K devices × 100Hz ingest, measure throughput vs single-table baseline
+- Cluster: Multi-table INSERT routed to correct nodes, cross-node SELECT returns correct table data
+- K8s: 3-node cluster with 10 tables, concurrent ingest + query on different tables
+
 ---
 
 ## P8 — Cluster
