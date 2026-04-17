@@ -33,7 +33,12 @@ add_executable(zepto_tests
     unit/test_table_statistics.cpp
     unit/test_cost_model.cpp
     unit/test_query_planner.cpp
+    unit/test_duckdb_engine.cpp
+    unit/test_window_join_simd.cpp
 )
+if(ZEPTO_USE_JIT)
+    target_sources(zepto_tests PRIVATE unit/test_jit_simd.cpp)
+endif()
 target_include_directories(zepto_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/cluster   # shm_backend.h access
 )

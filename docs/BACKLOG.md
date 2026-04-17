@@ -1,6 +1,6 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 933 tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1129 tests passing
 >
 > Last cleaned: 2026-04-16
 
@@ -76,12 +76,12 @@
 |------|---------------|--------|
 | ~~**Cost-based planner**~~ | ✅ Phase 1-7 done (devlog 066-067, 075) — TableStatistics + CostModel + LogicalPlan + PhysicalPlan + EXPLAIN v2 + Wiring (HASH_JOIN build side), 47 tests | — |
 | **JOINs/Window on virtual tables** | 🟠 Moderate | M |
-| **SIMD-ify WindowJoin aggregate loop** | 🟠 Moderate | M |
-| **JIT SIMD emit** | — | L |
-| **DuckDB embedding** | — | M |
+| ~~**SIMD-ify WindowJoin aggregate loop**~~ | ✅ Done (devlog 080) — Contiguous fast-path + sum_i64() SIMD for SUM/AVG, gather+SIMD for large non-contiguous, scalar fallback for small windows — 10 tests | — |
+| ~~**JIT SIMD emit**~~ | ✅ Done (devlog 079) — Explicit `<4 x i64>` vector IR generation in LLVM JIT, cttz mask extraction, scalar tail | — |
+| ~~**DuckDB embedding**~~ | ✅ Done (devlog 076) — Embedded DuckDB engine, Arrow bridge, Parquet offload, `duckdb()` table function | — |
 | **Limited DSL AOT compilation** | — | M |
 
-> ✅ Done: Composite index, MV query rewrite, INTERVAL, Prepared statements, Query result cache, SAMPLE, Scalar subqueries, FlatHashMap joins
+> ✅ Done: Composite index, MV query rewrite, INTERVAL, Prepared statements, Query result cache, SAMPLE, Scalar subqueries, FlatHashMap joins, DuckDB embedding
 
 ---
 
@@ -143,11 +143,11 @@
 | **P4** | Tool Integration | 2 | ClickHouse protocol |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
 | **P6** | Enterprise / Cloud | 3 | Marketplace, Geo-rep, SAML |
-| **P7** | Engine Performance | 6 | Cost-based planner |
+| **P7** | Engine Performance | 5 | JOINs/Window virtual tables |
 | **P8** | Cluster | 7 | RDMA transport, Cold query |
 | **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 37 items + 4 manual tasks**
+**Total remaining: 36 items + 4 manual tasks**
 
-**Critical path: P2 (launch) → P4 (ClickHouse protocol) → P7 (Cost-based planner)**
+**Critical path: P2 (launch) → P4 (ClickHouse protocol) → P7 (JOINs/Window virtual tables)**

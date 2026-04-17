@@ -41,6 +41,7 @@ option(ZEPTO_USE_TCMALLOC   "Link tcmalloc_minimal for HFT allocation performanc
 option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
+option(ZEPTO_ENABLE_DUCKDB "Enable embedded DuckDB engine for Parquet offload" ON)
 
 # ============================================================================
 # Platform-specific prefix paths for find_package()
@@ -156,6 +157,16 @@ FetchContent_Declare(
     GIT_TAG        v24.12.23
     GIT_SHALLOW    TRUE
 )
+
+# DuckDB amalgamation for embedded analytical engine (optional)
+if(ZEPTO_ENABLE_DUCKDB)
+    FetchContent_Declare(
+        duckdb
+        GIT_REPOSITORY https://github.com/duckdb/duckdb.git
+        GIT_TAG        v1.2.1
+        GIT_SHALLOW    TRUE
+    )
+endif()
 
 set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(fmt spdlog)
@@ -274,6 +285,14 @@ if(OpenSSL_FOUND OR OPENSSL_FOUND)
 else()
     message(STATUS "OpenSSL: not found — TLS and JWT auth disabled")
     set(ZEPTO_HAS_OPENSSL OFF)
+endif()
+
+# --- DuckDB embedded engine (optional) ---
+if(ZEPTO_ENABLE_DUCKDB)
+    set(BUILD_UNITTESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHELL OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(duckdb)
+    message(STATUS "DuckDB: embedded engine enabled")
 endif()
 
 # --- LZ4 (optional) ---
@@ -428,6 +447,12 @@ add_library(zepto_execution STATIC
 if(ZEPTO_USE_JIT)
     target_sources(zepto_execution PRIVATE src/execution/jit_engine.cpp)
 endif()
+if(ZEPTO_ENABLE_DUCKDB)
+    target_sources(zepto_execution PRIVATE
+        src/execution/duckdb_engine.cpp
+        src/execution/arrow_bridge.cpp
+    )
+endif()
 target_include_directories(zepto_execution PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src   # Highway foreach_target.h needs src/ in path
@@ -440,6 +465,10 @@ target_link_libraries(zepto_execution PUBLIC
 )
 if(ZEPTO_USE_HIGHWAY)
     target_link_libraries(zepto_execution PUBLIC PkgConfig::HWY)
+endif()
+if(ZEPTO_ENABLE_DUCKDB)
+    target_link_libraries(zepto_execution PUBLIC duckdb)
+    target_compile_definitions(zepto_execution PUBLIC ZEPTO_ENABLE_DUCKDB=1)
 endif()
 if(ZEPTO_USE_JIT)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -989,5 +1018,6 @@ message(STATUS "  LZ4:           ${ZEPTO_USE_LZ4}")
 message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
 message(STATUS "  Arrow Flight:  ${ZEPTO_HAS_FLIGHT}")
+message(STATUS "  DuckDB:        ${ZEPTO_ENABLE_DUCKDB}")
 message(STATUS "  Tests:         ${ZEPTO_BUILD_TESTS}")
 message(STATUS "=================================")

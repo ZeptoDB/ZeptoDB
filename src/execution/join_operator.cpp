@@ -8,6 +8,7 @@
 
 #include "zeptodb/execution/join_operator.h"
 #include "zeptodb/execution/flat_hash_map.h"
+#include "zeptodb/execution/vectorized_engine.h"
 #include "zeptodb/storage/column_store.h"
 
 #include <algorithm>
@@ -288,7 +289,14 @@ WindowJoinResult WindowJoinOperator::execute(
 }
 
 // ============================================================================
-// WindowJoinOperator::aggregate_window
+// WindowJoinOperator::aggregate_window — SIMD-optimized (devlog 080)
+// ============================================================================
+// Strategy:
+//   1. COUNT: trivial (end - begin), no SIMD needed
+//   2. Check if right_group_indices[begin..end) are sequential → contiguous in right_val
+//   3. Contiguous: call sum_i64() SIMD directly on the slice
+//   4. Non-contiguous, n >= 32: gather into temp buffer, then SIMD
+//   5. Non-contiguous, n < 32: scalar fallback (SIMD setup overhead not worth it)
 // ============================================================================
 int64_t WindowJoinOperator::aggregate_window(
     const int64_t* /*right_time*/,
@@ -298,43 +306,77 @@ int64_t WindowJoinOperator::aggregate_window(
     int64_t& out_count)
 {
     out_count = static_cast<int64_t>(end - begin);
+    if (out_count == 0) return 0;
+
+    if (agg_type_ == WJAggType::COUNT)
+        return out_count;
+
+    const size_t n = static_cast<size_t>(out_count);
+
+    // Check if indices are contiguous (common case: right table sorted by timestamp)
+    bool contiguous = true;
+    const size_t base_idx = right_group_indices[begin];
+    for (size_t i = begin + 1; i < end && contiguous; ++i) {
+        if (right_group_indices[i] != base_idx + (i - begin))
+            contiguous = false;
+    }
+
+    // Resolve pointer to contiguous values (direct or via temp buffer)
+    const int64_t* vals = nullptr;
+    std::vector<int64_t> tmp_buf;
+
+    if (contiguous) {
+        vals = &right_val[base_idx];
+    } else if (n >= 32) {
+        tmp_buf.resize(n);
+        for (size_t i = 0; i < n; ++i)
+            tmp_buf[i] = right_val[right_group_indices[begin + i]];
+        vals = tmp_buf.data();
+    }
 
     switch (agg_type_) {
-        case WJAggType::COUNT:
-            return out_count;
-
         case WJAggType::SUM: {
+            if (vals) return sum_i64(vals, n);
             int64_t sum = 0;
-            for (size_t i = begin; i < end; ++i) {
+            for (size_t i = begin; i < end; ++i)
                 sum += right_val[right_group_indices[i]];
-            }
             return sum;
         }
-
         case WJAggType::AVG: {
-            if (out_count == 0) return 0;
-            double sum = 0.0;
-            for (size_t i = begin; i < end; ++i) {
-                sum += static_cast<double>(right_val[right_group_indices[i]]);
+            double sum;
+            if (vals) {
+                sum = static_cast<double>(sum_i64(vals, n));
+            } else {
+                sum = 0.0;
+                for (size_t i = begin; i < end; ++i)
+                    sum += static_cast<double>(right_val[right_group_indices[i]]);
             }
             return static_cast<int64_t>(sum / out_count);
         }
-
         case WJAggType::MIN: {
             int64_t minv = INT64_MAX;
-            for (size_t i = begin; i < end; ++i) {
-                minv = std::min(minv, right_val[right_group_indices[i]]);
+            if (vals) {
+                for (size_t i = 0; i < n; ++i)
+                    minv = std::min(minv, vals[i]);
+            } else {
+                for (size_t i = begin; i < end; ++i)
+                    minv = std::min(minv, right_val[right_group_indices[i]]);
             }
             return minv == INT64_MAX ? 0 : minv;
         }
-
         case WJAggType::MAX: {
             int64_t maxv = INT64_MIN;
-            for (size_t i = begin; i < end; ++i) {
-                maxv = std::max(maxv, right_val[right_group_indices[i]]);
+            if (vals) {
+                for (size_t i = 0; i < n; ++i)
+                    maxv = std::max(maxv, vals[i]);
+            } else {
+                for (size_t i = begin; i < end; ++i)
+                    maxv = std::max(maxv, right_val[right_group_indices[i]]);
             }
             return maxv == INT64_MIN ? 0 : maxv;
         }
+        case WJAggType::COUNT:
+            return out_count;
     }
     return 0;
 }

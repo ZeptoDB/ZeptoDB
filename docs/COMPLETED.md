@@ -25,6 +25,7 @@ Last updated: 2026-04-16
 - [x] **FlatHashMap for joins** — CRC32 intrinsic open-addressing hash map, replaces `std::unordered_map` in all join operators (ASOF, Hash, Window) — 9 unit tests
 - [x] **Window functions** — EMA, DELTA, RATIO, SUM, AVG, MIN, MAX, LAG, LEAD, ROW_NUMBER, RANK, DENSE_RANK
 - [x] **Financial functions** — xbar, FIRST, LAST, Window JOIN, UNION JOIN (uj), PLUS JOIN (pj), AJ0
+- [x] **SIMD WindowJoin aggregate** — Contiguous fast-path + Highway SIMD sum_i64() for SUM/AVG, gather+SIMD for large non-contiguous windows, scalar fallback for small windows — 10 tests (devlog 080)
 
 ## Query Execution
 - [x] **Parallel query** — LocalQueryScheduler (scatter/gather, 3.48x@8T), CHUNKED mode
@@ -35,6 +36,7 @@ Last updated: 2026-04-16
 - [x] **Cost-based planner (Phase 1+2)** — TableStatistics (HyperLogLog distinct, incremental min/max/count), CostModel (selectivity estimation, scan/join/sort/aggregate cost), observation-only infrastructure — 27 tests (devlog 066)
 - [x] **Cost-based planner (Phase 3-6)** — LogicalPlan (AST→operator tree, predicate/projection pushdown), PhysicalPlan (cost-based scan/join/sort selection), 2-tier adaptive routing (simple→fast path, complex→cost-based), EXPLAIN v2 with cost estimates — 20 tests (devlog 067)
 - [x] **Cost-based planner (Phase 7)** — Wired PhysicalPlan HASH_JOIN build side decision to exec_hash_join, TOPN_SORT already wired via apply_order_by, INDEX_SCAN already wired via collect_and_intersect. Planning overhead ~1μs. (devlog 075)
+- [x] **DuckDB embedding** — Embedded DuckDB engine for Parquet offload, Arrow bridge (columnar data conversion), `duckdb('path')` table function, configurable memory budget (256MB default), lazy init, conditional compilation (`ZEPTO_ENABLE_DUCKDB`), SQL injection protection, path traversal validation (devlog 076, 077)
 
 ## Storage
 - [x] **Parquet HDB** — SNAPPY/ZSTD/LZ4_RAW, DuckDB/Polars/Spark direct query (Arrow C++ API)
@@ -181,6 +183,7 @@ Last updated: 2026-04-16
 - [x] **Query result cache** — TTL-based result cache for SELECT queries. `enable_result_cache(max_entries, ttl_seconds)`. Auto-invalidated on INSERT/UPDATE/DELETE. Oldest-entry eviction when full — 2 tests
 - [x] **SAMPLE clause** — `SELECT * FROM trades SAMPLE 0.1` reads ~10% of rows. Deterministic hash-based sampling (splitmix64) for reproducible results. Works with WHERE, GROUP BY, aggregation. Shown in EXPLAIN plan — 8 tests
 - [x] **Scalar subqueries in WHERE** — `WHERE price > (SELECT avg(price) FROM trades)` and `WHERE symbol IN (SELECT symbol FROM ...)`. Uncorrelated subqueries evaluated once and substituted as literals before outer scan. IN results auto-deduplicated. Error on multi-row/multi-column scalar subqueries — 8 tests
+- [x] **JIT SIMD emit** — `compile_simd()` generates explicit `<4 x i64>` vector IR (256-bit). Vector load/compare, `bitcast <4 x i1>→i4`, cttz mask extraction loop. Scalar tail for remainder (n%4). Reuses existing AST parser — 8 tests (devlog 079)
 
 ## Package Distribution (P2)
 - [x] **Docker Hub official image** — `docker pull zeptodb/zeptodb:0.0.1`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint

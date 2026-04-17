@@ -1,6 +1,6 @@
 # ZeptoDB High-Level Architecture
 
-*Last updated: 2026-03-22 (Python Ecosystem — zepto_py package completed)*
+*Last updated: 2026-04-16 (DuckDB Embedding — columnar analytical offload)*
 
 ## Overview
 
@@ -43,6 +43,7 @@ open-source licensing.
 │  Window Functions: SUM/AVG/MIN/MAX/LAG/LEAD/RANK/EMA     │
 │  Financial: xbar · VWAP · DELTA · RATIO · FIRST · LAST  │
 │  Parallel: 8-thread scatter/gather (3.48x speedup)       │
+│  DuckDB Embedding: Parquet offload, Arrow columnar bridge │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 2: Ingestion (Tick Plant)                         │
 │  MPMC Ring Buffer (lock-free)                            │

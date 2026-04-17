@@ -10,6 +10,11 @@
 //   - compile_bulk(): 루프 포함 IR 직접 생성
 //     → (prices*, volumes*, n, out_indices*, out_count*) 벌크 함수
 //     → 행당 함수 호출 오버헤드 완전 제거
+//
+// Phase B v3 SIMD emit:
+//   - compile_simd(): explicit <4 x i64> vector IR generation
+//     → vector load/compare/mask extraction with cttz index loop
+//     → scalar tail for remainder (n % 4)
 // ============================================================================
 
 #include "zeptodb/execution/jit_engine.h"
@@ -410,6 +415,258 @@ BulkFilterFn JITEngine::compile_bulk(const std::string& expr) {
         return nullptr;
     }
 
+    return reinterpret_cast<BulkFilterFn>(sym->getValue());
+}
+
+// ============================================================================
+// AST → LLVM vector IR code generation (<4 x i64> → <4 x i1>)
+// ============================================================================
+static llvm::Value* codegen_node_vec(
+    const ASTNode* node,
+    llvm::IRBuilder<>& builder,
+    llvm::Value* price_vec,
+    llvm::Value* volume_vec,
+    llvm::VectorType* vec_ty
+) {
+    if (node->kind == ASTNodeKind::AND) {
+        auto* lhs = codegen_node_vec(node->left.get(), builder, price_vec, volume_vec, vec_ty);
+        auto* rhs = codegen_node_vec(node->right.get(), builder, price_vec, volume_vec, vec_ty);
+        return builder.CreateAnd(lhs, rhs, "vand");
+    }
+    if (node->kind == ASTNodeKind::OR) {
+        auto* lhs = codegen_node_vec(node->left.get(), builder, price_vec, volume_vec, vec_ty);
+        auto* rhs = codegen_node_vec(node->right.get(), builder, price_vec, volume_vec, vec_ty);
+        return builder.CreateOr(lhs, rhs, "vor");
+    }
+    // COMPARE
+    llvm::Value* col_vec = (node->col == ColId::PRICE) ? price_vec : volume_vec;
+    if (node->has_multiplier) {
+        auto* mult_splat = builder.CreateVectorSplat(
+            4, llvm::ConstantInt::get(builder.getInt64Ty(), node->multiplier));
+        col_vec = builder.CreateMul(col_vec, mult_splat, "vmul");
+    }
+    auto* rhs_splat = builder.CreateVectorSplat(
+        4, llvm::ConstantInt::get(builder.getInt64Ty(), node->rhs));
+    switch (node->op) {
+        case CmpOp::GT: return builder.CreateICmpSGT(col_vec, rhs_splat, "vcmp");
+        case CmpOp::GE: return builder.CreateICmpSGE(col_vec, rhs_splat, "vcmp");
+        case CmpOp::LT: return builder.CreateICmpSLT(col_vec, rhs_splat, "vcmp");
+        case CmpOp::LE: return builder.CreateICmpSLE(col_vec, rhs_splat, "vcmp");
+        case CmpOp::EQ: return builder.CreateICmpEQ(col_vec, rhs_splat, "vcmp");
+        case CmpOp::NE: return builder.CreateICmpNE(col_vec, rhs_splat, "vcmp");
+    }
+    return nullptr;
+}
+
+// ============================================================================
+// compile_simd (v3): SIMD-vectorized bulk filter with explicit <4 x i64> IR
+//
+// Loop structure:
+//   entry → vec_cond → vec_body → extract_loop → extract_body → extract_done
+//                                                                → vec_inc → vec_cond
+//                    ↘ scalar_cond → scalar_body → scalar_store → scalar_inc
+//                                                               → scalar_cond
+//                                 ↘ exit
+// ============================================================================
+BulkFilterFn JITEngine::compile_simd(const std::string& expr) {
+    if (!impl_->jit) {
+        last_error_ = "JIT not initialized. Call initialize() first";
+        return nullptr;
+    }
+
+    size_t pos = 0;
+    std::unique_ptr<ASTNode> ast;
+    try {
+        ast = parse(expr, pos);
+    } catch (const std::exception& e) {
+        last_error_ = std::string("Parse failed: ") + e.what();
+        return nullptr;
+    }
+    if (!ast) {
+        last_error_ = "Empty parse result";
+        return nullptr;
+    }
+
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto mod = std::make_unique<llvm::Module>("zepto_jit_simd", *ctx);
+
+    auto* void_ty   = llvm::Type::getVoidTy(*ctx);
+    auto* i64_ty    = llvm::Type::getInt64Ty(*ctx);
+    auto* i32_ty    = llvm::Type::getInt32Ty(*ctx);
+    auto* i64ptr_ty = llvm::PointerType::get(i64_ty, 0);
+    auto* i32ptr_ty = llvm::PointerType::get(i32_ty, 0);
+    auto* vec4i64   = llvm::FixedVectorType::get(i64_ty, 4);
+
+    auto* fn_type = llvm::FunctionType::get(
+        void_ty, {i64ptr_ty, i64ptr_ty, i64_ty, i32ptr_ty, i64ptr_ty}, false);
+
+    uint32_t fn_id = impl_->fn_counter.fetch_add(1);
+    std::string fn_name = "zepto_simd_filter_" + std::to_string(fn_id);
+
+    auto* fn = llvm::Function::Create(
+        fn_type, llvm::Function::ExternalLinkage, fn_name, *mod);
+    fn->addFnAttr(llvm::Attribute::NoUnwind);
+
+    auto* arg_prices  = fn->getArg(0); arg_prices->setName("prices");
+    auto* arg_volumes = fn->getArg(1); arg_volumes->setName("volumes");
+    auto* arg_n       = fn->getArg(2); arg_n->setName("n");
+    auto* arg_out     = fn->getArg(3); arg_out->setName("out_indices");
+    auto* arg_cnt_ptr = fn->getArg(4); arg_cnt_ptr->setName("out_count");
+
+    // Basic blocks
+    auto* bb_entry       = llvm::BasicBlock::Create(*ctx, "entry",        fn);
+    auto* bb_vec_cond    = llvm::BasicBlock::Create(*ctx, "vec_cond",     fn);
+    auto* bb_vec_body    = llvm::BasicBlock::Create(*ctx, "vec_body",     fn);
+    auto* bb_ext_loop    = llvm::BasicBlock::Create(*ctx, "ext_loop",     fn);
+    auto* bb_ext_body    = llvm::BasicBlock::Create(*ctx, "ext_body",     fn);
+    auto* bb_ext_done    = llvm::BasicBlock::Create(*ctx, "ext_done",     fn);
+    auto* bb_vec_inc     = llvm::BasicBlock::Create(*ctx, "vec_inc",      fn);
+    auto* bb_scalar_cond = llvm::BasicBlock::Create(*ctx, "scalar_cond",  fn);
+    auto* bb_scalar_body = llvm::BasicBlock::Create(*ctx, "scalar_body",  fn);
+    auto* bb_scalar_st   = llvm::BasicBlock::Create(*ctx, "scalar_store", fn);
+    auto* bb_scalar_inc  = llvm::BasicBlock::Create(*ctx, "scalar_inc",   fn);
+    auto* bb_exit        = llvm::BasicBlock::Create(*ctx, "exit",         fn);
+
+    auto zero64 = llvm::ConstantInt::get(i64_ty, 0);
+    auto four64 = llvm::ConstantInt::get(i64_ty, 4);
+    auto one64  = llvm::ConstantInt::get(i64_ty, 1);
+    auto zero32 = llvm::ConstantInt::get(i32_ty, 0);
+    auto one32  = llvm::ConstantInt::get(i32_ty, 1);
+
+    llvm::IRBuilder<> b(bb_entry);
+
+    // entry: store 0 to *out_count, jump to vec_cond
+    b.CreateStore(zero64, arg_cnt_ptr);
+    b.CreateBr(bb_vec_cond);
+
+    // vec_cond: phi i, cnt; check i+4 <= n
+    b.SetInsertPoint(bb_vec_cond);
+    auto* phi_vi  = b.CreatePHI(i64_ty, 2, "vi");
+    auto* phi_vc  = b.CreatePHI(i64_ty, 2, "vc");
+    phi_vi->addIncoming(zero64, bb_entry);
+    phi_vc->addIncoming(zero64, bb_entry);
+    auto* vi_plus4 = b.CreateAdd(phi_vi, four64, "vi4");
+    auto* can_vec  = b.CreateICmpSLE(vi_plus4, arg_n, "can_vec");
+    b.CreateCondBr(can_vec, bb_vec_body, bb_scalar_cond);
+
+    // vec_body: vector load, evaluate AST, bitcast mask
+    b.SetInsertPoint(bb_vec_body);
+    auto* p_ptr = b.CreateInBoundsGEP(i64_ty, arg_prices, phi_vi, "vp_ptr");
+    auto* p_load = b.CreateLoad(vec4i64, p_ptr, "p_vec");
+    cast<llvm::LoadInst>(p_load)->setAlignment(llvm::Align(8));
+    auto* v_ptr = b.CreateInBoundsGEP(i64_ty, arg_volumes, phi_vi, "vv_ptr");
+    auto* v_load = b.CreateLoad(vec4i64, v_ptr, "v_vec");
+    cast<llvm::LoadInst>(v_load)->setAlignment(llvm::Align(8));
+
+    auto* mask_vec = codegen_node_vec(ast.get(), b, p_load, v_load, vec4i64);
+
+    // Bitcast <4 x i1> → i4 → zext to i32
+    auto* mask_i4  = b.CreateBitCast(mask_vec, llvm::Type::getIntNTy(*ctx, 4), "mask_i4");
+    auto* mask_i32 = b.CreateZExt(mask_i4, i32_ty, "mask_i32");
+    b.CreateBr(bb_ext_loop);
+
+    // ext_loop: while (mask != 0)
+    b.SetInsertPoint(bb_ext_loop);
+    auto* phi_mask = b.CreatePHI(i32_ty, 2, "emask");
+    auto* phi_ecnt = b.CreatePHI(i64_ty, 2, "ecnt");
+    phi_mask->addIncoming(mask_i32, bb_vec_body);
+    phi_ecnt->addIncoming(phi_vc, bb_vec_body);
+    auto* mask_nz = b.CreateICmpNE(phi_mask, zero32, "mask_nz");
+    b.CreateCondBr(mask_nz, bb_ext_body, bb_ext_done);
+
+    // ext_body: bit = cttz(mask); out[cnt] = i + bit; cnt++; mask &= mask-1
+    b.SetInsertPoint(bb_ext_body);
+    // llvm.cttz.i32(mask, /*is_zero_poison=*/true)
+    auto* cttz_fn = llvm::Intrinsic::getDeclaration(
+        mod.get(), llvm::Intrinsic::cttz, {i32_ty});
+    auto* bit = b.CreateCall(cttz_fn, {phi_mask, b.getTrue()}, "bit");
+    auto* bit64 = b.CreateZExt(bit, i64_ty, "bit64");
+    auto* idx = b.CreateAdd(phi_vi, bit64, "idx");
+    auto* idx32 = b.CreateTrunc(idx, i32_ty, "idx32");
+    auto* out_p = b.CreateInBoundsGEP(i32_ty, arg_out, phi_ecnt, "out_p");
+    b.CreateStore(idx32, out_p);
+    auto* ecnt_inc = b.CreateAdd(phi_ecnt, one64, "ecnt_inc");
+    // mask &= mask - 1 (clear lowest set bit)
+    auto* mask_dec = b.CreateSub(phi_mask, one32, "mask_dec");
+    auto* mask_clr = b.CreateAnd(phi_mask, mask_dec, "mask_clr");
+    phi_mask->addIncoming(mask_clr, bb_ext_body);
+    phi_ecnt->addIncoming(ecnt_inc, bb_ext_body);
+    b.CreateBr(bb_ext_loop);
+
+    // ext_done: update phi for vec_inc
+    b.SetInsertPoint(bb_ext_done);
+    b.CreateBr(bb_vec_inc);
+
+    // vec_inc: i += 4
+    b.SetInsertPoint(bb_vec_inc);
+    auto* vi_next = b.CreateAdd(phi_vi, four64, "vi_next");
+    phi_vi->addIncoming(vi_next, bb_vec_inc);
+    phi_vc->addIncoming(phi_ecnt, bb_vec_inc);
+    b.CreateBr(bb_vec_cond);
+
+    // scalar_cond: phi si, scnt; check si < n
+    b.SetInsertPoint(bb_scalar_cond);
+    auto* phi_si  = b.CreatePHI(i64_ty, 2, "si");
+    auto* phi_sc  = b.CreatePHI(i64_ty, 2, "sc");
+    phi_si->addIncoming(phi_vi, bb_vec_cond);
+    phi_sc->addIncoming(phi_vc, bb_vec_cond);
+    auto* si_lt_n = b.CreateICmpSLT(phi_si, arg_n, "si_lt_n");
+    b.CreateCondBr(si_lt_n, bb_scalar_body, bb_exit);
+
+    // scalar_body: load scalar, evaluate AST, branch
+    b.SetInsertPoint(bb_scalar_body);
+    auto* sp_ptr = b.CreateInBoundsGEP(i64_ty, arg_prices, phi_si, "sp_ptr");
+    auto* sp_val = b.CreateLoad(i64_ty, sp_ptr, "sp");
+    auto* sv_ptr = b.CreateInBoundsGEP(i64_ty, arg_volumes, phi_si, "sv_ptr");
+    auto* sv_val = b.CreateLoad(i64_ty, sv_ptr, "sv");
+    auto* s_pass = codegen_node(ast.get(), b, sp_val, sv_val);
+    b.CreateCondBr(s_pass, bb_scalar_st, bb_scalar_inc);
+
+    // scalar_store: out[cnt] = i; cnt++
+    b.SetInsertPoint(bb_scalar_st);
+    auto* si32 = b.CreateTrunc(phi_si, i32_ty, "si32");
+    auto* so_p = b.CreateInBoundsGEP(i32_ty, arg_out, phi_sc, "so_p");
+    b.CreateStore(si32, so_p);
+    auto* sc_inc = b.CreateAdd(phi_sc, one64, "sc_inc");
+    b.CreateBr(bb_scalar_inc);
+
+    // scalar_inc: i++, cnt phi merge
+    b.SetInsertPoint(bb_scalar_inc);
+    auto* phi_sc2 = b.CreatePHI(i64_ty, 2, "sc2");
+    phi_sc2->addIncoming(phi_sc, bb_scalar_body);
+    phi_sc2->addIncoming(sc_inc, bb_scalar_st);
+    auto* si_next = b.CreateAdd(phi_si, one64, "si_next");
+    phi_si->addIncoming(si_next, bb_scalar_inc);
+    phi_sc->addIncoming(phi_sc2, bb_scalar_inc);
+    b.CreateBr(bb_scalar_cond);
+
+    // exit: *out_count = cnt
+    b.SetInsertPoint(bb_exit);
+    b.CreateStore(phi_sc, arg_cnt_ptr);
+    b.CreateRetVoid();
+
+    // Verify
+    std::string verify_err;
+    llvm::raw_string_ostream err_stream(verify_err);
+    if (llvm::verifyFunction(*fn, &err_stream)) {
+        last_error_ = "SIMD IR verification failed: " + verify_err;
+        return nullptr;
+    }
+
+    llvm::orc::ThreadSafeModule tsm(std::move(mod), std::move(ctx));
+    auto err = impl_->jit->addIRModule(std::move(tsm));
+    if (err) {
+        last_error_ = "SIMD module add failed: " + llvm::toString(std::move(err));
+        return nullptr;
+    }
+
+    auto sym = impl_->jit->lookup(fn_name);
+    if (!sym) {
+        last_error_ = "SIMD symbol lookup failed: " + llvm::toString(sym.takeError());
+        return nullptr;
+    }
+
+    ZEPTO_INFO("compile_simd: {} → SIMD <4 x i64> vectorized filter", expr);
     return reinterpret_cast<BulkFilterFn>(sym->getValue());
 }
 

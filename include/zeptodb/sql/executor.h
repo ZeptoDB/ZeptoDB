@@ -25,6 +25,10 @@
 #include <unordered_set>
 #include <functional>
 
+#ifdef ZEPTO_ENABLE_DUCKDB
+namespace zeptodb::execution { class DuckDBEngine; }
+#endif
+
 namespace zeptodb::sql {
 
 using zeptodb::storage::ColumnType;
@@ -83,6 +87,9 @@ public:
     /// 커스텀 스케줄러 주입 (테스트용 or 분산용)
     QueryExecutor(zeptodb::core::ZeptoPipeline& pipeline,
                   std::unique_ptr<zeptodb::execution::QueryScheduler> scheduler);
+
+    /// Destructor (defined in .cpp for unique_ptr with incomplete types)
+    ~QueryExecutor();
 
     /// SQL string execution → QueryResultSet
     QueryResultSet execute(const std::string& sql);
@@ -152,6 +159,25 @@ private:
     std::unordered_map<size_t, CachedResult> result_cache_;
     size_t result_cache_max_   = 0;      // 0 = disabled
     double result_cache_ttl_s_ = 5.0;
+
+    // ── DuckDB offload engine (lazy-initialized) ─────────────────────────────
+#ifdef ZEPTO_ENABLE_DUCKDB
+    bool   enable_duckdb_offload_  = true;
+    size_t duckdb_memory_limit_mb_ = 256;
+    std::unique_ptr<zeptodb::execution::DuckDBEngine> duckdb_engine_;
+    std::mutex duckdb_mu_;
+
+    /// Lazy-initialize DuckDB engine on first use
+    zeptodb::execution::DuckDBEngine& get_duckdb_engine();
+
+    /// Execute a query via DuckDB on Parquet files
+    QueryResultSet exec_via_duckdb(const std::string& sql,
+                                   const std::vector<std::string>& parquet_paths);
+
+    /// Check if a table name is a duckdb('path') function call
+    static bool is_duckdb_table_func(const std::string& table_name,
+                                     std::string& out_path);
+#endif
 
     static size_t sql_hash(const std::string& sql);
 

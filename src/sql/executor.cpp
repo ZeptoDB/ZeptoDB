@@ -15,6 +15,11 @@
 #include "zeptodb/execution/local_scheduler.h"
 #include "zeptodb/common/logger.h"
 
+#ifdef ZEPTO_ENABLE_DUCKDB
+#include "zeptodb/execution/duckdb_engine.h"
+#include "zeptodb/execution/arrow_bridge.h"
+#endif
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -303,6 +308,8 @@ QueryExecutor::QueryExecutor(ZeptoPipeline& pipeline,
     , scheduler_(std::move(sched))
     , pool_raw_(nullptr)  // 비-로컬 스케줄러: 직렬 폴백
 {}
+
+QueryExecutor::~QueryExecutor() = default;
 
 void QueryExecutor::enable_parallel(size_t num_threads, size_t row_threshold) {
     par_opts_.enabled      = true;
@@ -1180,6 +1187,44 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
             return exec_select_virtual(stmt, cte_it->second, alias);
         }
     }
+
+#ifdef ZEPTO_ENABLE_DUCKDB
+    // DuckDB offload: explicit duckdb('path') table function
+    {
+        std::string parquet_path;
+        if (enable_duckdb_offload_ && is_duckdb_table_func(stmt.from_table, parquet_path)) {
+            // Reject whitespace-only paths
+            bool all_space = true;
+            for (char c : parquet_path) if (c != ' ' && c != '\t') { all_space = false; break; }
+            if (parquet_path.empty() || all_space) {
+                QueryResultSet err;
+                err.error = "DuckDB: empty parquet path";
+                return err;
+            }
+            // Path traversal validation
+            if (parquet_path.find("..") != std::string::npos || (!parquet_path.empty() && parquet_path[0] == '/')) {
+                ZEPTO_WARN("DuckDB offload: rejected unsafe path '{}'", parquet_path);
+                QueryResultSet err;
+                err.error = "DuckDB: path traversal or absolute path not allowed";
+                return err;
+            }
+            ZEPTO_INFO("DuckDB offload: explicit duckdb('{}') table function", parquet_path);
+            // Escape path for SQL string literal
+            std::string escaped_path;
+            escaped_path.reserve(parquet_path.size());
+            for (char c : parquet_path) {
+                if (c == '\'') escaped_path += "''";
+                else escaped_path += c;
+            }
+            std::string duckdb_sql = "SELECT * FROM read_parquet('" + escaped_path + "')";
+            auto duckdb_result = exec_via_duckdb(duckdb_sql, {parquet_path});
+            if (!duckdb_result.ok()) return duckdb_result;
+            // Apply WHERE/ORDER BY/LIMIT/column selection from original AST
+            const std::string& alias = stmt.from_alias.empty() ? stmt.from_table : stmt.from_alias;
+            return exec_select_virtual(stmt, duckdb_result, alias);
+        }
+    }
+#endif
 
     // Extract time range hint from WHERE for partition-level pruning.
     // This runs before any exec function so partitions outside the range are
@@ -5502,5 +5547,92 @@ size_t QueryExecutor::result_cache_size() const {
     std::lock_guard<std::mutex> lk(result_cache_mu_);
     return result_cache_.size();
 }
+
+// ============================================================================
+// DuckDB Offload Methods
+// ============================================================================
+#ifdef ZEPTO_ENABLE_DUCKDB
+
+zeptodb::execution::DuckDBEngine& QueryExecutor::get_duckdb_engine() {
+    std::lock_guard<std::mutex> lk(duckdb_mu_);
+    if (!duckdb_engine_) {
+        execution::DuckDBConfig cfg;
+        cfg.memory_limit_mb = duckdb_memory_limit_mb_;
+        duckdb_engine_ = std::make_unique<execution::DuckDBEngine>(cfg);
+    }
+    return *duckdb_engine_;
+}
+
+QueryResultSet QueryExecutor::exec_via_duckdb(
+    const std::string& sql,
+    const std::vector<std::string>& parquet_paths)
+{
+    // Hold mutex for entire call to prevent concurrent view name collisions
+    std::lock_guard<std::mutex> lk(duckdb_mu_);
+
+    if (!duckdb_engine_) {
+        execution::DuckDBConfig cfg;
+        cfg.memory_limit_mb = duckdb_memory_limit_mb_;
+        duckdb_engine_ = std::make_unique<execution::DuckDBEngine>(cfg);
+    }
+    auto& engine = *duckdb_engine_;
+
+    // Register parquet files as views (paths already validated by caller)
+    for (size_t i = 0; i < parquet_paths.size(); ++i) {
+        std::string name = "pq_" + std::to_string(i);
+        engine.register_parquet(name, parquet_paths[i]);
+    }
+
+    auto duckdb_result = engine.execute(sql);
+
+    QueryResultSet result;
+    if (!duckdb_result.ok()) {
+        result.error = duckdb_result.error;
+        return result;
+    }
+
+    // Convert materialized DuckDB data to ArrowColumnData, then to QueryResultSet
+    std::vector<execution::ArrowColumnData> columns;
+    columns.reserve(duckdb_result.num_columns);
+    for (size_t c = 0; c < duckdb_result.num_columns; ++c) {
+        execution::ArrowColumnData col;
+        col.name = duckdb_result.column_names[c];
+        switch (duckdb_result.column_type_hints[c]) {
+            case 1:
+                col.type = storage::ColumnType::FLOAT64;
+                col.dbl_values = std::move(duckdb_result.dbl_columns[c]);
+                break;
+            case 2:
+                col.type = storage::ColumnType::SYMBOL;
+                col.str_values = std::move(duckdb_result.str_columns[c]);
+                break;
+            default:
+                col.type = storage::ColumnType::INT64;
+                col.int_values = std::move(duckdb_result.int_columns[c]);
+                break;
+        }
+        columns.push_back(std::move(col));
+    }
+
+    execution::arrow_columns_to_result(columns, duckdb_result.num_rows, result);
+    return result;
+}
+
+bool QueryExecutor::is_duckdb_table_func(const std::string& table_name,
+                                          std::string& out_path) {
+    // Match pattern: duckdb('path/to/file.parquet')
+    const std::string prefix = "duckdb('";
+    if (table_name.size() > prefix.size() + 2 &&
+        table_name.starts_with(prefix) &&
+        table_name.back() == ')' &&
+        table_name[table_name.size() - 2] == '\'') {
+        out_path = table_name.substr(prefix.size(),
+                                     table_name.size() - prefix.size() - 2);
+        return true;
+    }
+    return false;
+}
+
+#endif // ZEPTO_ENABLE_DUCKDB
 
 } // namespace zeptodb::sql

@@ -14,6 +14,11 @@
 //   - alwaysinline: 내부 비교 함수 인라이닝 강제
 //   - compile_bulk: (data*, n) → void 벌크 필터 함수 IR 생성
 //     → JIT 함수를 행당 1번 호출하는 오버헤드 제거
+//
+// Phase B v3 SIMD emit:
+//   - compile_simd: explicit <4 x i64> vector IR generation
+//     → vector load/compare/mask extraction instead of scalar loop
+//     → main loop processes 4 elements per iteration, scalar tail for remainder
 // ============================================================================
 
 #include <cstdint>
@@ -91,6 +96,15 @@ public:
     //   → 행당 함수 호출 오버헤드 없음
     // ----------------------------------------------------------------
     BulkFilterFn compile_bulk(const std::string& expr);
+
+    // ----------------------------------------------------------------
+    // v3 API: SIMD-vectorized bulk filter (explicit <4 x i64> vector IR)
+    //   Generates vector load/compare instructions instead of scalar loops.
+    //   Main loop processes 4 elements per iteration using <4 x i64> vectors,
+    //   scalar tail handles remainder (n % 4).
+    //   Same signature as BulkFilterFn.
+    // ----------------------------------------------------------------
+    BulkFilterFn compile_simd(const std::string& expr);
 
     // 컴파일된 함수를 column data에 적용 (v1 — 하위 호환)
     std::vector<uint32_t> apply(

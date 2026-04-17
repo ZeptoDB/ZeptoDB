@@ -1,7 +1,7 @@
 # ZeptoDB SQL Reference
 
-*Last updated: 2026-03-24*
-*31 SQL functions · 9 JOIN types · DDL/DML · s#/g#/p# indexes · Distributed query support · Statistical functions*
+*Last updated: 2026-04-16*
+*32 SQL functions · 9 JOIN types · DDL/DML · s#/g#/p# indexes · Distributed query support · Statistical functions · Table functions*
 
 ZeptoDB uses a recursive descent SQL parser with nanosecond timestamp semantics.
 All integer columns are `int64`. Floating-point values are stored as fixed-point scaled integers.
@@ -30,6 +30,7 @@ All integer columns are `int64`. Floating-point values are stored as fixed-point
 - [Catalog Queries (SHOW TABLES / DESCRIBE)](#catalog-queries-show-tables--describe)
 - [Data Types & Timestamp Arithmetic](#data-types--timestamp-arithmetic)
 - [Distributed Query Behavior](#distributed-query-behavior)
+- [Table Functions](#table-functions)
 - [Known Limitations](#known-limitations)
 
 ---
@@ -1198,6 +1199,20 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | `SHOW TABLES` | ✅ Full | Scatter to all nodes, sum row counts |
 | `DESCRIBE` | ✅ Full | Execute on any node (schema replicated via DDL broadcast) |
 | `CREATE/DROP/ALTER TABLE` | ✅ Full | DDL broadcast to all nodes |
+
+---
+
+## Table Functions
+
+### duckdb()
+
+Queries an external Parquet file via the embedded DuckDB engine.
+
+```sql
+SELECT * FROM duckdb('path/to/file.parquet') WHERE price > 15000
+```
+
+The path is relative to the server's working directory. Supports any SQL clauses (WHERE, GROUP BY, ORDER BY, etc.) on the result.
 
 ---
 

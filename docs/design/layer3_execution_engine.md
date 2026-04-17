@@ -39,3 +39,4 @@ flowchart TD
 ## 4. Detailed Design
 - **DataBlock Pipeline:** Operators in the database pass a single DataBlock (column-unit memory fragment) to the next operator when scanning the RDB memory pool. Instead of copying data, only reference counts and position pointers are passed, achieving zero-copy.
 - **LLVM JIT compilation target:** For example, when a user queries `WHERE price > 100 AND volume * 10 > 5000`, instead of evaluating each expression individually, LLVM at runtime instantly replaces this with a single optimized internal machine code C++ function compiled as `bool result = (price > 100) & ((volume * 10) > 5000);`.
+- **JIT SIMD emit (v3):** `compile_simd()` generates explicit `<4 x i64>` vector IR — vector loads, vector compares, and cttz-based mask extraction — instead of relying on LLVM auto-vectorization. Main loop processes 4 elements per iteration; scalar tail handles remainder.
