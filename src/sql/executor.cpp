@@ -736,6 +736,9 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
     // Drain to ensure data is stored before returning
     pipeline_.drain_sync();
 
+    if (inserted > 0)
+        pipeline_.schema_registry().mark_has_data(stmt.table_name);
+
     QueryResultSet result;
     result.column_names = {"inserted"};
     result.column_types = {storage::ColumnType::INT64};
@@ -1418,11 +1421,23 @@ std::vector<Partition*> QueryExecutor::find_partitions(
     const std::string& table_name)
 {
     auto& reg = pipeline_.schema_registry();
-    if (!table_name.empty() && reg.table_count() > 0 && !reg.exists(table_name)) {
-        return {};  // Table not found in registry
+    if (!table_name.empty() && reg.table_count() > 0) {
+        if (!reg.exists(table_name)) return {};       // Unknown table
     }
     auto& pm = pipeline_.partition_manager();
-    return pm.get_all_partitions();
+    auto parts = pm.get_all_partitions();
+    // If table is in schema but has no data (never inserted via any path),
+    // check if any partition actually has rows. Schema-only tables with
+    // 0 total rows return empty.
+    if (!table_name.empty() && reg.exists(table_name) && !reg.has_data(table_name)) {
+        // Double-check: maybe data was ingested via pipeline (not exec_insert)
+        size_t total = 0;
+        for (auto* p : parts) total += p->num_rows();
+        if (total == 0) return {};
+        // Data exists via pipeline ingest — mark it
+        reg.mark_has_data(table_name);
+    }
+    return parts;
 }
 
 // ============================================================================

@@ -34,6 +34,7 @@ struct TableSchema {
     std::string            table_name;
     std::vector<ColumnDef> columns;
     int64_t                ttl_ns = 0;  // 0 = no retention limit
+    bool                   has_data = false;  // set true on first INSERT
 };
 
 // ============================================================================
@@ -121,6 +122,18 @@ public:
     [[nodiscard]] size_t table_count() const {
         std::shared_lock lk(mu_);
         return tables_.size();
+    }
+
+    void mark_has_data(const std::string& name) {
+        std::unique_lock lk(mu_);
+        auto it = tables_.find(name);
+        if (it != tables_.end()) it->second.has_data = true;
+    }
+
+    [[nodiscard]] bool has_data(const std::string& name) const {
+        std::shared_lock lk(mu_);
+        auto it = tables_.find(name);
+        return it != tables_.end() && it->second.has_data;
     }
 
 private:
