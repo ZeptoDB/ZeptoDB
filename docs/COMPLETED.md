@@ -48,6 +48,7 @@ Last updated: 2026-04-16
 ## Ingestion & Feed Handlers
 - [x] **Feed Handlers** — FIX, NASDAQ ITCH (350ns parsing)
 - [x] **Kafka consumer** — JSON/binary/human-readable decode, backpressure retry, Prometheus metrics, commit modes — 26 tests
+- [x] **MQTT consumer** — IoT / Physical AI ingestion, QoS 0/1/2, topic wildcards (`#`, `+`), shared JSON/BINARY/JSON_HUMAN decoders with Kafka, Paho async client with `ZEPTO_USE_MQTT` optional-dep pattern — 18 tests (devlog 081)
 - [x] **Connection hooks & session tracking** — on_connect/on_disconnect callbacks, session list, idle eviction, query count — 7 tests
 
 ## Python Ecosystem

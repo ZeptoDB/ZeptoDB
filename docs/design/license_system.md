@@ -9,7 +9,7 @@ ZeptoDB ships as a single binary. Edition-based feature gating is controlled at 
 | Edition | Key Required | Max Nodes | Features |
 |---------|:---:|:---:|---|
 | Community | No | 1 | Core engine, SQL, HTTP API, Python DSL |
-| Enterprise | Yes | Unlimited | + SSO, Audit Export, Advanced RBAC, Kafka, Migration, Cluster, Geo-Replication, Rolling Upgrade |
+| Enterprise | Yes | Unlimited | + SSO, Audit Export, Advanced RBAC, Kafka, Migration, Cluster, Geo-Replication, Rolling Upgrade, IoT Connectors (MQTT) |
 
 > **Backward compatibility:** Old license keys with `"edition": "pro"` are automatically treated as Enterprise. No action required from existing Pro licensees.
 
@@ -41,7 +41,24 @@ KAFKA           = 1 << 4
 MIGRATION       = 1 << 5
 GEO_REPLICATION = 1 << 6
 ROLLING_UPGRADE = 1 << 7
+IOT_CONNECTORS  = 1 << 8
 ```
+
+### IOT_CONNECTORS (bit 8)
+
+Gates enterprise IoT / Physical AI streaming integrations. Currently gates:
+
+- **MQTT consumer** (`MqttConsumer::start()`) — IoT broker ingestion
+  (sensors, robotics, autonomous vehicles).
+
+Planned future connectors under the same gate (no new feature bit needed):
+
+- **OPC-UA** — industrial PLC / SCADA systems.
+- **ROS2** — robotics / autonomous-driving middleware.
+- **Apache Pulsar** — alternative to Kafka.
+- **AWS Kinesis** — cloud streaming.
+
+Present in: Enterprise. Trial keys enable all features (bits 0..8 → `features=511`).
 
 ## Key Loading (Priority Order)
 
@@ -95,7 +112,7 @@ Unsigned JWT with `"alg":"none"` header and `"trial":true` claim:
 |-------|-------|
 | `alg` | `"none"` (no signature) |
 | `edition` | `"enterprise"` |
-| `features` | `0xFF` (all features) |
+| `features` | `0x1FF` (all features: bits 0..8) |
 | `max_nodes` | `1` (single-node only) |
 | `trial` | `true` |
 | `exp` | now + 30 days |

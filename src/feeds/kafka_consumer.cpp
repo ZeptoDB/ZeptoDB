@@ -5,7 +5,6 @@
 #include "zeptodb/feeds/kafka_consumer.h"
 #include "zeptodb/auth/license_validator.h"
 #include "zeptodb/common/logger.h"
-#include "spdlog/spdlog.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -325,7 +324,7 @@ bool KafkaConsumer::start() {
     delete conf;
 
     if (!consumer) {
-        spdlog::error("KafkaConsumer: failed to create consumer: {}", errstr);
+        ZEPTO_ERROR("KafkaConsumer: failed to create consumer: {}", errstr);
         running_ = false;
         return false;
     }
@@ -333,8 +332,8 @@ bool KafkaConsumer::start() {
     std::vector<std::string> topics{config_.topic};
     RdKafka::ErrorCode err = consumer->subscribe(topics);
     if (err != RdKafka::ERR_NO_ERROR) {
-        spdlog::error("KafkaConsumer: subscribe failed: {}",
-                      RdKafka::err2str(err));
+        ZEPTO_ERROR("KafkaConsumer: subscribe failed: {}",
+                    RdKafka::err2str(err));
         consumer->close();
         delete consumer;
         running_ = false;
@@ -342,14 +341,14 @@ bool KafkaConsumer::start() {
     }
 
     consumer_handle_ = consumer;
-    spdlog::info("KafkaConsumer: subscribed to topic '{}' on '{}'",
+    ZEPTO_INFO("KafkaConsumer: subscribed to topic '{}' on '{}'",
                  config_.topic, config_.brokers);
 
     poll_thread_ = std::thread([this] { poll_loop(); });
     return true;
 
 #else
-    spdlog::warn("KafkaConsumer: Kafka support not compiled in "
+    ZEPTO_WARN("KafkaConsumer: Kafka support not compiled in "
                  "(rebuild with ZEPTO_USE_KAFKA=ON and librdkafka++ installed)");
     return false;
 #endif
@@ -402,7 +401,7 @@ void KafkaConsumer::poll_loop() {
                 break;  // normal — no new messages
 
             default:
-                spdlog::warn("KafkaConsumer: message error: {}",
+                ZEPTO_WARN("KafkaConsumer: message error: {}",
                              msg->errstr());
                 break;
         }

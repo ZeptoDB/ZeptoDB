@@ -298,7 +298,7 @@ std::string LicenseValidator::startupBanner() const {
 std::string LicenseValidator::generate_trial_key(const std::string& company) {
     std::string header = base64url_encode(R"({"alg":"none","typ":"JWT"})");
     int64_t exp = now_unix() + 30 * 86400;
-    std::string payload_json = R"({"edition":"enterprise","features":255,"max_nodes":1,"company":")"
+    std::string payload_json = R"({"edition":"enterprise","features":511,"max_nodes":1,"company":")"
         + company + R"(","exp":)" + std::to_string(exp)
         + R"(,"iat":)" + std::to_string(now_unix())
         + R"(,"trial":true})";

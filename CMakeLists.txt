@@ -40,6 +40,7 @@ option(ZEPTO_USE_S3         "Enable AWS S3 upload"        ON)
 option(ZEPTO_USE_TCMALLOC   "Link tcmalloc_minimal for HFT allocation performance" OFF)
 option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
+option(ZEPTO_USE_MQTT       "Enable MQTT consumer (requires paho-mqttpp3)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
 option(ZEPTO_ENABLE_DUCKDB "Enable embedded DuckDB engine for Parquet offload" ON)
 
@@ -120,6 +121,23 @@ if(ZEPTO_USE_KAFKA)
     endif()
 else()
     set(ZEPTO_HAS_KAFKA OFF)
+endif()
+
+# --- paho-mqttpp3 (MQTT consumer, optional) ---
+if(ZEPTO_USE_MQTT)
+    find_library(PAHO_MQTTPP_LIB paho-mqttpp3 QUIET)
+    find_library(PAHO_MQTT_LIB   paho-mqtt3a  QUIET)
+    if(PAHO_MQTTPP_LIB AND PAHO_MQTT_LIB)
+        message(STATUS "paho-mqttpp3: ${PAHO_MQTTPP_LIB} (MQTT consumer enabled)")
+        set(ZEPTO_HAS_MQTT ON)
+    else()
+        message(STATUS "paho-mqttpp3: not found — MQTT consumer disabled")
+        message(STATUS "  Install: sudo dnf install -y paho-c-devel paho-cpp-devel")
+        set(ZEPTO_USE_MQTT OFF)
+        set(ZEPTO_HAS_MQTT OFF)
+    endif()
+else()
+    set(ZEPTO_HAS_MQTT OFF)
 endif()
 
 # ============================================================================
@@ -691,6 +709,26 @@ if(ZEPTO_HAS_KAFKA)
     message(STATUS "zepto_kafka: Kafka polling enabled")
 else()
     message(STATUS "zepto_kafka: decode/routing only (no librdkafka)")
+endif()
+
+# --- MQTT Consumer (depends on zepto_core + zepto_cluster + zepto_kafka for shared decoders) ---
+add_library(zepto_mqtt STATIC
+    src/feeds/mqtt_consumer.cpp
+)
+target_include_directories(zepto_mqtt PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_mqtt PUBLIC
+    zepto_core
+    zepto_cluster
+    zepto_kafka
+)
+if(ZEPTO_HAS_MQTT)
+    target_compile_definitions(zepto_mqtt PUBLIC ZEPTO_MQTT_AVAILABLE=1)
+    target_link_libraries(zepto_mqtt PUBLIC ${PAHO_MQTTPP_LIB} ${PAHO_MQTT_LIB})
+    message(STATUS "zepto_mqtt: MQTT broker connectivity enabled")
+else()
+    message(STATUS "zepto_mqtt: decode/routing only (no paho-mqttpp3)")
 endif()
 
 # ============================================================================

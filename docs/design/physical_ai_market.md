@@ -77,6 +77,10 @@ WHERE DELTA(vibration) OVER (ORDER BY timestamp) > 500
 
 ### B. Smart Factory / Industrial IoT
 
+> **MQTT ingestion: implemented** ✅ — `MqttConsumer` (QoS 0/1/2, topic wildcards,
+> shared JSON/BINARY/JSON_HUMAN decoders with Kafka). See
+> [`devlog/081_mqtt_consumer.md`](../devlog/081_mqtt_consumer.md).
+
 **Customers:** Samsung Electronics, SK Hynix, TSMC, Siemens, Bosch, POSCO
 
 **Data characteristics:**

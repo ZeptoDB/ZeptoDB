@@ -21,6 +21,7 @@ add_executable(zepto_tests
     unit/test_scheduler.cpp
     unit/test_features.cpp
     unit/test_kafka.cpp
+    unit/test_mqtt.cpp
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_flat_hash_map.cpp
@@ -53,6 +54,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_scheduler
     zepto_server
     zepto_kafka
+    zepto_mqtt
     zepto_flight
     GTest::gtest_main
 )

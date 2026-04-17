@@ -12,7 +12,6 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Blog: additional devlog migration** | Remaining 46 devlogs → blog posts for SEO long-tail | S |
 | **YouTube / Loom demo video** | 2-minute demo. Embed in README + landing page. 3x conversion vs text | S |
 
 ### Manual TODO (requires manual execution)
@@ -24,7 +23,7 @@
 | **Post Show HN** | `docs/community/LAUNCH_POSTS.md` | Docker image + website + Discord | XS |
 | **Post on Reddit (5 subreddits)** | `docs/community/LAUNCH_POSTS.md` | 1-2 day gap after Show HN | XS |
 
-> ✅ Done: Website, Docs site, Blog (4 posts), Docker, GitHub Releases, Homebrew, PyPI (v0.0.3), GitHub Discussions, Awesome Time-Series DB PR (#122)
+> ✅ Done: Website, Docs site, Blog (52 posts, full devlog migration), Docker, GitHub Releases, Homebrew, PyPI (v0.0.3), GitHub Discussions, Awesome Time-Series DB PR (#122)
 
 ---
 
@@ -112,7 +111,6 @@
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **MQTT ingestion** | IoT devices | S |
 | **OPC-UA connector** | Siemens S7, industrial PLCs | M |
 | **ROS2 plugin** | ROS2 topics → ZeptoDB | M |
 
@@ -138,16 +136,16 @@
 
 | Priority | Category | Remaining | Next Action |
 |----------|----------|:---------:|-------------|
-| **P2** | Visibility & Launch | 2 + 4 manual | Demo video, Show HN, Reddit |
+| **P2** | Visibility & Launch | 1 + 4 manual | Demo video, Show HN, Reddit |
 | **P2.5** | Monetization | 1 (deferred) | Gate when features ship |
 | **P4** | Tool Integration | 2 | ClickHouse protocol |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
 | **P6** | Enterprise / Cloud | 3 | Marketplace, Geo-rep, SAML |
 | **P7** | Engine Performance | 5 | JOINs/Window virtual tables |
 | **P8** | Cluster | 7 | RDMA transport, Cold query |
-| **P9** | Physical AI / IoT | 3 | MQTT, OPC-UA, ROS2 |
+| **P9** | Physical AI / IoT | 2 | OPC-UA, ROS2 |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 36 items + 4 manual tasks**
+**Total remaining: 34 items + 4 manual tasks**
 
 **Critical path: P2 (launch) → P4 (ClickHouse protocol) → P7 (JOINs/Window virtual tables)**
