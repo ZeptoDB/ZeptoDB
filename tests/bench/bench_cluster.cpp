@@ -20,6 +20,7 @@
 #include "zeptodb/cluster/partition_router.h"
 #include "zeptodb/cluster/health_monitor.h"
 #include "zeptodb/cluster/cluster_node.h"
+#include "zeptodb/auth/license_validator.h"
 #include "shm_backend.h"
 
 using namespace zeptodb;
@@ -285,6 +286,10 @@ BenchResult bench_routing_decision() {
 // Main
 // ============================================================================
 int main() {
+    // Load Enterprise license from env (ZEPTODB_LICENSE_KEY) or /etc/zeptodb/license.key.
+    // Required for cluster ingest benchmarks; transport/routing benches work without it.
+    zeptodb::auth::license().load();
+
     std::cout << "\n";
     std::cout << "╔══════════════════════════════════════════════════════╗\n";
     std::cout << "║      ZeptoDB Phase C Cluster Benchmark               ║\n";
