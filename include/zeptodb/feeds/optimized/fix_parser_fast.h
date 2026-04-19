@@ -4,7 +4,9 @@
 #pragma once
 
 #include "zeptodb/feeds/fix_parser.h"
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>  // AVX2/AVX-512
+#endif
 
 namespace zeptodb::feeds::optimized {
 

@@ -20,15 +20,37 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install LLVM 19 and dependencies
+        run: |
+          if command -v apt-get >/dev/null; then
+            wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm.asc
+            echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | \
+              sudo tee /etc/apt/sources.list.d/llvm.list
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends \
+              clang-19 llvm-19-dev cmake ninja-build \
+              libnuma-dev liblz4-dev libssl-dev zlib1g-dev
+          elif command -v dnf >/dev/null; then
+            sudo dnf install -y clang llvm-devel cmake ninja-build \
+              numactl-devel lz4-devel openssl-devel zlib-devel
+          fi
+
       - name: Install optional connector libs (Kafka, MQTT)
         run: |
           if command -v apt-get >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y librdkafka-dev libpaho-mqttpp-dev libpaho-mqtt-dev
+            sudo apt-get install -y librdkafka-dev libpaho-mqttpp-dev libpaho-mqtt-dev || true
           elif command -v dnf >/dev/null; then
             sudo dnf install -y librdkafka-devel paho-c-devel paho-cpp-devel || \
-              sudo dnf install -y librdkafka-devel
+              sudo dnf install -y librdkafka-devel || true
           fi
+
+      - name: Build Highway
+        run: |
+          git clone --depth 1 --branch 1.2.0 https://github.com/google/highway.git /tmp/highway
+          cmake -S /tmp/highway -B /tmp/highway/build -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release -DHWY_ENABLE_TESTS=OFF -DHWY_ENABLE_EXAMPLES=OFF
+          sudo ninja -C /tmp/highway/build -j$(nproc) install
 
       - name: Build
         run: |
@@ -36,6 +58,7 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER=clang-19 \
                 -DCMAKE_CXX_COMPILER=clang++-19 \
+                -DZEPTO_USE_JIT=ON \
                 -DZEPTO_USE_KAFKA=ON \
                 -DZEPTO_USE_MQTT=ON \
                 -G Ninja -S .. -B .

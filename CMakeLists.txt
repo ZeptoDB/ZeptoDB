@@ -368,8 +368,10 @@ endif()
 if(ZEPTO_USE_JIT)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         find_package(LLVM REQUIRED CONFIG
-            PATHS /usr/lib64/llvm19/lib/cmake/llvm
-            NO_DEFAULT_PATH
+            PATHS
+                /usr/lib64/llvm19/lib/cmake/llvm          # Amazon Linux / RHEL
+                /usr/lib/llvm-19/lib/cmake/llvm            # Ubuntu amd64
+                /usr/lib/aarch64-linux-gnu/cmake/llvm-19   # Ubuntu arm64
         )
     else()
         find_package(LLVM CONFIG QUIET)
