@@ -20,6 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Expand filesystem (if EBS was resized)
+        run: |
+          ROOT_DEV=$(df / | tail -1 | awk '{print $1}')
+          DISK=$(echo "$ROOT_DEV" | sed 's/p[0-9]*$//' | sed 's/[0-9]*$//')
+          PART=$(echo "$ROOT_DEV" | grep -o '[0-9]*$')
+          sudo growpart "$DISK" "$PART" 2>/dev/null || true
+          sudo xfs_growfs / 2>/dev/null || sudo resize2fs "$ROOT_DEV" 2>/dev/null || true
+          df -h /
+
       - name: Install LLVM 19 and dependencies
         run: |
           if command -v apt-get >/dev/null; then
@@ -66,7 +75,6 @@ jobs:
                 -DZEPTO_USE_JIT=ON \
                 -DZEPTO_USE_KAFKA=ON \
                 -DZEPTO_USE_MQTT=ON \
-                -DZEPTO_ENABLE_DUCKDB=OFF \
                 -G Ninja -S .. -B .
           ninja -j$(nproc) zepto_tests
 
