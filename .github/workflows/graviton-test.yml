@@ -52,6 +52,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DHWY_ENABLE_TESTS=OFF -DHWY_ENABLE_EXAMPLES=OFF
           sudo ninja -C /tmp/highway/build -j$(nproc) install
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /tmp/highway 2>/dev/null || true
+          df -h / | tail -1
+
       - name: Build
         run: |
           mkdir -p build && cd build
@@ -61,6 +66,7 @@ jobs:
                 -DZEPTO_USE_JIT=ON \
                 -DZEPTO_USE_KAFKA=ON \
                 -DZEPTO_USE_MQTT=ON \
+                -DZEPTO_ENABLE_DUCKDB=OFF \
                 -G Ninja -S .. -B .
           ninja -j$(nproc) zepto_tests
 
