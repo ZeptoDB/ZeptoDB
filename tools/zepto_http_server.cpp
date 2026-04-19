@@ -10,6 +10,7 @@
 #include "zeptodb/server/http_server.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/auth/auth_manager.h"
+#include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/coordinator_ha.h"
@@ -74,6 +75,14 @@ int main(int argc, char* argv[]) {
     std::string jwks_url;         // JWKS endpoint URL
     std::string web_dir;          // Web UI static files directory
 
+    // Storage mode (devlog 086 D4): allow operators to persist data to HDB
+    // instead of the default PURE_IN_MEMORY.
+    std::string hdb_dir;                 // --hdb-dir <path>
+    std::string storage_mode = "pure";   // --storage-mode pure|tiered
+
+    // devlog 091 F1: provision tenants at startup.
+    std::vector<std::pair<std::string, std::string>> tenants;  // (id, namespace)
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "--port" || arg == "-p") && i + 1 < argc)
@@ -105,6 +114,20 @@ int main(int argc, char* argv[]) {
             jwks_url = argv[++i];
         else if (arg == "--web-dir" && i + 1 < argc)
             web_dir = argv[++i];
+        else if (arg == "--hdb-dir" && i + 1 < argc)
+            hdb_dir = argv[++i];
+        else if (arg == "--storage-mode" && i + 1 < argc)
+            storage_mode = argv[++i];
+        else if (arg == "--tenant" && i + 1 < argc) {
+            // --tenant <id:namespace>  (repeatable) — devlog 091 F1
+            std::string spec = argv[++i];
+            auto colon = spec.find(':');
+            if (colon == std::string::npos) {
+                std::cerr << "Error: --tenant expects <id:namespace>, got '" << spec << "'\n";
+                return 1;
+            }
+            tenants.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
+        }
         else if (arg == "--add-node" && i + 1 < argc) {
             std::string spec = argv[++i];
             auto p1 = spec.find(':');
@@ -129,6 +152,11 @@ int main(int argc, char* argv[]) {
                       << "  --jwt-secret <secret>    HS256 shared secret\n"
                       << "  --jwt-public-key <path>  RS256 PEM public key file\n"
                       << "  --jwks-url <url>         JWKS endpoint (auto-fetch RS256 keys)\n\n"
+                      << "Storage:\n"
+                      << "  --hdb-dir <path>         HDB base directory (implies --storage-mode tiered)\n"
+                      << "  --storage-mode <mode>    pure (in-memory, default) | tiered (RDB+HDB)\n\n"
+                      << "Tenants:\n"
+                      << "  --tenant <id:namespace>  Register a tenant with a table-namespace prefix (repeatable)\n\n"
                       << "HA mode:\n"
                       << "  --ha active  --peer standby-host:rpc-port  --rpc-port 9100\n"
                       << "  --ha standby --peer active-host:rpc-port   --rpc-port 9101\n\n"
@@ -173,7 +201,14 @@ int main(int argc, char* argv[]) {
 
     // Pipeline
     zeptodb::core::PipelineConfig cfg;
-    cfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    // devlog 086 (D4): --hdb-dir or --storage-mode tiered switches to on-disk
+    // HDB tier. Default stays PURE_IN_MEMORY for HFT dev-server parity.
+    if (storage_mode == "tiered" || !hdb_dir.empty()) {
+        cfg.storage_mode  = zeptodb::core::StorageMode::TIERED;
+        cfg.hdb_base_path = hdb_dir.empty() ? std::string("/tmp/zepto_hdb") : hdb_dir;
+    } else {
+        cfg.storage_mode  = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    }
     zeptodb::core::ZeptoPipeline pipeline(cfg);
 
     // Register default trades schema
@@ -255,6 +290,19 @@ int main(int argc, char* argv[]) {
         }
     }
     if (!web_dir.empty()) server.set_web_dir(web_dir);
+
+    // devlog 091 F1: provision tenants from --tenant id:namespace flags
+    if (!tenants.empty()) {
+        auto tm = std::make_shared<zeptodb::auth::TenantManager>();
+        for (auto& [tid, ns] : tenants) {
+            zeptodb::auth::TenantConfig cfg;
+            cfg.tenant_id       = tid;
+            cfg.table_namespace = ns;
+            tm->create_tenant(std::move(cfg));
+        }
+        server.set_tenant_manager(tm);
+        std::cout << "Tenants provisioned: " << tenants.size() << "\n";
+    }
 
     // ── HA mode ──
     std::unique_ptr<zeptodb::cluster::CoordinatorHA> ha;

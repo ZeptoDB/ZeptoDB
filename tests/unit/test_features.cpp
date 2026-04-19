@@ -25,6 +25,8 @@
 // --- Feeds ---
 #include "zeptodb/feeds/kafka_consumer.h"
 
+#include "test_port_helper.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -260,6 +262,7 @@ TEST_F(SortedColumnQueryTest, RowsScannedReduced) {
 class ConnectionHooksTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        test_port_ = zepto_test_util::pick_free_port();
         pipeline_ = make_pipeline();
         executor_  = std::make_unique<QueryExecutor>(*pipeline_);
         server_    = std::make_unique<zeptodb::server::HttpServer>(*executor_, test_port_);
@@ -284,7 +287,7 @@ protected:
         server_->stop();
     }
 
-    static constexpr uint16_t test_port_ = 18881;
+    uint16_t test_port_ = 0;
 
     std::unique_ptr<ZeptoPipeline>            pipeline_;
     std::unique_ptr<QueryExecutor>           executor_;
@@ -377,6 +380,7 @@ TEST_F(ConnectionHooksTest, QueryCountIncrements) {
 class MetricsProviderTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        test_port_ = zepto_test_util::pick_free_port();
         pipeline_ = make_pipeline();
         executor_  = std::make_unique<QueryExecutor>(*pipeline_);
         server_    = std::make_unique<zeptodb::server::HttpServer>(*executor_, test_port_);
@@ -388,7 +392,7 @@ protected:
         server_->stop();
     }
 
-    static constexpr uint16_t test_port_ = 18882;
+    uint16_t test_port_ = 0;
 
     std::unique_ptr<ZeptoPipeline>             pipeline_;
     std::unique_ptr<QueryExecutor>            executor_;
@@ -522,7 +526,7 @@ TEST(TableACL, CanAccessTable_Restricted) {
 
 TEST(TableACL, ApiKeyStore_CreateWithTables) {
     // Use a temp file
-    std::string path = "/tmp/zepto_test_keys_table_acl.txt";
+    std::string path = zepto_test_util::unique_test_path("keys_table_acl").string();
     std::remove(path.c_str());
 
     zeptodb::auth::ApiKeyStore store(path);
@@ -548,7 +552,7 @@ TEST(TableACL, ApiKeyStore_CreateWithTables) {
 }
 
 TEST(TableACL, ApiKeyStore_BackwardCompatible_NoTables) {
-    std::string path = "/tmp/zepto_test_keys_compat.txt";
+    std::string path = zepto_test_util::unique_test_path("keys_compat").string();
     std::remove(path.c_str());
 
     // Create key without tables

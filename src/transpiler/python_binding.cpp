@@ -66,10 +66,15 @@ public:
 
     // -------------------------------------------------------------------------
     // 배치 인제스트: numpy array 또는 Python list 허용
+    //
+    // table_name (Stage B, devlog 084):
+    //   ""         → legacy path, msg.table_id = 0
+    //   non-empty  → resolve via SchemaRegistry; throws if table is unknown
     // -------------------------------------------------------------------------
     void ingest_batch(py::object symbols_obj,
                       py::object prices_obj,
-                      py::object volumes_obj)
+                      py::object volumes_obj,
+                      const std::string& table_name = "")
     {
         // numpy array로 변환 (forcecast: int32 등 다른 정수 타입도 수용)
         // pybind11 3.x: c_contiguous 제거됨 → forcecast만 사용
@@ -86,6 +91,8 @@ public:
             throw std::invalid_argument("symbols, prices, volumes must have the same length");
         }
 
+        const uint16_t tid = resolve_table_id_(table_name);
+
         const int64_t* sym_ptr = static_cast<int64_t*>(s_buf.ptr);
         const int64_t* prc_ptr = static_cast<int64_t*>(p_buf.ptr);
         const int64_t* vol_ptr = static_cast<int64_t*>(v_buf.ptr);
@@ -98,6 +105,7 @@ public:
             msg.volume    = vol_ptr[i];
             msg.recv_ts   = ts + static_cast<int64_t>(i);  // 순서 보존
             msg.msg_type  = 0;
+            msg.table_id  = tid;
             if (!pipeline_->ingest_tick(msg)) {
                 throw std::runtime_error(
                     "ingest_batch: queue full at index " + std::to_string(i));
@@ -118,7 +126,8 @@ public:
                             py::object prices_obj,
                             py::object volumes_obj,
                             double price_scale = 1.0,
-                            double vol_scale   = 1.0)
+                            double vol_scale   = 1.0,
+                            const std::string& table_name = "")
     {
         py::array_t<int64_t, py::array::forcecast> syms(symbols_obj);
         py::array_t<double,  py::array::forcecast> prs(prices_obj);
@@ -135,6 +144,8 @@ public:
                 "ingest_float_batch: symbols, prices, volumes must have the same length");
         }
 
+        const uint16_t tid = resolve_table_id_(table_name);
+
         const int64_t* sym_ptr = static_cast<int64_t*>(s_buf.ptr);
         const double*  prc_ptr = static_cast<double*>(p_buf.ptr);
         const double*  vol_ptr = static_cast<double*>(v_buf.ptr);
@@ -147,6 +158,7 @@ public:
             msg.volume    = static_cast<int64_t>(vol_ptr[i] * vol_scale);
             msg.recv_ts   = ts + static_cast<int64_t>(i);
             msg.msg_type  = 0;
+            msg.table_id  = tid;
             if (!pipeline_->ingest_tick(msg)) {
                 throw std::runtime_error(
                     "ingest_float_batch: queue full at index " + std::to_string(i));
@@ -357,6 +369,17 @@ public:
     }
 
 private:
+    // Resolve table_name → table_id via SchemaRegistry.
+    // Empty name → 0 (legacy/default path). Unknown name → std::invalid_argument.
+    uint16_t resolve_table_id_(const std::string& table_name) const {
+        if (table_name.empty()) return 0;
+        uint16_t tid = pipeline_->schema_registry().get_table_id(table_name);
+        if (tid == 0) {
+            throw std::invalid_argument("Unknown table: " + table_name);
+        }
+        return tid;
+    }
+
     // PartitionManager의 내부 파티션을 symbol로 검색 (최신 파티션 우선)
     static ColumnVector* find_column_in_partitions(
         PartitionManager& pm,
@@ -464,15 +487,20 @@ PYBIND11_MODULE(zeptodb, m) {
              "단건 틱 인제스트")
         .def("ingest_batch", &PyPipeline::ingest_batch,
              py::arg("symbols"), py::arg("prices"), py::arg("volumes"),
-             "배치 틱 인제스트 (numpy int64 array 또는 list)")
+             py::arg("table_name") = "",
+             "배치 틱 인제스트 (numpy int64 array 또는 list).\n"
+             "table_name: 대상 테이블 이름 (빈 문자열 → 레거시/기본 경로).\n"
+             "           CREATE TABLE으로 만든 테이블만 허용 — 알 수 없는 이름은 예외.")
         .def("ingest_float_batch", &PyPipeline::ingest_float_batch,
              py::arg("symbols"),
              py::arg("prices"),
              py::arg("volumes"),
              py::arg("price_scale") = 1.0,
              py::arg("vol_scale")   = 1.0,
+             py::arg("table_name")  = "",
              "배치 인제스트 (float64 가격/볼륨).\n"
              "price_scale: float→int64 변환 계수 (예: 100.0 = 센트 단위)\n"
+             "table_name:  대상 테이블 이름 (빈 문자열 → 레거시/기본 경로)\n"
              "Polars/pandas float 컬럼을 직접 전달 가능 — Python 루프 없음")
         .def("drain", &PyPipeline::drain,
              "큐의 틱을 동기적으로 스토리지에 반영. 반환값: 저장된 틱 수")

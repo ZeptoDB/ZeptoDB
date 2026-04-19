@@ -209,6 +209,10 @@ public:
         bool migrate_data = true;
         bool validate = true;
         std::vector<std::string> tables;  // empty = all tables
+        // Destination ZeptoDB table name (Stage B, devlog 084). Empty =
+        // legacy path (msg.table_id = 0). When set, migrators resolve the
+        // table_id via SchemaRegistry and stamp it on every ingested row.
+        std::string dest_table;
         ExportOptions export_opts;
     };
 

@@ -28,3 +28,8 @@ package-lock.json
 keys/license-private.pem
 skills-lock.json
 .agents
+
+# Local-only dev artifacts
+dev_keys.txt
+tests/python/dev_keys.txt
+/Testing/

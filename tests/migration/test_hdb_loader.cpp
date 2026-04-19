@@ -2,13 +2,49 @@
 // ZeptoDB: HDB Loader Tests
 // ============================================================================
 #include "zeptodb/migration/hdb_loader.h"
+#include "zeptodb/auth/license_validator.h"
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <unistd.h>
 
 using namespace zeptodb::migration;
 namespace fs = std::filesystem;
+
+// Load an Enterprise license so HDBLoader::scan() (Feature::MIGRATION gated)
+// functions at all. Idempotent.
+static void hdb_loader_ensure_enterprise_license() {
+    static bool loaded = false;
+    if (loaded) return;
+    auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string payload =
+        R"({"edition":"enterprise","features":255,"max_nodes":64,"exp":)"
+        + std::to_string(now + 86400) + "}";
+    auto b64 = [](const std::string& s) {
+        static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string out;
+        auto data = reinterpret_cast<const unsigned char*>(s.data());
+        size_t len = s.size();
+        for (size_t i = 0; i < len; i += 3) {
+            uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+            if (i+1 < len) n |= static_cast<uint32_t>(data[i+1]) << 8;
+            if (i+2 < len) n |= static_cast<uint32_t>(data[i+2]);
+            out += tbl[(n>>18)&63]; out += tbl[(n>>12)&63];
+            out += (i+1<len) ? tbl[(n>>6)&63] : '=';
+            out += (i+2<len) ? tbl[n&63] : '=';
+        }
+        for (char& c : out) { if (c=='+') c='-'; else if (c=='/') c='_'; }
+        while (!out.empty() && out.back()=='=') out.pop_back();
+        return out;
+    };
+    std::string jwt = b64(R"({"alg":"RS256","typ":"JWT"})") + "." + b64(payload) + ".fakesig";
+    zeptodb::auth::license().load_from_jwt_string_for_testing(jwt);
+    loaded = true;
+}
 
 // ============================================================================
 // Test Fixture
@@ -20,8 +56,18 @@ protected:
     fs::path hdb_dir_;
 
     void SetUp() override {
-        // Create temporary test directory
-        test_dir_ = fs::temp_directory_path() / "zepto_hdb_test";
+        hdb_loader_ensure_enterprise_license();
+        // Per-(pid, test name, monotonic) temp directory — safe under
+        // ctest -j$(nproc) where sibling HDBLoaderTest.* run concurrently
+        // and would otherwise race on TearDown's remove_all().
+        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        const std::string tname = info && info->name() ? info->name() : "anon";
+        test_dir_ = fs::temp_directory_path() /
+            ("zepto_hdb_test_" +
+             std::to_string(static_cast<unsigned long>(::getpid())) + "_" +
+             std::to_string(static_cast<unsigned long long>(
+                 std::chrono::steady_clock::now().time_since_epoch().count())) +
+             "_" + tname);
         hdb_dir_ = test_dir_ / "hdb";
         fs::create_directories(hdb_dir_);
     }
@@ -346,3 +392,87 @@ TEST_F(HDBLoaderTest, EmptyHDB) {
 // ============================================================================
 
 // main provided by test_q_to_sql.cpp
+
+// ============================================================================
+// Stage B (devlog 084): Migration dest_table wiring
+// ============================================================================
+
+TEST_F(HDBLoaderTest, DestTableDefaultsEmpty) {
+    HDBLoader loader(hdb_dir_);
+    EXPECT_TRUE(loader.dest_table().empty());
+}
+
+TEST_F(HDBLoaderTest, DestTableSetterRoundTrip) {
+    HDBLoader loader(hdb_dir_);
+    loader.set_dest_table("trades");
+    EXPECT_EQ(loader.dest_table(), "trades");
+}
+
+#include "zeptodb/migration/clickhouse_migrator.h"
+#include "zeptodb/migration/duckdb_interop.h"
+#include "zeptodb/migration/timescaledb_migrator.h"
+
+TEST(MigrationConfig, DestTableFieldsDefaultEmpty) {
+    zeptodb::migration::ClickHouseMigrator::Config ch;
+    zeptodb::migration::DuckDBIntegrator::Config dd;
+    zeptodb::migration::TimescaleDBMigrator::Config ts;
+    EXPECT_TRUE(ch.dest_table.empty());
+    EXPECT_TRUE(dd.dest_table.empty());
+    EXPECT_TRUE(ts.dest_table.empty());
+}
+
+TEST(MigrationConfig, DestTableFieldsAssignable) {
+    zeptodb::migration::ClickHouseMigrator::Config ch;
+    zeptodb::migration::DuckDBIntegrator::Config dd;
+    zeptodb::migration::TimescaleDBMigrator::Config ts;
+    ch.dest_table = "trades";
+    dd.dest_table = "quotes";
+    ts.dest_table = "orders";
+    EXPECT_EQ(ch.dest_table, "trades");
+    EXPECT_EQ(dd.dest_table, "quotes");
+    EXPECT_EQ(ts.dest_table, "orders");
+}
+
+
+// ============================================================================
+// devlog 086 (D2): migration CLI stamps dest_table into SchemaRegistry
+// ----------------------------------------------------------------------------
+// The library migrators (HDBLoader, ClickHouse/DuckDB/Timescale) write data
+// files under `output_dir`, but the pre-086 CLI never registered the dest
+// table in the catalog. Without an entry in `_schema.json`, a post-migration
+// `SELECT * FROM <dest_table>` returned empty because strict fallback
+// couldn't resolve the table_id. The fix is a CLI-level wrapper (exposed as
+// the header-only `ensure_dest_table` helper for testability).
+// ============================================================================
+#include "zeptodb/migration/migrate_utils.h"
+
+TEST(HDBLoaderTableAware, CliStampsTableIdViaSchemaRegistry) {
+    auto dir = fs::temp_directory_path() /
+        ("zepto_migrate_ensure_" +
+         std::to_string(static_cast<unsigned long>(::getpid())) + "_" +
+         std::to_string(static_cast<unsigned long long>(
+             std::chrono::steady_clock::now().time_since_epoch().count())));
+    fs::create_directories(dir);
+
+    // First call: table does not exist yet — should create and return tid != 0.
+    uint16_t tid1 = zeptodb::migration::ensure_dest_table(dir.string(), "mytable");
+    EXPECT_NE(tid1, 0);
+
+    // Fresh SchemaRegistry loaded from the same path must see the table.
+    zeptodb::storage::SchemaRegistry reloaded;
+    ASSERT_TRUE(reloaded.load_from(dir.string() + "/_schema.json"));
+    EXPECT_TRUE(reloaded.exists("mytable"));
+    EXPECT_EQ(reloaded.get_table_id("mytable"), tid1);
+
+    // Idempotent: calling again with the same name returns the same tid
+    // (create() is a no-op for an existing table; save_to preserves it).
+    uint16_t tid2 = zeptodb::migration::ensure_dest_table(dir.string(), "mytable");
+    EXPECT_EQ(tid2, tid1);
+
+    // Empty args must be no-ops.
+    EXPECT_EQ(zeptodb::migration::ensure_dest_table("", "mytable"), 0);
+    EXPECT_EQ(zeptodb::migration::ensure_dest_table(dir.string(), ""), 0);
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}

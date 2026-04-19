@@ -14,8 +14,8 @@ Partition::Partition(PartitionKey key, std::unique_ptr<ArenaAllocator> arena)
     : key_(key)
     , arena_(std::move(arena))
 {
-    ZEPTO_DEBUG("Partition created: symbol={}, hour={}",
-               key_.symbol_id, key_.hour_epoch);
+    ZEPTO_DEBUG("Partition created: table={}, symbol={}, hour={}",
+               key_.table_id, key_.symbol_id, key_.hour_epoch);
 }
 
 ColumnVector& Partition::add_column(const std::string& name, ColumnType type) {
@@ -64,8 +64,8 @@ int64_t PartitionManager::to_hour_epoch(Timestamp ts) {
     return (ts / NS_PER_HOUR) * NS_PER_HOUR;
 }
 
-Partition& PartitionManager::get_or_create(SymbolId symbol, Timestamp ts) {
-    PartitionKey key{symbol, to_hour_epoch(ts)};
+Partition& PartitionManager::get_or_create(uint16_t table_id, SymbolId symbol, Timestamp ts) {
+    PartitionKey key{table_id, symbol, to_hour_epoch(ts)};
 
     // Fast path: check without lock (대부분의 경우 이미 존재)
     {
@@ -91,8 +91,8 @@ Partition& PartitionManager::get_or_create(SymbolId symbol, Timestamp ts) {
     auto& ref = *partition;
     partitions_.emplace(key, std::move(partition));
 
-    ZEPTO_INFO("New partition: symbol={}, hour={} (total partitions={})",
-              symbol, key.hour_epoch, partitions_.size());
+    ZEPTO_INFO("New partition: table={}, symbol={}, hour={} (total partitions={})",
+              table_id, symbol, key.hour_epoch, partitions_.size());
     return ref;
 }
 
@@ -133,10 +133,10 @@ std::vector<Partition*> PartitionManager::get_all_partitions() {
     return result;
 }
 
-std::vector<Partition*> PartitionManager::get_partitions_for_symbol(SymbolId symbol) {
+std::vector<Partition*> PartitionManager::get_partitions_for_symbol(uint16_t table_id, SymbolId symbol) {
     std::vector<Partition*> result;
     for (auto& [key, partition] : partitions_) {
-        if (key.symbol_id == symbol) {
+        if (key.table_id == table_id && key.symbol_id == symbol) {
             result.push_back(partition.get());
         }
     }
@@ -159,11 +159,50 @@ std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
     return result;
 }
 
+std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
+    uint16_t table_id, int64_t lo, int64_t hi)
+{
+    constexpr int64_t NS_PER_HOUR = 3600LL * 1'000'000'000LL;
+    std::vector<Partition*> result;
+    for (auto& [key, partition] : partitions_) {
+        if (key.table_id == table_id
+            && key.hour_epoch <= hi
+            && key.hour_epoch + NS_PER_HOUR > lo) {
+            result.push_back(partition.get());
+        }
+    }
+    return result;
+}
+
+std::vector<Partition*> PartitionManager::get_partitions_for_table(uint16_t table_id) {
+    std::vector<Partition*> result;
+    for (auto& [key, partition] : partitions_) {
+        if (key.table_id == table_id) {
+            result.push_back(partition.get());
+        }
+    }
+    return result;
+}
+
 size_t PartitionManager::evict_older_than(int64_t cutoff_ns) {
     std::lock_guard<std::mutex> lk(mutex_);
     size_t count = 0;
     for (auto it = partitions_.begin(); it != partitions_.end(); ) {
         if (it->first.hour_epoch < cutoff_ns) {
+            it = partitions_.erase(it);
+            ++count;
+        } else {
+            ++it;
+        }
+    }
+    return count;
+}
+
+size_t PartitionManager::drop_table_partitions(uint16_t table_id) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    size_t count = 0;
+    for (auto it = partitions_.begin(); it != partitions_.end(); ) {
+        if (it->first.table_id == table_id) {
             it = partitions_.erase(it);
             ++count;
         } else {

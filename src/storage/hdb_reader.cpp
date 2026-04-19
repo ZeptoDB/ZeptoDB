@@ -28,14 +28,19 @@ HDBReader::HDBReader(const std::string& base_path)
 }
 
 // ============================================================================
-// read_column: 컬럼 파일 mmap 읽기
+// read_column: 컬럼 파일 mmap 읽기 (table-scoped; v1/v2 header compat)
 // ============================================================================
-MappedColumn HDBReader::read_column(SymbolId symbol,
+MappedColumn HDBReader::read_column(uint16_t table_id,
+                                     SymbolId symbol,
                                      int64_t  hour_epoch,
                                      const std::string& col_name) {
     MappedColumn result;
 
-    const std::string file_path = column_file_path(symbol, hour_epoch, col_name);
+    // Resolve file path for the requested table_id. With table_id == 0, this
+    // is the legacy `{base}/{sym}/{hour}/` layout; with table_id > 0 it is
+    // `{base}/t{tid}/{sym}/{hour}/`. No cross-fallback — a v2 table must not
+    // silently read a legacy file written without a table scope.
+    const std::string file_path = column_file_path(table_id, symbol, hour_epoch, col_name);
 
     // 파일 열기
     const int fd = ::open(file_path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -53,7 +58,7 @@ MappedColumn HDBReader::read_column(SymbolId symbol,
     }
 
     const size_t file_size = static_cast<size_t>(st.st_size);
-    if (file_size < sizeof(HDBFileHeader)) {
+    if (file_size < HDB_HEADER_V1_SIZE) {
         ZEPTO_WARN("파일이 너무 작음: {} ({} bytes)", file_path, file_size);
         ::close(fd);
         return result;
@@ -70,31 +75,62 @@ MappedColumn HDBReader::read_column(SymbolId symbol,
     // madvise: 순차 접근 힌트 → 커널 프리패치 최적화
     ::madvise(mapped, file_size, MADV_SEQUENTIAL);
 
-    // 헤더 파싱
-    const auto* header = static_cast<const HDBFileHeader*>(mapped);
+    // --- 헤더 파싱 (v1 32B / v2 40B) ---
+    const uint8_t* base = static_cast<const uint8_t*>(mapped);
 
-    // 매직 바이트 검증
-    if (std::memcmp(header->magic, HDB_MAGIC, 5) != 0) {
+    // 매직 바이트 검증 (공통: offset 0..4)
+    if (std::memcmp(base, HDB_MAGIC, 5) != 0) {
         ZEPTO_WARN("HDB 매직 바이트 불일치: {}", file_path);
         ::munmap(mapped, file_size);
         ::close(fd);
         return result;
     }
 
-    // 버전 확인
-    if (header->version != HDB_VERSION) {
-        ZEPTO_WARN("HDB 버전 불일치: file={}, expect={}", header->version, HDB_VERSION);
-        // 하위 호환성을 위해 경고만 출력하고 계속 진행
+    const uint8_t version_byte = base[5];
+    size_t header_size = 0;
+    uint16_t file_table_id = 0;
+    if (version_byte == 1) {
+        header_size = HDB_HEADER_V1_SIZE;           // 32B, no table_id
+        file_table_id = 0;
+    } else if (version_byte == 2) {
+        if (file_size < HDB_HEADER_V2_SIZE) {
+            ZEPTO_WARN("v2 헤더 크기 부족: {} ({} bytes)", file_path, file_size);
+            ::munmap(mapped, file_size);
+            ::close(fd);
+            return result;
+        }
+        header_size = HDB_HEADER_V2_SIZE;           // 40B, table_id at offset 32
+        std::memcpy(&file_table_id, base + 32, sizeof(uint16_t));
+    } else {
+        ZEPTO_WARN("HDB 알 수 없는 버전: file={}, expect={}", version_byte, HDB_VERSION);
+        ::munmap(mapped, file_size);
+        ::close(fd);
+        return result;
     }
 
-    const ColumnType col_type   = static_cast<ColumnType>(header->col_type);
-    const size_t     row_count  = static_cast<size_t>(header->row_count);
-    const HDBCompression comp   = static_cast<HDBCompression>(header->compression);
-    const size_t data_size      = static_cast<size_t>(header->data_size);
-    const size_t uncomp_size    = static_cast<size_t>(header->uncompressed_size);
+    // 공통 필드 복사 (v1/v2 동일 레이아웃 0..31)
+    HDBFileHeader h{};
+    std::memcpy(&h, base, HDB_HEADER_V1_SIZE);
+    h.table_id = file_table_id;
 
-    // 데이터 포인터 (헤더 이후)
-    const char* data_start = static_cast<const char*>(mapped) + sizeof(HDBFileHeader);
+    // Cross-check: if caller asked for a specific table_id, reject mismatches.
+    // table_id == 0 means "don't care / legacy caller" and matches anything.
+    if (table_id != 0 && file_table_id != table_id) {
+        ZEPTO_WARN("HDB table_id 불일치: file={}, expect={}, path={}",
+                   file_table_id, table_id, file_path);
+        ::munmap(mapped, file_size);
+        ::close(fd);
+        return result;
+    }
+
+    const ColumnType col_type   = static_cast<ColumnType>(h.col_type);
+    const size_t     row_count  = static_cast<size_t>(h.row_count);
+    const HDBCompression comp   = static_cast<HDBCompression>(h.compression);
+    const size_t data_size      = static_cast<size_t>(h.data_size);
+    const size_t uncomp_size    = static_cast<size_t>(h.uncompressed_size);
+
+    // 데이터 포인터 (헤더 크기만큼 offset)
+    const char* data_start = static_cast<const char*>(mapped) + header_size;
 
     if (comp == HDBCompression::NONE) {
         // 압축 없음 → mmap 포인터 직접 반환 (Zero-copy)
@@ -153,10 +189,12 @@ MappedColumn HDBReader::read_column(SymbolId symbol,
 // ============================================================================
 // list_partitions: 심볼의 파티션 목록
 // ============================================================================
-std::vector<int64_t> HDBReader::list_partitions(SymbolId symbol) const {
+std::vector<int64_t> HDBReader::list_partitions(uint16_t table_id, SymbolId symbol) const {
     std::vector<int64_t> result;
 
-    const std::string sym_dir = base_path_ + "/" + std::to_string(symbol);
+    const std::string sym_dir = (table_id != 0)
+        ? (base_path_ + "/t" + std::to_string(table_id) + "/" + std::to_string(symbol))
+        : (base_path_ + "/" + std::to_string(symbol));
 
     std::error_code ec;
     if (!fs::is_directory(sym_dir, ec)) {
@@ -183,7 +221,7 @@ std::vector<int64_t> HDBReader::list_partitions(SymbolId symbol) const {
 // list_partitions_in_range: 시간 범위의 파티션 목록
 // ============================================================================
 std::vector<int64_t> HDBReader::list_partitions_in_range(
-    SymbolId symbol, int64_t from_ns, int64_t to_ns) const
+    uint16_t table_id, SymbolId symbol, int64_t from_ns, int64_t to_ns) const
 {
     constexpr int64_t NS_PER_HOUR = 3600LL * 1'000'000'000LL;
 
@@ -191,7 +229,7 @@ std::vector<int64_t> HDBReader::list_partitions_in_range(
     const int64_t from_hour = (from_ns / NS_PER_HOUR) * NS_PER_HOUR;
     const int64_t to_hour   = (to_ns   / NS_PER_HOUR) * NS_PER_HOUR;
 
-    auto all = list_partitions(symbol);
+    auto all = list_partitions(table_id, symbol);
     std::vector<int64_t> result;
     result.reserve(all.size());
 
@@ -207,9 +245,16 @@ std::vector<int64_t> HDBReader::list_partitions_in_range(
 // ============================================================================
 // column_file_path: 컬럼 파일 경로
 // ============================================================================
-std::string HDBReader::column_file_path(SymbolId symbol,
+std::string HDBReader::column_file_path(uint16_t table_id,
+                                          SymbolId symbol,
                                           int64_t  hour_epoch,
                                           const std::string& col_name) const {
+    if (table_id != 0) {
+        return base_path_ + "/t" + std::to_string(table_id) + "/" +
+               std::to_string(symbol) + "/" +
+               std::to_string(hour_epoch) + "/" +
+               col_name + ".bin";
+    }
     return base_path_ + "/" +
            std::to_string(symbol) + "/" +
            std::to_string(hour_epoch) + "/" +

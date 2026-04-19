@@ -508,3 +508,85 @@ ninja -j$(nproc)
 ---
 
 *See also: [SQL Reference](SQL_REFERENCE.md) · [Python Reference](PYTHON_REFERENCE.md) · [HTTP Reference](HTTP_REFERENCE.md)*
+
+## Table-aware ingest (Stage B — devlog 084)
+
+All ingress entry points that produce a `TickMessage` can now stamp a
+destination `table_id`. Resolve the name via the pipeline's `SchemaRegistry`
+once, then stamp every message before calling `ingest_tick()`:
+
+```cpp
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/ingestion/tick_plant.h"
+#include <stdexcept>
+
+zeptodb::core::ZeptoPipeline pipeline;
+// ... CREATE TABLE first (via QueryExecutor) ...
+const uint16_t tid = pipeline.schema_registry().get_table_id("trades");
+if (tid == 0) throw std::invalid_argument("Unknown table: trades");
+
+zeptodb::ingestion::TickMessage msg{};
+msg.symbol_id = 1;
+msg.price     = 15000;
+msg.volume    = 100;
+msg.recv_ts   = now_ns();
+msg.table_id  = tid;              // Stamp before ingest
+pipeline.ingest_tick(msg);
+```
+
+### Feed handlers
+
+`KafkaConfig::table_name` / `MqttConfig::table_name` resolve the id once
+inside `set_pipeline()` and stamp it on every decoded tick automatically:
+
+```cpp
+zeptodb::feeds::KafkaConfig cfg;
+cfg.topic      = "market_data";
+cfg.table_name = "trades";        // empty = legacy path (table_id = 0)
+zeptodb::feeds::KafkaConsumer consumer(cfg);
+consumer.set_pipeline(&pipeline); // resolves table_name → table_id here
+```
+
+FIX / ITCH / Binance parser classes expose `set_table_id(tid)` and
+`set_table_name(name)` setters that return the configured id to callers
+that forward the parser's `Tick` into a `TickMessage`.
+
+### Migration tools
+
+All four migrator configs (`ClickHouseMigrator::Config`,
+`DuckDBIntegrator::Config`, `TimescaleDBMigrator::Config`) expose a
+`dest_table` field. `HDBLoader::set_dest_table(name)` sets the destination
+on the loader. The `zepto-migrate` CLI wires them via `--dest-table <name>`.
+
+---
+
+## Cluster routing (Stage C — devlog 085)
+
+`ClusterNode::ingest_tick(TickMessage msg)` now honors `msg.table_id` when
+selecting the owning node — it calls `route(msg.table_id, msg.symbol_id)`
+instead of `route(msg.symbol_id)`. Two tables that both use `symbol_id = 1`
+can therefore live on different nodes. The migration dual-write path
+(`PartitionRouter::migration_target(symbol_id)`) keeps its single-symbol
+semantics for now.
+
+A table-aware routing accessor is available for callers that build their
+own ingest path:
+
+```cpp
+zeptodb::cluster::ClusterNode<T> node(cfg);
+const uint16_t tid = node.pipeline().schema_registry().get_table_id("trades");
+
+// Resolve the owner for (table, symbol)
+NodeId owner = node.route(tid, /*symbol_id=*/1);
+
+// Backward compat: route(sym) is equivalent to route(0, sym)
+NodeId legacy_owner = node.route(1);  // == node.route(0, 1)
+```
+
+Each data node resolves `FROM <table>` in scattered SQL via its own
+`SchemaRegistry`, which Stage A made durable at `{hdb_base}/_schema.json`.
+If every node loads the same file (e.g. a shared mount or an operator-driven
+seed), the scatter-gather SELECT path is automatically table-aware — no
+additional RPC fields required.
+
+*See also: [Devlog 084 — Stage B](../devlog/084_stage_b_ingest_paths.md), [Devlog 085 — Stage C](../devlog/085_stage_c_cluster_and_sql_strict.md)*

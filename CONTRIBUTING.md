@@ -30,12 +30,61 @@ ninja -j$(nproc)
 ```bash
 cd build
 ninja zepto_tests
-./tests/zepto_tests                              # all tests
+./tests/zepto_tests                              # all tests (single process, serial)
 ./tests/zepto_tests --gtest_filter="*YourTest*"  # specific test
+
+# Parallel — one process per test, scales with cores:
+ctest -j$(nproc) --output-on-failure
+
+# Note: a single `./tests/zepto_tests` invocation runs GTest cases
+# sequentially in-process by design. Use ctest for parallel execution.
 
 # Python tests
 python3 -m pytest ../tests/test_python.py -v
 ```
+
+## Running the full test matrix
+
+For pre-commit or pre-release verification, use the single orchestrator
+`tools/run-full-matrix.sh` instead of invoking every runner by hand.
+It composes the build, ctest, integration shell scripts, pytest suites,
+local benches, aarch64 (Graviton via EKS), and the EKS K8s benchmark
+pipeline — fail-fast by default, with one shared EKS wake/sleep cycle
+when cloud stages are selected. See `docs/devlog/092_full_matrix_test_script.md`
+(and `docs/devlog/093_parallel_arm64_unit_stage.md` for the parallel arm64
+stage) for the full design.
+
+`--local` / `--eks` / `--all` all include a parallel arm64 unit stage
+(`aarch64_unit_ssh`) by default. It rsyncs the tree to a persistent
+Graviton EC2 instance, remote-builds `zepto_tests` / `test_feeds` /
+`test_migration`, and runs the same ctest exclusion regex as the x86
+stage — all in parallel with stage 2, at \$0 cost. If the host is
+unreachable (VPN down, instance stopped) the stage prints a `WARN` and
+skips with rc=0 so local development never blocks. Override the target
+with `GRAVITON_HOST` / `GRAVITON_KEY` env vars, or drop the stage
+entirely with `--no-arm64`.
+
+```bash
+# Local only (stages 1,2,8,3,4): build + ctest + parallel arm64 unit + integration + pytest
+./tools/run-full-matrix.sh --local
+
+# Skip the persistent-Graviton arm64 stage (VPN down, instance offline, etc.)
+./tools/run-full-matrix.sh --local --no-arm64
+
+# Local + cloud (stages 1,2,8,3,4,7): adds full EKS K8s/bench pipeline
+# (Stage 6 — EKS-buildx aarch64 image — is deprecated in favor of stage 8;
+#  request it explicitly with --stages=6 if you need the container path.)
+./tools/run-full-matrix.sh --eks --repo=<account>.dkr.ecr.<region>.amazonaws.com/zeptodb
+
+# Everything including local benches (stages 1,2,8,3,4,5,7)
+./tools/run-full-matrix.sh --all --repo=<account>.dkr.ecr.<region>.amazonaws.com/zeptodb
+
+# Preview without executing
+./tools/run-full-matrix.sh --dry-run --all
+```
+
+Stage logs land in `/tmp/zepto_full_matrix_<timestamp>/stage_<n>_<name>.log`.
+Run `tools/run-full-matrix.sh --help` for the complete flag list.
 
 ## Code Style
 

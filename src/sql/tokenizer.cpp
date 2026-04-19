@@ -155,12 +155,22 @@ Token Tokenizer::read_number() {
 }
 
 // ============================================================================
-// 문자열 리터럴 파싱 (단순 '...' 지원)
+// 문자열 리터럴 파싱 (단순 '...' 지원; '' -> ' 이스케이프, devlog 089)
 // ============================================================================
 Token Tokenizer::read_string() {
     advance(); // 여는 '
     std::string s;
-    while (!at_end() && peek() != '\'') {
+    while (!at_end()) {
+        if (peek() == '\'') {
+            // devlog 089: '' inside a string literal == one embedded '
+            if (pos_ + 1 < sql_.size() && sql_[pos_ + 1] == '\'') {
+                s += '\'';
+                advance();  // first '
+                advance();  // second '
+                continue;
+            }
+            break;
+        }
         s += advance();
     }
     if (at_end()) {

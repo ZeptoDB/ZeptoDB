@@ -67,8 +67,8 @@ size_t HDBWriter::flush_partition(const Partition& partition) {
         return 0;
     }
 
-    // 파티션 디렉토리 생성
-    const std::string dir = partition_dir(key.symbol_id, key.hour_epoch);
+    // 파티션 디렉토리 생성 (table-scoped)
+    const std::string dir = partition_dir(key.table_id, key.symbol_id, key.hour_epoch);
     if (!mkdir_p(dir)) {
         ZEPTO_WARN("flush_partition: 디렉토리 생성 실패: {}", dir);
         return 0;
@@ -79,7 +79,7 @@ size_t HDBWriter::flush_partition(const Partition& partition) {
     // 컬럼별 직렬화
     for (const auto& col_ptr : partition.columns()) {
         if (!col_ptr) continue;
-        const size_t written = write_column_file(dir, *col_ptr);
+        const size_t written = write_column_file(dir, *col_ptr, key.table_id);
         total_written += written;
     }
 
@@ -102,10 +102,19 @@ size_t HDBWriter::snapshot_partition(const Partition& partition,
     const size_t num_rows = partition.num_rows();
     if (num_rows == 0) return 0;
 
-    // 스냅샷 디렉토리: {snapshot_dir}/{symbol_id}/{hour_epoch}
-    const std::string dir = snapshot_dir + "/" +
-                            std::to_string(key.symbol_id) + "/" +
-                            std::to_string(key.hour_epoch);
+    // 스냅샷 디렉토리: table-scoped
+    //   table_id != 0 → {snapshot_dir}/t{table_id}/{symbol_id}/{hour_epoch}
+    //   table_id == 0 → {snapshot_dir}/{symbol_id}/{hour_epoch}
+    std::string dir;
+    if (key.table_id != 0) {
+        dir = snapshot_dir + "/t" + std::to_string(key.table_id) + "/" +
+              std::to_string(key.symbol_id) + "/" +
+              std::to_string(key.hour_epoch);
+    } else {
+        dir = snapshot_dir + "/" +
+              std::to_string(key.symbol_id) + "/" +
+              std::to_string(key.hour_epoch);
+    }
     if (!mkdir_p(dir)) {
         ZEPTO_WARN("snapshot_partition: 디렉토리 생성 실패: {}", dir);
         return 0;
@@ -114,7 +123,7 @@ size_t HDBWriter::snapshot_partition(const Partition& partition,
     size_t total_written = 0;
     for (const auto& col_ptr : partition.columns()) {
         if (!col_ptr) continue;
-        total_written += write_column_file(dir, *col_ptr);
+        total_written += write_column_file(dir, *col_ptr, key.table_id);
     }
 
     ZEPTO_DEBUG("snapshot 완료: symbol={}, hour={}, rows={}, bytes={}",
@@ -126,7 +135,8 @@ size_t HDBWriter::snapshot_partition(const Partition& partition,
 // write_column_file: 단일 컬럼 → 바이너리 파일
 // ============================================================================
 size_t HDBWriter::write_column_file(const std::string& dir_path,
-                                     const ColumnVector& col) {
+                                     const ColumnVector& col,
+                                     uint16_t table_id) {
     const std::string file_path = dir_path + "/" + col.name() + ".bin";
 
     // 원본 데이터
@@ -168,15 +178,17 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
     }
 #endif
 
-    // --- 헤더 구성 ---
+    // --- 헤더 구성 (v2: includes table_id) ---
     HDBFileHeader header{};
     std::memcpy(header.magic, HDB_MAGIC, 5);
-    header.version           = HDB_VERSION;
+    header.version           = HDB_VERSION;   // = 2
     header.col_type          = static_cast<uint8_t>(col.type());
     header.compression       = static_cast<uint8_t>(compression);
     header.row_count         = static_cast<uint64_t>(col.size());
     header.data_size         = static_cast<uint64_t>(write_size);
     header.uncompressed_size = static_cast<uint64_t>(raw_data_size);
+    header.table_id          = table_id;
+    // header.reserved is zero-initialized by {}.
 
     // --- 파일 쓰기 ---
     const int fd = ::open(file_path.c_str(),
@@ -224,8 +236,14 @@ size_t HDBWriter::write_column_file(const std::string& dir_path,
 // ============================================================================
 // partition_dir: 파티션 디렉토리 경로
 // ============================================================================
-std::string HDBWriter::partition_dir(SymbolId symbol, int64_t hour_epoch) const {
-    // 형식: {base_path}/{symbol_id}/{hour_epoch}
+std::string HDBWriter::partition_dir(uint16_t table_id, SymbolId symbol, int64_t hour_epoch) const {
+    // table_id != 0 → {base}/t{table_id}/{symbol}/{hour}
+    // table_id == 0 → {base}/{symbol}/{hour}   (legacy, pre-v2 layout)
+    if (table_id != 0) {
+        return base_path_ + "/t" + std::to_string(table_id) + "/" +
+               std::to_string(symbol) + "/" +
+               std::to_string(hour_epoch);
+    }
     return base_path_ + "/" +
            std::to_string(symbol) + "/" +
            std::to_string(hour_epoch);

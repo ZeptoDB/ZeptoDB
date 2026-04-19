@@ -22,6 +22,7 @@
 #include "zeptodb/common/logger.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 
@@ -75,6 +76,15 @@ ZeptoPipeline::ZeptoPipeline(PipelineConfig config)
 
         ZEPTO_INFO("HDB 활성화: path={}", config_.hdb_base_path);
     }
+
+    // Load persisted schema catalog if present (HDB modes only).
+    if (!config_.hdb_base_path.empty()) {
+        const std::string schema_path = config_.hdb_base_path + "/_schema.json";
+        if (schema_registry_.load_from(schema_path)) {
+            ZEPTO_INFO("SchemaRegistry loaded from {} ({} tables)",
+                      schema_path, schema_registry_.table_count());
+        }
+    }
 }
 
 ZeptoPipeline::~ZeptoPipeline() {
@@ -115,28 +125,29 @@ void ZeptoPipeline::start() {
         if (fs::exists(snap, ec)) {
             HDBReader snap_reader(snap);
 
-            for (auto& sym_entry : fs::directory_iterator(snap, ec)) {
-                if (!sym_entry.is_directory()) continue;
+            // Walk one symbol subtree (`base/{sym}/{hour}/...`) and reload rows.
+            auto walk_symbol = [&](const fs::path& sym_path, uint16_t table_id) {
                 SymbolId sym_id = 0;
                 try { sym_id = static_cast<SymbolId>(
-                    std::stoll(sym_entry.path().filename().string())); }
-                catch (...) { continue; }
+                    std::stoll(sym_path.filename().string())); }
+                catch (...) { return; }
 
-                for (auto& hour_entry : fs::directory_iterator(sym_entry.path(), ec)) {
+                std::error_code ec2;
+                for (auto& hour_entry : fs::directory_iterator(sym_path, ec2)) {
                     if (!hour_entry.is_directory()) continue;
                     int64_t hour_epoch = 0;
                     try { hour_epoch = std::stoll(
                         hour_entry.path().filename().string()); }
                     catch (...) { continue; }
 
-                    auto ts_col  = snap_reader.read_column(sym_id, hour_epoch, COL_TIMESTAMP);
-                    auto px_col  = snap_reader.read_column(sym_id, hour_epoch, COL_PRICE);
-                    auto vol_col = snap_reader.read_column(sym_id, hour_epoch, COL_VOLUME);
-                    auto mt_col  = snap_reader.read_column(sym_id, hour_epoch, COL_MSG_TYPE);
+                    auto ts_col  = snap_reader.read_column(table_id, sym_id, hour_epoch, COL_TIMESTAMP);
+                    auto px_col  = snap_reader.read_column(table_id, sym_id, hour_epoch, COL_PRICE);
+                    auto vol_col = snap_reader.read_column(table_id, sym_id, hour_epoch, COL_VOLUME);
+                    auto mt_col  = snap_reader.read_column(table_id, sym_id, hour_epoch, COL_MSG_TYPE);
 
                     if (!ts_col.valid() || !px_col.valid() || !vol_col.valid()) {
-                        ZEPTO_WARN("Recovery: incomplete snapshot for symbol={} hour={}",
-                                  sym_id, hour_epoch);
+                        ZEPTO_WARN("Recovery: incomplete snapshot for table={} symbol={} hour={}",
+                                  table_id, sym_id, hour_epoch);
                         continue;
                     }
 
@@ -147,6 +158,7 @@ void ZeptoPipeline::start() {
 
                     for (size_t i = 0; i < n; ++i) {
                         TickMessage msg{};
+                        msg.table_id  = table_id;
                         msg.symbol_id = sym_id;
                         msg.recv_ts   = ts_span[i];
                         msg.price     = px_span[i];
@@ -158,6 +170,27 @@ void ZeptoPipeline::start() {
                         store_tick(msg);
                         ++recovered_rows;
                     }
+                }
+            };
+
+            for (auto& entry : fs::directory_iterator(snap, ec)) {
+                if (!entry.is_directory()) continue;
+                const std::string name = entry.path().filename().string();
+                // Table-scoped subtree: `t{table_id}/...`
+                if (name.size() > 1 && name[0] == 't' &&
+                    std::all_of(name.begin() + 1, name.end(),
+                                [](char c){ return std::isdigit(static_cast<unsigned char>(c)); })) {
+                    uint16_t tid = 0;
+                    try { tid = static_cast<uint16_t>(std::stoi(name.substr(1))); }
+                    catch (...) { continue; }
+                    std::error_code ec3;
+                    for (auto& sym_entry : fs::directory_iterator(entry.path(), ec3)) {
+                        if (!sym_entry.is_directory()) continue;
+                        walk_symbol(sym_entry.path(), tid);
+                    }
+                } else {
+                    // Legacy layout `{sym}/{hour}/...` — table_id = 0.
+                    walk_symbol(entry.path(), 0);
                 }
             }
         }
@@ -235,8 +268,8 @@ size_t ZeptoPipeline::ingest_batch(int32_t symbol,
 // store_tick: 틱 → ColumnStore 저장 (드레인 스레드에서만 호출)
 // ============================================================================
 void ZeptoPipeline::store_tick(const TickMessage& msg) {
-    // 파티션 가져오기 (없으면 자동 생성)
-    Partition& partition = partition_mgr_.get_or_create(msg.symbol_id, msg.recv_ts);
+    // 파티션 가져오기 (없으면 자동 생성) — table-scoped
+    Partition& partition = partition_mgr_.get_or_create(msg.table_id, msg.symbol_id, msg.recv_ts);
 
     // 파티션 최초 접근 시 스키마 초기화
     if (partition.get_column(COL_TIMESTAMP) == nullptr) {
@@ -246,10 +279,12 @@ void ZeptoPipeline::store_tick(const TickMessage& msg) {
         partition.add_column(COL_VOLUME,    ColumnType::INT64);
         partition.add_column(COL_MSG_TYPE,  ColumnType::INT32);
 
-        // partition_index_ 업데이트
+        // partition_index_ 업데이트 — key = (table_id << 32) | symbol_id
         {
             std::lock_guard<std::mutex> lk(partition_index_mu_);
-            partition_index_[msg.symbol_id].push_back(&partition);
+            const uint64_t k = (static_cast<uint64_t>(msg.table_id) << 32)
+                             | static_cast<uint32_t>(msg.symbol_id);
+            partition_index_[k].push_back(&partition);
         }
 
         stats_.partitions_created.fetch_add(1, std::memory_order_relaxed);
@@ -321,11 +356,13 @@ size_t ZeptoPipeline::drain_sync(size_t max_items) {
 }
 
 // ============================================================================
-// find_partitions: symbol에 대한 모든 파티션 포인터 반환
+// find_partitions: (table_id, symbol)에 대한 모든 파티션 포인터 반환
 // ============================================================================
-std::vector<Partition*> ZeptoPipeline::find_partitions(SymbolId symbol) const {
+std::vector<Partition*> ZeptoPipeline::find_partitions(uint16_t table_id, SymbolId symbol) const {
     std::lock_guard<std::mutex> lk(partition_index_mu_);
-    auto it = partition_index_.find(symbol);
+    const uint64_t k = (static_cast<uint64_t>(table_id) << 32)
+                     | static_cast<uint32_t>(symbol);
+    auto it = partition_index_.find(k);
     if (it == partition_index_.end()) return {};
     return it->second;
 }
@@ -626,10 +663,27 @@ size_t ZeptoPipeline::evict_older_than_ns(int64_t cutoff_ns) {
         std::lock_guard<std::mutex> lk(partition_index_mu_);
         partition_index_.clear();
         for (Partition* p : partition_mgr_.get_all_partitions()) {
-            partition_index_[p->key().symbol_id].push_back(p);
+            const auto& k = p->key();
+            const uint64_t idx_key = (static_cast<uint64_t>(k.table_id) << 32)
+                                   | static_cast<uint32_t>(k.symbol_id);
+            partition_index_[idx_key].push_back(p);
         }
     }
     return evicted;
+}
+
+// ============================================================================
+// drop_table_index: remove partition_index_ entries for a given table_id
+// ============================================================================
+void ZeptoPipeline::drop_table_index(uint16_t table_id) {
+    std::lock_guard<std::mutex> lk(partition_index_mu_);
+    for (auto it = partition_index_.begin(); it != partition_index_.end(); ) {
+        if (static_cast<uint16_t>(it->first >> 32) == table_id) {
+            it = partition_index_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // ============================================================================

@@ -283,6 +283,12 @@ protected:
 
         executor = std::make_unique<QueryExecutor>(*pipeline);
 
+        // CREATE TABLE first so table_id is assigned; subsequent ingest_tick
+        // calls must stamp that table_id on the message (table-scoped partitioning).
+        executor->execute(
+            "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)");
+        const uint16_t tid = pipeline->schema_registry().get_table_id("trades");
+
         // 데이터 삽입: symbol=1, trades 테이블
         // price: 15000..15009, volume: 100..109
         for (int i = 0; i < 10; ++i) {
@@ -292,6 +298,7 @@ protected:
             msg.price      = 15000 + i * 10;
             msg.volume     = 100 + i;
             msg.msg_type   = 0;
+            msg.table_id   = tid;
             pipeline->ingest_tick(msg);
         }
         // symbol=2 데이터
@@ -302,6 +309,7 @@ protected:
             msg.price      = 20000 + i * 10;
             msg.volume     = 200 + i;
             msg.msg_type   = 0;
+            msg.table_id   = tid;
             pipeline->ingest_tick(msg);
         }
 
@@ -2763,6 +2771,12 @@ protected:
         pipeline = std::make_unique<ZeptoPipeline>(cfg);
         executor = std::make_unique<QueryExecutor>(*pipeline);
 
+        // CREATE TABLE first so table_id is assigned; store_tick_direct
+        // messages stamp that table_id for table-scoped partitioning.
+        executor->execute(
+            "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)");
+        const uint16_t tid = pipeline->schema_registry().get_table_id("trades");
+
         // 3 symbols, 100 ticks each, 1-second intervals
         // Use store_tick_direct to preserve exact timestamps
         const int64_t base_ts = 1'711'000'000'000'000'000LL;
@@ -2774,6 +2788,7 @@ protected:
                 msg.price     = s * 10000 + i * 10;
                 msg.volume    = (s == 3 ? 50 : s * 100) + i;
                 msg.msg_type  = 0;
+                msg.table_id  = tid;
                 pipeline->store_tick_direct(msg);
             }
         }
@@ -4426,6 +4441,30 @@ TEST_F(SqlExecutorTest, PreparedStatementCache) {
     // Clear cache
     executor->clear_prepared_cache();
     EXPECT_EQ(executor->prepared_cache_size(), 0u);
+}
+
+// ----------------------------------------------------------------------------
+// devlog 091 F4: cache_prepared() primes the prepared-statement cache so the
+// HTTP ACL path can thread its already-parsed AST in and avoid a re-parse.
+// ----------------------------------------------------------------------------
+TEST_F(SqlExecutorTest, CachePreparedAvoidsReparse) {
+    executor->clear_prepared_cache();
+    ASSERT_EQ(executor->prepared_cache_size(), 0u);
+
+    zeptodb::sql::Parser parser;
+    auto ps = parser.parse_statement("SELECT COUNT(*) FROM trades");
+
+    executor->cache_prepared("SELECT COUNT(*) FROM trades", std::move(ps));
+    EXPECT_EQ(executor->prepared_cache_size(), 1u);
+
+    // Idempotent: second call with same SQL must NOT grow the cache.
+    auto ps2 = parser.parse_statement("SELECT COUNT(*) FROM trades");
+    executor->cache_prepared("SELECT COUNT(*) FROM trades", std::move(ps2));
+    EXPECT_EQ(executor->prepared_cache_size(), 1u);
+
+    // Subsequent execute() on the same SQL should still succeed (cache hit).
+    auto r = executor->execute("SELECT COUNT(*) FROM trades");
+    EXPECT_TRUE(r.ok()) << r.error;
 }
 
 // ============================================================================

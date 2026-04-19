@@ -42,6 +42,7 @@ struct Tick {
     Side     side;               // 매수/매도
     uint64_t order_id;           // 주문 ID (옵션)
     uint32_t sequence;           // 시퀀스 번호 (옵션)
+    uint16_t table_id;           // ZeptoDB table_id (0 = legacy/default), devlog 086
 
     Tick()
         : symbol_id(0)
@@ -52,6 +53,7 @@ struct Tick {
         , side(Side::UNKNOWN)
         , order_id(0)
         , sequence(0)
+        , table_id(0)
     {}
 };
 

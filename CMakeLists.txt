@@ -684,6 +684,7 @@ target_link_libraries(zepto_scheduler PUBLIC
 add_library(zepto_feeds STATIC
     src/feeds/fix_parser.cpp
     src/feeds/nasdaq_itch.cpp
+    src/feeds/binance_feed.cpp
 )
 target_include_directories(zepto_feeds PUBLIC
     ${CMAKE_SOURCE_DIR}/include
@@ -859,6 +860,7 @@ if(ZEPTO_BUILD_BENCH)
         zepto_storage
         zepto_ingestion
         zepto_execution
+        zepto_auth
     )
     target_compile_options(bench_cluster PRIVATE
         -O3 -march=native

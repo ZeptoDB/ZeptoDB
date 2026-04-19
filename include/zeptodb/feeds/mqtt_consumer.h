@@ -80,6 +80,15 @@ struct MqttConfig {
     std::unordered_map<std::string, SymbolId> symbol_map;
 
     // ------------------------------------------------------------------
+    // Table-aware ingest (Stage B, devlog 084)
+    // ------------------------------------------------------------------
+    // Optional destination table. Empty string = legacy/default path
+    // (msg.table_id = 0). When non-empty, the consumer resolves the
+    // table_id via the connected pipeline's SchemaRegistry and stamps it
+    // on every decoded TickMessage.
+    std::string table_name;
+
+    // ------------------------------------------------------------------
     // Backpressure: retry when the ingestion ring buffer is full
     // ------------------------------------------------------------------
     int backpressure_retries   = 3;
@@ -203,6 +212,9 @@ private:
 
     // Opaque Paho handle (mqtt::async_client* when ZEPTO_MQTT_AVAILABLE)
     void* client_handle_ = nullptr;
+
+    // Resolved destination table_id (Stage B, devlog 084). 0 = legacy path.
+    uint16_t table_id_ = 0;
 };
 
 } // namespace zeptodb::feeds

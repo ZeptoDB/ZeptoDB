@@ -123,6 +123,37 @@ class ZeptoConnection:
         self._base_url = f"http://{host}:{port}"
 
     # ------------------------------------------------------------------
+    # SQL identifier validation (devlog 089 — injection guard)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_identifier(name: str) -> str:
+        """Validate SQL identifier (table/column name).
+
+        Raises ``ValueError`` if the name doesn't match
+        ``^[A-Za-z_][A-Za-z0-9_]*$``. Applied to every caller-supplied
+        table/column name before it's interpolated into a SQL string.
+        """
+        import re
+        if not isinstance(name, str) or not re.match(
+                r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+            raise ValueError(f"Invalid SQL identifier: {name!r}")
+        return name
+
+    @staticmethod
+    def _validate_type(name: str) -> str:
+        """Validate SQL column type string (e.g. ``INT64``, ``DOUBLE``).
+
+        Types are a controlled set but we still reject anything outside
+        ``^[A-Za-z0-9_]+$`` to prevent injection via a misused kwarg.
+        """
+        import re
+        if not isinstance(name, str) or not re.match(
+                r'^[A-Za-z0-9_]+$', name):
+            raise ValueError(f"Invalid SQL type: {name!r}")
+        return name
+
+    # ------------------------------------------------------------------
     # Core HTTP methods
     # ------------------------------------------------------------------
 
@@ -221,6 +252,37 @@ class ZeptoConnection:
         return result.row_count
 
     # ------------------------------------------------------------------
+    # DDL convenience helpers
+    # ------------------------------------------------------------------
+
+    def create_table(
+        self,
+        name: str,
+        columns: "list[tuple[str, str]]",
+        if_not_exists: bool = False,
+    ) -> None:
+        """Create a table. columns: [("symbol", "INT64"), ("price", "INT64"), ...]"""
+        self._validate_identifier(name)
+        cols_sql = ", ".join(
+            f"{self._validate_identifier(n)} {self._validate_type(t)}"
+            for n, t in columns
+        )
+        ine = "IF NOT EXISTS " if if_not_exists else ""
+        self.execute(f"CREATE TABLE {ine}{name} ({cols_sql})")
+
+    def drop_table(self, name: str, if_exists: bool = False) -> None:
+        """Drop a table."""
+        self._validate_identifier(name)
+        ie = "IF EXISTS " if if_exists else ""
+        self.execute(f"DROP TABLE {ie}{name}")
+
+    def list_tables(self) -> "list[str]":
+        """Return list of table names via SHOW TABLES."""
+        rs = self.query("SHOW TABLES")
+        # SHOW TABLES returns one column with table names
+        return [row[0] for row in rs.rows] if rs.rows else []
+
+    # ------------------------------------------------------------------
     # Pandas ingest
     # ------------------------------------------------------------------
 
@@ -231,6 +293,7 @@ class ZeptoConnection:
         sym_col: str = "sym",
         timestamp_col: Optional[str] = "timestamp",
         show_progress: bool = False,
+        table_name: str = "ticks",
     ) -> int:
         """
         Ingest a pandas DataFrame into ZeptoDB.
@@ -245,6 +308,8 @@ class ZeptoConnection:
         sym_col : str, column containing symbol/key
         timestamp_col : str or None
         show_progress : bool
+        table_name : str, default "ticks"
+            Destination table for the generated INSERT statements.
 
         Returns
         -------
@@ -252,6 +317,8 @@ class ZeptoConnection:
         """
         if not HAS_PANDAS:
             raise ImportError("pandas is required")
+
+        self._validate_identifier(table_name)
 
         cols = list(df.columns)
         total = len(df)
@@ -265,7 +332,8 @@ class ZeptoConnection:
                 for col in cols:
                     val = row[col]
                     if isinstance(val, str):
-                        row_vals.append(f"'{val}'")
+                        # devlog 089: double embedded single quotes (SQL escape)
+                        row_vals.append("'" + val.replace("'", "''") + "'")
                     elif hasattr(val, 'item'):  # numpy scalar
                         row_vals.append(str(val.item()))
                     else:
@@ -273,7 +341,7 @@ class ZeptoConnection:
                 values.append(f"({', '.join(row_vals)})")
 
             sql = (
-                f"INSERT INTO ticks ({', '.join(cols)}) VALUES "
+                f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES "
                 + ", ".join(values)
             )
             self._post(sql)
@@ -314,6 +382,7 @@ class ZeptoConnection:
         df: "pl.DataFrame",
         batch_size: int = 10_000,
         show_progress: bool = False,
+        table_name: str = "ticks",
     ) -> int:
         """
         Ingest a polars DataFrame into ZeptoDB.
@@ -321,9 +390,11 @@ class ZeptoConnection:
         """
         if not HAS_POLARS:
             raise ImportError("polars is required")
+        self._validate_identifier(table_name)
         pd_df = df.to_pandas()
         return self.ingest_pandas(pd_df, batch_size=batch_size,
-                                  show_progress=show_progress)
+                                  show_progress=show_progress,
+                                  table_name=table_name)
 
     # ------------------------------------------------------------------
     # Context manager

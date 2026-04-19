@@ -353,3 +353,80 @@ TEST(KafkaConsumerTest, StartWithoutKafkaLibrary) {
     EXPECT_FALSE(consumer.is_running());
 #endif
 }
+
+// ============================================================================
+// Stage B (devlog 084): Table-aware ingest
+// ============================================================================
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/storage/partition_manager.h"
+
+TEST(KafkaConsumerTest, TableScopedIngestLandsInTable) {
+    zeptodb::core::PipelineConfig pcfg;
+    pcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline pipeline(pcfg);
+
+    // CREATE TABLE via SQL so the SchemaRegistry assigns a non-zero table_id.
+    zeptodb::sql::QueryExecutor ex(pipeline);
+    ex.execute("CREATE TABLE kfeed (symbol INT64, price INT64, volume INT64, "
+               "timestamp TIMESTAMP_NS)");
+    const uint16_t tid = pipeline.schema_registry().get_table_id("kfeed");
+    ASSERT_NE(tid, 0);
+
+    KafkaConfig cfg;
+    cfg.topic      = "t";
+    cfg.table_name = "kfeed";
+    KafkaConsumer consumer(cfg);
+    consumer.set_pipeline(&pipeline);
+
+    TickMessage msg{};
+    msg.symbol_id = 1;
+    msg.price     = 12345;
+    msg.volume    = 10;
+    EXPECT_TRUE(consumer.ingest_decoded(msg));
+
+    pipeline.drain_sync(100);
+
+    auto parts = pipeline.partition_manager().get_partitions_for_table(tid);
+    ASSERT_GE(parts.size(), 1u);
+    // At least one row for symbol 1 in the kfeed-scoped partition set.
+    size_t total = 0;
+    for (auto* p : parts) total += p->num_rows();
+    EXPECT_GE(total, 1u);
+}
+
+TEST(KafkaConsumerTest, TableNameEmptyIsLegacyPath) {
+    zeptodb::core::PipelineConfig pcfg;
+    pcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline pipeline(pcfg);
+
+    KafkaConfig cfg;
+    cfg.topic = "t";  // table_name empty → legacy path
+    KafkaConsumer consumer(cfg);
+    consumer.set_pipeline(&pipeline);
+
+    TickMessage msg{};
+    msg.symbol_id = 2;
+    msg.price     = 99;
+    msg.volume    = 1;
+    EXPECT_TRUE(consumer.ingest_decoded(msg));
+    EXPECT_EQ(consumer.stats().route_local, 1u);
+}
+
+TEST(KafkaConsumerTest, UnknownTableDropsMessages) {
+    zeptodb::core::PipelineConfig pcfg;
+    pcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline pipeline(pcfg);
+
+    KafkaConfig cfg;
+    cfg.topic      = "t";
+    cfg.table_name = "nonexistent";   // never CREATE'd
+    KafkaConsumer consumer(cfg);
+    consumer.set_pipeline(&pipeline);  // logs error, table_id stays 0
+
+    TickMessage msg{};
+    msg.symbol_id = 3;
+    msg.price     = 1;
+    msg.volume    = 1;
+    EXPECT_FALSE(consumer.ingest_decoded(msg));
+    EXPECT_EQ(consumer.stats().ingest_failures, 1u);
+}

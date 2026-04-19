@@ -27,6 +27,7 @@ protected:
         executor_ = std::make_unique<zeptodb::sql::QueryExecutor>(*pipeline_);
         executor_->execute("CREATE TABLE IF NOT EXISTS trades "
                            "(symbol SYMBOL, price INT64, volume INT64, timestamp INT64)");
+        const uint16_t tid = pipeline_->schema_registry().get_table_id("trades");
 
         // Seed data
         for (int i = 0; i < 100; ++i) {
@@ -35,6 +36,7 @@ protected:
             msg.price     = (15000 + i) * 1'000'000LL;
             msg.volume    = 100 + i;
             msg.recv_ts   = 1711234567'000'000'000LL + static_cast<int64_t>(i) * 1'000'000LL;
+            msg.table_id  = tid;
             pipeline_->ingest_tick(msg);
         }
         pipeline_->drain_sync(200);

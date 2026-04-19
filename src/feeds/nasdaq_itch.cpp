@@ -40,6 +40,10 @@ bool NASDAQITCHParser::parse_packet(const uint8_t* data, size_t len) {
 bool NASDAQITCHParser::extract_tick(Tick& tick, SymbolMapper* mapper) const {
     if (current_message_ == nullptr) return false;
 
+    // devlog 086 (D3): auto-stamp table_id so downstream pipeline ingest routes
+    // to the correct SchemaRegistry-assigned table. 0 = legacy/default.
+    tick.table_id = table_id_;
+
     switch (msg_type_) {
         case ITCHMessageType::ADD_ORDER: {
             if (current_message_len_ < sizeof(ITCHAddOrder)) return false;

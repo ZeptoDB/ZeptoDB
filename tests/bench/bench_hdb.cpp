@@ -62,7 +62,7 @@ static std::unique_ptr<Partition> make_bench_partition(
         .use_hugepages = true,
     });
 
-    PartitionKey key{symbol, hour_epoch};
+    PartitionKey key{0, symbol, hour_epoch};
     auto part = std::make_unique<Partition>(key, std::move(arena));
 
     part->add_column("timestamp",  ColumnType::TIMESTAMP_NS);

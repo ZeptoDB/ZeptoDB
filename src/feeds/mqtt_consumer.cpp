@@ -32,6 +32,17 @@ MqttConsumer::~MqttConsumer() {
 
 void MqttConsumer::set_pipeline(zeptodb::core::ZeptoPipeline* pipeline) {
     pipeline_ = pipeline;
+    // Stage B: resolve configured table_name → table_id via SchemaRegistry.
+    if (pipeline_ && !config_.table_name.empty()) {
+        uint16_t tid = pipeline_->schema_registry().get_table_id(config_.table_name);
+        if (tid == 0) {
+            ZEPTO_ERROR("MqttConsumer: unknown table '{}' — ticks will be dropped",
+                        config_.table_name);
+        }
+        table_id_ = tid;
+    } else {
+        table_id_ = 0;
+    }
 }
 
 void MqttConsumer::set_routing(
@@ -64,8 +75,16 @@ bool MqttConsumer::ingest_decoded(zeptodb::ingestion::TickMessage msg) {
     const int retries  = config_.backpressure_retries;
     const int sleep_us = config_.backpressure_sleep_us;
 
+    // Stage B: drop if a destination table was configured but unknown.
+    if (!config_.table_name.empty() && table_id_ == 0) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.ingest_failures++;
+        return false;
+    }
+    msg.table_id = table_id_;
+
     if (router_) {
-        zeptodb::cluster::NodeId target = router_->route(msg.symbol_id);
+        zeptodb::cluster::NodeId target = router_->route(msg.table_id, msg.symbol_id);
         if (target == local_id_) {
             if (!pipeline_) {
                 std::lock_guard<std::mutex> lk(stats_mu_);

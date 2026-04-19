@@ -276,8 +276,10 @@ public:
             return ok_from || ok_to;
         }
 
-        // Normal path: single route
-        NodeId owner = route(msg.symbol_id);
+        // Normal path: table-aware single route.
+        // Each (table_id, symbol_id) pair hashes to its own slot so different
+        // tables with the same symbol id can land on different nodes.
+        NodeId owner = route(msg.table_id, msg.symbol_id);
 
         if (owner == config_.self.id) {
             return local_pipeline_.ingest_tick(msg);
@@ -340,6 +342,14 @@ public:
     NodeId route(SymbolId symbol) const {
         std::shared_lock lock(router_mutex_);
         return router_.route(symbol);
+    }
+
+    /// Table-aware routing: hashes (table_id, symbol) so the same symbol_id
+    /// used in two different tables can land on different nodes.  Backward
+    /// compatible — `route(sym)` is equivalent to `route(0, sym)`.
+    NodeId route(uint16_t table_id, SymbolId symbol) const {
+        std::shared_lock lock(router_mutex_);
+        return router_.route(table_id, symbol);
     }
 
     PartitionRouter& router() { return router_; }

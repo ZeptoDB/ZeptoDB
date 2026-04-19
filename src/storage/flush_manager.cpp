@@ -244,10 +244,16 @@ void FlushManager::flush_partition_parquet(const Partition& partition)
 
     const auto& key = partition.key();
 
-    // 파티션 디렉토리: {hdb_base}/{symbol}/{hour}/
-    const std::string parquet_dir = writer_.base_path() + "/" +
-                                    std::to_string(key.symbol_id) + "/" +
-                                    std::to_string(key.hour_epoch);
+    // 파티션 디렉토리 (table-scoped):
+    //   table_id != 0 → {hdb_base}/t{tid}/{symbol}/{hour}
+    //   table_id == 0 → {hdb_base}/{symbol}/{hour}   (legacy layout)
+    const std::string parquet_dir = (key.table_id != 0)
+        ? (writer_.base_path() + "/t" + std::to_string(key.table_id) + "/" +
+           std::to_string(key.symbol_id) + "/" +
+           std::to_string(key.hour_epoch))
+        : (writer_.base_path() + "/" +
+           std::to_string(key.symbol_id) + "/" +
+           std::to_string(key.hour_epoch));
 
     const std::string filepath = parquet_writer_->flush_to_file(partition, parquet_dir);
 

@@ -55,6 +55,7 @@ def from_pandas(
     price_scale: float = 1.0,
     vol_scale: float = 1.0,
     show_progress: bool = False,
+    table_name: Optional[str] = None,
 ) -> int:
     """
     Ingest a pandas DataFrame into ZeptoDB via the C++ pipeline.
@@ -110,7 +111,8 @@ def from_pandas(
     for start in range(0, total, batch_size):
         chunk = df.iloc[start : start + batch_size]
         ingested += _ingest_pandas_chunk(
-            chunk, pipeline, sym_col, price_col, vol_col, price_scale, vol_scale
+            chunk, pipeline, sym_col, price_col, vol_col, price_scale, vol_scale,
+            table_name,
         )
         if show_progress:
             done = min(start + batch_size, total)
@@ -130,6 +132,7 @@ def _ingest_pandas_chunk(
     vol_col: str,
     price_scale: float,
     vol_scale: float,
+    table_name: Optional[str] = None,
 ) -> int:
     """Vectorized ingest of one pandas chunk."""
     syms = chunk[sym_col].to_numpy(dtype=np.int64, copy=False)
@@ -146,7 +149,11 @@ def _ingest_pandas_chunk(
     else:
         vols = raw_vols.astype(np.int64, copy=False)
 
-    pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+    if table_name:
+        pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols,
+                              table_name=table_name)
+    else:
+        pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
     pipeline.drain()
     return len(chunk)
 
@@ -222,6 +229,7 @@ def from_polars(
     price_scale: float = 1.0,
     vol_scale: float = 1.0,
     show_progress: bool = False,
+    table_name: Optional[str] = None,
 ) -> int:
     """
     Zero-copy Polars DataFrame → ZeptoDB ingest.
@@ -275,7 +283,8 @@ def from_polars(
         # df.slice() is zero-copy in Polars (returns a view)
         chunk = df.slice(start, batch_size)
         ingested += _ingest_polars_chunk(
-            chunk, pipeline, sym_col, price_col, vol_col, price_scale, vol_scale
+            chunk, pipeline, sym_col, price_col, vol_col, price_scale, vol_scale,
+            table_name,
         )
         if show_progress:
             done = min(start + batch_size, total)
@@ -295,6 +304,7 @@ def _ingest_polars_chunk(
     vol_col: str,
     price_scale: float,
     vol_scale: float,
+    table_name: Optional[str] = None,
 ) -> int:
     """Vectorized ingest of one polars chunk.
 
@@ -316,7 +326,11 @@ def _ingest_polars_chunk(
     else:
         vols = raw_vols.astype(np.int64, copy=False)
 
-    pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+    if table_name:
+        pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols,
+                              table_name=table_name)
+    else:
+        pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
     pipeline.drain()
     return len(chunk)
 
@@ -329,6 +343,7 @@ def from_polars_arrow(
     vol_col: str = "volume",
     price_scale: float = 1.0,
     vol_scale: float = 1.0,
+    table_name: Optional[str] = None,
 ) -> int:
     """
     Polars → Arrow → numpy zero-copy ingest (requires pyarrow).
@@ -344,7 +359,8 @@ def from_polars_arrow(
     if not HAS_PYARROW:
         return from_polars(df, pipeline, sym_col=sym_col,
                            price_col=price_col, vol_col=vol_col,
-                           price_scale=price_scale, vol_scale=vol_scale)
+                           price_scale=price_scale, vol_scale=vol_scale,
+                           table_name=table_name)
 
     _require_cols(df, [sym_col, price_col, vol_col], "polars DataFrame")
 
@@ -352,7 +368,8 @@ def from_polars_arrow(
     arrow_table = df.to_arrow()
     return from_arrow(arrow_table, pipeline,
                       sym_col=sym_col, price_col=price_col, vol_col=vol_col,
-                      price_scale=price_scale, vol_scale=vol_scale)
+                      price_scale=price_scale, vol_scale=vol_scale,
+                      table_name=table_name)
 
 
 def to_polars(
@@ -409,6 +426,7 @@ def from_arrow(
     vol_col: str = "volume",
     price_scale: float = 1.0,
     vol_scale: float = 1.0,
+    table_name: Optional[str] = None,
 ) -> int:
     """
     Apache Arrow Table → ZeptoDB vectorized ingest.
@@ -466,7 +484,11 @@ def from_arrow(
         else:
             vols = raw_vols.astype(np.int64, copy=False)
 
-        pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+        if table_name:
+            pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols,
+                                  table_name=table_name)
+        else:
+            pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
         pipeline.drain()
         ingested += batch.num_rows
 

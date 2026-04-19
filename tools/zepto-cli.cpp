@@ -404,7 +404,7 @@ public:
         }
 
         if (cmd == "show tables" || cmd == "SHOW TABLES") {
-            execute_query("SELECT name FROM system.tables");
+            execute_query("SHOW TABLES");
             r.handled = true;
             return r;
         }
@@ -607,7 +607,16 @@ public:
                 if (result.quit) break;
 
                 if (!result.handled) {
-                    cmds_.execute_query(accumulated);
+                    // devlog 089: strip trailing `;` (and whitespace) before
+                    // dispatch — the server tokenizer rejects semicolons, but
+                    // the REPL uses `;` as the end-of-statement delimiter.
+                    std::string sql = accumulated;
+                    while (!sql.empty() && sql.back() == ';') sql.pop_back();
+                    while (!sql.empty() &&
+                           (sql.back() == ' '  || sql.back() == '\t' ||
+                            sql.back() == '\n' || sql.back() == '\r'))
+                        sql.pop_back();
+                    cmds_.execute_query(sql);
                 }
 
 #if HAVE_READLINE
@@ -648,7 +657,14 @@ public:
                 if (cfg_.verbose) {
                     std::cout << "-- [line " << line_num << "] " << accumulated << "\n";
                 }
-                cmds_.execute_query(accumulated);
+                // devlog 089: strip trailing `;` — tokenizer rejects it.
+                std::string sql = accumulated;
+                while (!sql.empty() && sql.back() == ';') sql.pop_back();
+                while (!sql.empty() &&
+                       (sql.back() == ' '  || sql.back() == '\t' ||
+                        sql.back() == '\n' || sql.back() == '\r'))
+                    sql.pop_back();
+                cmds_.execute_query(sql);
                 accumulated.clear();
             }
         }

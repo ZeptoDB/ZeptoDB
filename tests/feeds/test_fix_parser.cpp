@@ -227,6 +227,19 @@ TEST(FIXParserPerformanceTest, ParseSpeed) {
     EXPECT_LT(ns_per_msg, 1000.0);
 }
 
+// ============================================================================
+// Stage B (devlog 084): Table-aware ingest setters
+// ============================================================================
+TEST(FIXParserStageB, TableIdSetterRoundTrip) {
+    FIXParser p;
+    EXPECT_EQ(p.table_id(), 0u);
+    EXPECT_TRUE(p.table_name().empty());
+    p.set_table_id(7);
+    p.set_table_name("orders");
+    EXPECT_EQ(p.table_id(), 7u);
+    EXPECT_EQ(p.table_name(), "orders");
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

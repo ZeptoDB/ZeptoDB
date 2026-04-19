@@ -338,4 +338,15 @@ TEST(ITCHParserPerformanceTest, ParseSpeed) {
     EXPECT_LT(ns_per_msg, 500.0);
 }
 
+// Stage B (devlog 084): Table-aware ingest setters
+TEST(NASDAQITCHParserStageB, TableIdSetterRoundTrip) {
+    NASDAQITCHParser p;
+    EXPECT_EQ(p.table_id(), 0u);
+    EXPECT_TRUE(p.table_name().empty());
+    p.set_table_id(9);
+    p.set_table_name("nasdaq_trades");
+    EXPECT_EQ(p.table_id(), 9u);
+    EXPECT_EQ(p.table_name(), "nasdaq_trades");
+}
+
 // main provided by test_fix_parser.cpp

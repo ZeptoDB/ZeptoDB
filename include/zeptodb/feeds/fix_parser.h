@@ -84,6 +84,15 @@ public:
     uint64_t get_parse_count() const { return parse_count_; }
     uint64_t get_error_count() const { return error_count_; }
 
+    // Table-aware ingest (Stage B, devlog 084).
+    // Setters are write-only hints; callers that forward parsed Ticks into
+    // a ZeptoDB pipeline should stamp `table_id()` onto the produced
+    // TickMessage before ingest.
+    void     set_table_id(uint16_t tid)         { table_id_ = tid; }
+    void     set_table_name(std::string name)   { table_name_ = std::move(name); }
+    uint16_t table_id()   const { return table_id_; }
+    const std::string& table_name() const { return table_name_; }
+
 private:
     // 필드 맵 (tag → value)
     std::unordered_map<int, std::string> fields_;
@@ -92,6 +101,10 @@ private:
     // 통계
     uint64_t parse_count_;
     uint64_t error_count_;
+
+    // Table-aware ingest (Stage B, devlog 084)
+    uint16_t    table_id_ = 0;
+    std::string table_name_;
 
     // 헬퍼
     bool validate_checksum(const char* msg, size_t len) const;

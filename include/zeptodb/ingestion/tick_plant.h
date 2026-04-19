@@ -28,7 +28,8 @@ struct ZEPTO_CACHE_ALIGNED TickMessage {
     Volume    volume;       // 체결량
     uint8_t   msg_type;     // 0=Trade, 1=BidUpdate, 2=AskUpdate
     uint8_t   price_is_float; // 1 if price stores double via price_f
-    uint8_t   _pad[6];      // Alignment padding
+    uint16_t  table_id;     // 0 = default/legacy (assigned by SchemaRegistry)
+    uint8_t   _pad[4];      // Alignment padding
 };
 static_assert(sizeof(TickMessage) == 64, "TickMessage must be exactly 1 cache line");
 

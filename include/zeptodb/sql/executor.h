@@ -112,6 +112,11 @@ public:
     size_t prepared_cache_size() const;
     void   clear_prepared_cache();
 
+    /// Prime the prepared-statement cache with a pre-parsed AST for the given
+    /// SQL. Used by the HTTP ACL path (devlog 091 F4) to avoid re-parsing.
+    /// No-op if the cache already contains this SQL's hash or is at capacity.
+    void cache_prepared(const std::string& sql, ParsedStatement ps);
+
     /// Query result cache control
     void   enable_result_cache(size_t max_entries = 128, double ttl_seconds = 5.0);
     void   disable_result_cache();

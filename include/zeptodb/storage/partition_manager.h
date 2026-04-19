@@ -23,14 +23,19 @@
 namespace zeptodb::storage {
 
 // ============================================================================
-// PartitionKey: Symbol + Hour 단위 파티션 식별자
+// PartitionKey: Table + Symbol + Hour 단위 파티션 식별자
+//   table_id = 0 → legacy/default (single-table, no CREATE TABLE)
+//   table_id > 0 → assigned by SchemaRegistry on CREATE TABLE
 // ============================================================================
 struct PartitionKey {
+    uint16_t table_id = 0;   // 0 = legacy/default
     SymbolId symbol_id;
     int64_t  hour_epoch;   // floor(timestamp / 3600e9) * 3600e9
 
     bool operator==(const PartitionKey& other) const {
-        return symbol_id == other.symbol_id && hour_epoch == other.hour_epoch;
+        return table_id == other.table_id
+            && symbol_id == other.symbol_id
+            && hour_epoch == other.hour_epoch;
     }
 };
 
@@ -39,6 +44,7 @@ struct PartitionKeyHash {
         // FNV-1a style combine
         size_t h = static_cast<size_t>(k.symbol_id);
         h ^= static_cast<size_t>(k.hour_epoch) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(k.table_id)   + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -246,9 +252,14 @@ class PartitionManager {
 public:
     explicit PartitionManager(size_t arena_size_per_partition = DEFAULT_ARENA_SIZE);
 
-    /// 틱 데이터의 Symbol + Timestamp로 적절한 파티션에 라우팅
+    /// 틱 데이터의 Table + Symbol + Timestamp로 적절한 파티션에 라우팅
     /// 없으면 자동 생성
-    Partition& get_or_create(SymbolId symbol, Timestamp ts);
+    Partition& get_or_create(uint16_t table_id, SymbolId symbol, Timestamp ts);
+
+    /// Legacy overload (table_id = 0) for backward compat
+    Partition& get_or_create(SymbolId symbol, Timestamp ts) {
+        return get_or_create(0, symbol, ts);
+    }
 
     /// 임계 메모리 도달 시 오래된 ACTIVE 파티션을 SEALED로 전환
     std::vector<Partition*> seal_old_partitions(Timestamp current_ts, int64_t max_age_hours = 1);
@@ -259,12 +270,27 @@ public:
     /// 전체 파티션 목록 반환 (SQL 쿼리 실행용)
     std::vector<Partition*> get_all_partitions();
 
-    /// 특정 Symbol의 파티션 목록 반환
-    std::vector<Partition*> get_partitions_for_symbol(SymbolId symbol);
+    /// 특정 Table + Symbol의 파티션 목록 반환
+    std::vector<Partition*> get_partitions_for_symbol(uint16_t table_id, SymbolId symbol);
 
-    /// Return partitions whose hour_epoch window overlaps [lo, hi] (nanoseconds).
-    /// Uses partition key comparison only — O(partitions), no data access.
+    /// Legacy overload — table_id = 0
+    std::vector<Partition*> get_partitions_for_symbol(SymbolId symbol) {
+        return get_partitions_for_symbol(0, symbol);
+    }
+
+    /// Return partitions of a specific table whose hour_epoch window overlaps [lo, hi].
+    std::vector<Partition*> get_partitions_for_time_range(uint16_t table_id, int64_t lo, int64_t hi);
+
+    /// Legacy overload — all tables
     std::vector<Partition*> get_partitions_for_time_range(int64_t lo, int64_t hi);
+
+    /// Return all partitions belonging to a specific table (table_id scoping).
+    [[nodiscard]] std::vector<Partition*> get_partitions_for_table(uint16_t table_id);
+
+    /// Remove all partitions belonging to the given table_id.
+    /// Used by DROP TABLE to release memory. O(partitions).
+    /// @return number of partitions removed.
+    size_t drop_table_partitions(uint16_t table_id);
 
     /// Remove partitions whose hour_epoch is strictly before cutoff_ns.
     /// Used for TTL-based retention eviction.

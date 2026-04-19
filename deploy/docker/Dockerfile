@@ -102,6 +102,27 @@ RUN mkdir -p /runtime-libs && \
     mkdir -p /runtime-libs/var/log/zeptodb && chmod 777 /runtime-libs/var/log/zeptodb
 
 # ============================================================================
+# Stage 2b: Test builder (devlog 088 — aarch64 full-suite target)
+# ----------------------------------------------------------------------------
+# Runs the unit / migration / feed test binaries inside the container. Used by
+# `tools/run-aarch64-tests.sh` to execute the full C++ test suite on Graviton
+# after a buildx cross-compile. The image is NOT pushed to the production
+# registry — it's a disposable CI artifact.
+# ============================================================================
+FROM builder AS test
+RUN cd build && cmake .. -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang-19 \
+    -DCMAKE_CXX_COMPILER=clang++-19 \
+    -DBUILD_TESTS=ON \
+    -DZEPTO_USE_JIT=ON \
+    -DZEPTO_USE_S3=ON \
+    -DZEPTO_USE_PARQUET=ON \
+    -DZEPTO_USE_FLIGHT=ON && \
+    ninja -j$(nproc) zepto_tests test_migration test_feeds
+CMD ["/build/build/tests/zepto_tests"]
+
+# ============================================================================
 # Stage 3: Runtime (distroless)
 # ============================================================================
 FROM gcr.io/distroless/cc-debian12:nonroot

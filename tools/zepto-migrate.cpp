@@ -7,6 +7,7 @@
 #include "zeptodb/migration/clickhouse_migrator.h"
 #include "zeptodb/migration/duckdb_interop.h"
 #include "zeptodb/migration/timescaledb_migrator.h"
+#include "zeptodb/migration/migrate_utils.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -40,6 +41,11 @@ struct MigrateOptions {
     bool verbose = false;
     bool dry_run = false;
     std::string target = "sql";  // sql or python
+
+    // Destination ZeptoDB table name (Stage B, devlog 084).
+    // CLI: --dest-table <name> — stamped as msg.table_id when migrators
+    // ingest into a live pipeline. Empty = legacy/default path.
+    std::string dest_table;
 
     // ClickHouse options
     std::string ch_host = "localhost";
@@ -82,6 +88,7 @@ HDB Mode:
   -o, --output <path>      ZeptoDB output directory
   -t, --table <name>       Specific table (default: all)
   -p, --partition <date>   Specific partition (YYYY.MM.DD)
+  --dest-table <name>      Destination ZeptoDB table (CREATE TABLE name)
   --dry-run                Scan only, no data migration
 
 ClickHouse Mode:
@@ -91,6 +98,7 @@ ClickHouse Mode:
   --ch-port <port>         ClickHouse port (default: 8123)
   --ch-db <name>           ClickHouse database (default: default)
   -t, --table <name>       Specific table (default: all)
+  --dest-table <name>      Destination ZeptoDB table (CREATE TABLE name)
 
 DuckDB Mode:
   -d, --hdb-dir <path>     Source data directory
@@ -98,6 +106,7 @@ DuckDB Mode:
   -t, --table <name>       Specific table (default: all)
   --compression <codec>    Parquet compression: SNAPPY|ZSTD|GZIP (default: SNAPPY)
   --threads <n>            DuckDB thread count (default: auto)
+  --dest-table <name>      Destination ZeptoDB table (CREATE TABLE name)
 
 TimescaleDB Mode:
   -d, --hdb-dir <path>     kdb+ HDB source directory
@@ -106,6 +115,7 @@ TimescaleDB Mode:
   -t, --table <name>       Specific table (default: trades,quotes)
   --no-compression         Disable compression policy
   --retention <days>       Add retention policy (days)
+  --dest-table <name>      Destination ZeptoDB table (CREATE TABLE name)
 
 Examples:
   # Convert q query
@@ -147,6 +157,7 @@ MigrateOptions parse_args(int argc, char* argv[]) {
         else if (arg == "-o" || arg == "--output")      { if (i+1 < argc) opts.output = argv[++i]; }
         else if (arg == "-d" || arg == "--hdb-dir")     { if (i+1 < argc) opts.input = argv[++i]; }
         else if (arg == "-t" || arg == "--table")       { if (i+1 < argc) opts.table_name = argv[++i]; }
+        else if (arg == "--dest-table")                 { if (i+1 < argc) opts.dest_table = argv[++i]; }
         else if (arg == "-p" || arg == "--partition")   { if (i+1 < argc) opts.partition_date = argv[++i]; }
         else if (arg == "--ch-host")                    { if (i+1 < argc) opts.ch_host = argv[++i]; }
         else if (arg == "--ch-port")                    { if (i+1 < argc) opts.ch_port = std::stoi(argv[++i]); }
@@ -228,6 +239,7 @@ bool migrate_hdb(const MigrateOptions& opts) {
     }
 
     HDBLoader loader(opts.input);
+    loader.set_dest_table(opts.dest_table);
     if (!loader.scan()) {
         std::cerr << "Error: Failed to scan HDB\n";
         return false;
@@ -288,6 +300,7 @@ bool migrate_clickhouse(const MigrateOptions& opts) {
     config.clickhouse_port = opts.ch_port;
     config.clickhouse_db   = opts.ch_db;
     config.migrate_data    = !opts.dry_run;
+    config.dest_table      = opts.dest_table;
 
     if (!opts.table_name.empty()) {
         config.tables = {opts.table_name};
@@ -344,6 +357,7 @@ bool migrate_duckdb(const MigrateOptions& opts) {
     DuckDBIntegrator::Config config;
     config.zepto_data_path = opts.input;
     config.threads = opts.duckdb_threads;
+    config.dest_table = opts.dest_table;
 
     DuckDBIntegrator integrator(config);
 
@@ -393,6 +407,7 @@ bool migrate_timescaledb(const MigrateOptions& opts) {
     config.enable_compression = opts.enable_compression;
     config.add_retention_policy = opts.add_retention;
     config.retention_days = opts.retention_days;
+    config.dest_table = opts.dest_table;
 
     if (!opts.table_name.empty()) {
         config.tables = {opts.table_name};
@@ -431,6 +446,29 @@ int main(int argc, char* argv[]) {
     if (opts.mode == MigrateMode::HELP) {
         print_usage();
         return 0;
+    }
+
+    // devlog 086 (D2): if the caller supplied --dest-table and a directory
+    // output that will hold an HDB catalog, create the table in SchemaRegistry
+    // and persist `_schema.json` so subsequent pipeline startups pick it up.
+    // TimescaleDB (SQL-file output) and QUERY mode are skipped — neither
+    // writes an HDB directory.
+    const bool dir_output_mode =
+        opts.mode == MigrateMode::HDB ||
+        opts.mode == MigrateMode::CLICKHOUSE ||
+        opts.mode == MigrateMode::DUCKDB;
+    if (dir_output_mode && !opts.dest_table.empty() && !opts.output.empty()) {
+        uint16_t tid = zeptodb::migration::ensure_dest_table(opts.output, opts.dest_table);
+        if (tid == 0) {
+            std::cerr << "Warning: failed to register dest_table '"
+                      << opts.dest_table << "' in " << opts.output
+                      << "/_schema.json — migration will still run, but "
+                         "post-migration SELECT may require manual CREATE TABLE.\n";
+        } else if (opts.verbose) {
+            std::cout << "dest_table '" << opts.dest_table
+                      << "' registered with table_id=" << tid
+                      << " in " << opts.output << "/_schema.json\n";
+        }
     }
 
     try {

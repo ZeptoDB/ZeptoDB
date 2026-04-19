@@ -87,6 +87,17 @@ struct KafkaConfig {
     CommitMode commit_mode = CommitMode::AFTER_INGEST;
 
     // ------------------------------------------------------------------
+    // Table-aware ingest (Stage B, devlog 084)
+    // ------------------------------------------------------------------
+    // Optional destination table. Empty string = legacy/default path
+    // (msg.table_id = 0). When non-empty, the consumer resolves the
+    // table_id via the connected pipeline's SchemaRegistry on the first
+    // ingest and stamps it on every decoded TickMessage.
+    // An unknown table name causes set_pipeline()/ingest_decoded() to
+    // log an error and drop messages (ingest_failures++).
+    std::string table_name;
+
+    // ------------------------------------------------------------------
     // Backpressure: retry when the ingestion ring buffer is full
     // ------------------------------------------------------------------
     // If ingest_tick() returns false (ring buffer full), retry up to
@@ -222,6 +233,11 @@ private:
 
     // Opaque Kafka handle (RdKafka::KafkaConsumer* when ZEPTO_KAFKA_AVAILABLE)
     void* consumer_handle_ = nullptr;
+
+    // Resolved destination table_id (Stage B). 0 = legacy path; UINT16_MAX
+    // sentinel means "resolve on first use" (set after set_pipeline).
+    // After resolution: stamped onto every TickMessage before ingest.
+    uint16_t table_id_ = 0;
 };
 
 } // namespace zeptodb::feeds

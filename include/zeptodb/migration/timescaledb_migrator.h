@@ -171,6 +171,9 @@ public:
         bool add_retention_policy = false;
         int retention_days = 365;
         std::vector<std::string> tables;
+        // Destination ZeptoDB table name (Stage B, devlog 084). Empty =
+        // legacy path; when set, stamped as `msg.table_id` on ingest.
+        std::string dest_table;
     };
 
     explicit TimescaleDBMigrator(const Config& config);

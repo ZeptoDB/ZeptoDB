@@ -403,3 +403,54 @@ TEST(MqttConsumerTest, ConcurrentIngestAndStop) {
     EXPECT_EQ(s.messages_consumed, s.route_local + s.ingest_failures);
     EXPECT_EQ(s.decode_errors, 0u);
 }
+
+// ============================================================================
+// Stage B (devlog 084): Table-aware ingest
+// ============================================================================
+#include "zeptodb/sql/executor.h"
+#include "zeptodb/storage/partition_manager.h"
+
+TEST(MqttConsumerTest, TableScopedIngestLandsInTable) {
+    zeptodb::core::PipelineConfig pcfg;
+    pcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline pipeline(pcfg);
+
+    zeptodb::sql::QueryExecutor ex(pipeline);
+    ex.execute("CREATE TABLE mfeed (symbol INT64, price INT64, volume INT64, "
+               "timestamp TIMESTAMP_NS)");
+    const uint16_t tid = pipeline.schema_registry().get_table_id("mfeed");
+    ASSERT_NE(tid, 0);
+
+    MqttConfig cfg;
+    cfg.topic      = "t";
+    cfg.table_name = "mfeed";
+    MqttConsumer consumer(cfg);
+    consumer.set_pipeline(&pipeline);
+
+    TickMessage msg{};
+    msg.symbol_id = 1;
+    msg.price     = 42;
+    msg.volume    = 3;
+    EXPECT_TRUE(consumer.ingest_decoded(msg));
+
+    pipeline.drain_sync(100);
+    auto parts = pipeline.partition_manager().get_partitions_for_table(tid);
+    ASSERT_GE(parts.size(), 1u);
+}
+
+TEST(MqttConsumerTest, UnknownTableDropsMessages) {
+    zeptodb::core::PipelineConfig pcfg;
+    pcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline pipeline(pcfg);
+
+    MqttConfig cfg;
+    cfg.topic      = "t";
+    cfg.table_name = "nonexistent";
+    MqttConsumer consumer(cfg);
+    consumer.set_pipeline(&pipeline);
+
+    TickMessage msg{};
+    msg.symbol_id = 1;
+    EXPECT_FALSE(consumer.ingest_decoded(msg));
+    EXPECT_EQ(consumer.stats().ingest_failures, 1u);
+}

@@ -104,6 +104,7 @@ class ArrowSession:
         vol_col: str = "volume",
         price_scale: float = 1.0,
         vol_scale: float = 1.0,
+        table_name: Optional[str] = None,
     ) -> int:
         """
         Ingest an Arrow Table into ZeptoDB via vectorized batch.
@@ -120,6 +121,9 @@ class ArrowSession:
             Column names in the Arrow table.
         price_scale, vol_scale : float
             Float→int64 scale factor.
+        table_name : str, optional
+            Destination ZeptoDB table name (from CREATE TABLE). None → legacy
+            path (all rows land in the default/unnamed table).
 
         Returns
         -------
@@ -131,6 +135,7 @@ class ArrowSession:
             batch_size=batch_size,
             sym_col=sym_col, price_col=price_col, vol_col=vol_col,
             price_scale=price_scale, vol_scale=vol_scale,
+            table_name=table_name,
         )
 
     def ingest_arrow_columnar(
@@ -140,6 +145,7 @@ class ArrowSession:
         vol_arr: "pa.Array",
         price_scale: float = 1.0,
         vol_scale: float = 1.0,
+        table_name: Optional[str] = None,
     ) -> int:
         """
         Column-wise Arrow array ingest — maximum zero-copy path.
@@ -188,7 +194,11 @@ class ArrowSession:
         else:
             vols = raw_vols.astype(np.int64, copy=False)
 
-        self.pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
+        if table_name:
+            self.pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols,
+                                       table_name=table_name)
+        else:
+            self.pipeline.ingest_batch(symbols=syms, prices=prices, volumes=vols)
         self.pipeline.drain()
         return n
 

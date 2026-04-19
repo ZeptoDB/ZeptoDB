@@ -995,6 +995,9 @@ CREATE TABLE orders (
 
 Supported types: `INT64`, `INT32`, `FLOAT64`, `FLOAT32`, `TIMESTAMP_NS`, `SYMBOL`, `BOOL`
 
+**Table-scoped partitioning & strict fallback (devlog 082, 083, 084, 085):**
+Once at least one `CREATE TABLE` has succeeded (i.e. `SchemaRegistry::table_count() > 0`), the executor switches to *strict* mode — a query referencing an unknown table name returns **zero rows** instead of falling back to a global partition scan. This ensures `SELECT * FROM empty_table` and `SELECT * FROM does_not_exist` both see 0 rows even when other tables contain data. Tables with no `CREATE TABLE` ever issued keep using the legacy per-symbol path (`table_id = 0`). In a distributed cluster this works on scatter-gather SELECTs too — each data node resolves `FROM <table>` via its own durable `_schema.json`, so the strict behavior is identical on every node.
+
 ### DROP TABLE
 
 ```sql

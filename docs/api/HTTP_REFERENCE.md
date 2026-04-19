@@ -40,12 +40,35 @@ using the ClickHouse data source plugin with no modification.
 # Build (see README for full build instructions)
 cd build && ninja -j$(nproc)
 
-# Start with default settings (port 8123, no auth)
-./zepto_server --port 8123
+# Start with default settings (port 8123, no auth, in-memory)
+./zepto_http_server --port 8123
+
+# Persist catalog & HDB tier to disk (survives restart)
+./zepto_http_server --port 8123 --hdb-dir /var/lib/zeptodb/hdb
 
 # Start with TLS + auth enabled
-./zepto_server --port 8123 --tls-cert server.crt --tls-key server.key
+./zepto_http_server --port 8123 --tls-cert server.crt --tls-key server.key
 ```
+
+### Storage CLI flags
+
+| Flag | Value | Effect |
+|------|-------|--------|
+| `--hdb-dir <path>` | directory path | Enables tiered storage (RDB + HDB) rooted at `<path>`. `_schema.json` and column files live under this dir. Implies `--storage-mode tiered`. |
+| `--storage-mode <mode>` | `pure` (default) \| `tiered` | `pure` = in-memory only (fastest, lost on exit). `tiered` = persist to `--hdb-dir` or `/tmp/zepto_hdb` if unset. |
+| `--tenant <id:namespace>` | `tenant-id:prefix` | **(repeatable, devlog 091)** Register a tenant at startup with a table-namespace prefix. Any request carrying `X-Zepto-Tenant-Id: <id>` is then limited to tables whose names start with `<namespace>`. A tenant with an empty namespace is unrestricted. Example: `--tenant deska_:deska_` restricts tenant `deska_` to tables like `deska_trades`, `deska_quotes`. |
+
+When `--hdb-dir` is supplied, `CREATE TABLE` DDL is persisted to
+`<path>/_schema.json` on every call and reloaded on server start, so tables
+survive restarts. See [devlog 086](../devlog/086_residual_limits_closed.md)
+for the underlying mechanism.
+
+### Tenant identity headers
+
+| Header | Purpose |
+|--------|---------|
+| `X-Zepto-Tenant-Id` | Identifies the calling tenant. In authenticated mode this header is stamped automatically from the API key / JWT claim. In `--no-auth` mode the client supplies it directly. When present **and** the server was started with a matching `--tenant <id:namespace>`, every statement's touched table is checked against the namespace prefix — non-matching requests get `403 "Tenant 't' cannot access table 'x'"`. |
+| `X-Zepto-Allowed-Tables` | Comma-separated list of tables the caller is permitted to touch (SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/ALTER/DESCRIBE). Stamped from API key / JWT `allowed_tables` claim. |
 
 ### Run your first query
 
@@ -1043,6 +1066,37 @@ curl -X POST https://zepto:8443/admin/keys \
 When `allowed_tables` is empty (default), the key has access to all tables.
 Table ACL is enforced at the HTTP layer before SQL execution — the SQL parser
 extracts the target table from the query and checks it against the key's whitelist.
+
+Covered statement kinds (devlog 090):
+
+- `SELECT ... FROM <table>`
+- `INSERT INTO <table> ...`
+- `UPDATE <table> ...`
+- `DELETE FROM <table> ...`
+- `CREATE TABLE <table> ...`
+- `DROP TABLE <table>`
+- `ALTER TABLE <table> ...`
+- `DESCRIBE <table>`
+
+A key with `allowed_tables: ["trades"]` attempting `CREATE TABLE forbidden (...)`
+or `DESCRIBE secret` receives `403 Forbidden`. `SHOW TABLES` is not table-scoped
+and is not gated by this ACL.
+
+### Tenant Namespace Enforcement (devlog 090)
+
+When an API key / JWT carries a non-empty `tenant_id` and the server has a
+`TenantManager` configured with a `table_namespace` for that tenant, every
+POST / query is additionally checked against the namespace prefix. A tenant
+with `table_namespace: "deskA."` cannot query / write / describe any table
+whose name does not start with `deskA.` — the server returns:
+
+```
+HTTP/1.1 403 Forbidden
+{"error":"Tenant 'deskA' cannot access table 'deskB.trades'"}
+```
+
+Tenant namespace enforcement runs after the `allowed_tables` check and
+before query execution. Tenants with empty `table_namespace` are unrestricted.
 
 | ACL Type | Scope | Example |
 |----------|-------|---------|

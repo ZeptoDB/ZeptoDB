@@ -107,10 +107,19 @@ public:
     bool export_to_zepto(const std::string& table_name,
                         const std::string& output_dir);
 
+    // Table-aware ingest (Stage B, devlog 084). Destination ZeptoDB table
+    // name: empty = legacy path; when set, future live-pipeline ingest
+    // paths resolve this via SchemaRegistry and stamp `msg.table_id`.
+    void set_dest_table(std::string name) { dest_table_ = std::move(name); }
+    const std::string& dest_table() const { return dest_table_; }
+
 private:
     std::filesystem::path hdb_root_;
     std::vector<HDBTable> tables_;
     std::unordered_map<std::string, std::vector<std::string>> sym_tables_;
+
+    // Destination ZeptoDB table name (Stage B, devlog 084)
+    std::string dest_table_;
 
     // Discovery methods
     bool discover_tables();

@@ -37,7 +37,7 @@ flowchart TD
 
 ## 4. Detailed Design
 - **Memory Arena technique:** The RDB pre-allocates a large memory space (Pool) via CXL/RDMA (Arena). Rather than dynamically allocating memory (`malloc`/`new`) for each incoming tick, the arena's empty pointer is atomically updated (bump pointer), making allocation cost zero.
-- **Partitioning:** Data is divided into partition chunks by `Symbol` and `Hour`. Each chunk becomes a target for HDB flush when it transitions to read-only state.
+- **Partitioning:** Data is divided into partition chunks keyed by `(table_id, symbol_id, hour_epoch)`. `table_id` (uint16_t) is assigned by `SchemaRegistry` on `CREATE TABLE` (0 is reserved for the legacy single-table path), so every table has its own partition space and `SELECT * FROM empty_table` never returns rows from other tables. Each chunk becomes a target for HDB flush when it transitions to read-only state. See devlog 082 (initial design) and devlogs 083–085 (full-sweep closure: HDB v2 header, `_schema.json` durability, table-aware ingress/cluster routing, strict SQL fallback) for the implementation.
 
 ## 5. Partition Attribute Hints (kdb+ `s#`/`g#`/`p#` equivalent)
 
@@ -183,4 +183,76 @@ Recovery path:
 
 ---
 
-*Last updated: 2026-03-23*
+## 8. HDB On-Disk Format — File Header (v1 / v2)
+
+Each HDB column file starts with a fixed-size header.
+
+| Version | Header size | Emitted by | Contains `table_id` | Read-compatible by |
+|---------|-------------|------------|---------------------|--------------------|
+| v1 | 32 bytes | Pre-devlog 083 writers | No (implicit `0`) | v1 & v2 readers |
+| v2 | 40 bytes | Current writer (`HDB_VERSION = 2`) | Yes, `uint16_t` at offset 32 | v2 readers only |
+
+v2 layout (`HDBFileHeader`, `sizeof == 40`):
+
+```
+offset  size  field
+  0     5     magic[5] = "APEXH"
+  5     1     version  = 2
+  6     1     col_type (ColumnType)
+  7     1     compression (0=None, 1=LZ4)
+  8     8     row_count
+ 16     8     data_size
+ 24     8     uncompressed_size
+ 32     2     table_id            <-- v2 only
+ 34     6     reserved[6] (zero)
+```
+
+Readers dispatch on the `version` byte at offset 5: v1 files are read with a 32-byte header and `table_id` is forced to `0`. v2 files read the full 40 bytes. A caller passing `table_id != 0` to `HDBReader::read_column` will be rejected if the on-disk header carries a different `table_id` (cross-table leak guard).
+
+### 8.1 Directory Layout
+
+| table_id | Directory pattern |
+|----------|-------------------|
+| `0` (legacy / single-table) | `{hdb_base}/{symbol_id}/{hour_epoch}/{col}.bin` |
+| `> 0` (CREATE TABLE assigned) | `{hdb_base}/t{table_id}/{symbol_id}/{hour_epoch}/{col}.bin` |
+
+`HDBWriter::partition_dir(table_id, symbol, hour)` is the canonical builder; a legacy single-argument overload delegates with `table_id = 0` and returns the pre-v2 layout so existing kdb+-style HDB roots remain readable.
+
+## 9. SchemaRegistry Durability (`_schema.json`)
+
+`SchemaRegistry` persists the catalog to `{hdb_base_path}/_schema.json` whenever a CREATE/DROP TABLE succeeds, so `table_id` assignments survive process restarts:
+
+```json
+{"next_table_id":4,
+ "tables":[
+   {"name":"trades","table_id":1,"ttl_ns":0,"has_data":1,
+    "columns":[{"name":"price","type":0}, ...]},
+   ...
+ ]}
+```
+
+- **Save:** `ZeptoPipeline::save_schema_catalog()` is called from `QueryExecutor::exec_create_table` and `exec_drop_table` when `hdb_base_path` is non-empty. Write is `open + rename(2)` for crash-atomicity.
+- **Load:** `ZeptoPipeline` constructor calls `SchemaRegistry::load_from()` after `HDBWriter` is built. `next_table_id_` is restored as `max(persisted next, max(loaded table_id) + 1)` so a new CREATE after restart never reuses a dropped id.
+- **No dep:** Hand-rolled JSON (no `nlohmann/json`); all fields are scalars.
+- **PURE_IN_MEMORY mode:** `hdb_base_path` is empty by default, so save/load are no-ops — matching the pre-existing ephemeral behavior.
+
+See devlog 083 for the full Stage A changelog.
+
+## 10. WAL forward-compatibility with `table_id` (Stage B — devlog 084)
+
+`WALWriter::write` persists the raw 64-byte `TickMessage` (see
+`include/zeptodb/ingestion/tick_plant.h`). Since devlog 082, `TickMessage`
+includes `uint16_t table_id` within that 64-byte layout — **no WAL format
+change is required for Stage B**:
+
+- WAL files written *after* devlog 082 already carry the correct `table_id`
+  on every record and replay losslessly.
+- WAL files written *before* devlog 082 replay with the old byte layout; on
+  modern readers, the bytes at the `table_id` offset are either zero (from
+  pre-field padding) or ignored, giving the legacy path (`table_id = 0`).
+- No forward-compat break: the 64-byte `static_assert` is unchanged, so
+  older binaries reading newer WAL files still see exactly 64 bytes per
+  record and simply ignore the `table_id` field they don't know about.
+
+See devlog 084 for the full Stage B changelog.
+

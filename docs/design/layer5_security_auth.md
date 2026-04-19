@@ -488,6 +488,40 @@ Internal (Ops)
 - Tenant A cannot observe Tenant B's symbols (even if they know the partition key structure)
 - `admin` role is only issued to internal ops accounts, never tenants
 
+### 6.6 Tenant Table Namespace (HTTP Layer) — devlog 090
+
+`TenantConfig.table_namespace` is enforced at the HTTP POST `/` boundary by
+`HttpServer`. When an authenticated identity carries a non-empty `tenant_id`
+and the server has a `TenantManager` configured (`HttpServer::set_tenant_manager`),
+every query that names a table is checked against `TenantManager::can_access_table`.
+
+Flow:
+
+1. Middleware resolves `AuthDecision::context.tenant_id` and stashes it as
+   the internal request header `X-Zepto-Tenant-Id`.
+2. The POST handler parses the SQL once and extracts the touched table
+   across SELECT / INSERT / UPDATE / DELETE / CREATE TABLE / DROP TABLE /
+   ALTER TABLE / DESCRIBE.
+3. `tenant_mgr_->can_access_table(tenant_id, table)` returns false iff the
+   tenant has a non-empty namespace and the table name does not start with
+   that prefix — the handler responds `403` and does not execute the query.
+
+Example — tenant Alpha with `table_namespace = "deskA."`:
+
+| Request | Result |
+|---------|--------|
+| `SELECT * FROM deskA.trades` | 200 — allowed |
+| `SELECT * FROM deskB.trades` | 403 — `"Tenant 'alpha' cannot access table 'deskB.trades'"` |
+| `DESCRIBE deskA.quotes`      | 200 — allowed |
+| `CREATE TABLE deskB.foo ...` | 403 — namespace prefix check fires on DDL too |
+
+Tenants with an empty `table_namespace` are unrestricted (function returns
+`true`). Requests without a `tenant_id` on the `AuthContext` skip the check
+entirely (unauthenticated `--no-auth` mode is unaffected).
+
+This layer sits on top of, not in place of, the per-key `allowed_tables` ACL
+(§4.3 / §4.4): a query must pass BOTH checks to reach the SQL executor.
+
 ---
 
 ## 7. Configuration Reference

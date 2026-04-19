@@ -87,6 +87,13 @@ fi
 if ! $ENGINE_ONLY; then
   step "2. Provision arm64 nodes (Karpenter)"
 
+  # devlog 094 #10: skip Karpenter provision when nodes already present
+  # (saves 1–5 min on subsequent runs against a warm cluster).
+  EXISTING_ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
+  if [ "$EXISTING_ARM" -ge 3 ]; then
+    info "arm64 nodes already present ($EXISTING_ARM ready) — skipping Karpenter provision"
+  else
+
   cat <<'KEOF' | kubectl apply -f -
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
@@ -180,6 +187,8 @@ TEOF
   done
   kubectl delete namespace karpenter-trigger --wait=false 2>/dev/null || true
 
+  fi  # end devlog 094 #10 "skip provision when arm64 already present"
+
   AMD=$(kubectl get nodes -l kubernetes.io/arch=amd64 --no-headers 2>/dev/null | grep -c Ready || true)
   ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
   info "Ready: ${AMD} amd64, ${ARM} arm64"
@@ -187,7 +196,8 @@ TEOF
 fi
 
 # ═══════════════════════════════════════════════════════════
-# 3. K8s tests — amd64 then arm64 (sequential to avoid contention)
+# 3. K8s tests — amd64 chain ‖ arm64 chain (devlog 094 #9)
+# Separate namespaces → no cluster-level state contention, safe to parallelize.
 # ═══════════════════════════════════════════════════════════
 if ! $ENGINE_ONLY; then
   cd "$PROJECT_ROOT"
@@ -196,19 +206,21 @@ if ! $ENGINE_ONLY; then
   force_clean_namespaces
   sleep 5
 
-  # ── amd64 compat ──
-  step "3a. amd64 compat tests (27)"
-  python3.13 -u tests/k8s/test_k8s_compat.py > "$RESULT_DIR/amd64_compat.log" 2>&1 && RC_AC=0 || RC_AC=$?
-  info "amd64 compat: exit=$RC_AC"
+  step "3. K8s tests — amd64 (compat → HA+perf) ‖ arm64 (compat+HA+perf)"
 
-  # ── amd64 HA+perf ──
-  step "3b. amd64 HA+perf tests (11)"
-  python3.13 -u tests/k8s/test_k8s_ha_perf.py > "$RESULT_DIR/amd64_ha_perf.log" 2>&1 && RC_AH=0 || RC_AH=$?
-  info "amd64 HA+perf: exit=$RC_AH"
+  # amd64 chain
+  (
+    python3.13 -u tests/k8s/test_k8s_compat.py > "$RESULT_DIR/amd64_compat.log" 2>&1
+    RC_AC_IN=$?
+    python3.13 -u tests/k8s/test_k8s_ha_perf.py > "$RESULT_DIR/amd64_ha_perf.log" 2>&1
+    RC_AH_IN=$?
+    echo "$RC_AC_IN $RC_AH_IN" > "$RESULT_DIR/amd64_rc"
+  ) &
+  PID_AMD=$!
 
-  # ── arm64 compat → HA+perf ──
-  step "3c. arm64 compat + HA+perf tests (38)"
-  python3.13 -u -c "
+  # arm64 chain
+  (
+    python3.13 -u -c "
 import sys, time, importlib; sys.path.insert(0, '$PROJECT_ROOT')
 
 import tests.k8s.test_k8s_compat as tc
@@ -232,8 +244,18 @@ for t in hp.HA_TESTS+hp.PERF_TESTS:
     except Exception as e: suite2.add(hp.TestResult(t.__name__,False,str(e)))
 ha_ok=suite2.summary(); hp.cleanup()
 sys.exit(0 if (compat_ok and ha_ok) else 1)
-" > "$RESULT_DIR/arm64_all.log" 2>&1 && RC_ARM=0 || RC_ARM=$?
-  info "arm64: exit=$RC_ARM"
+" > "$RESULT_DIR/arm64_all.log" 2>&1
+    echo $? > "$RESULT_DIR/arm64_rc"
+  ) &
+  PID_ARM=$!
+
+  info "forked amd64 pid=$PID_AMD, arm64 pid=$PID_ARM — waiting…"
+  wait $PID_AMD || true
+  wait $PID_ARM || true
+
+  read RC_AC RC_AH < "$RESULT_DIR/amd64_rc"
+  RC_ARM=$(cat "$RESULT_DIR/arm64_rc")
+  info "amd64 compat: exit=$RC_AC  amd64 HA+perf: exit=$RC_AH  arm64: exit=$RC_ARM"
 fi
 
 # ═══════════════════════════════════════════════════════════

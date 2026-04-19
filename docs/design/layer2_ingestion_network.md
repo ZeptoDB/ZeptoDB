@@ -147,3 +147,63 @@ server.add_metrics_provider([&consumer]() {
 `KafkaConsumer` uses the standard Kafka consumer API (group ID, `subscribe()`, `consume()`). Any Kafka-API-compatible broker (Redpanda, WarpStream, MSK) works without code changes.
 
 Last updated: 2026-03-23 (Kafka Prometheus metrics exposure added)
+
+## Table-aware ingest (Stage B — devlog 084)
+
+Every ingress surface now accepts an optional destination table name. The
+table_id is resolved once (at `set_pipeline()` or on the first call) via
+`SchemaRegistry::get_table_id(name)` and stamped onto each produced
+`TickMessage::table_id`.
+
+| Surface | Config / call | Resolution | Unknown name |
+|---|---|---|---|
+| Python `Pipeline.ingest_batch` | `table_name=...` kwarg | per-call lookup | `ValueError` |
+| Python `Pipeline.ingest_float_batch` | `table_name=...` kwarg | per-call lookup | `ValueError` |
+| `zepto_py.from_pandas / from_polars / from_arrow` | `table_name=...` kwarg | threaded through to C++ | `ValueError` |
+| `KafkaConfig::table_name` | set at construction | cached at `set_pipeline()` | log ERROR, increment `ingest_failures`, drop message |
+| `MqttConfig::table_name` | set at construction | cached at `set_pipeline()` | same as Kafka |
+| `FIXParser::set_table_id/name` | manual | write-only setter | caller responsibility |
+| `NASDAQITCHParser::set_table_id/name` | manual | write-only setter | caller responsibility |
+| `BinanceFeedHandler::set_table_id/name` | manual | write-only setter | caller responsibility |
+
+Default `table_name = ""` (or `None` in Python) preserves the legacy path
+(`msg.table_id = 0`). WAL serialization is unchanged — `TickMessage` is
+64 bytes and already includes `table_id`; pre-devlog-082 WAL files replay
+with `table_id = 0`.
+
+### `TickMessage` wire contract and WAL forward-compat
+
+`TickMessage` is a cache-aligned 64-byte struct. Since devlog 082 the
+second byte pair of the struct holds `uint16_t table_id`; the same slot
+was zero-padding in pre-082 builds. Both of these facts matter for
+**rolling upgrades** and **WAL replay**:
+
+* **Cluster wire format.** `remote_ingest` / dual-write / replica forwarding
+  send the full 64-byte `TickMessage` verbatim, so `table_id` is carried
+  end-to-end without any RPC version bump. Stage C's
+  `ClusterNode::ingest_tick` uses `route(msg.table_id, msg.symbol_id)` so
+  the destination node is picked from the table-scoped hash.
+* **WAL replay.** A v1 WAL file written by a pre-082 node replays cleanly
+  on an 082+ node: the `table_id` slot is zero in the on-disk bytes, so
+  every replayed tick lands in the legacy `table_id = 0` pool — exactly
+  the "unassigned table" bucket operators expect during a rolling upgrade.
+  No format bump, no shim, no reader fork. New WAL records written by an
+  082+ node carry the real `table_id` and replay into the matching table
+  on restart.
+
+### `Quote` / `Order` structs — future `table_id` path (devlog 088 note)
+
+Only `feeds::Tick` carries a `table_id` field today. The sibling `Quote` and
+`Order` structs (see `include/zeptodb/feeds/tick.h`) do **not** — they are
+not yet routable into ZeptoDB tables: the ingress pipeline consumes Ticks
+only, while Quotes/Orders stay inside the feed handler for client
+distribution. When they become routable (see the order-book and quote
+distribution items in `BACKLOG.md`, tentative tags P9 / P10), the exact
+same pattern as `Tick.table_id` must be applied: add `uint16_t table_id = 0`
+to the struct, stamp it from `parser_.table_id()` immediately before the
+corresponding `quote_callback_` / `order_callback_` dispatch, and extend
+the handler setters to cascade the resolved id. No other surface changes
+are expected (the structs are not on any current wire protocol or WAL
+format).
+
+Last updated: 2026-04-18 (Stage C — devlog 085)

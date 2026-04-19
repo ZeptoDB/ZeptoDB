@@ -23,9 +23,12 @@
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/ingestion/tick_plant.h"
 
+#include "test_port_helper.h"
+
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <unistd.h>
 
 using namespace zeptodb::cluster;
 using namespace zeptodb::sql;
@@ -249,8 +252,23 @@ TEST(PartialAgg, MergeScalarAvg_ThreeNodes) {
 // 3. TcpRpc — loopback ping and SQL query
 // ============================================================================
 
-// Use ports 19700-19799 for TCP RPC tests
-static constexpr uint16_t RPC_TEST_PORT_BASE = 19700;
+// Use ports 19700-19799 for TCP RPC tests.
+// Under ctest -j$(nproc) each test runs in its own process; to avoid
+// cross-process bind collisions we randomise the base per-process from the
+// PID, keeping the relative offsets used by each test intact.
+static const uint16_t RPC_TEST_PORT_BASE = static_cast<uint16_t>(
+    20000 + ((static_cast<unsigned>(::getpid()) * 131u) % 30000));
+
+// Per-process port offset applied to any other hardcoded test port literal below.
+// Without this, tests in test_coordinator.cpp and test_cluster.cpp that both
+// hardcode 19900 (etc.) collide under parallel ctest. Each ctest invocation
+// launches a new process with a fresh PID + monotonic clock → near-unique
+// offset. Range chosen so base+off stays below the 16-bit port limit.
+static const uint16_t PORT_OFF = static_cast<uint16_t>(
+    ((static_cast<unsigned>(::getpid()) * 2654435761u)
+     ^ static_cast<unsigned>(
+         std::chrono::steady_clock::now().time_since_epoch().count())) % 30000);
+static inline uint16_t P(uint16_t n) { return static_cast<uint16_t>(n + PORT_OFF); }
 
 TEST(TcpRpc, PingPong) {
     TcpRpcServer server;
@@ -374,10 +392,17 @@ TEST(QueryCoordinator, SingleLocalNode_DirectExecution) {
     msg.volume = 200;
     msg.recv_ts = 2'000'000'000LL;
     pipeline->ingest_tick(msg);
-    std::this_thread::sleep_for(50ms);
+    // Bounded poll (up to 2s) — robust under ctest -j CPU saturation.
+    {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (pipeline->total_stored_rows() < 2 &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19801, 1}, *pipeline);
+    coord.add_local_node({"127.0.0.1", P(19801), 1}, *pipeline);
 
     auto result = coord.execute_sql(
         "SELECT count(*) FROM trades WHERE symbol = 1");
@@ -400,10 +425,17 @@ TEST(QueryCoordinator, SingleLocalNode_SumQuery) {
         msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
         pipeline->ingest_tick(msg);
     }
-    std::this_thread::sleep_for(50ms);
+    // Bounded poll (up to 2s) — robust under ctest -j CPU saturation.
+    {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (pipeline->total_stored_rows() < 5 &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19802, 2}, *pipeline);
+    coord.add_local_node({"127.0.0.1", P(19802), 2}, *pipeline);
 
     auto result = coord.execute_sql(
         "SELECT sum(volume) FROM trades WHERE symbol = 2");
@@ -445,7 +477,7 @@ TEST(QueryCoordinator, TwoNodeRemote_ScatterGather_Count) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19810, port2 = 19811;
+    uint16_t port1 = P(19810), port2 = P(19811);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -496,7 +528,7 @@ TEST(QueryCoordinator, TwoNodeRemote_GroupBy_Concat) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19820, port2 = 19821;
+    uint16_t port1 = P(19820), port2 = P(19821);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -567,7 +599,7 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedAvg_Correct) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19830, port2 = 19831;
+    uint16_t port1 = P(19830), port2 = P(19831);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -617,7 +649,7 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedAvg_MixedAggs) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19832, port2 = 19833;
+    uint16_t port1 = P(19832), port2 = P(19833);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -677,7 +709,7 @@ TEST(QueryCoordinator, TwoNodeRemote_GroupBy_CrossNode_XbarMerge) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19840, port2 = 19841;
+    uint16_t port1 = P(19840), port2 = P(19841);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -720,7 +752,7 @@ TEST(WalReplication, RpcRoundTrip_WalBatch) {
 
     std::atomic<size_t> replayed{0};
     TcpRpcServer server;
-    server.start(19850,
+    server.start(P(19850),
         [](const std::string&) { return QueryResultSet{}; },
         nullptr,
         [&](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
@@ -733,7 +765,7 @@ TEST(WalReplication, RpcRoundTrip_WalBatch) {
     std::this_thread::sleep_for(20ms);
 
     // Client sends WAL batch
-    TcpRpcClient client("127.0.0.1", 19850);
+    TcpRpcClient client("127.0.0.1", P(19850));
     std::vector<zeptodb::ingestion::TickMessage> batch;
     for (int i = 0; i < 5; ++i) {
         zeptodb::ingestion::TickMessage msg{};
@@ -779,7 +811,7 @@ TEST(WalReplication, WalReplicator_EndToEnd) {
     auto replica_pipeline = make_pipeline();
 
     TcpRpcServer replica_server;
-    replica_server.start(19851,
+    replica_server.start(P(19851),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*replica_pipeline);
             return ex.execute(sql);
@@ -798,7 +830,7 @@ TEST(WalReplication, WalReplicator_EndToEnd) {
     cfg.batch_size = 10;
     cfg.flush_interval_ms = 50;
     zeptodb::cluster::WalReplicator replicator(cfg);
-    replicator.add_replica("127.0.0.1", 19851);
+    replicator.add_replica("127.0.0.1", P(19851));
     replicator.start();
 
     // Primary ingests ticks and enqueues to replicator
@@ -836,7 +868,7 @@ TEST(WalReplication, WalReplicator_ReplicaDown_CountsErrors) {
     cfg.batch_size = 5;
     cfg.flush_interval_ms = 20;
     zeptodb::cluster::WalReplicator replicator(cfg);
-    replicator.add_replica("127.0.0.1", 19852);  // nobody listening
+    replicator.add_replica("127.0.0.1", P(19852));  // nobody listening
     replicator.start();
 
     for (int i = 0; i < 10; ++i) {
@@ -877,14 +909,14 @@ TEST(PartitionMigration, MigrateSymbol_SourceToDest) {
 
     // Start RPC servers
     TcpRpcServer src_server, dst_server;
-    src_server.start(19860,
+    src_server.start(P(19860),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*src_pipeline);
             return ex.execute(sql);
         },
         nullptr,
         nullptr);
-    dst_server.start(19861,
+    dst_server.start(P(19861),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*dst_pipeline);
             return ex.execute(sql);
@@ -900,8 +932,8 @@ TEST(PartitionMigration, MigrateSymbol_SourceToDest) {
 
     // Migrate symbol 500: node 1 → node 2
     zeptodb::cluster::PartitionMigrator migrator;
-    migrator.add_node(1, "127.0.0.1", 19860);
-    migrator.add_node(2, "127.0.0.1", 19861);
+    migrator.add_node(1, "127.0.0.1", P(19860));
+    migrator.add_node(2, "127.0.0.1", P(19861));
 
     uint64_t rows_tmp = 0;
     EXPECT_TRUE(migrator.migrate_symbol(500, 1, 2, rows_tmp));
@@ -937,12 +969,12 @@ TEST(PartitionMigration, ExecutePlan_MultipleSymbols) {
     src_pipeline->drain_sync(100);
 
     TcpRpcServer src_server, dst_server;
-    src_server.start(19862,
+    src_server.start(P(19862),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*src_pipeline);
             return ex.execute(sql);
         });
-    dst_server.start(19863,
+    dst_server.start(P(19863),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*dst_pipeline);
             return ex.execute(sql);
@@ -957,8 +989,8 @@ TEST(PartitionMigration, ExecutePlan_MultipleSymbols) {
     std::this_thread::sleep_for(20ms);
 
     zeptodb::cluster::PartitionMigrator migrator;
-    migrator.add_node(1, "127.0.0.1", 19862);
-    migrator.add_node(2, "127.0.0.1", 19863);
+    migrator.add_node(1, "127.0.0.1", P(19862));
+    migrator.add_node(2, "127.0.0.1", P(19863));
 
     // Build a plan with 2 moves
     zeptodb::cluster::PartitionRouter::MigrationPlan plan;
@@ -988,7 +1020,7 @@ TEST(PartitionMigration, MigrateEmptySymbol_Succeeds) {
     src_pipeline->drain_sync(100);
 
     TcpRpcServer src_server;
-    src_server.start(19864,
+    src_server.start(P(19864),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*src_pipeline);
             return ex.execute(sql);
@@ -996,8 +1028,8 @@ TEST(PartitionMigration, MigrateEmptySymbol_Succeeds) {
     std::this_thread::sleep_for(20ms);
 
     zeptodb::cluster::PartitionMigrator migrator;
-    migrator.add_node(1, "127.0.0.1", 19864);
-    migrator.add_node(2, "127.0.0.1", 19865);  // doesn't matter, no data to send
+    migrator.add_node(1, "127.0.0.1", P(19864));
+    migrator.add_node(2, "127.0.0.1", P(19865));  // doesn't matter, no data to send
 
     // Symbol 999 has no data — should succeed (nothing to move)
     uint64_t rows_empty = 0;
@@ -1060,9 +1092,9 @@ TEST(Failover, ManualTrigger_RemovesNodeAndFiresCallback) {
     auto p1 = make_pipeline();
     auto p2 = make_pipeline();
     auto p3 = make_pipeline();
-    coord.add_local_node({"127.0.0.1", 19870, 1}, *p1);
-    coord.add_local_node({"127.0.0.1", 19871, 2}, *p2);
-    coord.add_local_node({"127.0.0.1", 19872, 3}, *p3);
+    coord.add_local_node({"127.0.0.1", P(19870), 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19871), 2}, *p2);
+    coord.add_local_node({"127.0.0.1", P(19872), 3}, *p3);
     EXPECT_EQ(coord.node_count(), 3u);
 
     zeptodb::cluster::FailoverManager fm(router, coord);
@@ -1102,8 +1134,8 @@ TEST(Failover, HealthMonitorIntegration_DeadTriggersFailover) {
     QueryCoordinator coord;
     auto p1 = make_pipeline();
     auto p2 = make_pipeline();
-    coord.add_local_node({"127.0.0.1", 19880, 1}, *p1);
-    coord.add_local_node({"127.0.0.1", 19881, 2}, *p2);
+    coord.add_local_node({"127.0.0.1", P(19880), 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19881), 2}, *p2);
 
     HealthConfig hcfg;
     hcfg.suspect_timeout_ms = 50;
@@ -1152,7 +1184,7 @@ TEST(Failover, ReplicaBecomePrimary_DataAvailable) {
 
     // Set up coordinator with both nodes
     TcpRpcServer srv2;
-    srv2.start(19890,
+    srv2.start(P(19890),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*replica_pipeline);
             return ex.execute(sql);
@@ -1164,8 +1196,8 @@ TEST(Failover, ReplicaBecomePrimary_DataAvailable) {
     router.add_node(2);
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19889, 1}, *primary_pipeline);
-    coord.add_remote_node({"127.0.0.1", 19890, 2});
+    coord.add_local_node({"127.0.0.1", P(19889), 1}, *primary_pipeline);
+    coord.add_remote_node({"127.0.0.1", P(19890), 2});
 
     // Failover: node 1 dies
     zeptodb::cluster::FailoverManager fm(router, coord);
@@ -1198,8 +1230,8 @@ TEST(CoordinatorHA, ActiveServesQueries) {
     pipeline->drain_sync(100);
 
     zeptodb::cluster::CoordinatorHA ha;
-    ha.init(zeptodb::cluster::CoordinatorRole::ACTIVE, "127.0.0.1", 19999);
-    ha.add_local_node({"127.0.0.1", 19900, 1}, *pipeline);
+    ha.init(zeptodb::cluster::CoordinatorRole::ACTIVE, "127.0.0.1", P(19999));
+    ha.add_local_node({"127.0.0.1", P(19900), 1}, *pipeline);
 
     EXPECT_TRUE(ha.is_active());
 
@@ -1224,7 +1256,7 @@ TEST(CoordinatorHA, StandbyPromotesOnActiveDown) {
 
     // Active's RPC server (for standby to ping)
     TcpRpcServer active_rpc;
-    active_rpc.start(19901, [&](const std::string& sql) {
+    active_rpc.start(P(19901), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline);
         return ex.execute(sql);
     });
@@ -1235,8 +1267,8 @@ TEST(CoordinatorHA, StandbyPromotesOnActiveDown) {
     cfg.ping_interval_ms = 50;
     cfg.failover_after_ms = 200;
     zeptodb::cluster::CoordinatorHA standby(cfg);
-    standby.init(zeptodb::cluster::CoordinatorRole::STANDBY, "127.0.0.1", 19901);
-    standby.add_local_node({"127.0.0.1", 19902, 1}, *pipeline);
+    standby.init(zeptodb::cluster::CoordinatorRole::STANDBY, "127.0.0.1", P(19901));
+    standby.add_local_node({"127.0.0.1", P(19902), 1}, *pipeline);
 
     std::atomic<bool> promoted{false};
     standby.on_promotion([&]() { promoted.store(true); });
@@ -1277,7 +1309,7 @@ TEST(CoordinatorHA, StandbyForwardsToActive) {
 
     // Active's RPC server
     TcpRpcServer active_rpc;
-    active_rpc.start(19903, [&](const std::string& sql) {
+    active_rpc.start(P(19903), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline);
         return ex.execute(sql);
     });
@@ -1285,7 +1317,7 @@ TEST(CoordinatorHA, StandbyForwardsToActive) {
 
     // Standby forwards queries to active via RPC
     zeptodb::cluster::CoordinatorHA standby;
-    standby.init(zeptodb::cluster::CoordinatorRole::STANDBY, "127.0.0.1", 19903);
+    standby.init(zeptodb::cluster::CoordinatorRole::STANDBY, "127.0.0.1", P(19903));
 
     EXPECT_FALSE(standby.is_active());
 
@@ -1326,7 +1358,7 @@ TEST(Snapshot, TwoNodeSnapshot) {
 
     // Each node handles SNAPSHOT 2PC commands
     TcpRpcServer srv1, srv2;
-    srv1.start(19910, [&](const std::string& sql) {
+    srv1.start(P(19910), [&](const std::string& sql) {
         if (sql.find("SNAPSHOT PREPARE") == 0 || sql.find("SNAPSHOT ABORT") == 0) {
             return make_result({"status"}, {{1}});
         }
@@ -1338,7 +1370,7 @@ TEST(Snapshot, TwoNodeSnapshot) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19911, [&](const std::string& sql) {
+    srv2.start(P(19911), [&](const std::string& sql) {
         if (sql.find("SNAPSHOT PREPARE") == 0 || sql.find("SNAPSHOT ABORT") == 0) {
             return make_result({"status"}, {{1}});
         }
@@ -1353,8 +1385,8 @@ TEST(Snapshot, TwoNodeSnapshot) {
     std::this_thread::sleep_for(20ms);
 
     zeptodb::cluster::SnapshotCoordinator snap;
-    snap.add_node(1, "127.0.0.1", 19910);
-    snap.add_node(2, "127.0.0.1", 19911);
+    snap.add_node(1, "127.0.0.1", P(19910));
+    snap.add_node(2, "127.0.0.1", P(19911));
 
     auto result = snap.take_snapshot();
     EXPECT_TRUE(result.all_ok());
@@ -1373,7 +1405,7 @@ TEST(Snapshot, NodeDown_PartialFailure) {
     p1->drain_sync(100);
 
     TcpRpcServer srv1;
-    srv1.start(19912, [&](const std::string& sql) {
+    srv1.start(P(19912), [&](const std::string& sql) {
         if (sql.find("SNAPSHOT PREPARE") == 0 || sql.find("SNAPSHOT ABORT") == 0)
             return make_result({"status"}, {{1}});
         if (sql.find("SNAPSHOT COMMIT") == 0 || sql == "SNAPSHOT")
@@ -1383,8 +1415,8 @@ TEST(Snapshot, NodeDown_PartialFailure) {
     std::this_thread::sleep_for(20ms);
 
     zeptodb::cluster::SnapshotCoordinator snap;
-    snap.add_node(1, "127.0.0.1", 19912);
-    snap.add_node(2, "127.0.0.1", 19913);  // not running
+    snap.add_node(1, "127.0.0.1", P(19912));
+    snap.add_node(2, "127.0.0.1", P(19913));  // not running
 
     auto result = snap.take_snapshot();
     EXPECT_FALSE(result.all_ok());  // node 2 failed
@@ -1431,19 +1463,19 @@ TEST(CrossNodeAsofJoin, SymbolFilterRoutesToSingleNode) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19920, [&](const std::string& sql) {
+    srv1.start(P(19920), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
     });
-    srv2.start(19921, [&](const std::string& sql) {
+    srv2.start(P(19921), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19920, 1});
-    coord.add_remote_node({"127.0.0.1", 19921, 2});
+    coord.add_remote_node({"127.0.0.1", P(19920), 1});
+    coord.add_remote_node({"127.0.0.1", P(19921), 2});
 
     // Scatter-gather count across both nodes (no symbol filter)
     auto result = coord.execute_sql("SELECT count(*) FROM trades");
@@ -1495,19 +1527,19 @@ TEST(DistributedSelect, ScatterGather_PlainSelect) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19922, [&](const std::string& sql) {
+    srv1.start(P(19922), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19923, [&](const std::string& sql) {
+    srv2.start(P(19923), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19922, 1});
-    coord.add_remote_node({"127.0.0.1", 19923, 2});
+    coord.add_remote_node({"127.0.0.1", P(19922), 1});
+    coord.add_remote_node({"127.0.0.1", P(19923), 2});
 
     // SUM across nodes
     auto sum_result = coord.execute_sql("SELECT sum(volume) FROM trades");
@@ -1548,7 +1580,7 @@ TEST(ComputeNode, FetchAndIngest_LocalJoin) {
     data_pipeline->drain_sync(100);
 
     TcpRpcServer data_srv;
-    data_srv.start(19930, [&](const std::string& sql) {
+    data_srv.start(P(19930), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*data_pipeline);
         return ex.execute(sql);
     });
@@ -1556,7 +1588,7 @@ TEST(ComputeNode, FetchAndIngest_LocalJoin) {
 
     // Compute node fetches data and ingests locally
     zeptodb::cluster::ComputeNode compute;
-    compute.add_data_node(1, "127.0.0.1", 19930);
+    compute.add_data_node(1, "127.0.0.1", P(19930));
 
     auto local_pipeline = make_pipeline();
     size_t fetched = compute.fetch_and_ingest(
@@ -1598,19 +1630,19 @@ TEST(ComputeNode, ExecuteAcrossDataNodes) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19931, [&](const std::string& sql) {
+    srv1.start(P(19931), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19932, [&](const std::string& sql) {
+    srv2.start(P(19932), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     zeptodb::cluster::ComputeNode compute;
-    compute.add_data_node(1, "127.0.0.1", 19931);
-    compute.add_data_node(2, "127.0.0.1", 19932);
+    compute.add_data_node(1, "127.0.0.1", P(19931));
+    compute.add_data_node(2, "127.0.0.1", P(19932));
 
     // Execute across both data nodes — concat results
     auto result = compute.execute(
@@ -1642,9 +1674,11 @@ TEST(MultiDrain, TwoDrainThreads_AllDataStored) {
         pipeline.ingest_tick(msg);
     }
 
-    // Wait for drain threads to process
-    std::this_thread::sleep_for(200ms);
+    // Deterministically wait for drain completion. stop() internally joins
+    // drain threads and then calls drain_sync(), but the background drain
+    // threads can race with an external drain_sync, so stop first.
     pipeline.stop();
+    pipeline.drain_sync(1024);
 
     zeptodb::sql::QueryExecutor ex(pipeline);
     auto result = ex.execute("SELECT count(*) FROM trades WHERE symbol = 60");
@@ -1670,8 +1704,8 @@ TEST(MultiDrain, FourDrainThreads_MultiSymbol) {
         }
     }
 
-    std::this_thread::sleep_for(200ms);
     pipeline.stop();
+    pipeline.drain_sync(1024);
 
     zeptodb::sql::QueryExecutor ex(pipeline);
     auto result = ex.execute("SELECT count(*) FROM trades");
@@ -1765,7 +1799,7 @@ TEST(SharedRouter, CoordinatorFallsBackToOwnRouter) {
     QueryCoordinator coord;
     // add_local_node adds to the internal router
     auto pipeline = make_pipeline();
-    NodeAddress addr{"127.0.0.1", 19900, 10};
+    NodeAddress addr{"127.0.0.1", P(19900), 10};
     coord.add_local_node(addr, *pipeline);
     EXPECT_EQ(coord.router().node_count(), 1u);
 }
@@ -1786,7 +1820,7 @@ TEST(FencingRpc, StaleEpochTickRejected) {
 
     TcpRpcServer server;
     server.set_fencing_token(&token);
-    server.start(19870,
+    server.start(P(19870),
         [&](const std::string& sql) { return zeptodb::sql::QueryResultSet{}; },
         [&](const zeptodb::ingestion::TickMessage& msg) {
             return pipeline->ingest_tick(msg);
@@ -1794,7 +1828,7 @@ TEST(FencingRpc, StaleEpochTickRejected) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     // Client with current epoch (5) — should succeed
-    TcpRpcClient good_client("127.0.0.1", 19870);
+    TcpRpcClient good_client("127.0.0.1", P(19870));
     good_client.set_epoch(5);
     zeptodb::ingestion::TickMessage tick{};
     tick.symbol_id = 999;
@@ -1804,12 +1838,12 @@ TEST(FencingRpc, StaleEpochTickRejected) {
     EXPECT_TRUE(good_client.ingest_tick(tick));
 
     // Client with stale epoch (3) — should be rejected
-    TcpRpcClient stale_client("127.0.0.1", 19870);
+    TcpRpcClient stale_client("127.0.0.1", P(19870));
     stale_client.set_epoch(3);
     EXPECT_FALSE(stale_client.ingest_tick(tick));
 
     // Client with epoch 0 — bypasses fencing (backward compat)
-    TcpRpcClient legacy_client("127.0.0.1", 19870);
+    TcpRpcClient legacy_client("127.0.0.1", P(19870));
     EXPECT_TRUE(legacy_client.ingest_tick(tick));
 
     server.stop();
@@ -1826,7 +1860,7 @@ TEST(FencingRpc, StaleEpochWalRejected) {
 
     TcpRpcServer server;
     server.set_fencing_token(&token);
-    server.start(19945,
+    server.start(P(19945),
         [&](const std::string& sql) { return zeptodb::sql::QueryResultSet{}; },
         [&](const zeptodb::ingestion::TickMessage& msg) {
             return pipeline->ingest_tick(msg);
@@ -1845,12 +1879,12 @@ TEST(FencingRpc, StaleEpochWalRejected) {
     tick.recv_ts = 2000000000LL;
 
     // Stale epoch 1 — rejected
-    TcpRpcClient stale("127.0.0.1", 19945);
+    TcpRpcClient stale("127.0.0.1", P(19945));
     stale.set_epoch(1);
     EXPECT_FALSE(stale.replicate_wal({tick}));
 
     // Current epoch 3 — accepted
-    TcpRpcClient good("127.0.0.1", 19945);
+    TcpRpcClient good("127.0.0.1", P(19945));
     good.set_epoch(3);
     EXPECT_TRUE(good.replicate_wal({tick}));
 
@@ -1877,14 +1911,14 @@ TEST(CoordinatorHA, PromotionReRegistersNodes) {
     pipeline->drain_sync(100);
 
     TcpRpcServer data_rpc;
-    data_rpc.start(19875, [&](const std::string& sql) {
+    data_rpc.start(P(19875), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline);
         return ex.execute(sql);
     });
 
     // Active coordinator RPC (standby pings this)
     TcpRpcServer active_rpc;
-    active_rpc.start(19876, [](const std::string&) {
+    active_rpc.start(P(19876), [](const std::string&) {
         return zeptodb::sql::QueryResultSet{};
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -1894,8 +1928,8 @@ TEST(CoordinatorHA, PromotionReRegistersNodes) {
     cfg.ping_interval_ms  = 50;
     cfg.failover_after_ms = 200;
     CoordinatorHA standby(cfg);
-    standby.init(CoordinatorRole::STANDBY, "127.0.0.1", 19876);
-    standby.add_remote_node({"127.0.0.1", 19875, 50});
+    standby.init(CoordinatorRole::STANDBY, "127.0.0.1", P(19876));
+    standby.add_remote_node({"127.0.0.1", P(19875), 50});
 
     // Before promotion, standby's coordinator should have the node
     // (add_remote_node registers immediately)
@@ -1950,7 +1984,7 @@ TEST(SplitBrain, StaleCoordinatorWriteRejected) {
 
     TcpRpcServer data_rpc;
     data_rpc.set_fencing_token(&data_node_token);
-    data_rpc.start(19880,
+    data_rpc.start(P(19880),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*data_pipeline);
             return ex.execute(sql);
@@ -1965,7 +1999,7 @@ TEST(SplitBrain, StaleCoordinatorWriteRejected) {
     coord_a_token.advance();  // epoch = 1
     ASSERT_EQ(coord_a_token.current(), 1u);
 
-    TcpRpcClient client_a("127.0.0.1", 19880);
+    TcpRpcClient client_a("127.0.0.1", P(19880));
     client_a.set_epoch(coord_a_token.current());
 
     zeptodb::ingestion::TickMessage tick{};
@@ -1996,7 +2030,7 @@ TEST(SplitBrain, StaleCoordinatorWriteRejected) {
     coord_b_token.advance();  // epoch = 2
     ASSERT_EQ(coord_b_token.current(), 2u);
 
-    TcpRpcClient client_b("127.0.0.1", 19880);
+    TcpRpcClient client_b("127.0.0.1", P(19880));
     client_b.set_epoch(coord_b_token.current());
 
     tick.price  = 60000LL;
@@ -2034,7 +2068,7 @@ TEST(SplitBrain, StaleCoordinatorWriteRejected) {
     }
 
     // --- Phase 5: Legacy client (epoch=0) bypasses fencing ---
-    TcpRpcClient legacy_client("127.0.0.1", 19880);
+    TcpRpcClient legacy_client("127.0.0.1", P(19880));
     // epoch=0 by default — no fencing
     tick.price  = 70000LL;
     tick.recv_ts = 4'000'000'000LL;
@@ -2055,7 +2089,7 @@ TEST(SplitBrain, StaleWalReplicationRejected) {
 
     TcpRpcServer data_rpc;
     data_rpc.set_fencing_token(&data_node_token);
-    data_rpc.start(19881,
+    data_rpc.start(P(19881),
         [&](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*data_pipeline);
             return ex.execute(sql);
@@ -2077,12 +2111,12 @@ TEST(SplitBrain, StaleWalReplicationRejected) {
     tick.recv_ts   = 1'000'000'000LL;
 
     // New coordinator (epoch=3) writes WAL batch
-    TcpRpcClient new_coord("127.0.0.1", 19881);
+    TcpRpcClient new_coord("127.0.0.1", P(19881));
     new_coord.set_epoch(3);
     EXPECT_TRUE(new_coord.replicate_wal({tick, tick, tick}));
 
     // Old coordinator (epoch=1) tries WAL replication → rejected
-    TcpRpcClient old_coord("127.0.0.1", 19881);
+    TcpRpcClient old_coord("127.0.0.1", P(19881));
     old_coord.set_epoch(1);
     EXPECT_FALSE(old_coord.replicate_wal({tick}))
         << "Stale WAL replication (epoch=1) should be rejected after epoch=3";
@@ -2160,19 +2194,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedVwap) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19890, [&](const std::string& sql) {
+    srv1.start(P(19890), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19891, [&](const std::string& sql) {
+    srv2.start(P(19891), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19890, 30});
-    coord.add_remote_node({"127.0.0.1", 19891, 40});
+    coord.add_remote_node({"127.0.0.1", P(19890), 30});
+    coord.add_remote_node({"127.0.0.1", P(19891), 40});
 
     // Distributed VWAP across all symbols:
     // Total SUM(price*volume) = 3*100*10 + 2*200*20 = 3000 + 8000 = 11000
@@ -2223,19 +2257,19 @@ TEST(QueryCoordinator, TwoNodeRemote_OrderByLimit) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19892, [&](const std::string& sql) {
+    srv1.start(P(19892), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19893, [&](const std::string& sql) {
+    srv2.start(P(19893), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19892, 50});
-    coord.add_remote_node({"127.0.0.1", 19893, 60});
+    coord.add_remote_node({"127.0.0.1", P(19892), 50});
+    coord.add_remote_node({"127.0.0.1", P(19893), 60});
 
     // ORDER BY price DESC LIMIT 3 → should get 500, 400, 300
     auto result = coord.execute_sql(
@@ -2290,19 +2324,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedHaving) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19894, [&](const std::string& sql) {
+    srv1.start(P(19894), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19895, [&](const std::string& sql) {
+    srv2.start(P(19895), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19894, 70});
-    coord.add_remote_node({"127.0.0.1", 19895, 80});
+    coord.add_remote_node({"127.0.0.1", P(19894), 70});
+    coord.add_remote_node({"127.0.0.1", P(19895), 80});
 
     // GROUP BY price: price=100 appears on both nodes (3 has 1 tick, 4 has 4 ticks)
     // Node 1: price=100 count=1, price=200 count=1, price=300 count=1
@@ -2353,19 +2387,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedDistinct) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19896, [&](const std::string& sql) {
+    srv1.start(P(19896), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19897, [&](const std::string& sql) {
+    srv2.start(P(19897), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19896, 90});
-    coord.add_remote_node({"127.0.0.1", 19897, 91});
+    coord.add_remote_node({"127.0.0.1", P(19896), 90});
+    coord.add_remote_node({"127.0.0.1", P(19897), 91});
 
     // Without DISTINCT: 6 rows (3+3)
     // With DISTINCT on price: 100, 200, 300, 400 = 4 unique prices
@@ -2415,19 +2449,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedWindowFunction) {
     p2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19898, [&](const std::string& sql) {
+    srv1.start(P(19898), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19899, [&](const std::string& sql) {
+    srv2.start(P(19899), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19898, 100});
-    coord.add_remote_node({"127.0.0.1", 19899, 110});
+    coord.add_remote_node({"127.0.0.1", P(19898), 100});
+    coord.add_remote_node({"127.0.0.1", P(19899), 110});
 
     // LAG(price, 1) over full dataset ordered by timestamp:
     // All 5 rows from both nodes, sorted by timestamp:
@@ -2486,19 +2520,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedFirstLast) {
     }
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19850, [&](const std::string& sql) {
+    srv1.start(P(19850), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19851, [&](const std::string& sql) {
+    srv2.start(P(19851), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19850, 120});
-    coord.add_remote_node({"127.0.0.1", 19851, 130});
+    coord.add_remote_node({"127.0.0.1", P(19850), 120});
+    coord.add_remote_node({"127.0.0.1", P(19851), 130});
 
     // Global FIRST(price) = 100 (ts=1, on node 2)
     // Global LAST(price) = 500 (ts=5, on node 1)
@@ -2546,19 +2580,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedCountDistinct) {
     }
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19852, [&](const std::string& sql) {
+    srv1.start(P(19852), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19853, [&](const std::string& sql) {
+    srv2.start(P(19853), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19852, 140});
-    coord.add_remote_node({"127.0.0.1", 19853, 150});
+    coord.add_remote_node({"127.0.0.1", P(19852), 140});
+    coord.add_remote_node({"127.0.0.1", P(19853), 150});
 
     // Unique prices: 100, 200, 300, 400 = 4
     // Node 1 COUNT(DISTINCT price) = 3 (100,200,300)
@@ -2606,19 +2640,19 @@ TEST(QueryCoordinator, TwoNodeRemote_DistributedCTE) {
     }
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19854, [&](const std::string& sql) {
+    srv1.start(P(19854), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19855, [&](const std::string& sql) {
+    srv2.start(P(19855), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19854, 160});
-    coord.add_remote_node({"127.0.0.1", 19855, 170});
+    coord.add_remote_node({"127.0.0.1", P(19854), 160});
+    coord.add_remote_node({"127.0.0.1", P(19855), 170});
 
     // CTE: WITH t AS (SELECT price FROM trades WHERE price > 150)
     //       SELECT count(*) FROM t
@@ -2681,19 +2715,19 @@ TEST(QueryCoordinator, TwoNodeRemote_MultiColumnOrderBy) {
     }
 
     TcpRpcServer srv1, srv2;
-    srv1.start(19856, [&](const std::string& sql) {
+    srv1.start(P(19856), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
-    srv2.start(19857, [&](const std::string& sql) {
+    srv2.start(P(19857), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p2);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19856, 180});
-    coord.add_remote_node({"127.0.0.1", 19857, 190});
+    coord.add_remote_node({"127.0.0.1", P(19856), 180});
+    coord.add_remote_node({"127.0.0.1", P(19857), 190});
 
     // ORDER BY price ASC, volume DESC
     // All rows: (100,30), (200,10), (100,20), (100,10)
@@ -2728,16 +2762,16 @@ TEST(QueryCoordinator, PartialFailure_NodeDown) {
     }
 
     TcpRpcServer srv1;
-    srv1.start(19860, [&](const std::string& sql) {
+    srv1.start(P(19860), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*p1);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", 19860, 200});
+    coord.add_remote_node({"127.0.0.1", P(19860), 200});
     // Node 2: unreachable (port not listening)
-    coord.add_remote_node({"127.0.0.1", 19861, 210});
+    coord.add_remote_node({"127.0.0.1", P(19861), 210});
 
     auto result = coord.execute_sql("SELECT count(*) FROM trades");
     // Should fail because node 2 is unreachable
@@ -2754,7 +2788,7 @@ TEST(QueryCoordinator, PartialFailure_NodeDown) {
 
 TEST(QueryCoordinator, QueryTimeout_SlowNode) {
     // Verify TcpRpcClient accepts query_timeout_ms parameter
-    TcpRpcClient client("127.0.0.1", 19999, 2000, 4, 1000);
+    TcpRpcClient client("127.0.0.1", P(19999), 2000, 4, 1000);
     // Client created with 1s query timeout — just verify construction works.
     // Actual timeout behavior is tested via SO_RCVTIMEO in execute_sql.
     SUCCEED();
@@ -2837,7 +2871,7 @@ TEST(DistributedP0, SumCaseWhen_ScatterGather) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19880, port2 = 19881;
+    uint16_t port1 = P(19880), port2 = P(19881);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -2886,7 +2920,7 @@ TEST(DistributedP0, WhereIn_MultiNode) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19882, port2 = 19883;
+    uint16_t port1 = P(19882), port2 = P(19883);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -2934,7 +2968,7 @@ TEST(DistributedP0, SumCaseWhen_ScalarAgg) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19884, port2 = 19885;
+    uint16_t port1 = P(19884), port2 = P(19885);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -2981,7 +3015,7 @@ TEST(DistributedP0, SumCaseWhen_TwoColumns) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19886, port2 = 19887;
+    uint16_t port1 = P(19886), port2 = P(19887);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -3031,7 +3065,7 @@ TEST(DistributedP0, WhereIn_SingleNodeHit) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19888, port2 = 19889;
+    uint16_t port1 = P(19888), port2 = P(19889);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -3075,7 +3109,7 @@ TEST(DistributedP0, WhereIn_ScalarAgg) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19890, port2 = 19891;
+    uint16_t port1 = P(19890), port2 = P(19891);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -3120,7 +3154,7 @@ TEST(DistributedP0, OrderBy_PostMerge) {
     pipeline2->drain_sync(100);
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19892, port2 = 19893;
+    uint16_t port1 = P(19892), port2 = P(19893);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -3178,7 +3212,7 @@ TEST(DistributedP0, SumCaseWhen_Plus_WhereIn) {
     pipeline3->drain_sync(100);
 
     TcpRpcServer srv1, srv2, srv3;
-    uint16_t port1 = 19894, port2 = 19895, port3 = 19896;
+    uint16_t port1 = P(19894), port2 = P(19895), port3 = P(19896);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1); return ex.execute(sql);
     });
@@ -3237,7 +3271,7 @@ TEST(DistributedString, TwoNode_ScatterGather_Count) {
     }
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19900, port2 = 19901;
+    uint16_t port1 = P(19900), port2 = P(19901);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -3278,7 +3312,7 @@ TEST(DistributedString, TwoNode_StringWhere_ScatterGather) {
     }
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19902, port2 = 19903;
+    uint16_t port1 = P(19902), port2 = P(19903);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -3317,7 +3351,7 @@ TEST(DistributedString, TwoNode_StringWhere_Sum) {
     }
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19904, port2 = 19905;
+    uint16_t port1 = P(19904), port2 = P(19905);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -3355,7 +3389,7 @@ TEST(DistributedString, TwoNode_StringWhere_Vwap) {
     }
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19906, port2 = 19907;
+    uint16_t port1 = P(19906), port2 = P(19907);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -3394,7 +3428,7 @@ TEST(DistributedString, TwoNode_StringNotFound) {
     }
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19908, port2 = 19909;
+    uint16_t port1 = P(19908), port2 = P(19909);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -3441,7 +3475,7 @@ TEST(DistributedString, TwoNode_MixedIntAndString) {
     }
 
     TcpRpcServer srv1, srv2;
-    uint16_t port1 = 19910, port2 = 19911;
+    uint16_t port1 = P(19910), port2 = P(19911);
     srv1.start(port1, [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*pipeline1);
         return ex.execute(sql);
@@ -3623,8 +3657,8 @@ TEST(QueryCoordinator, DDLBroadcast_CreateTable_BothNodesHaveSchema) {
     p2->start();
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19901, 1}, *p1);
-    coord.add_local_node({"127.0.0.1", 19902, 2}, *p2);
+    coord.add_local_node({"127.0.0.1", P(19901), 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19902), 2}, *p2);
 
     auto r = coord.execute_sql(
         "CREATE TABLE orders (symbol INT64, price INT64, qty INT64)");
@@ -3645,8 +3679,8 @@ TEST(QueryCoordinator, ShowTables_AggregatesRowCounts) {
     p2->start();
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19903, 1}, *p1);
-    coord.add_local_node({"127.0.0.1", 19904, 2}, *p2);
+    coord.add_local_node({"127.0.0.1", P(19903), 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19904), 2}, *p2);
 
     // Create table on both nodes via broadcast
     coord.execute_sql("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp INT64)");
@@ -3679,8 +3713,8 @@ TEST(QueryCoordinator, Describe_ReturnsSchemaFromAnyNode) {
     p2->start();
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19905, 1}, *p1);
-    coord.add_local_node({"127.0.0.1", 19906, 2}, *p2);
+    coord.add_local_node({"127.0.0.1", P(19905), 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19906), 2}, *p2);
 
     coord.execute_sql("CREATE TABLE quotes (symbol INT64, bid FLOAT64, ask FLOAT64)");
 
@@ -3701,7 +3735,7 @@ TEST(QueryCoordinator, ShowTables_SingleNode_Works) {
     p1->start();
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19907, 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19907), 1}, *p1);
 
     coord.execute_sql("CREATE TABLE metrics (ts INT64, value INT64)");
 
@@ -3723,7 +3757,7 @@ TEST(QueryCoordinator, AddRemoveNode_Runtime) {
     p1->start();
 
     QueryCoordinator coord;
-    coord.add_local_node({"127.0.0.1", 19910, 1}, *p1);
+    coord.add_local_node({"127.0.0.1", P(19910), 1}, *p1);
     EXPECT_EQ(coord.node_count(), 1u);
 
     // Simulate runtime add via the same API the HTTP endpoint calls
@@ -3758,7 +3792,7 @@ TEST(Snapshot, TwoPC_AbortOnPrepareFailure) {
 
     // Node 1: succeeds prepare
     TcpRpcServer srv1;
-    srv1.start(19960, [&](const std::string& sql) {
+    srv1.start(P(19960), [&](const std::string& sql) {
         if (sql.find("SNAPSHOT PREPARE") == 0) { prepare_count++; return make_result({"status"}, {{1}}); }
         if (sql.find("SNAPSHOT ABORT") == 0)   { abort_count++;   return make_result({"status"}, {{1}}); }
         if (sql.find("SNAPSHOT COMMIT") == 0)  { commit_count++;  return make_result({"rows_flushed"}, {{5}}); }
@@ -3767,7 +3801,7 @@ TEST(Snapshot, TwoPC_AbortOnPrepareFailure) {
 
     // Node 2: fails prepare
     TcpRpcServer srv2;
-    srv2.start(19961, [&](const std::string& sql) {
+    srv2.start(P(19961), [&](const std::string& sql) {
         if (sql.find("SNAPSHOT PREPARE") == 0) {
             prepare_count++;
             zeptodb::sql::QueryResultSet err;
@@ -3781,8 +3815,8 @@ TEST(Snapshot, TwoPC_AbortOnPrepareFailure) {
     std::this_thread::sleep_for(20ms);
 
     SnapshotCoordinator snap;
-    snap.add_node(1, "127.0.0.1", 19960);
-    snap.add_node(2, "127.0.0.1", 19961);
+    snap.add_node(1, "127.0.0.1", P(19960));
+    snap.add_node(2, "127.0.0.1", P(19961));
 
     auto result = snap.take_snapshot();
 
@@ -3819,14 +3853,14 @@ TEST(PartitionMigratorStateMachine, ResumeRetiesFailedMoves) {
 
     std::atomic<int> call_count{0};
     TcpRpcServer src_srv;
-    src_srv.start(19970, [&](const std::string& sql) {
+    src_srv.start(P(19970), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*src);
         return ex.execute(sql);
     });
 
     // Dest: first call for WAL fails, subsequent succeed
     TcpRpcServer dst_srv;
-    dst_srv.start(19971, [&](const std::string& sql) {
+    dst_srv.start(P(19971), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*dst);
         return ex.execute(sql);
     },
@@ -3845,8 +3879,8 @@ TEST(PartitionMigratorStateMachine, ResumeRetiesFailedMoves) {
 
     PartitionMigrator migrator;
     migrator.set_max_retries(3);
-    migrator.add_node(1, "127.0.0.1", 19970);
-    migrator.add_node(2, "127.0.0.1", 19971);
+    migrator.add_node(1, "127.0.0.1", P(19970));
+    migrator.add_node(2, "127.0.0.1", P(19971));
 
     PartitionRouter router;
     router.add_node(1);
@@ -3881,7 +3915,7 @@ TEST(MigrationCheckpointDisk, SaveAndLoad) {
     cp.moves.push_back({{200, 1, 3}, MoveState::FAILED, "timeout", 0, 3});
     cp.moves.push_back({{300, 2, 3}, MoveState::PENDING, "", 0, 0});
 
-    std::string path = "/tmp/zepto_test_checkpoint.json";
+    std::string path = zepto_test_util::unique_test_path("checkpoint").string() + ".json";
     ASSERT_TRUE(cp.save_to_file(path));
 
     auto loaded = MigrationCheckpoint::load_from_file(path);
@@ -3925,11 +3959,11 @@ TEST(MigrationCheckpointDisk, AutoSaveDuringPlan) {
     auto dst = make_pipeline();
 
     TcpRpcServer src_srv, dst_srv;
-    src_srv.start(19980, [&](const std::string& sql) {
+    src_srv.start(P(19980), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*src);
         return ex.execute(sql);
     });
-    dst_srv.start(19981, [&](const std::string& sql) {
+    dst_srv.start(P(19981), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*dst);
         return ex.execute(sql);
     }, nullptr,
@@ -3940,12 +3974,12 @@ TEST(MigrationCheckpointDisk, AutoSaveDuringPlan) {
     });
     std::this_thread::sleep_for(20ms);
 
-    std::string cp_path = "/tmp/zepto_test_auto_checkpoint.json";
+    std::string cp_path = zepto_test_util::unique_test_path("auto_checkpoint").string() + ".json";
 
     PartitionMigrator migrator;
     migrator.set_checkpoint_path(cp_path);
-    migrator.add_node(1, "127.0.0.1", 19980);
-    migrator.add_node(2, "127.0.0.1", 19981);
+    migrator.add_node(1, "127.0.0.1", P(19980));
+    migrator.add_node(2, "127.0.0.1", P(19981));
 
     PartitionRouter router;
     router.add_node(1);
@@ -3999,11 +4033,11 @@ TEST(LiveRebalancing, T1_IngestDuringSingleSymbolMigration) {
     src->drain_sync(100);
 
     TcpRpcServer src_srv, dst_srv;
-    src_srv.start(19870, [&](const std::string& sql) {
+    src_srv.start(P(19870), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*src);
         return ex.execute(sql);
     });
-    dst_srv.start(19871, [&](const std::string& sql) {
+    dst_srv.start(P(19871), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*dst);
         return ex.execute(sql);
     }, nullptr,
@@ -4039,8 +4073,8 @@ TEST(LiveRebalancing, T1_IngestDuringSingleSymbolMigration) {
 
     // Migrate symbol 900: node 1 → node 2
     PartitionMigrator migrator;
-    migrator.add_node(1, "127.0.0.1", 19870);
-    migrator.add_node(2, "127.0.0.1", 19871);
+    migrator.add_node(1, "127.0.0.1", P(19870));
+    migrator.add_node(2, "127.0.0.1", P(19871));
 
     PartitionRouter router;
     router.add_node(1);
@@ -4189,7 +4223,7 @@ TEST(PartitionMigratorRollback, FailedMoveDeletesPartialData) {
     auto dst = make_pipeline();
 
     TcpRpcServer src_srv;
-    src_srv.start(19990, [&](const std::string& sql) {
+    src_srv.start(P(19990), [&](const std::string& sql) {
         zeptodb::sql::QueryExecutor ex(*src);
         return ex.execute(sql);
     });
@@ -4197,7 +4231,7 @@ TEST(PartitionMigratorRollback, FailedMoveDeletesPartialData) {
     // Dest: SQL executor handles DELETE, WAL always fails
     std::atomic<int> delete_count{0};
     TcpRpcServer dst_srv;
-    dst_srv.start(19991, [&](const std::string& sql) {
+    dst_srv.start(P(19991), [&](const std::string& sql) {
         if (sql.find("DELETE") != std::string::npos) {
             delete_count.fetch_add(1);
             // In real impl this would delete data; here just acknowledge
@@ -4213,8 +4247,8 @@ TEST(PartitionMigratorRollback, FailedMoveDeletesPartialData) {
 
     PartitionMigrator migrator;
     migrator.set_max_retries(1);  // fail fast
-    migrator.add_node(1, "127.0.0.1", 19990);
-    migrator.add_node(2, "127.0.0.1", 19991);
+    migrator.add_node(1, "127.0.0.1", P(19990));
+    migrator.add_node(2, "127.0.0.1", P(19991));
 
     PartitionRouter router;
     router.add_node(1);

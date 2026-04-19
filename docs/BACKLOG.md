@@ -2,7 +2,9 @@
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | 1129 tests passing
 >
-> Last cleaned: 2026-04-16
+> Last cleaned: 2026-04-18
+
+> ✅ 2026-04-18: **Fast parallel cross-arch EKS test pipeline** shipped (devlog 083). `run_arch_comparison_fast.sh` replaces the legacy sequential script: ~28 min cold, ~\$1.30/run, fail-fast teardown, Auto Mode-compatible.
 
 ---
 
@@ -73,7 +75,7 @@
 
 | Task | Engine Impact | Effort |
 |------|---------------|--------|
-| **Table-scoped partitioning** | 🔴 Critical for Physical AI / IoT | M |
+| ~~**Table-scoped partitioning**~~ | ✅ Done (devlog 082) — PartitionKey `(table_id, symbol_id, hour_epoch)`; `SELECT * FROM empty_table` returns 0 rows; 7 new tests | — |
 | ~~**Cost-based planner**~~ | ✅ Phase 1-7 done (devlog 066-067, 075) — TableStatistics + CostModel + LogicalPlan + PhysicalPlan + EXPLAIN v2 + Wiring (HASH_JOIN build side), 47 tests | — |
 | **JOINs/Window on virtual tables** | 🟠 Moderate | M |
 | ~~**SIMD-ify WindowJoin aggregate loop**~~ | ✅ Done (devlog 080) — Contiguous fast-path + sum_i64() SIMD for SUM/AVG, gather+SIMD for large non-contiguous, scalar fallback for small windows — 10 tests | — |
@@ -81,39 +83,7 @@
 | ~~**DuckDB embedding**~~ | ✅ Done (devlog 076) — Embedded DuckDB engine, Arrow bridge, Parquet offload, `duckdb()` table function | — |
 | **Limited DSL AOT compilation** | — | M |
 
-> ✅ Done: Composite index, MV query rewrite, INTERVAL, Prepared statements, Query result cache, SAMPLE, Scalar subqueries, FlatHashMap joins, DuckDB embedding
-
-### Table-Scoped Partitioning (P7 — Critical)
-
-**Problem**: PartitionKey is `(symbol_id, hour_epoch)` — no table dimension. All tables share the same partition pool. `SELECT * FROM empty_table` returns data from other tables. Physical AI / IoT workloads with dozens of tables (temperature, vibration, lidar, etc.) scan all partitions regardless of table, causing 10–50x unnecessary overhead.
-
-**Solution**: Add `table_id` (uint16_t) to PartitionKey → `(table_id, symbol_id, hour_epoch)`.
-
-**Changes required**:
-- `PartitionKey`: add `table_id` field (2 bytes)
-- `PartitionManager`: table-scoped partition index (`get_partitions_for_table()`)
-- `TickMessage`: add `table_id` field
-- `exec_insert()`: pass `table_id` from table name
-- `find_partitions()`: filter by `table_id`
-- `PartitionRouter` (cluster): include `table_id` in routing key
-
-**Performance impact**:
-- Ingest: 0% change (2 bytes added to hash — unmeasurable)
-- Query (HFT, 2–3 tables): 0–2x improvement
-- Query (IoT, 10+ tables): 2–10x improvement
-- Query (Physical AI, 50+ tables): 10–50x improvement
-- Memory: +1% per partition metadata (2 bytes on ~200 byte struct)
-- Fully backward compatible (table_id=0 for legacy single-table mode)
-
-**Test plan** (multi-table ingest + isolation verification):
-- Unit: CREATE 5 tables (temperature, vibration, pressure, gps, lidar), INSERT 1000 rows each with different schemas, verify `SELECT * FROM temperature` returns only temperature data
-- Unit: ASOF JOIN between two different tables (trades JOIN quotes ON symbol, timestamp)
-- Unit: GROUP BY on one table doesn't include rows from other tables
-- Unit: DROP TABLE removes only that table's partitions
-- Unit: Empty table returns 0 rows even when other tables have data
-- Bench: 50 tables × 10K devices × 100Hz ingest, measure throughput vs single-table baseline
-- Cluster: Multi-table INSERT routed to correct nodes, cross-node SELECT returns correct table data
-- K8s: 3-node cluster with 10 tables, concurrent ingest + query on different tables
+> ✅ Done: Composite index, MV query rewrite, INTERVAL, Prepared statements, Query result cache, SAMPLE, Scalar subqueries, FlatHashMap joins, DuckDB embedding, Table-scoped partitioning (devlog 082)
 
 ---
 

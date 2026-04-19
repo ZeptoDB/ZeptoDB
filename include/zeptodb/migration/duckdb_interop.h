@@ -143,6 +143,9 @@ public:
         int threads = 0;                           // 0 = auto
         size_t memory_limit_mb = 0;               // 0 = auto
         bool enable_progress_bar = true;
+        // Destination ZeptoDB table name (Stage B, devlog 084). Empty =
+        // legacy path; when set, stamped as `msg.table_id` on ingest.
+        std::string dest_table;
     };
 
     explicit DuckDBIntegrator(const Config& config);

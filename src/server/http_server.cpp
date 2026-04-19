@@ -177,6 +177,9 @@ void HttpServer::setup_auth_middleware() {
                 }
                 mutable_req.set_header("X-Zepto-Allowed-Tables", tables);
             }
+            // Stash tenant_id for namespace enforcement
+            if (!decision.context.tenant_id.empty())
+                mutable_req.set_header("X-Zepto-Tenant-Id", decision.context.tenant_id);
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
@@ -439,8 +442,31 @@ void HttpServer::setup_routes() {
             return;
         }
 
-        // Table-level ACL enforcement
-        if (req.has_header("X-Zepto-Allowed-Tables")) {
+        // Table-level ACL + tenant namespace enforcement
+        // Parse once; resolve the touched table name across SELECT/DML/DDL/DESCRIBE.
+        std::string touched_table;
+        zeptodb::sql::ParsedStatement cached_ps;
+        bool have_parsed = false;
+        {
+            try {
+                zeptodb::sql::Parser parser;
+                cached_ps = parser.parse_statement(req.body);
+                have_parsed = true;
+                auto& ps = cached_ps;
+                if (ps.select)             touched_table = ps.select->from_table;
+                else if (ps.insert)        touched_table = ps.insert->table_name;
+                else if (ps.update)        touched_table = ps.update->table_name;
+                else if (ps.del)           touched_table = ps.del->table_name;
+                else if (ps.create_table)  touched_table = ps.create_table->table_name;
+                else if (ps.drop_table)    touched_table = ps.drop_table->table_name;
+                else if (ps.alter_table)   touched_table = ps.alter_table->table_name;
+                else if (ps.kind == zeptodb::sql::ParsedStatement::Kind::DESCRIBE_TABLE)
+                    touched_table = ps.describe_table_name;
+            } catch (...) {} // parse failure → let executor surface the error
+        }
+
+        // allowed_tables ACL (from API key / JWT claims)
+        if (!touched_table.empty() && req.has_header("X-Zepto-Allowed-Tables")) {
             std::string allowed = req.get_header_value("X-Zepto-Allowed-Tables");
             std::vector<std::string> allowed_tables;
             std::istringstream ss(allowed);
@@ -449,28 +475,37 @@ void HttpServer::setup_routes() {
                 if (!t.empty()) allowed_tables.push_back(t);
 
             if (!allowed_tables.empty()) {
-                try {
-                    zeptodb::sql::Parser parser;
-                    auto ps = parser.parse_statement(req.body);
-                    std::string table;
-                    if (ps.select) table = ps.select->from_table;
-                    else if (ps.insert) table = ps.insert->table_name;
-                    else if (ps.update) table = ps.update->table_name;
-                    else if (ps.del) table = ps.del->table_name;
-                    if (!table.empty()) {
-                        bool ok = false;
-                        for (const auto& a : allowed_tables)
-                            if (a == table) { ok = true; break; }
-                        if (!ok) {
-                            res.status = 403;
-                            res.set_content(build_error_json(
-                                "Access denied: table '" + table + "' not in allowed list"),
-                                "application/json");
-                            return;
-                        }
-                    }
-                } catch (...) {} // parse failure → let executor handle it
+                bool ok = false;
+                for (const auto& a : allowed_tables)
+                    if (a == touched_table) { ok = true; break; }
+                if (!ok) {
+                    res.status = 403;
+                    res.set_content(build_error_json(
+                        "Access denied: table '" + touched_table + "' not in allowed list"),
+                        "application/json");
+                    return;
+                }
             }
+        }
+
+        // Tenant namespace enforcement
+        if (!touched_table.empty() && tenant_mgr_ &&
+            req.has_header("X-Zepto-Tenant-Id")) {
+            std::string tid = req.get_header_value("X-Zepto-Tenant-Id");
+            if (!tid.empty() && !tenant_mgr_->can_access_table(tid, touched_table)) {
+                res.status = 403;
+                res.set_content(build_error_json(
+                    "Tenant '" + tid + "' cannot access table '" + touched_table + "'"),
+                    "application/json");
+                return;
+            }
+        }
+
+        // Prime prepared-statement cache with the ACL parse (devlog 091 F4)
+        // so run_query_with_tracking → execute() hits the cache instead of
+        // re-parsing the same SQL.
+        if (have_parsed) {
+            executor_.cache_prepared(req.body, std::move(cached_ps));
         }
 
         auto result = run_query_with_tracking(req.body, req.remote_addr);

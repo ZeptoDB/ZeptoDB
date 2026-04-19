@@ -1,6 +1,6 @@
 # ZeptoDB Python API Reference
 
-*Last updated: 2026-03-22*
+*Last updated: 2026-04-18*
 
 Two Python interfaces are available:
 
@@ -179,6 +179,13 @@ pipeline.ingest_batch(syms, prices, vols)
 prices_f = np.array([150.00, 150.10, 150.20], dtype=np.float64)
 vols_f   = np.array([100.0, 50.0, 75.0], dtype=np.float64)
 pipeline.ingest_float_batch(syms, prices_f, vols_f, price_scale=100.0)
+
+# Table-aware ingest (Stage B, devlog 084) — lands rows in a specific
+# CREATE TABLE table so that SELECT FROM other_table sees 0 rows.
+pipeline.execute("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)")
+pipeline.ingest_batch(syms, prices, vols, table_name="trades")
+# Unknown table raises ValueError:
+#   pipeline.ingest_batch(syms, prices, vols, table_name="nope")  # ValueError
 ```
 
 #### Direct queries (C++ execution)
@@ -285,9 +292,54 @@ db.ingest_pandas(df,
                  price_col="price",
                  volume_col="volume")
 
+# Ingest pandas into a specific table (devlog 088)
+db.ingest_pandas(df, table_name="my_trades")   # INSERT INTO my_trades ...
+
 # Ingest polars → HTTP
 db.ingest_polars(df_polars)
+db.ingest_polars(df_polars, table_name="my_trades")
+
+# DDL convenience helpers (devlog 088) — wrappers over execute() / query()
+db.create_table(
+    "my_trades",
+    [("symbol", "INT64"), ("price", "INT64"),
+     ("volume", "INT64"), ("timestamp", "INT64")],
+    if_not_exists=True,
+)
+db.list_tables()                          # → ['my_trades', ...]
+db.drop_table("my_trades", if_exists=True)
 ```
+
+### ZeptoConnection DDL helpers (devlog 088)
+
+| Method | Signature | Purpose |
+|---|---|---|
+| `create_table` | `create_table(name, columns, if_not_exists=False)` | `columns` is a `list[tuple[str, str]]` of `(col_name, sql_type)`; issues `CREATE TABLE [IF NOT EXISTS] name (...)` |
+| `drop_table`   | `drop_table(name, if_exists=False)` | Issues `DROP TABLE [IF EXISTS] name` |
+| `list_tables`  | `list_tables() -> list[str]`         | Runs `SHOW TABLES` and returns the first column of every row |
+| `ingest_pandas`| `ingest_pandas(df, ..., table_name="ticks")` | `table_name` kwarg (default `"ticks"` for backward compat) selects the destination table for the generated `INSERT` statements |
+| `ingest_polars`| `ingest_polars(df, ..., table_name="ticks")` | Passes `table_name` through to `ingest_pandas` |
+
+**Identifier validation (devlog 089).** All caller-supplied identifiers
+are validated before interpolation into SQL — invalid names raise
+`ValueError` and never hit the wire.
+
+| Arg | Regex | Methods that validate it |
+|---|---|---|
+| table / column `name` | `^[A-Za-z_][A-Za-z0-9_]*$` | `create_table`, `drop_table`, `ingest_pandas`, `ingest_polars` |
+| column `type` string  | `^[A-Za-z0-9_]+$`          | `create_table` |
+
+```python
+db.create_table("ticks; DROP TABLE x; --", [("a", "INT64")])
+# ValueError: Invalid SQL identifier: "ticks; DROP TABLE x; --"
+
+db.create_table("safe", [("col; DROP", "INT64")])
+# ValueError: Invalid SQL identifier: "col; DROP"
+```
+
+`ingest_pandas` also SQL-escapes single quotes inside string values
+(standard `''` doubling), so `DataFrame` rows containing `it's` are
+inserted correctly.
 
 ---
 

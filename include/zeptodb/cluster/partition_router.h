@@ -157,6 +157,14 @@ public:
         return n;
     }
 
+    /// Table-scoped overload: combines (table_id, symbol_id) into the routing hash.
+    /// Preserves backward compat — `route(SymbolId)` == `route(0, SymbolId)`.
+    NodeId route(uint16_t table_id, SymbolId symbol) const {
+        return route(static_cast<SymbolId>(
+            static_cast<uint32_t>(symbol) ^
+            static_cast<uint32_t>(static_cast<uint64_t>(table_id) << 16)));
+    }
+
     // ----------------------------------------------------------------
     // Hot symbol pinning
     // ----------------------------------------------------------------
@@ -256,6 +264,13 @@ public:
             if (it->second != primary) return it->second;
         }
         return INVALID_NODE_ID;  // shouldn't happen with ≥2 nodes
+    }
+
+    /// Table-scoped replica routing.
+    NodeId route_replica(uint16_t table_id, SymbolId symbol) const {
+        return route_replica(static_cast<SymbolId>(
+            static_cast<uint32_t>(symbol) ^
+            static_cast<uint32_t>(static_cast<uint64_t>(table_id) << 16)));
     }
 
     // ----------------------------------------------------------------

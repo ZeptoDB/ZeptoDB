@@ -234,6 +234,10 @@ void FIXFeedHandler::handle_message(const char* msg, size_t len) {
     // Tick 추출
     Tick tick;
     if (parser_.extract_tick(tick, mapper_)) {
+        // devlog 086 (D3): auto-stamp table_id from parser before dispatch so
+        // downstream pipeline ingest routes to the correct SchemaRegistry
+        // table. 0 = legacy/default.
+        tick.table_id = parser_.table_id();
         std::lock_guard<std::mutex> lock(callback_mutex_);
         if (tick_callback_) {
             tick_callback_(tick);

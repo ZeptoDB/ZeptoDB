@@ -36,6 +36,9 @@ add_executable(zepto_tests
     unit/test_query_planner.cpp
     unit/test_duckdb_engine.cpp
     unit/test_window_join_simd.cpp
+    unit/test_table_scoped_partitioning.cpp
+    unit/test_feed_table_id.cpp
+    unit/test_table_acl_ddl.cpp
 )
 if(ZEPTO_USE_JIT)
     target_sources(zepto_tests PRIVATE unit/test_jit_simd.cpp)
@@ -56,6 +59,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_kafka
     zepto_mqtt
     zepto_flight
+    zepto_feeds
     GTest::gtest_main
 )
 if(ZEPTO_HAS_OPENSSL)
@@ -66,7 +70,10 @@ if(ZEPTO_USE_TCMALLOC AND TCMALLOC_LIB)
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(zepto_tests)
+# Use PRE_TEST mode so we can apply per-test properties (e.g. RESOURCE_LOCK)
+# via a TEST_INCLUDE_FILES hook evaluated at ctest-run time, after test
+# names are materialised.
+gtest_discover_tests(zepto_tests DISCOVERY_MODE PRE_TEST)
 
 # --- Feed Handler Tests ---
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/feeds/test_fix_parser.cpp")
@@ -82,8 +89,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/feeds/test_fix_parser.cpp")
         zepto_common
         GTest::gtest
     )
-    gtest_discover_tests(test_feeds)
+    gtest_discover_tests(test_feeds DISCOVERY_MODE PRE_TEST)
 endif()
+
+# Append AFTER all gtest_discover_tests() calls so the serial-tests script
+# runs after each discovered suite's _include.cmake (which registers the
+# test names). Otherwise set_tests_properties() for tests from the later
+# suites silently no-ops because the names aren't known yet.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/serial_tests.cmake")
 
 # --- Feed Handler Benchmarks ---
 find_package(benchmark QUIET)
@@ -116,6 +130,7 @@ target_include_directories(test_migration PRIVATE
 )
 target_link_libraries(test_migration PRIVATE
     zepto_migration
+    zepto_auth
     zepto_common
     GTest::gtest
 )

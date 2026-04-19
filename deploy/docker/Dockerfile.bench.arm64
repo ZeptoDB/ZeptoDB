@@ -1,0 +1,57 @@
+# ARM64 bench image — same as Dockerfile.bench, with -mcpu=neoverse-n1.
+# Built natively on Graviton host by run_arch_comparison_fast.sh Stage 1b.
+
+ARG ARCH_FLAGS="-mcpu=neoverse-n1"
+
+FROM debian:bookworm-slim AS builder
+ARG ARCH_FLAGS
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget gnupg ca-certificates lsb-release && \
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key > /etc/apt/trusted.gpg.d/llvm.asc && \
+    echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" > /etc/apt/sources.list.d/llvm.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      clang-19 llvm-19-dev cmake ninja-build git pkg-config \
+      libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch 1.2.0 https://github.com/google/highway.git /tmp/hwy && \
+    cmake -S /tmp/hwy -B /tmp/hwy/build -G Ninja \
+      -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+      -DCMAKE_BUILD_TYPE=Release -DHWY_ENABLE_TESTS=OFF -DHWY_ENABLE_EXAMPLES=OFF && \
+    ninja -C /tmp/hwy/build -j"$(nproc)" install && rm -rf /tmp/hwy
+
+WORKDIR /build
+COPY CMakeLists.txt ./
+COPY include ./include
+COPY src ./src
+COPY tools ./tools
+COPY tests ./tests
+COPY third_party ./third_party
+
+RUN mkdir -p build && cd build && \
+    cmake .. -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+      -DCMAKE_CXX_FLAGS="${ARCH_FLAGS} -O3" \
+      -DAPEX_USE_RDMA=OFF -DZEPTO_USE_UCX=OFF \
+      -DZEPTO_USE_JIT=ON -DZEPTO_USE_S3=OFF \
+      -DZEPTO_USE_PARQUET=OFF -DZEPTO_USE_FLIGHT=OFF \
+      -DZEPTO_BUILD_PYTHON=OFF -DAPEX_USE_IO_URING=ON \
+      -DBUILD_TESTS=OFF && \
+    ninja -j"$(nproc)" zepto_http_server zepto_data_node bench_rebalance && \
+    strip zepto_http_server zepto_data_node bench_rebalance
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libssl3 libcurl4 liblz4-1 libnuma1 liburing2 ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/zeptodb
+COPY --from=builder /build/build/zepto_http_server .
+COPY --from=builder /build/build/zepto_data_node   .
+COPY --from=builder /build/build/bench_rebalance   .
+
+EXPOSE 8123
+ENTRYPOINT ["./zepto_http_server"]
+CMD ["--port","8123","--no-auth"]

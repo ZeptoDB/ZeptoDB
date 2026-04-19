@@ -185,6 +185,18 @@ KafkaConsumer::~KafkaConsumer() {
 
 void KafkaConsumer::set_pipeline(zeptodb::core::ZeptoPipeline* pipeline) {
     pipeline_ = pipeline;
+    // Resolve configured table_name → table_id via SchemaRegistry.
+    // Empty name → legacy path (table_id = 0).
+    if (pipeline_ && !config_.table_name.empty()) {
+        uint16_t tid = pipeline_->schema_registry().get_table_id(config_.table_name);
+        if (tid == 0) {
+            ZEPTO_ERROR("KafkaConsumer: unknown table '{}' — ticks will be dropped",
+                        config_.table_name);
+        }
+        table_id_ = tid;
+    } else {
+        table_id_ = 0;
+    }
 }
 
 void KafkaConsumer::set_routing(
@@ -219,9 +231,19 @@ bool KafkaConsumer::ingest_decoded(zeptodb::ingestion::TickMessage msg) {
     const int  retries   = config_.backpressure_retries;
     const int  sleep_us  = config_.backpressure_sleep_us;
 
+    // Table-aware ingest (Stage B): if a destination table was configured
+    // but unknown at set_pipeline(), table_id_ stays 0 → drop with failure.
+    if (!config_.table_name.empty() && table_id_ == 0) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.ingest_failures++;
+        return false;
+    }
+    // Stamp resolved table_id on every message (0 = legacy).
+    msg.table_id = table_id_;
+
     if (router_) {
         // Multi-node: route via consistent-hash ring
-        zeptodb::cluster::NodeId target = router_->route(msg.symbol_id);
+        zeptodb::cluster::NodeId target = router_->route(msg.table_id, msg.symbol_id);
         if (target == local_id_) {
             if (!pipeline_) {
                 std::lock_guard<std::mutex> lk(stats_mu_);

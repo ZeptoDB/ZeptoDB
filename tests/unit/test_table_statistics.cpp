@@ -145,8 +145,8 @@ TEST(TableStatistics, UpdateAndAggregate) {
     auto arena1 = std::make_unique<ArenaAllocator>(cfg);
     auto arena2 = std::make_unique<ArenaAllocator>(cfg);
 
-    PartitionKey key1{1, 0};
-    PartitionKey key2{1, 3600000000000LL};
+    PartitionKey key1{0, 1, 0};
+    PartitionKey key2{0, 1, 3600000000000LL};
 
     Partition p1(key1, std::move(arena1));
     Partition p2(key2, std::move(arena2));
@@ -179,7 +179,7 @@ TEST(TableStatistics, UpdateAndAggregate) {
 TEST(TableStatistics, EmptyPartition) {
     ArenaConfig cfg{1024 * 1024, false, -1};
     auto arena = std::make_unique<ArenaAllocator>(cfg);
-    PartitionKey key{1, 0};
+    PartitionKey key{0, 1, 0};
     Partition p(key, std::move(arena));
 
     TableStatistics stats;

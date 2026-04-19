@@ -19,6 +19,7 @@
 #include <latch>
 #include <numeric>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 using namespace zeptodb::execution;
@@ -738,13 +739,17 @@ TEST(DistributedScheduler, ScatterGather_WithRpcServer) {
     pipeline.drain_sync(10);
 
     zeptodb::cluster::TcpRpcServer srv;
-    srv.start(19940, [&](const std::string& sql) {
+    uint16_t sched_port = 19940 + static_cast<uint16_t>(
+        ((static_cast<unsigned>(::getpid()) * 2654435761u) ^
+         static_cast<unsigned>(
+             std::chrono::steady_clock::now().time_since_epoch().count())) % 30000);
+    srv.start(sched_port, [&](const std::string& sql) {
         QueryExecutor ex(pipeline);
         return ex.execute(sql);
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    DistributedQueryScheduler dist({"127.0.0.1:19940"});
+    DistributedQueryScheduler dist({"127.0.0.1:" + std::to_string(sched_port)});
     EXPECT_EQ(dist.worker_count(), 1u);
 
     QueryFragment frag;

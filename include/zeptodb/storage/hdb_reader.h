@@ -119,26 +119,45 @@ public:
     HDBReader& operator=(const HDBReader&) = delete;
 
     /// 특정 파티션의 컬럼을 mmap으로 읽기
+    /// @param table_id    table_id (0 = legacy layout)
     /// @param symbol      심볼 ID
     /// @param hour_epoch  시간 파티션 epoch (나노초)
     /// @param col_name    컬럼 이름 (예: "price", "volume")
     /// @return MappedColumn (valid() == false 이면 읽기 실패)
-    MappedColumn read_column(SymbolId symbol,
+    MappedColumn read_column(uint16_t table_id,
+                              SymbolId symbol,
                               int64_t  hour_epoch,
                               const std::string& col_name);
 
+    /// Legacy overload (table_id = 0).
+    MappedColumn read_column(SymbolId symbol,
+                              int64_t  hour_epoch,
+                              const std::string& col_name) {
+        return read_column(0, symbol, hour_epoch, col_name);
+    }
+
     /// 특정 심볼의 사용 가능한 파티션 목록 반환 (hour_epoch 오름차순)
-    std::vector<int64_t> list_partitions(SymbolId symbol) const;
+    std::vector<int64_t> list_partitions(uint16_t table_id, SymbolId symbol) const;
+    std::vector<int64_t> list_partitions(SymbolId symbol) const {
+        return list_partitions(0, symbol);
+    }
 
     /// 시간 범위에 속하는 파티션 목록 반환
-    std::vector<int64_t> list_partitions_in_range(SymbolId symbol,
+    std::vector<int64_t> list_partitions_in_range(uint16_t table_id,
+                                                   SymbolId symbol,
                                                    int64_t  from_ns,
                                                    int64_t  to_ns) const;
+    std::vector<int64_t> list_partitions_in_range(SymbolId symbol,
+                                                   int64_t  from_ns,
+                                                   int64_t  to_ns) const {
+        return list_partitions_in_range(0, symbol, from_ns, to_ns);
+    }
 
     [[nodiscard]] const std::string& base_path() const { return base_path_; }
 
 private:
-    std::string column_file_path(SymbolId symbol,
+    std::string column_file_path(uint16_t table_id,
+                                  SymbolId symbol,
                                   int64_t  hour_epoch,
                                   const std::string& col_name) const;
 

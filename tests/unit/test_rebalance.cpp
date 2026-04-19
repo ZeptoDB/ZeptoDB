@@ -13,6 +13,8 @@
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/auth/license_validator.h"
 
+#include "test_port_helper.h"
+
 #include <chrono>
 #include <thread>
 #include <fstream>
@@ -179,11 +181,11 @@ protected:
         }
         src_pipeline_->drain_sync(100);
 
-        src_srv_.start(29200, [this](const std::string& sql) {
+        src_srv_.start(src_port_, [this](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*src_pipeline_);
             return ex.execute(sql);
         });
-        dst_srv_.start(29201, [this](const std::string& sql) {
+        dst_srv_.start(dst_port_, [this](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*dst_pipeline_);
             return ex.execute(sql);
         }, nullptr,
@@ -195,8 +197,8 @@ protected:
         });
         std::this_thread::sleep_for(20ms);
 
-        migrator_.add_node(1, "127.0.0.1", 29200);
-        migrator_.add_node(2, "127.0.0.1", 29201);
+        migrator_.add_node(1, "127.0.0.1", src_port_);
+        migrator_.add_node(2, "127.0.0.1", dst_port_);
         router_.add_node(1);
     }
 
@@ -205,6 +207,8 @@ protected:
         dst_srv_.stop();
     }
 
+    const uint16_t src_port_ = zepto_test_util::pick_free_port();
+    const uint16_t dst_port_ = zepto_test_util::pick_free_port();
     std::unique_ptr<zeptodb::core::ZeptoPipeline> src_pipeline_;
     std::unique_ptr<zeptodb::core::ZeptoPipeline> dst_pipeline_;
     TcpRpcServer src_srv_, dst_srv_;
@@ -390,11 +394,11 @@ protected:
         }
         src_pipeline_->drain_sync(100);
 
-        src_srv_.start(29300, [this](const std::string& sql) {
+        src_srv_.start(src_port_, [this](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*src_pipeline_);
             return ex.execute(sql);
         });
-        dst_srv_.start(29301, [this](const std::string& sql) {
+        dst_srv_.start(dst_port_, [this](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*dst_pipeline_);
             return ex.execute(sql);
         }, nullptr,
@@ -406,8 +410,8 @@ protected:
         });
         std::this_thread::sleep_for(20ms);
 
-        migrator_.add_node(1, "127.0.0.1", 29300);
-        migrator_.add_node(2, "127.0.0.1", 29301);
+        migrator_.add_node(1, "127.0.0.1", src_port_);
+        migrator_.add_node(2, "127.0.0.1", dst_port_);
         router_.add_node(1);
     }
 
@@ -415,6 +419,9 @@ protected:
         src_srv_.stop();
         dst_srv_.stop();
     }
+
+    const uint16_t src_port_ = zepto_test_util::pick_free_port();
+    const uint16_t dst_port_ = zepto_test_util::pick_free_port();
 
     std::unique_ptr<zeptodb::core::ZeptoPipeline> src_pipeline_;
     std::unique_ptr<zeptodb::core::ZeptoPipeline> dst_pipeline_;
@@ -677,10 +684,10 @@ protected:
         server_ = std::make_unique<zeptodb::server::HttpServer>(*executor_, http_port_);
 
         // Set up migrator/router for rebalance manager
-        src_srv_.start(29400, [this](const std::string& sql) {
+        src_srv_.start(src_port_, [this](const std::string& sql) {
             return executor_->execute(sql);
         });
-        dst_srv_.start(29401, [this](const std::string& sql) {
+        dst_srv_.start(dst_port_, [this](const std::string& sql) {
             return executor_->execute(sql);
         }, nullptr,
         [](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
@@ -688,8 +695,8 @@ protected:
         });
         std::this_thread::sleep_for(20ms);
 
-        migrator_.add_node(1, "127.0.0.1", 29400);
-        migrator_.add_node(2, "127.0.0.1", 29401);
+        migrator_.add_node(1, "127.0.0.1", src_port_);
+        migrator_.add_node(2, "127.0.0.1", dst_port_);
         router_.add_node(1);
 
         mgr_ = std::make_unique<RebalanceManager>(router_, migrator_);
@@ -707,7 +714,9 @@ protected:
         dst_srv_.stop();
     }
 
-    static constexpr uint16_t http_port_ = 18920;
+    const uint16_t http_port_ = zepto_test_util::pick_free_port();
+    const uint16_t src_port_  = zepto_test_util::pick_free_port();
+    const uint16_t dst_port_  = zepto_test_util::pick_free_port();
 
     std::unique_ptr<zeptodb::core::ZeptoPipeline> pipeline_;
     std::unique_ptr<zeptodb::sql::QueryExecutor> executor_;
@@ -1479,7 +1488,7 @@ TEST_F(RebalancePolicyTest, PolicyAutoTriggerRecordsHistory) {
 TEST_F(RebalanceTest, PartialMoveWithCheckpoint) {
     router_.add_node(2);
 
-    std::string cp_dir = "/tmp/zepto_test_rebalance_cp";
+    std::string cp_dir = zepto_test_util::unique_test_path("rebalance_cp").string();
     std::filesystem::create_directories(cp_dir);
 
     RebalanceConfig cfg;

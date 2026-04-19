@@ -482,6 +482,7 @@ QueryResultSet QueryExecutor::exec_create_table(const CreateTableStmt& stmt) {
         err.error = "Table '" + stmt.table_name + "' already exists";
         return err;
     }
+    pipeline_.save_schema_catalog();
     return ddl_ok("Table '" + stmt.table_name + "' created");
 }
 
@@ -489,6 +490,7 @@ QueryResultSet QueryExecutor::exec_create_table(const CreateTableStmt& stmt) {
 // exec_drop_table
 // ============================================================================
 QueryResultSet QueryExecutor::exec_drop_table(const DropTableStmt& stmt) {
+    const uint16_t tid = pipeline_.schema_registry().get_table_id(stmt.table_name);
     bool ok = pipeline_.schema_registry().drop(stmt.table_name);
     if (!ok) {
         if (stmt.if_exists)
@@ -497,6 +499,11 @@ QueryResultSet QueryExecutor::exec_drop_table(const DropTableStmt& stmt) {
         err.error = "Table '" + stmt.table_name + "' does not exist";
         return err;
     }
+    if (tid != 0) {
+        pipeline_.partition_manager().drop_table_partitions(tid);
+        pipeline_.drop_table_index(tid);
+    }
+    pipeline_.save_schema_catalog();
     return ddl_ok("Table '" + stmt.table_name + "' dropped");
 }
 
@@ -728,6 +735,7 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
                 std::chrono::system_clock::now().time_since_epoch()).count()));
         msg.seq_num   = static_cast<uint64_t>(pipeline_.stats().ticks_ingested.load());
         msg.msg_type  = 0;  // Trade
+        msg.table_id  = pipeline_.schema_registry().get_table_id(stmt.table_name);
 
         pipeline_.ingest_tick(msg);
         ++inserted;
@@ -1235,13 +1243,17 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
     int64_t ts_lo_filter = INT64_MIN, ts_hi_filter = INT64_MAX;
     bool has_ts_range = extract_time_range(stmt, ts_lo_filter, ts_hi_filter);
 
+    // Table-scoped partitioning: resolve table_id once for the FROM table.
+    // 0 = legacy/default (no CREATE TABLE) → queries span all partitions.
+    const uint16_t from_tid = pipeline_.schema_registry().get_table_id(stmt.from_table);
+
     // WHERE symbol = N 조건 추출 (파티션 레벨 필터링)
     int64_t sym_filter = -1;
     if (has_where_symbol(stmt, sym_filter, stmt.from_alias)) {
         // symbol 기반 파티션 필터링
         auto& pm = pipeline_.partition_manager();
         auto sym_parts = pm.get_partitions_for_symbol(
-            static_cast<zeptodb::SymbolId>(sym_filter));
+            from_tid, static_cast<zeptodb::SymbolId>(sym_filter));
 
         // Further narrow by time range if present (avoids passing entire symbol
         // history to exec functions when a tight timestamp window is queried).
@@ -1320,7 +1332,7 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
         auto& pm = pipeline_.partition_manager();
         std::vector<Partition*> left_parts;
         for (int64_t s : in_syms) {
-            auto sp = pm.get_partitions_for_symbol(static_cast<zeptodb::SymbolId>(s));
+            auto sp = pm.get_partitions_for_symbol(from_tid, static_cast<zeptodb::SymbolId>(s));
             if (has_ts_range) {
                 for (auto* p : sp)
                     if (p->overlaps_time_range(ts_lo_filter, ts_hi_filter))
@@ -1349,8 +1361,10 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
     // 심볼 필터 없음 → 전체 파티션 (타임스탬프 범위 있으면 파티션 수준 사전 필터링)
     std::vector<Partition*> left_parts;
     if (has_ts_range) {
-        left_parts = pipeline_.partition_manager()
-            .get_partitions_for_time_range(ts_lo_filter, ts_hi_filter);
+        // Scope time-range lookup by table when the FROM table was CREATE'd.
+        left_parts = (from_tid == 0)
+            ? pipeline_.partition_manager().get_partitions_for_time_range(ts_lo_filter, ts_hi_filter)
+            : pipeline_.partition_manager().get_partitions_for_time_range(from_tid, ts_lo_filter, ts_hi_filter);
     } else {
         left_parts = find_partitions(stmt.from_table);
     }
@@ -1425,7 +1439,11 @@ std::vector<Partition*> QueryExecutor::find_partitions(
         return {};  // Table not found in registry
     }
     auto& pm = pipeline_.partition_manager();
-    return pm.get_all_partitions();
+    // Table-scoped partitioning: if the table was CREATE'd, scope partitions to it.
+    // Legacy path (no CREATE TABLE, or tables dropped) falls back to all partitions.
+    uint16_t tid = reg.get_table_id(table_name);
+    if (tid == 0) return pm.get_all_partitions();  // legacy fallback
+    return pm.get_partitions_for_table(tid);
 }
 
 // ============================================================================
@@ -5526,6 +5544,16 @@ size_t QueryExecutor::prepared_cache_size() const {
 void QueryExecutor::clear_prepared_cache() {
     std::lock_guard<std::mutex> lk(stmt_cache_mu_);
     stmt_cache_.clear();
+}
+
+// devlog 091 F4: prime cache from HTTP ACL parse so the subsequent execute()
+// call hits the cache instead of re-parsing.
+void QueryExecutor::cache_prepared(const std::string& sql, ParsedStatement ps) {
+    size_t h = sql_hash(sql);
+    std::lock_guard<std::mutex> lk(stmt_cache_mu_);
+    if (stmt_cache_.find(h) == stmt_cache_.end() && stmt_cache_.size() < 4096) {
+        stmt_cache_.emplace(h, std::move(ps));
+    }
 }
 
 // ============================================================================

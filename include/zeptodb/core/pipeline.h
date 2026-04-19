@@ -209,6 +209,17 @@ public:
     [[nodiscard]] SchemaRegistry& schema_registry() { return schema_registry_; }
     [[nodiscard]] const SchemaRegistry& schema_registry() const { return schema_registry_; }
 
+    /// HDB base path (for schema catalog durability / table-scoped paths).
+    /// Empty string if HDB is disabled (PURE_IN_MEMORY).
+    [[nodiscard]] const std::string& hdb_base_path() const { return config_.hdb_base_path; }
+
+    /// Persist SchemaRegistry to {hdb_base_path}/_schema.json. No-op if HDB
+    /// is disabled. Called after CREATE / DROP / ALTER TABLE in executor.
+    bool save_schema_catalog() const {
+        if (config_.hdb_base_path.empty()) return false;
+        return schema_registry_.save_to(config_.hdb_base_path + "/_schema.json");
+    }
+
     /// MaterializedViewManager 접근
     [[nodiscard]] MaterializedViewManager& mat_view_manager() { return mat_view_mgr_; }
 
@@ -220,6 +231,10 @@ public:
     /// Used by ALTER TABLE SET TTL.
     /// @return number of partitions removed
     size_t evict_older_than_ns(int64_t cutoff_ns);
+
+    /// Remove all partition_index_ entries belonging to the given table_id.
+    /// Used by DROP TABLE after PartitionManager::drop_table_partitions.
+    void drop_table_index(uint16_t table_id);
 
     /// 큐 강제 드레인 (테스트용: 백그라운드 스레드 없이 동기 드레인)
     size_t drain_sync(size_t max_items = SIZE_MAX);
@@ -255,8 +270,12 @@ private:
     // 드레인 스레드 루프
     void drain_loop();
 
-    // symbol 기준으로 저장된 파티션 목록 반환
-    std::vector<Partition*> find_partitions(SymbolId symbol) const;
+    // symbol 기준으로 저장된 파티션 목록 반환 (backward-compat overload = table_id 0)
+    std::vector<Partition*> find_partitions(SymbolId symbol) const {
+        return find_partitions(0, symbol);
+    }
+    // Table-scoped partition lookup.
+    std::vector<Partition*> find_partitions(uint16_t table_id, SymbolId symbol) const;
 
     // 파티션에서 ColumnSnapshot 빌드
     ColumnSnapshot build_snapshot(Partition* part, const std::string& extra_col_name) const;
@@ -274,9 +293,9 @@ private:
 
     PipelineStats    stats_;
 
-    // symbol → partition 인덱스
+    // (table_id, symbol) → partitions
     mutable std::mutex               partition_index_mu_;
-    std::unordered_map<SymbolId, std::vector<Partition*>> partition_index_;
+    std::unordered_map<uint64_t, std::vector<Partition*>> partition_index_;
 
     // Schema registry (all storage modes)
     SchemaRegistry schema_registry_;

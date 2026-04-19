@@ -58,7 +58,7 @@ protected:
             .use_hugepages = false,
         });
 
-        PartitionKey key{symbol_id, hour_epoch};
+        PartitionKey key{0, symbol_id, hour_epoch};
         auto part = std::make_unique<Partition>(key, std::move(arena));
 
         part->add_column("timestamp",  ColumnType::TIMESTAMP_NS);
@@ -329,7 +329,7 @@ TEST_F(HDBTest, FlushEmptyPartition_NoFiles) {
         .use_hugepages = false,
     });
 
-    PartitionKey key{1, 3600LL * 1'000'000'000LL};
+    PartitionKey key{0, 1, 3600LL * 1'000'000'000LL};
     Partition empty_part(key, std::move(arena));
     empty_part.seal();
 

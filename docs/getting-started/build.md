@@ -13,8 +13,11 @@ ninja -j$(nproc)
 ## Run Tests
 
 ```bash
-# C++ unit tests (766+)
+# C++ unit tests (1300+), single process / serial
 ./tests/zepto_tests
+
+# Parallel run via ctest — one process per test, scales with cores:
+ctest -j$(nproc) --output-on-failure
 
 # Python tests (208)
 python3 -m pytest ../tests/test_python.py -v

@@ -105,6 +105,15 @@ public:
     uint64_t get_message_count() const { return message_count_; }
     uint64_t get_error_count() const { return error_count_; }
 
+    // Table-aware ingest (Stage B, devlog 084).
+    // Setter is a write-only hint for callers that forward Ticks into a
+    // ZeptoDB pipeline — they should stamp `table_id()` onto the produced
+    // TickMessage before ingest.
+    void     set_table_id(uint16_t tid)           { table_id_ = tid; }
+    void     set_table_name(std::string name)     { table_name_ = std::move(name); }
+    uint16_t table_id()    const { return table_id_; }
+    const std::string& table_name() const { return table_name_; }
+
 private:
     ITCHMessageType msg_type_;
     const uint8_t* current_message_;
@@ -112,6 +121,10 @@ private:
 
     uint64_t message_count_;
     uint64_t error_count_;
+
+    // Table-aware ingest (Stage B)
+    uint16_t    table_id_ = 0;
+    std::string table_name_;
 
     // 헬퍼
     uint16_t read_uint16_be(const uint8_t* ptr) const;

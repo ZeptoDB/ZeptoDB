@@ -28,11 +28,11 @@ fi
 echo "=== Multi-Process Cluster Integration Test ==="
 
 # Start data node 1: port 29001, 500 ticks, symbol 1
-"$DATA_NODE" 29001 500 1 &
+"$DATA_NODE" 29001 500 --symbol 1 &
 PID1=$!
 
 # Start data node 2: port 29002, 300 ticks, symbol 2
-"$DATA_NODE" 29002 300 2 &
+"$DATA_NODE" 29002 300 --symbol 2 &
 PID2=$!
 
 # Wait for nodes to be ready
@@ -47,18 +47,22 @@ import socket, struct
 s = socket.socket()
 s.settimeout(2)
 s.connect(('127.0.0.1', 29001))
-# RpcHeader: magic(4) + type(4) + request_id(4) + payload_len(4)
+# RpcHeader: magic(4) + type(4) + request_id(4) + payload_len(4) + epoch(8) = 24 bytes
 magic = 0x41504558
-s.sendall(struct.pack('<IIII', magic, 3, 0, 0))  # type=PING(3)
-resp = s.recv(64)
+s.sendall(struct.pack('<IIIIQ', magic, 3, 0, 0, 0))  # type=PING(3)
+resp = b''
+while len(resp) < 24:
+    chunk = s.recv(4096)
+    if not chunk: break
+    resp += chunk
 s.close()
 # Response should be PONG (type=4)
 rmag, rtype = struct.unpack('<II', resp[:8])
 assert rmag == magic and rtype == 4
 " 2>/dev/null; then
-    echo "PASS"; ((PASS++))
+    echo "PASS"; PASS=$((PASS+1))
 else
-    echo "FAIL"; ((FAIL++))
+    echo "FAIL"; FAIL=$((FAIL+1))
 fi
 
 echo -n "Test 2: Ping node 2... "
@@ -68,15 +72,19 @@ s = socket.socket()
 s.settimeout(2)
 s.connect(('127.0.0.1', 29002))
 magic = 0x41504558
-s.sendall(struct.pack('<IIII', magic, 3, 0, 0))
-resp = s.recv(64)
+s.sendall(struct.pack('<IIIIQ', magic, 3, 0, 0, 0))
+resp = b''
+while len(resp) < 24:
+    chunk = s.recv(4096)
+    if not chunk: break
+    resp += chunk
 s.close()
 rmag, rtype = struct.unpack('<II', resp[:8])
 assert rmag == magic and rtype == 4
 " 2>/dev/null; then
-    echo "PASS"; ((PASS++))
+    echo "PASS"; PASS=$((PASS+1))
 else
-    echo "FAIL"; ((FAIL++))
+    echo "FAIL"; FAIL=$((FAIL+1))
 fi
 
 # Test 3: Query node 1 directly
@@ -88,14 +96,14 @@ s.settimeout(2)
 s.connect(('127.0.0.1', 29001))
 magic = 0x41504558
 sql = b'SELECT count(*) FROM trades WHERE symbol = 1'
-s.sendall(struct.pack('<IIII', magic, 1, 1, len(sql)) + sql)  # type=SQL_QUERY(1)
+s.sendall(struct.pack('<IIIIQ', magic, 1, 1, len(sql), 0) + sql)  # type=SQL_QUERY(1)
 resp = b''
-while len(resp) < 16:
+while len(resp) < 24:
     resp += s.recv(4096)
 rmag, rtype, rid, plen = struct.unpack('<IIII', resp[:16])
-while len(resp) < 16 + plen:
+while len(resp) < 24 + plen:
     resp += s.recv(4096)
-payload = resp[16:]
+payload = resp[24:]
 # Parse: error_len(4) + error + col_count(4) + ... + row_count(4) + rows
 elen = struct.unpack('<I', payload[:4])[0]
 off = 4 + elen
@@ -113,10 +121,10 @@ s.close()
 
 if [[ "$RESULT" == "500" ]]; then
     echo "PASS (got 500 rows)"
-    ((PASS++))
+    PASS=$((PASS+1))
 else
     echo "FAIL (got: $RESULT)"
-    ((FAIL++))
+    FAIL=$((FAIL+1))
 fi
 
 # Test 4: Query node 2 directly
@@ -128,14 +136,14 @@ s.settimeout(2)
 s.connect(('127.0.0.1', 29002))
 magic = 0x41504558
 sql = b'SELECT count(*) FROM trades WHERE symbol = 2'
-s.sendall(struct.pack('<IIII', magic, 1, 2, len(sql)) + sql)
+s.sendall(struct.pack('<IIIIQ', magic, 1, 2, len(sql), 0) + sql)
 resp = b''
-while len(resp) < 16:
+while len(resp) < 24:
     resp += s.recv(4096)
 rmag, rtype, rid, plen = struct.unpack('<IIII', resp[:16])
-while len(resp) < 16 + plen:
+while len(resp) < 24 + plen:
     resp += s.recv(4096)
-payload = resp[16:]
+payload = resp[24:]
 elen = struct.unpack('<I', payload[:4])[0]
 off = 4 + elen
 ncols = struct.unpack('<I', payload[off:off+4])[0]
@@ -152,10 +160,10 @@ s.close()
 
 if [[ "$RESULT" == "300" ]]; then
     echo "PASS (got 300 rows)"
-    ((PASS++))
+    PASS=$((PASS+1))
 else
     echo "FAIL (got: $RESULT)"
-    ((FAIL++))
+    FAIL=$((FAIL+1))
 fi
 
 # Test 5: Cross-node query via C++ test binary
@@ -163,10 +171,10 @@ echo -n "Test 5: Cross-node scatter-gather... "
 RESULT=$("${BUILD_DIR}/tests/zepto_tests" --gtest_filter='DistributedSelect.*' 2>&1 | tail -1)
 if echo "$RESULT" | grep -q "PASSED"; then
     echo "PASS"
-    ((PASS++))
+    PASS=$((PASS+1))
 else
     echo "FAIL ($RESULT)"
-    ((FAIL++))
+    FAIL=$((FAIL+1))
 fi
 
 echo ""

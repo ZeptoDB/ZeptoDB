@@ -31,26 +31,35 @@
 namespace zeptodb::storage {
 
 // ============================================================================
-// HDB 파일 헤더 (32 bytes, cache-line 절반)
-// ============================================================================
-// 파일 구조:
-//   [HDBFileHeader 32 bytes] [데이터 bytes (압축 or raw)]
+// HDB File Header
+// ----------------------------------------------------------------------------
+// v1 (32 bytes, legacy): no table_id field; files assumed table_id = 0.
+// v2 (40 bytes): appends uint16_t table_id + 6 reserved bytes for alignment.
+// Readers MUST accept both: dispatch on `version` byte at offset 5.
+// File layout: [Header] [data bytes (compressed or raw)]
 // ============================================================================
 struct HDBFileHeader {
-    uint8_t  magic[5];           // "APEXH" (legacy HDB compat) (0x41 0x50 0x45 0x58 0x48)
-    uint8_t  version;            // 현재 버전 = 1
+    uint8_t  magic[5];           // "APEXH" (0x41 0x50 0x45 0x58 0x48)
+    uint8_t  version;            // 1 = legacy 32B, 2 = 40B with table_id
     uint8_t  col_type;           // ColumnType (uint8_t cast)
     uint8_t  compression;        // 0=None, 1=LZ4 block
-    uint64_t row_count;          // 행(row) 수
-    uint64_t data_size;          // 헤더 이후 실제 데이터 바이트 (압축 시 압축된 크기)
-    uint64_t uncompressed_size;  // 압축 전 원본 크기 (압축 없을 경우 == data_size)
-    // Total: 5+1+1+1+8+8+8 = 32 bytes
+    uint64_t row_count;          // number of rows
+    uint64_t data_size;          // payload bytes after header (compressed if LZ4)
+    uint64_t uncompressed_size;  // original raw size (== data_size if uncompressed)
+    // --- v2 fields (below) ---
+    uint16_t table_id;           // SchemaRegistry-assigned id; 0 = legacy/default
+    uint8_t  reserved[6];        // padding for 8-byte alignment / future use
+    // Total v2: 5+1+1+1+8+8+8+2+6 = 40 bytes
 };
-static_assert(sizeof(HDBFileHeader) == 32, "HDBFileHeader must be 32 bytes");
+static_assert(sizeof(HDBFileHeader) == 40, "HDBFileHeader v2 must be 40 bytes");
 
-// 매직 바이트
+// v1 header layout size for backward-compatible reads.
+inline constexpr size_t HDB_HEADER_V1_SIZE = 32;
+inline constexpr size_t HDB_HEADER_V2_SIZE = 40;
+
+// Magic bytes
 inline constexpr uint8_t HDB_MAGIC[5] = {'A', 'P', 'E', 'X', 'H'};
-inline constexpr uint8_t HDB_VERSION   = 1;
+inline constexpr uint8_t HDB_VERSION   = 2;  // current writer version
 
 // 압축 플래그
 enum class HDBCompression : uint8_t {
@@ -103,13 +112,22 @@ public:
 
 private:
     /// 단일 ColumnVector를 파일로 기록
+    /// @param table_id  파일 헤더에 기록할 table_id (0 = legacy)
     /// @return 기록된 바이트 (헤더 포함)
     size_t write_column_file(const std::string& dir_path,
-                              const ColumnVector& col);
+                              const ColumnVector& col,
+                              uint16_t table_id = 0);
 
-    /// 파티션 디렉토리 경로 계산
-    /// 형식: {base_path}/{symbol_id}/{hour_epoch}
-    std::string partition_dir(SymbolId symbol, int64_t hour_epoch) const;
+    /// 파티션 디렉토리 경로 계산 (table-scoped)
+    /// table_id != 0 → {base_path}/t{table_id}/{symbol_id}/{hour_epoch}
+    /// table_id == 0 → {base_path}/{symbol_id}/{hour_epoch}  (legacy layout)
+    std::string partition_dir(uint16_t table_id, SymbolId symbol, int64_t hour_epoch) const;
+
+    /// Legacy overload (table_id = 0). Preserved for callers that don't know
+    /// about table_id yet (recovery, older tests).
+    std::string partition_dir(SymbolId symbol, int64_t hour_epoch) const {
+        return partition_dir(0, symbol, hour_epoch);
+    }
 
     /// 디렉토리 재귀 생성
     static bool mkdir_p(const std::string& path);
