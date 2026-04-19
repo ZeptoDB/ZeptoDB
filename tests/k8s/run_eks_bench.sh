@@ -1,6 +1,13 @@
 #!/bin/bash
 # tests/k8s/run_eks_bench.sh — Full EKS benchmark: wake → test amd64+arm64 → engine bench → sleep
 #
+# Cluster: `zepto-bench` runs in EKS Auto Mode (devlog 100). The arm64 NodePool
+# `zepto-bench-arm64` is a persistent cluster asset provisioned once via eksctl
+# and scaled up/down by `tools/eks-bench.sh wake/sleep`. This script does NOT
+# create its own NodePool or NodeClass — Auto Mode ships a managed `default`
+# NodeClass (`nodeclasses.eks.amazonaws.com`), and the Karpenter self-managed
+# `EC2NodeClass` CRD is absent by design (devlog 095 diagnosis).
+#
 # Usage:
 #   ./tests/k8s/run_eks_bench.sh              # full run
 #   ./tests/k8s/run_eks_bench.sh --keep       # don't sleep after tests
@@ -52,8 +59,8 @@ force_clean_namespaces() {
 cleanup() {
   step "Cleanup"
   force_clean_namespaces
-  kubectl delete nodepool arm64-bench 2>/dev/null || true
-  kubectl delete ec2nodeclass arm64-bench 2>/dev/null || true
+  # Auto Mode: no self-managed EC2NodeClass / arm64-bench NodePool to delete.
+  # `zepto-bench-arm64` is a persistent cluster asset, scaled via eks-bench.sh.
   if ! $KEEP; then
     step "Sleep EKS"
     "$EKS_BENCH" sleep || true
@@ -82,71 +89,32 @@ if ! $SKIP_WAKE && ! $ENGINE_ONLY; then
 fi
 
 # ═══════════════════════════════════════════════════════════
-# 2. Provision arm64 nodes
+# 2. Ensure arm64 nodes available (EKS Auto Mode — devlog 100)
 # ═══════════════════════════════════════════════════════════
 if ! $ENGINE_ONLY; then
-  step "2. Provision arm64 nodes (Karpenter)"
+  step "2. Ensure arm64 nodes available (Auto Mode, reuse zepto-bench-arm64 NodePool)"
 
-  # devlog 094 #10: skip Karpenter provision when nodes already present
-  # (saves 1–5 min on subsequent runs against a warm cluster).
+  # devlog 094 #10: skip provision when ≥3 arm64 nodes already Ready.
   EXISTING_ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
   if [ "$EXISTING_ARM" -ge 3 ]; then
-    info "arm64 nodes already present ($EXISTING_ARM ready) — skipping Karpenter provision"
+    info "arm64 nodes already present ($EXISTING_ARM ready) — skipping provision"
   else
+    # zepto-bench-arm64 is a persistent NodePool managed via eksctl/eks-bench.sh.
+    # If limits.cpu=0 (asleep), wake it; if missing, fail loudly — do NOT try
+    # to create it here (Auto Mode schema is owned by the cluster bootstrap).
+    if ! kubectl get nodepool zepto-bench-arm64 >/dev/null 2>&1; then
+      fail "NodePool zepto-bench-arm64 missing — create via eksctl/kubectl once"
+      exit 1
+    fi
+    ARM_LIMIT=$(kubectl get nodepool zepto-bench-arm64 -o jsonpath='{.spec.limits.cpu}' 2>/dev/null || echo 0)
+    if [ "${ARM_LIMIT:-0}" = "0" ]; then
+      info "zepto-bench-arm64 limits.cpu=0 — running eks-bench.sh wake"
+      "$EKS_BENCH" wake
+    fi
 
-  cat <<'KEOF' | kubectl apply -f -
-apiVersion: karpenter.k8s.aws/v1
-kind: EC2NodeClass
-metadata:
-  name: arm64-bench
-spec:
-  role: "KarpenterNodeRole-zepto-bench"
-  amiSelectorTerms:
-    - alias: al2023@latest
-  subnetSelectorTerms:
-    - tags:
-        karpenter.sh/discovery: zepto-bench
-  securityGroupSelectorTerms:
-    - tags:
-        karpenter.sh/discovery: zepto-bench
----
-apiVersion: karpenter.sh/v1
-kind: NodePool
-metadata:
-  name: arm64-bench
-spec:
-  weight: 50
-  template:
-    spec:
-      expireAfter: 720h
-      nodeClassRef:
-        group: karpenter.k8s.aws
-        kind: EC2NodeClass
-        name: arm64-bench
-      requirements:
-        - key: kubernetes.io/arch
-          operator: In
-          values: ["arm64"]
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values: ["on-demand"]
-        - key: karpenter.k8s.aws/instance-family
-          operator: In
-          values: ["m7g", "m6g", "c7g"]
-        - key: karpenter.k8s.aws/instance-size
-          operator: In
-          values: ["xlarge", "2xlarge"]
-  limits:
-    cpu: "64"
-    memory: "128Gi"
-  disruption:
-    consolidationPolicy: WhenEmpty
-    consolidateAfter: 30m
-KEOF
-
-  # Trigger 3 arm64 pods spread across nodes
-  kubectl create namespace karpenter-trigger --dry-run=client -o yaml | kubectl apply -f -
-  kubectl apply -n karpenter-trigger -f - <<'TEOF'
+    # Trigger 3 arm64 pods spread across nodes to force Karpenter scale-up.
+    kubectl create namespace karpenter-trigger --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -n karpenter-trigger -f - <<'TEOF'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -179,15 +147,14 @@ spec:
               memory: "512Mi"
 TEOF
 
-  info "Waiting for 3+ arm64 nodes (max 5min)..."
-  for i in $(seq 1 30); do
-    ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
-    [ "$ARM" -ge 3 ] && break
-    sleep 10
-  done
-  kubectl delete namespace karpenter-trigger --wait=false 2>/dev/null || true
-
-  fi  # end devlog 094 #10 "skip provision when arm64 already present"
+    info "Waiting for 3+ arm64 nodes (max 5min)..."
+    for i in $(seq 1 30); do
+      ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
+      [ "$ARM" -ge 3 ] && break
+      sleep 10
+    done
+    kubectl delete namespace karpenter-trigger --wait=false 2>/dev/null || true
+  fi
 
   AMD=$(kubectl get nodes -l kubernetes.io/arch=amd64 --no-headers 2>/dev/null | grep -c Ready || true)
   ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)

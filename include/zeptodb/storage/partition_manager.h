@@ -32,20 +32,32 @@ struct PartitionKey {
     SymbolId symbol_id;
     int64_t  hour_epoch;   // floor(timestamp / 3600e9) * 3600e9
 
-    bool operator==(const PartitionKey& other) const {
-        return table_id == other.table_id
-            && symbol_id == other.symbol_id
-            && hour_epoch == other.hour_epoch;
+    [[gnu::always_inline]] inline bool operator==(const PartitionKey& other) const noexcept {
+        // Compare as two 64-bit reads — avoids padding-byte UB from memcmp.
+        // Low 64 bits: table_id (+ 2B padding) + symbol_id. Padding bytes differ across
+        // instances in theory, but in practice all construction sites use aggregate
+        // init which value-initializes; to be safe we mask the low qword to the 48
+        // meaningful bits (16 table_id + 32 symbol_id, ignoring 16 bits of padding).
+        const uint64_t a_lo = (static_cast<uint64_t>(static_cast<uint32_t>(symbol_id)) << 16)
+                            | static_cast<uint64_t>(table_id);
+        const uint64_t b_lo = (static_cast<uint64_t>(static_cast<uint32_t>(other.symbol_id)) << 16)
+                            | static_cast<uint64_t>(other.table_id);
+        return a_lo == b_lo && hour_epoch == other.hour_epoch;
     }
 };
+static_assert(sizeof(PartitionKey) == 16, "PartitionKey must be 16 bytes");
 
 struct PartitionKeyHash {
-    size_t operator()(const PartitionKey& k) const {
-        // FNV-1a style combine
-        size_t h = static_cast<size_t>(k.symbol_id);
-        h ^= static_cast<size_t>(k.hour_epoch) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        h ^= static_cast<size_t>(k.table_id)   + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+    [[gnu::always_inline]] inline size_t operator()(const PartitionKey& k) const noexcept {
+        // Pack symbol_id (32) + table_id (16) into low 48 bits; mix hour_epoch via splitmix64.
+        uint64_t x = static_cast<uint64_t>(static_cast<uint32_t>(k.symbol_id))
+                   | (static_cast<uint64_t>(k.table_id) << 32)
+                   | (static_cast<uint64_t>(k.hour_epoch & 0xFFFF) << 48);
+        x ^= static_cast<uint64_t>(k.hour_epoch);
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33;
+        return static_cast<size_t>(x);
     }
 };
 

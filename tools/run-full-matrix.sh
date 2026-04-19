@@ -323,7 +323,14 @@ cmd_aarch64_ssh='set -e
   echo "── Remote build + ctest (same exclusion regex as stage 2, timeout 300) ──"
   ssh $SSH_OPTS "$GRAVITON_HOST" "
     set -e
-    cd ~/zeptodb/build
+    cd ~/zeptodb
+    # devlog 097: auto-configure when build/ missing (e.g., compiler changed,
+    # CMakeCache.txt purged). CMakeLists.txt soft-default picks clang-19.
+    if [[ ! -f build/build.ninja ]]; then
+      echo ── Remote: build/ missing or stale, running cmake configure ──
+      cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    fi
+    cd build
     ninja -j\$(nproc) zepto_tests test_feeds test_migration
     ctest -j\$(nproc) -E \"Benchmark\\.|K8s\" --output-on-failure --timeout 300
   "'

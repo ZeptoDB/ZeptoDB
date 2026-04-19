@@ -8,6 +8,7 @@
 // ============================================================================
 
 #include "zeptodb/common/types.h"
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -107,6 +108,10 @@ private:
 
     mutable std::mutex mu_;
     std::unordered_map<std::string, ViewState> views_;
+
+    // Fast-path flag: true when views_ is empty. Enables lock-free early-exit
+    // in on_tick() when no MVs are registered (the common case on the hot path).
+    std::atomic<bool> views_empty_{true};
 
     // Update a single bucket with a new tick
     static void update_bucket(MVBucket& bucket, const MVDef& def,

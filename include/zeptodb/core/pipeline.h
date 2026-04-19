@@ -283,6 +283,12 @@ private:
     // HDB에서 시간 범위 내 COUNT 집계
     size_t hdb_count_range(SymbolId symbol, Timestamp from, Timestamp to) const;
 
+    // Cold HDB fallback for query_vwap; extracted to keep the hot RDB scan
+    // loop small enough to avoid stack spills (devlog 097).
+    void query_vwap_hdb_fallback(SymbolId symbol, Timestamp from, Timestamp to,
+                                 __int128& pv_sum, int64_t& v_sum,
+                                 size_t& total_rows) const;
+
     // ============================================================
     // 멤버
     // ============================================================

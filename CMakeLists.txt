@@ -4,6 +4,26 @@
 # ============================================================================
 cmake_minimum_required(VERSION 3.22)
 
+# ============================================================================
+# Compiler soft-default: prefer clang-19 when user didn't pick a compiler.
+# Respects env vars CC/CXX and explicit -DCMAKE_*_COMPILER. Keeps gcc builds
+# possible (pass -DCMAKE_CXX_COMPILER=g++) but makes the common case match the
+# documented clang-19 toolchain (see docs/getting-started/build.md).
+# ============================================================================
+if(NOT CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+    find_program(ZEPTO_CLANGXX19 NAMES clang++-19 clang++ PATHS /usr/bin /usr/local/bin)
+    if(ZEPTO_CLANGXX19)
+        set(CMAKE_CXX_COMPILER "${ZEPTO_CLANGXX19}" CACHE FILEPATH "C++ compiler" FORCE)
+        message(STATUS "Auto-selected C++ compiler: ${CMAKE_CXX_COMPILER}")
+    endif()
+endif()
+if(NOT CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
+    find_program(ZEPTO_CLANG19 NAMES clang-19 clang PATHS /usr/bin /usr/local/bin)
+    if(ZEPTO_CLANG19)
+        set(CMAKE_C_COMPILER "${ZEPTO_CLANG19}" CACHE FILEPATH "C compiler" FORCE)
+    endif()
+endif()
+
 project(zeptodb
     VERSION 0.1.0
     DESCRIPTION "Ultra-Low Latency In-Memory Database for HFT"

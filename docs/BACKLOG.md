@@ -2,9 +2,11 @@
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | 1129 tests passing
 >
-> Last cleaned: 2026-04-18
+> Last cleaned: 2026-04-19
 
 > ✅ 2026-04-18: **Fast parallel cross-arch EKS test pipeline** shipped (devlog 083). `run_arch_comparison_fast.sh` replaces the legacy sequential script: ~28 min cold, ~\$1.30/run, fail-fast teardown, Auto Mode-compatible.
+>
+> ✅ 2026-04-19: **Stage 7 / EKS Auto Mode fully green** (devlog 100, closes devlog 095 follow-up). Both parts of the fix landed: (1) `tests/k8s/run_eks_bench.sh` stopped applying the Karpenter self-managed `EC2NodeClass` — now reuses the persistent `zepto-bench-arm64` NodePool via `eks-bench.sh wake` + trigger Deployment; (2) `zepto-bench-{x86,arm64}` NodePools recreated with Auto-Mode-compatible `eks.amazonaws.com/instance-family` + `eks.amazonaws.com/instance-cpu` keys (were `karpenter.k8s.aws/instance-*`, which Auto Mode rejects). Live `./tools/run-full-matrix.sh --stages=7` run: 76/76 green (amd64 compat 27/27 + amd64 HA+perf 11/11 + arm64 all 38/38), 465 s wall, 0 flakes, 0 ZeptoDB regressions, cluster back asleep via global EXIT trap. First-ever fully green amd64+arm64 K8s matrix under Auto Mode.
 
 ---
 
@@ -78,6 +80,8 @@
 | ~~**Table-scoped partitioning**~~ | ✅ Done (devlog 082) — PartitionKey `(table_id, symbol_id, hour_epoch)`; `SELECT * FROM empty_table` returns 0 rows; 7 new tests | — |
 | ~~**Cost-based planner**~~ | ✅ Phase 1-7 done (devlog 066-067, 075) — TableStatistics + CostModel + LogicalPlan + PhysicalPlan + EXPLAIN v2 + Wiring (HASH_JOIN build side), 47 tests | — |
 | **JOINs/Window on virtual tables** | 🟠 Moderate | M |
+| **VWAP 1M p50 sub-600 µs restore** | Inherent residual after 097+098 recovery (625→697 µs median, +11.5% vs realistic rebuilt baseline; +20% vs 582 µs best-case). 582→625 µs gap was best-case-run artefact. Root cause: clang-19 register allocator spills the `v_sum` int64 accumulator to stack under multi-table `query_vwap`'s raised register pressure — `query_vwap` inner loop is byte-identical to baseline (36 instr/iter), only the allocator decision differs. Bounded recovery path: ~30 LOC kernel extraction to standalone `[[gnu::hot, gnu::flatten]] execution::vwap_fused(const int64_t*, const int64_t*, size_t)` behind the `[[unlikely]]` HDB branch; estimated +25 µs recovery. PartitionKey hash/eq was packed-uint64 + splitmix64 in 098 — confirmed <0.01% of profile, no query-path benefit but no regression on ingest. Not in urgency-track P7 scope; revisit if perf pressure rises. (devlog 097, 098) | M |
+| ~~**BENCH 1 ingest peak throughput restore**~~ | ✅ Done (devlog 099) — `store_tick` column-pointer caching closes the post-multi-table ingest regression. Root cause was `Partition::get_column(const std::string&)` being called 6×/tick (vs 4× baseline) due to FLOAT64 branch re-lookup, pushing `__memcmp_evex_movbe` from 14.42% → 20.85% of samples. Fix: cache 4 `ColumnVector*` locals in `src/core/pipeline.cpp::store_tick` (10 LOC, no header/API/test change). x86 5-run medians recovered: batch=1 4.76 / batch=64 **5.06** / batch=512 5.05 / batch=4096 5.05 / batch=65535 5.04 M t/s — all within ±2% of `875a4c3` baseline (batch=64 = −0.8%). Graviton 3-run medians 3.97–4.03 M t/s. 1361/1361 tests pass on both arches. Remaining ingest residuals (`clock_gettime` vdso, arena first-touch `memset`) are inherent. | — |
 | ~~**SIMD-ify WindowJoin aggregate loop**~~ | ✅ Done (devlog 080) — Contiguous fast-path + sum_i64() SIMD for SUM/AVG, gather+SIMD for large non-contiguous, scalar fallback for small windows — 10 tests | — |
 | ~~**JIT SIMD emit**~~ | ✅ Done (devlog 079) — Explicit `<4 x i64>` vector IR generation in LLVM JIT, cttz mask extraction, scalar tail | — |
 | ~~**DuckDB embedding**~~ | ✅ Done (devlog 076) — Embedded DuckDB engine, Arrow bridge, Parquet offload, `duckdb()` table function | — |

@@ -14,12 +14,17 @@ bool MaterializedViewManager::create_view(MVDef def) {
     ViewState vs;
     vs.def = std::move(def);
     views_[vs.def.view_name] = std::move(vs);
+    views_empty_.store(false, std::memory_order_release);
     return true;
 }
 
 bool MaterializedViewManager::drop_view(const std::string& name) {
     std::lock_guard lk(mu_);
-    return views_.erase(name) > 0;
+    const bool erased = views_.erase(name) > 0;
+    if (erased && views_.empty()) {
+        views_empty_.store(true, std::memory_order_release);
+    }
+    return erased;
 }
 
 bool MaterializedViewManager::exists(const std::string& name) const {
@@ -29,6 +34,13 @@ bool MaterializedViewManager::exists(const std::string& name) const {
 
 void MaterializedViewManager::on_tick(int32_t symbol, int64_t ts,
                                        int64_t price, int64_t volume) {
+    // Fast-path: when no MVs are registered, skip the lock entirely.
+    // MV updates are eventually-consistent — a single missed tick at the instant
+    // a view is created is acceptable. The acquire/release pair ensures that
+    // once on_tick observes views_empty_=false, all subsequent view state is
+    // visible.
+    if (views_empty_.load(std::memory_order_acquire)) return;
+
     std::lock_guard lk(mu_);
     for (auto& [_, vs] : views_) {
         // Compute bucket key

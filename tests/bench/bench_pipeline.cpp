@@ -242,6 +242,62 @@ static void bench_query_latency() {
 }
 
 // ============================================================================
+// BENCH 2b: 쿼리 레이턴시 (MV registered) — isolates MV on_tick overhead
+// Only measures 1M-rows VWAP p50, directly comparable to BENCH 2 (MV-off).
+// ============================================================================
+static void bench_query_latency_mv_on() {
+    printf("\n===== BENCH 2b: 쿼리 레이턴시 (MV on) =====\n");
+
+    const size_t num_rows   = 1'000'000;
+    const size_t arena_mb   = 256ULL * 1024 * 1024;
+    const size_t QUERY_ITERS = 1000;
+
+    PipelineConfig cfg;
+    cfg.arena_size_per_partition = arena_mb;
+    ZeptoPipeline pipeline(cfg);
+
+    // Simplest possible MV: SUM(volume) GROUP BY symbol, no xbar.
+    zeptodb::storage::MVDef mv;
+    mv.view_name    = "bench_mv";
+    mv.source_table = "trades";
+    mv.group_by     = {"symbol"};
+    mv.xbar_bucket  = 0;
+    mv.columns.push_back({"total_vol", zeptodb::storage::MVAggType::SUM, "volume"});
+    pipeline.mat_view_manager().create_view(std::move(mv));
+
+    // Load data (MV updated on every tick via on_tick)
+    const int64_t base_ts = 1'700'000'000'000'000'000LL;
+    for (size_t i = 0; i < num_rows; ++i) {
+        TickMessage msg = make_tick(42, base_ts, static_cast<int>(i));
+        pipeline.ingest_tick(msg);
+        if ((i & 0xFFFF) == 0) {
+            pipeline.drain_sync(65536);
+        }
+    }
+    pipeline.drain_sync(SIZE_MAX);
+
+    const size_t stored = pipeline.total_stored_rows();
+    if (stored == 0) {
+        printf("[BENCH] WARNING: 저장된 데이터 없음 (rows=%zu)\n", num_rows);
+        return;
+    }
+
+    std::vector<int64_t> latencies;
+    latencies.reserve(QUERY_ITERS);
+    for (size_t q = 0; q < QUERY_ITERS; ++q) {
+        const int64_t t0 = now_ns();
+        auto r = pipeline.query_vwap(42);
+        const int64_t dt = now_ns() - t0;
+        (void)r;
+        latencies.push_back(dt);
+    }
+    auto s = compute_stats(latencies);
+    printf("[BENCH] BENCH 2b: VWAP 질의 레이턴시 (MV on) p50=%.1fμs"
+           " p99=%.1fμs p999=%.1fμs (rows=%zuK, stored=%zu)\n",
+           s.p50_us, s.p99_us, s.p999_us, num_rows / 1000, stored);
+}
+
+// ============================================================================
 // BENCH 3: 엔드투엔드 레이턴시 (ingest → query)
 // ============================================================================
 static void bench_e2e_latency() {
@@ -437,6 +493,8 @@ int main(int argc, char* argv[]) {
 
     if (should_run("ingest"))     bench_ingestion_throughput();
     if (should_run("query"))      bench_query_latency();
+    if (should_run("query") || should_run("query_mv_on"))
+                                   bench_query_latency_mv_on();
     if (should_run("e2e"))        bench_e2e_latency();
     if (should_run("concurrent")) bench_concurrent();
     if (should_run("large"))      bench_large_vwap();

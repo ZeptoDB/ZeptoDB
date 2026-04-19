@@ -291,15 +291,19 @@ void ZeptoPipeline::store_tick(const TickMessage& msg) {
         ZEPTO_DEBUG("파티션 스키마 초기화: symbol={}", msg.symbol_id);
     }
 
-    // 컬럼에 데이터 append (타입 디스패치)
-    partition.get_column(COL_TIMESTAMP)->append<int64_t>(msg.recv_ts);
-    if (partition.get_column(COL_PRICE)->type() == ColumnType::FLOAT64)
-        partition.get_column(COL_PRICE)->append<double>(msg.price_f);
+    // 컬럼에 데이터 append (타입 디스패치) — cache column pointers once
+    // to avoid repeated linear scans in Partition::get_column (memcmp hotspot).
+    ColumnVector* ts_col  = partition.get_column(COL_TIMESTAMP);
+    ColumnVector* px_col  = partition.get_column(COL_PRICE);
+    ColumnVector* vol_col = partition.get_column(COL_VOLUME);
+    ColumnVector* mt_col  = partition.get_column(COL_MSG_TYPE);
+    ts_col->append<int64_t>(msg.recv_ts);
+    if (px_col->type() == ColumnType::FLOAT64)
+        px_col->append<double>(msg.price_f);
     else
-        partition.get_column(COL_PRICE)->append<int64_t>(msg.price);
-    partition.get_column(COL_VOLUME   )->append<int64_t>(msg.volume);
-    partition.get_column(COL_MSG_TYPE )->append<int32_t>(
-        static_cast<int32_t>(msg.msg_type));
+        px_col->append<int64_t>(msg.price);
+    vol_col->append<int64_t>(msg.volume);
+    mt_col->append<int32_t>(static_cast<int32_t>(msg.msg_type));
 
     stats_.ticks_stored.fetch_add(1, std::memory_order_relaxed);
 
@@ -465,28 +469,8 @@ QueryResult ZeptoPipeline::query_vwap(
     }
 
     // ===== HDB (disk mmap) 스캔 — Tiered / Pure On-Disk 모드 =====
-    if (hdb_reader_ && partitions.empty()) {
-        // RDB에 없을 때만 HDB 조회 (또는 Pure On-Disk 모드)
-        const auto hdb_parts = hdb_reader_->list_partitions_in_range(symbol, from, to);
-        for (const int64_t hour : hdb_parts) {
-            auto ts_col  = hdb_reader_->read_column(symbol, hour, COL_TIMESTAMP);
-            auto px_col  = hdb_reader_->read_column(symbol, hour, COL_PRICE);
-            auto vol_col = hdb_reader_->read_column(symbol, hour, COL_VOLUME);
-
-            if (!ts_col.valid() || !px_col.valid() || !vol_col.valid()) continue;
-
-            const auto ts_span  = ts_col.as_span<int64_t>();
-            const auto px_span  = px_col.as_span<int64_t>();
-            const auto vol_span = vol_col.as_span<int64_t>();
-
-            for (size_t i = 0; i < ts_col.num_rows; ++i) {
-                if (full_scan || (ts_span[i] >= from && ts_span[i] <= to)) {
-                    pv_sum += static_cast<__int128>(px_span[i]) * vol_span[i];
-                    v_sum  += vol_span[i];
-                    ++total_rows;
-                }
-            }
-        }
+    if (hdb_reader_ && partitions.empty()) [[unlikely]] {
+        query_vwap_hdb_fallback(symbol, from, to, pv_sum, v_sum, total_rows);
     }
 
     if (total_rows == 0) {
@@ -507,6 +491,33 @@ QueryResult ZeptoPipeline::query_vwap(
     stats_.total_rows_scanned.fetch_add(total_rows, std::memory_order_relaxed);
 
     return r;
+}
+
+// ============================================================================
+// query_vwap_hdb_fallback: Cold HDB fallback (extracted to reduce hot-path size)
+// ============================================================================
+[[gnu::cold, gnu::noinline]]
+void ZeptoPipeline::query_vwap_hdb_fallback(
+    SymbolId symbol, Timestamp from, Timestamp to,
+    __int128& pv_sum, int64_t& v_sum, size_t& total_rows) const {
+    const bool full_scan = (from == 0 && to == INT64_MAX);
+    const auto hdb_parts = hdb_reader_->list_partitions_in_range(symbol, from, to);
+    for (const int64_t hour : hdb_parts) {
+        auto ts_col  = hdb_reader_->read_column(symbol, hour, COL_TIMESTAMP);
+        auto px_col  = hdb_reader_->read_column(symbol, hour, COL_PRICE);
+        auto vol_col = hdb_reader_->read_column(symbol, hour, COL_VOLUME);
+        if (!ts_col.valid() || !px_col.valid() || !vol_col.valid()) continue;
+        const auto ts_span  = ts_col.as_span<int64_t>();
+        const auto px_span  = px_col.as_span<int64_t>();
+        const auto vol_span = vol_col.as_span<int64_t>();
+        for (size_t i = 0; i < ts_col.num_rows; ++i) {
+            if (full_scan || (ts_span[i] >= from && ts_span[i] <= to)) {
+                pv_sum += static_cast<__int128>(px_span[i]) * vol_span[i];
+                v_sum  += vol_span[i];
+                ++total_rows;
+            }
+        }
+    }
 }
 
 // ============================================================================
