@@ -265,6 +265,24 @@ Client Tick → PartitionRouter.route(symbol)
                               → Remote node Ring Buffer (zero-copy)
 ```
 
+#### Write-path routing (devlog 103)
+
+Feed consumers (`KafkaConsumer`, `MqttConsumer`, `OpcUaConsumer`) already
+dispatch through `ClusterNode::ingest_tick` via each consumer's
+`set_routing()` hook, so feed-driven ingest is partition-correct by default.
+
+The HTTP/SQL and Python write paths previously bypassed this and wrote
+directly to whichever pod received the request. `QueryExecutor` now holds
+an optional `zeptodb::cluster::ClusterNodeBase*`, set once at startup via
+`set_cluster_node()`. When non-null, `exec_insert()` dispatches through
+`ClusterNodeBase::ingest_tick` (routed to the partition owner via the
+same `PartitionRouter`); when null, it falls back to direct local
+`pipeline_.ingest_tick()` — preserving single-node behaviour. The same
+`ingest_routed_()` pattern covers the three Python `PyPipeline` call sites
+(single ingest, int batch, float batch). This closes the HTTP/Python
+parity gap with feed consumers and is the prerequisite for the stateless
+`zepto_ingest_node` tier (BACKLOG P8-I3).
+
 ### 4-C. Distributed Query Flow
 
 ```
@@ -612,3 +630,23 @@ In addition to full add/remove node operations, `start_move_partitions()` accept
 - Surgical moves for maintenance windows
 
 Partial moves reuse the same `start_plan()` → `run_loop()` execution path. The key difference: `action_` is set to `NONE`, so no `RingConsensus` broadcast occurs after completion (the ring topology doesn't change — only data placement does).
+
+---
+
+## 10. Pod placement for horizontal scale-out
+
+Horizontal scale-out on Kubernetes only delivers linear ingest gain when each replica
+lands on a distinct node. The Helm chart therefore defaults to **hard** podAntiAffinity
+(`podAntiAffinity.required: true`, `topologyKey: kubernetes.io/hostname`) — a soft
+`preferred*` preference was shown to silently co-locate replicas when HPA scaled past
+the current node count, halving ingest CPU scaling and destroying failure isolation.
+The default is complemented by `topologySpreadConstraints` with `maxSkew: 1` so that
+even when `replicas > nodes` is legitimate (e.g. during a brief HPA spike ahead of
+Karpenter node provision), pods are distributed as evenly as possible rather than
+clustering on whichever node has headroom.
+
+Dev clusters with tight node counts can flip `podAntiAffinity.required: false` to
+regain the soft behaviour. Full sizing guidance and sector-specific overlays live in
+`docs/operations/KUBERNETES_OPERATIONS.md` → "Sizing and placement for enterprise
+factory workloads". Implementation details and verification are captured in
+`docs/devlog/104_pod_placement_hardening.md`.

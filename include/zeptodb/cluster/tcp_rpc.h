@@ -12,6 +12,7 @@
 // One connection per request (Phase 1 simplicity; Phase 2 can add pooling).
 // ============================================================================
 
+#include "zeptodb/cluster/rpc_client_base.h"
 #include "zeptodb/cluster/rpc_protocol.h"
 #include "zeptodb/cluster/rpc_security.h"
 #include "zeptodb/cluster/k8s_lease.h"
@@ -140,7 +141,7 @@ private:
 // ============================================================================
 // TcpRpcClient — with connection pooling
 // ============================================================================
-class TcpRpcClient {
+class TcpRpcClient : public RpcClientBase {
 public:
     /// @param connect_timeout_ms  Non-blocking connect timeout (default 2s).
     /// @param pool_size           Max idle connections to keep (default 4).
@@ -163,7 +164,7 @@ public:
     zeptodb::sql::QueryResultSet execute_sql(const std::string& sql);
 
     /// Send a TickMessage to the remote node's local pipeline.
-    bool ingest_tick(const zeptodb::ingestion::TickMessage& msg);
+    bool ingest_tick(const zeptodb::ingestion::TickMessage& msg) override;
 
     /// Ping the remote server.  true = reachable within connect_timeout_ms.
     bool ping();

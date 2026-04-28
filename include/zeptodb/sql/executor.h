@@ -29,6 +29,8 @@
 namespace zeptodb::execution { class DuckDBEngine; }
 #endif
 
+namespace zeptodb::cluster { class ClusterNodeBase; }
+
 namespace zeptodb::sql {
 
 using zeptodb::storage::ColumnType;
@@ -139,8 +141,17 @@ public:
         return false;
     }
 
+    /// Enable cluster-aware INSERT routing. When set, exec_insert() routes
+    /// via the cluster ring (ClusterNodeBase::ingest_tick) instead of writing
+    /// to the local pipeline directly. Set once at startup; null = single-node
+    /// fallback (original behaviour). See devlog 103.
+    void set_cluster_node(zeptodb::cluster::ClusterNodeBase* node) {
+        cluster_node_ = node;
+    }
+
 private:
     zeptodb::core::ZeptoPipeline& pipeline_;
+    zeptodb::cluster::ClusterNodeBase* cluster_node_ = nullptr;  // devlog 103
     ParallelOptions par_opts_;
     std::unique_ptr<zeptodb::execution::QueryScheduler> scheduler_;
     // LocalQueryScheduler 의 WorkerPool 을 가리키는 raw pointer.

@@ -105,8 +105,26 @@ struct PipelineConfig {
     // 드레인 스레드 sleep (마이크로초)
     uint32_t drain_sleep_us = 10;
 
-    // 드레인 스레드 수 (1 = 기존 단일 스레드, >1 = 멀티 드레인)
-    size_t drain_threads = 1;
+    /// Number of background drain threads that move ticks from the ring
+    /// buffer into storage. The `MPMCRingBuffer` is lock-free MPMC so this
+    /// scales ~linearly until PartitionManager lock contention dominates.
+    ///
+    /// Sentinel `0` = auto: at `start()` the pipeline uses
+    /// `max(2, hardware_concurrency() / 4)`. Any explicit value `>=1` is
+    /// honored exactly (the `std::max(1, ...)` clamp in `start()` keeps
+    /// defense-in-depth for historical callers that wrote `0`). Raising
+    /// this is the first knob when `ingest_tick()` falls back to the
+    /// synchronous `store_tick()` path (a ~34× throughput cliff, devlog
+    /// 102).
+    size_t drain_threads = 0;
+
+    /// Capacity (in slots) of the TickPlant MPMC ring buffer. Must be a
+    /// power of two in `[4096, 16777216]`; `0` means "use engine default"
+    /// (`kDefaultRingBufferCapacity` = 65536, backward-compat with pre-102
+    /// builds). Raising this absorbs ingest bursts before the synchronous
+    /// `store_tick()` fallback kicks in. The `ZeptoPipeline` constructor
+    /// rejects invalid values (throws `std::invalid_argument`). See devlog 102.
+    size_t ring_buffer_capacity = 0;
 
     // -------------------------
     // HDB / Tiered Storage 설정
@@ -157,6 +175,16 @@ public:
 
     /// 파이프라인 중지 (드레인 스레드 종료, 큐 플러시)
     void stop();
+
+    /// Number of drain threads currently running (0 when stopped).
+    [[nodiscard]] size_t drain_thread_count() const { return drain_threads_.size(); }
+
+    /// Resolve a PipelineConfig::ring_buffer_capacity value to the effective
+    /// runtime capacity. `0` → default (65536). Non-power-of-two, or outside
+    /// `[4096, 16777216]`, throws `std::invalid_argument`. Used by the
+    /// ZeptoPipeline ctor to size `TickPlant` and by operators / tests to
+    /// pre-validate a config.
+    static size_t resolve_ring_buffer_capacity(size_t configured);
 
     /// 틱 인제스트 (Thread-safe, lock-free)
     /// @return true if successfully queued

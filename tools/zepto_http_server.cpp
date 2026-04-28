@@ -80,6 +80,17 @@ int main(int argc, char* argv[]) {
     std::string hdb_dir;                 // --hdb-dir <path>
     std::string storage_mode = "pure";   // --storage-mode pure|tiered
 
+    // devlog 102: ingest scale-out phase 1. 0 = engine default (auto / 65536).
+    // Precedence: CLI flag > env var > engine default. Env vars are set by the
+    // Helm chart (both Deployment and StatefulSet) so the knobs are honored
+    // even when the pod starts with the image's default CMD.
+    size_t drain_threads_cfg = 0;
+    size_t ring_buffer_capacity_cfg = 0;
+    if (const char* e = std::getenv("ZEPTO_DRAIN_THREADS"); e && *e)
+        drain_threads_cfg = static_cast<size_t>(std::atoll(e));
+    if (const char* e = std::getenv("ZEPTO_RING_BUFFER_CAPACITY"); e && *e)
+        ring_buffer_capacity_cfg = static_cast<size_t>(std::atoll(e));
+
     // devlog 091 F1: provision tenants at startup.
     std::vector<std::pair<std::string, std::string>> tenants;  // (id, namespace)
 
@@ -118,6 +129,10 @@ int main(int argc, char* argv[]) {
             hdb_dir = argv[++i];
         else if (arg == "--storage-mode" && i + 1 < argc)
             storage_mode = argv[++i];
+        else if (arg == "--drain-threads" && i + 1 < argc)
+            drain_threads_cfg = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--ring-buffer-capacity" && i + 1 < argc)
+            ring_buffer_capacity_cfg = static_cast<size_t>(std::atoll(argv[++i]));
         else if (arg == "--tenant" && i + 1 < argc) {
             // --tenant <id:namespace>  (repeatable) — devlog 091 F1
             std::string spec = argv[++i];
@@ -155,6 +170,9 @@ int main(int argc, char* argv[]) {
                       << "Storage:\n"
                       << "  --hdb-dir <path>         HDB base directory (implies --storage-mode tiered)\n"
                       << "  --storage-mode <mode>    pure (in-memory, default) | tiered (RDB+HDB)\n\n"
+                      << "Ingest tuning (devlog 102):\n"
+                      << "  --drain-threads N        0 = auto (max(2, hw/4)); N>0 = explicit drain thread count\n"
+                      << "  --ring-buffer-capacity N Ring-buffer slots, power-of-two in [4096, 16777216]; 0 = default 65536\n\n"
                       << "Tenants:\n"
                       << "  --tenant <id:namespace>  Register a tenant with a table-namespace prefix (repeatable)\n\n"
                       << "HA mode:\n"
@@ -209,6 +227,8 @@ int main(int argc, char* argv[]) {
     } else {
         cfg.storage_mode  = zeptodb::core::StorageMode::PURE_IN_MEMORY;
     }
+    cfg.drain_threads = drain_threads_cfg;
+    cfg.ring_buffer_capacity = ring_buffer_capacity_cfg;
     zeptodb::core::ZeptoPipeline pipeline(cfg);
 
     // Register default trades schema
@@ -276,6 +296,13 @@ int main(int argc, char* argv[]) {
 
     // HTTP server
     zeptodb::sql::QueryExecutor executor(pipeline);
+    // TODO(devlog 103): when zepto_http_server is wired into cluster mode
+    // (i.e. a ClusterNode<Transport> is constructed here), call
+    //   executor.set_cluster_node(&cluster_node);
+    // so that INSERT statements route to the partition owner via
+    // PartitionRouter instead of landing on whichever pod received the
+    // HTTP request. Currently single-node HTTP only → null cluster_node
+    // preserves original direct-to-pipeline behaviour.
     zeptodb::server::HttpServer server(executor, port, zeptodb::auth::TlsConfig{}, auth);
     server.set_ready(true);
 

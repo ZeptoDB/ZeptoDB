@@ -34,6 +34,13 @@ spec:
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:
+          {{- if .Values.podAntiAffinity.required }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "zeptodb.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+          {{- else }}
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: {{ .Values.podAntiAffinity.weight }}
               podAffinityTerm:
@@ -41,6 +48,16 @@ spec:
                   matchLabels:
                     {{- include "zeptodb.selectorLabels" . | nindent 20 }}
                 topologyKey: kubernetes.io/hostname
+          {{- end }}
+      {{- end }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey | quote }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "zeptodb.selectorLabels" . | nindent 14 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -64,12 +81,14 @@ spec:
               HEADLESS="${FULLNAME}-headless.{{ .Release.Namespace }}.svc.cluster.local"
               REPLICAS={{ .Values.replicaCount }}
               PORT={{ .Values.config.port }}
+              DRAIN_THREADS={{ .Values.pipeline.drainThreads | default 0 }}
+              RING_CAP={{ .Values.pipeline.ringBufferCapacity | default 0 }}
               ORDINAL=${HOSTNAME##*-}
 
               # Build startup script
               cat > /shared/start.sh <<SCRIPT
               #!/shared/sh
-              exec ./zepto_http_server --port ${PORT} --node-id ${ORDINAL} --no-auth --web-dir /opt/zeptodb/web$(for i in $(seq 0 $((REPLICAS - 1))); do [ "$i" != "$ORDINAL" ] && echo -n " --add-node ${i}:${FULLNAME}-${i}.${HEADLESS}:${PORT}"; done)
+              exec ./zepto_http_server --port ${PORT} --node-id ${ORDINAL} --no-auth --web-dir /opt/zeptodb/web --drain-threads ${DRAIN_THREADS} --ring-buffer-capacity ${RING_CAP}$(for i in $(seq 0 $((REPLICAS - 1))); do [ "$i" != "$ORDINAL" ] && echo -n " --add-node ${i}:${FULLNAME}-${i}.${HEADLESS}:${PORT}"; done)
               SCRIPT
               chmod +x /shared/start.sh
               echo "Generated: $(cat /shared/start.sh)"
@@ -96,6 +115,10 @@ spec:
               value: {{ .Values.config.workerThreads | quote }}
             - name: ZEPTO_ANALYTICS_MODE
               value: {{ .Values.config.analyticsMode | quote }}
+            - name: ZEPTO_DRAIN_THREADS
+              value: {{ .Values.pipeline.drainThreads | default 0 | quote }}
+            - name: ZEPTO_RING_BUFFER_CAPACITY
+              value: {{ .Values.pipeline.ringBufferCapacity | default 0 | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

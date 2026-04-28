@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <new>
 #include <optional>
+#include <stdexcept>
 
 namespace zeptodb::ingestion {
 
@@ -106,6 +107,78 @@ public:
 
 private:
     // 캐시라인 분리로 false sharing 방지
+    ZEPTO_CACHE_ALIGNED std::atomic<size_t> write_pos_{0};
+    ZEPTO_CACHE_ALIGNED std::atomic<size_t> read_pos_{0};
+    Slot<T>* slots_;
+};
+
+// ============================================================================
+// MPMCRingBufferDynamic: runtime-sized twin of MPMCRingBuffer (devlog 102).
+//   - Capacity chosen at construction (power-of-two, asserted).
+//   - Same lock-free MPMC protocol as the compile-time class; only the
+//     modulo is runtime via `capacity_ - 1` mask.
+//   - Kept as a separate type so the compile-time class stays untouched
+//     for existing callers.
+// ============================================================================
+template <typename T>
+class MPMCRingBufferDynamic {
+public:
+    explicit MPMCRingBufferDynamic(size_t capacity)
+        : capacity_(capacity), mask_(capacity - 1), slots_(new Slot<T>[capacity])
+    {
+        // Power-of-two check (and non-zero). Caller must validate beforehand
+        // and surface a friendly error; this is defense-in-depth.
+        if (capacity == 0 || (capacity & (capacity - 1)) != 0) {
+            delete[] slots_;
+            throw std::invalid_argument(
+                "MPMCRingBufferDynamic capacity must be a power of two > 0");
+        }
+    }
+    ~MPMCRingBufferDynamic() { delete[] slots_; }
+
+    MPMCRingBufferDynamic(const MPMCRingBufferDynamic&) = delete;
+    MPMCRingBufferDynamic& operator=(const MPMCRingBufferDynamic&) = delete;
+
+    bool try_push(const T& item) {
+        size_t pos = write_pos_.fetch_add(1, std::memory_order_relaxed);
+        auto& slot = slots_[pos & mask_];
+        SlotState expected = SlotState::EMPTY;
+        if (!slot.state.compare_exchange_strong(
+                expected, SlotState::WRITING,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            return false;
+        }
+        slot.data = item;
+        slot.state.store(SlotState::READY, std::memory_order_release);
+        return true;
+    }
+
+    std::optional<T> try_pop() {
+        size_t pos = read_pos_.load(std::memory_order_relaxed);
+        auto& slot = slots_[pos & mask_];
+        SlotState expected = SlotState::READY;
+        if (!slot.state.compare_exchange_strong(
+                expected, SlotState::READING,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            return std::nullopt;
+        }
+        read_pos_.fetch_add(1, std::memory_order_relaxed);
+        T item = slot.data;
+        slot.state.store(SlotState::EMPTY, std::memory_order_release);
+        return item;
+    }
+
+    [[nodiscard]] size_t approx_size() const {
+        auto w = write_pos_.load(std::memory_order_relaxed);
+        auto r = read_pos_.load(std::memory_order_relaxed);
+        return w >= r ? w - r : 0;
+    }
+
+    [[nodiscard]] size_t capacity() const { return capacity_; }
+
+private:
+    size_t capacity_;
+    size_t mask_;
     ZEPTO_CACHE_ALIGNED std::atomic<size_t> write_pos_{0};
     ZEPTO_CACHE_ALIGNED std::atomic<size_t> read_pos_{0};
     Slot<T>* slots_;

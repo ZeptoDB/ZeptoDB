@@ -25,6 +25,8 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
+#include <thread>
 
 namespace zeptodb::core {
 
@@ -48,14 +50,30 @@ static inline int64_t pipeline_now_ns() {
 // ============================================================================
 // 생성자 / 소멸자
 // ============================================================================
+size_t ZeptoPipeline::resolve_ring_buffer_capacity(size_t configured) {
+    constexpr size_t kDefault = ingestion::TickPlant::kDefaultCapacity; // 65536
+    constexpr size_t kMin     = 4096ULL;
+    constexpr size_t kMax     = 16ULL * 1024 * 1024;  // 16 777 216
+    const size_t cap = (configured == 0) ? kDefault : configured;
+    const bool pow2 = (cap != 0) && ((cap & (cap - 1)) == 0);
+    if (!pow2 || cap < kMin || cap > kMax) {
+        throw std::invalid_argument(
+            "PipelineConfig::ring_buffer_capacity must be a power of two in "
+            "[4096, 16777216] (got " + std::to_string(configured) + ")");
+    }
+    return cap;
+}
+
 ZeptoPipeline::ZeptoPipeline(PipelineConfig config)
     : config_(config)
+    , tick_plant_(resolve_ring_buffer_capacity(config.ring_buffer_capacity))
     , partition_mgr_(config.arena_size_per_partition)
 {
-    ZEPTO_INFO("ZeptoPipeline 초기화 (arena={}MB, batch={}, mode={})",
+    ZEPTO_INFO("ZeptoPipeline 초기화 (arena={}MB, batch={}, mode={}, ring_capacity={})",
               config.arena_size_per_partition / (1024*1024),
               config.drain_batch_size,
-              static_cast<int>(config.storage_mode));
+              static_cast<int>(config.storage_mode),
+              tick_plant_.capacity());
 
     // Tiered / Pure On-Disk 모드에서 HDB 컴포넌트 초기화
     if (config_.storage_mode == StorageMode::TIERED ||
@@ -203,10 +221,17 @@ void ZeptoPipeline::start() {
         flush_manager_->start();
     }
 
-    size_t n_drain = std::max<size_t>(1, config_.drain_threads);
+    size_t n_drain = config_.drain_threads;
+    if (n_drain == 0) {
+        // Auto: at least 2, up to hardware_concurrency()/4.
+        const size_t hc = std::thread::hardware_concurrency();
+        n_drain = std::max<size_t>(2, hc / 4);
+    }
+    n_drain = std::max<size_t>(1, n_drain);  // defense-in-depth: never 0
     for (size_t i = 0; i < n_drain; ++i)
         drain_threads_.emplace_back([this]() { drain_loop(); });
-    ZEPTO_INFO("ZeptoPipeline 시작 완료 (drain_threads={})", n_drain);
+    ZEPTO_INFO("ZeptoPipeline 시작 완료 (drain_threads={}, ring_capacity={})",
+              n_drain, tick_plant_.capacity());
 }
 
 void ZeptoPipeline::stop() {

@@ -9,7 +9,7 @@ set -euo pipefail
 CLUSTER="zepto-bench"
 REGION="ap-northeast-2"
 NODEPOOLS=(zepto-bench-x86 zepto-bench-arm64)
-NAMESPACES=(zeptodb-x86 zeptodb-arm64)
+NAMESPACES=(zeptodb-x86 zeptodb-arm64 zeptodb)
 
 patch_cpu() {
   local np=$1 cpu=$2
@@ -32,6 +32,10 @@ case "${1:-status}" in
       kubectl delete pod bench-loadgen -n "$ns" --force --grace-period=0 2>/dev/null || true
     done
     for np in "${NODEPOOLS[@]}"; do echo -n "  $np → 0... "; patch_cpu "$np" 0 && echo ok; done
+    echo "  deleting bench NodeClaims (force node termination)..."
+    kubectl get nodeclaims -o name 2>/dev/null \
+      | grep -E 'nodeclaim.karpenter.sh/(zepto-bench-x86|zepto-bench-arm64)-' \
+      | xargs -r kubectl delete --wait=false 2>/dev/null || true
     echo "Nodes drain in ~1 minute."
     ;;
   status)

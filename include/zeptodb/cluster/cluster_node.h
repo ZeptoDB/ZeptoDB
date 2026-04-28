@@ -13,6 +13,7 @@
 //   4. 로컬 파이프라인 (ZeptoPipeline) 관리
 // ============================================================================
 
+#include "zeptodb/cluster/cluster_node_base.h"
 #include "zeptodb/cluster/transport.h"
 #include "zeptodb/cluster/partition_router.h"
 #include "zeptodb/cluster/health_monitor.h"
@@ -64,7 +65,7 @@ struct ClusterConfig {
 // ClusterNode<Transport>: 분산 노드 메인 클래스
 // ============================================================================
 template <typename Transport>
-class ClusterNode {
+class ClusterNode : public ClusterNodeBase {
 public:
     explicit ClusterNode(const ClusterConfig& cfg = {})
         : config_(cfg)
@@ -261,7 +262,7 @@ public:
     /// During partition migration, dual-writes to both source and destination
     /// nodes to prevent data loss.
     /// @return true if ingested (local or remote), false if failed
-    bool ingest_tick(TickMessage msg) {
+    bool ingest_tick(TickMessage msg) override {
         // Check migration_target FIRST (uses cache_mutex_, not router_mutex_)
         auto mig = router_.migration_target(msg.symbol_id);
         if (mig) {

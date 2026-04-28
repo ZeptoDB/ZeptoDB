@@ -298,6 +298,18 @@ Supported: **kdb+** (HDB loader, q→SQL) · **ClickHouse** (DDL/query conversio
 
 ---
 
+## 🛠️ Built with Kiro
+
+ZeptoDB is developed using **[Kiro](https://kiro.dev)** (AI coding assistant, IDE + CLI) on top of a large existing C++20 codebase. Three Kiro features do most of the heavy lifting:
+
+1. **Multi-agent orchestration** — an orchestrator (`zeptodb-dev`) delegates to `zepto-developer`, `zepto-reviewer`, and `zepto-qa` subagents. Reviewer is tool-restricted to read-only; QA runs builds on x86_64 and aarch64 in parallel with review. See `.kiro/agents/`.
+2. **MCP + Skills** — six keyword-activated `SKILL.md` knowledge packs (design-doc index, layer patterns, edge-case catalog, doc-update checklist, review checklist, cross-arch verification) plus a Playwright MCP server for Web UI smoke tests. See `.kiro/skills/` and `.kiro/settings/mcp.json`.
+3. **Persistent context** — `.kiro/KIRO.md` (project rulebook) + per-agent `.kiro/context/*.md` are auto-loaded on every session via `.kiro/settings.json`. The repo itself becomes the prompt — no re-pasting rules, no doc-code drift.
+
+Full case study, workflow diagrams, and learnings: **[`docs/KIRO_USAGE.md`](docs/KIRO_USAGE.md)**.
+
+---
+
 ## 🤝 Contributing
 
 We welcome contributions of all sizes — from typo fixes to new features.

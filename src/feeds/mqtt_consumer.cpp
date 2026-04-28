@@ -49,7 +49,7 @@ void MqttConsumer::set_routing(
     zeptodb::cluster::NodeId local_id,
     std::shared_ptr<zeptodb::cluster::PartitionRouter> router,
     std::unordered_map<zeptodb::cluster::NodeId,
-        std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes)
+        std::shared_ptr<zeptodb::cluster::RpcClientBase>> remotes)
 {
     local_id_ = local_id;
     router_   = std::move(router);

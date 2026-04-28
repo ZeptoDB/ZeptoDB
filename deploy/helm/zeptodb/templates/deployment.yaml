@@ -43,6 +43,13 @@ spec:
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:
+          {{- if .Values.podAntiAffinity.required }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "zeptodb.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+          {{- else }}
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: {{ .Values.podAntiAffinity.weight }}
               podAffinityTerm:
@@ -50,6 +57,16 @@ spec:
                   matchLabels:
                     {{- include "zeptodb.selectorLabels" . | nindent 20 }}
                 topologyKey: kubernetes.io/hostname
+          {{- end }}
+      {{- end }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey | quote }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "zeptodb.selectorLabels" . | nindent 14 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -80,6 +97,10 @@ spec:
               value: {{ .Values.config.workerThreads | quote }}
             - name: ZEPTO_ANALYTICS_MODE
               value: {{ .Values.config.analyticsMode | quote }}
+            - name: ZEPTO_DRAIN_THREADS
+              value: {{ .Values.pipeline.drainThreads | default 0 | quote }}
+            - name: ZEPTO_RING_BUFFER_CAPACITY
+              value: {{ .Values.pipeline.ringBufferCapacity | default 0 | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

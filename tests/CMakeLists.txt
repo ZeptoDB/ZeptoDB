@@ -22,6 +22,8 @@ add_executable(zepto_tests
     unit/test_features.cpp
     unit/test_kafka.cpp
     unit/test_mqtt.cpp
+    unit/test_opcua.cpp
+    unit/test_opcua_integration.cpp
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_flat_hash_map.cpp
@@ -39,6 +41,7 @@ add_executable(zepto_tests
     unit/test_table_scoped_partitioning.cpp
     unit/test_feed_table_id.cpp
     unit/test_table_acl_ddl.cpp
+    unit/test_distributed_insert.cpp
 )
 if(ZEPTO_USE_JIT)
     target_sources(zepto_tests PRIVATE unit/test_jit_simd.cpp)
@@ -58,6 +61,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_server
     zepto_kafka
     zepto_mqtt
+    zepto_opcua
     zepto_flight
     zepto_feeds
     GTest::gtest_main

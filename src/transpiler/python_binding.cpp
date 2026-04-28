@@ -18,6 +18,7 @@
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/storage/column_store.h"
 #include "zeptodb/sql/executor.h"
+#include "zeptodb/cluster/cluster_node_base.h"
 
 #include <chrono>
 #include <stdexcept>
@@ -59,7 +60,7 @@ public:
         msg.volume    = volume;
         msg.recv_ts   = now_ns();
         msg.msg_type  = 0;  // Trade
-        if (!pipeline_->ingest_tick(msg)) {
+        if (!ingest_routed_(msg)) {
             throw std::runtime_error("ingest failed: queue full");
         }
     }
@@ -106,7 +107,7 @@ public:
             msg.recv_ts   = ts + static_cast<int64_t>(i);  // 순서 보존
             msg.msg_type  = 0;
             msg.table_id  = tid;
-            if (!pipeline_->ingest_tick(msg)) {
+            if (!ingest_routed_(msg)) {
                 throw std::runtime_error(
                     "ingest_batch: queue full at index " + std::to_string(i));
             }
@@ -159,7 +160,7 @@ public:
             msg.recv_ts   = ts + static_cast<int64_t>(i);
             msg.msg_type  = 0;
             msg.table_id  = tid;
-            if (!pipeline_->ingest_tick(msg)) {
+            if (!ingest_routed_(msg)) {
                 throw std::runtime_error(
                     "ingest_float_batch: queue full at index " + std::to_string(i));
             }
@@ -380,6 +381,15 @@ private:
         return tid;
     }
 
+    // Route a tick via the cluster ring if wired, else direct local ingest.
+    // See devlog 103 (cluster-aware INSERT routing).
+    bool ingest_routed_(const TickMessage& msg) {
+        if (cluster_node_) {
+            return cluster_node_->ingest_tick(msg);
+        }
+        return pipeline_->ingest_tick(msg);
+    }
+
     // PartitionManager의 내부 파티션을 symbol로 검색 (최신 파티션 우선)
     static ColumnVector* find_column_in_partitions(
         PartitionManager& pm,
@@ -428,6 +438,10 @@ private:
 
     std::unique_ptr<ZeptoPipeline> pipeline_;
     std::unique_ptr<zeptodb::sql::QueryExecutor> executor_;
+    // devlog 103: cluster-aware routing. Currently C++-only — exposing a
+    // ClusterNodeBase* setter to Python requires pybind11 plumbing beyond
+    // scope of the write-path correctness fix. TODO: Python cluster hook (BACKLOG P8-I5).
+    zeptodb::cluster::ClusterNodeBase* cluster_node_ = nullptr;
 };
 
 // ============================================================================

@@ -61,6 +61,7 @@ option(ZEPTO_USE_TCMALLOC   "Link tcmalloc_minimal for HFT allocation performanc
 option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
 option(ZEPTO_USE_MQTT       "Enable MQTT consumer (requires paho-mqttpp3)" OFF)
+option(ZEPTO_USE_OPCUA      "Enable OPC-UA consumer (requires open62541)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
 option(ZEPTO_ENABLE_DUCKDB "Enable embedded DuckDB engine for Parquet offload" ON)
 
@@ -158,6 +159,22 @@ if(ZEPTO_USE_MQTT)
     endif()
 else()
     set(ZEPTO_HAS_MQTT OFF)
+endif()
+
+# --- open62541 (OPC-UA consumer, optional) ---
+if(ZEPTO_USE_OPCUA)
+    find_library(OPEN62541_LIB open62541 QUIET)
+    if(OPEN62541_LIB)
+        message(STATUS "open62541: ${OPEN62541_LIB} (OPC-UA consumer enabled)")
+        set(ZEPTO_HAS_OPCUA ON)
+    else()
+        message(STATUS "open62541: not found — OPC-UA consumer disabled")
+        message(STATUS "  Install: sudo dnf install -y open62541-devel")
+        set(ZEPTO_USE_OPCUA OFF)
+        set(ZEPTO_HAS_OPCUA OFF)
+    endif()
+else()
+    set(ZEPTO_HAS_OPCUA OFF)
 endif()
 
 # ============================================================================
@@ -753,6 +770,25 @@ if(ZEPTO_HAS_MQTT)
     message(STATUS "zepto_mqtt: MQTT broker connectivity enabled")
 else()
     message(STATUS "zepto_mqtt: decode/routing only (no paho-mqttpp3)")
+endif()
+
+# --- OPC-UA Consumer (depends on zepto_core + zepto_cluster) ---
+add_library(zepto_opcua STATIC
+    src/feeds/opcua_consumer.cpp
+)
+target_include_directories(zepto_opcua PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_opcua PUBLIC
+    zepto_core
+    zepto_cluster
+)
+if(ZEPTO_HAS_OPCUA)
+    target_compile_definitions(zepto_opcua PUBLIC ZEPTO_OPCUA_AVAILABLE=1)
+    target_link_libraries(zepto_opcua PUBLIC ${OPEN62541_LIB})
+    message(STATUS "zepto_opcua: OPC-UA server connectivity enabled (PoC — see BACKLOG P9)")
+else()
+    message(STATUS "zepto_opcua: NodeId-map / routing only (no open62541)")
 endif()
 
 # ============================================================================

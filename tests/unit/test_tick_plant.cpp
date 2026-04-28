@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "zeptodb/ingestion/tick_plant.h"
+#include "zeptodb/core/pipeline.h"
 #include <gtest/gtest.h>
 
 using namespace zeptodb::ingestion;
@@ -56,4 +57,60 @@ TEST(TickPlant, EmptyConsume) {
     TickPlant tp;
     auto result = tp.consume();
     EXPECT_FALSE(result.has_value());
+}
+
+// ============================================================================
+// Phase 1 ingest scale-out (devlog 102)
+//   - drain_threads sentinel (0 = auto, >0 = honored exactly)
+//   - ring_buffer_capacity configurable, power-of-two enforced
+// ============================================================================
+
+TEST(IngestPhase1DrainThreads, SentinelZeroAutoAtLeastTwo) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.drain_threads = 0;   // sentinel — auto
+    zeptodb::core::ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+    EXPECT_GE(pipeline.drain_thread_count(), 2u);
+    pipeline.stop();
+    EXPECT_EQ(pipeline.drain_thread_count(), 0u);
+}
+
+TEST(IngestPhase1DrainThreads, ExplicitValueHonoredExactly) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.drain_threads = 4;
+    zeptodb::core::ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+    EXPECT_EQ(pipeline.drain_thread_count(), 4u);
+    pipeline.stop();
+}
+
+TEST(IngestPhase1RingCapacity, DefaultIs65536) {
+    zeptodb::core::PipelineConfig cfg;  // ring_buffer_capacity defaults to 0 → engine default
+    zeptodb::core::ZeptoPipeline pipeline(cfg);
+    EXPECT_EQ(pipeline.tick_plant().capacity(), 65536u);
+}
+
+TEST(IngestPhase1RingCapacity, CustomPowerOfTwoHonored) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.ring_buffer_capacity = 262144;
+    zeptodb::core::ZeptoPipeline pipeline(cfg);
+    EXPECT_EQ(pipeline.tick_plant().capacity(), 262144u);
+}
+
+TEST(IngestPhase1RingCapacity, NonPowerOfTwoRejected) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.ring_buffer_capacity = 100000;  // not power of two
+    EXPECT_THROW({ zeptodb::core::ZeptoPipeline pipeline(cfg); }, std::invalid_argument);
+}
+
+TEST(IngestPhase1RingCapacity, BelowRangeRejected) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.ring_buffer_capacity = 2048;  // power of two but below 4096 floor
+    EXPECT_THROW({ zeptodb::core::ZeptoPipeline pipeline(cfg); }, std::invalid_argument);
+}
+
+TEST(IngestPhase1RingCapacity, AboveRangeRejected) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.ring_buffer_capacity = 33554432;  // 32 Mi — above 16 Mi ceiling
+    EXPECT_THROW({ zeptodb::core::ZeptoPipeline pipeline(cfg); }, std::invalid_argument);
 }

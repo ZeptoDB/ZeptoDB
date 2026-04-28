@@ -16,13 +16,18 @@ headless:
   enabled: true
 
 resources:
+  # Defaults sized for mid-size factory / trading workloads (~200K–500K ticks/s).
+  # Right-size per sector — see docs/operations/KUBERNETES_OPERATIONS.md
+  # "Sizing and placement for enterprise factory workloads" section.
+  # For bare-metal trading (Guaranteed QoS + cpuset pinning), set
+  # requests.cpu == limits.cpu and keep hugepages-2Mi on both sides.
   requests:
-    cpu: "8"
-    memory: "32Gi"
+    cpu: "2000m"          # 2 cores — covers N drain threads + HTTP/RPC
+    memory: "4Gi"         # 4 GiB — 32 MB arena × hundreds of partitions + ring buffers
     hugepages-2Mi: "4Gi"
   limits:
-    cpu: "8"              # requests == limits → Guaranteed QoS → cpuset pinning
-    memory: "32Gi"
+    cpu: "4000m"          # allow burst to 4 cores under ingest spike
+    memory: "8Gi"
     hugepages-2Mi: "4Gi"
 
 config:
@@ -34,6 +39,21 @@ config:
   hdbCompression: lz4
   queryCacheSize: 1000
   parallelThreshold: 100000
+
+# ---------------------------------------------------------------------------
+# Pipeline ingest tuning (devlog 102 — Phase 1 scale-out)
+# ---------------------------------------------------------------------------
+# Both values use 0 = "engine default":
+#   drainThreads        0 → auto: max(2, hw_concurrency / 4)
+#                       N>0 → exactly N drain threads (honored verbatim)
+#   ringBufferCapacity  0 → 65536 (backward-compat default)
+#                       N → power of two in [4096, 16777216]
+# Raise these when ingest_tick() queue-full warnings appear or when the
+# synchronous store_tick() fallback (~34× throughput cliff) is observed
+# under burst load. Tuning guide: docs/operations/KUBERNETES_OPERATIONS.md §5.
+pipeline:
+  drainThreads: 0
+  ringBufferCapacity: 0
 
 cluster:
   enabled: false
@@ -77,7 +97,21 @@ autoscaling:
 
 podAntiAffinity:
   enabled: true
-  weight: 100
+  required: true           # true = hard rule (no co-location); false = soft preference
+  weight: 100              # only used when required=false
+
+# ---------------------------------------------------------------------------
+# Topology spread — smarter than antiAffinity when replicas > nodes
+# ---------------------------------------------------------------------------
+# `podAntiAffinity.required: true` refuses to schedule extras beyond node
+# count. `topologySpread` spreads pods as evenly as possible across the
+# chosen topology, and still allows more replicas than nodes if needed.
+# Kubernetes applies both constraints simultaneously.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: DoNotSchedule   # or ScheduleAnyway for soft
 
 podDisruptionBudget:
   enabled: true

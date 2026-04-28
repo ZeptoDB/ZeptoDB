@@ -207,3 +207,49 @@ are expected (the structs are not on any current wire protocol or WAL
 format).
 
 Last updated: 2026-04-18 (Stage C — devlog 085)
+
+## 6. Ingest capacity tuning (devlog 102)
+
+Two `PipelineConfig` knobs control single-pod ingest throughput. Both
+are backward-compatible (`0` = engine default, default build behaves
+exactly as pre-102).
+
+### Knobs
+
+| Field | Default (`0` = …) | Valid range | Effect |
+|---|---|---|---|
+| `PipelineConfig::drain_threads` | `max(2, hw_concurrency()/4)` | any `size_t >= 0` | Number of background threads draining `TickPlant` → storage. `MPMCRingBuffer` is lock-free MPMC, so this scales near-linearly until `PartitionManager::get_or_create` lock contention dominates. |
+| `PipelineConfig::ring_buffer_capacity` | `65 536` slots | power of two in `[4096, 16 777 216]` | `TickPlant` ring-buffer size. Larger = more burst absorption before `ingest_tick()` falls through to the ~34× slower synchronous `store_tick()` path. |
+
+Values outside the valid range throw `std::invalid_argument` at
+`ZeptoPipeline` construction — invalid configs fail closed, not
+silently. Explicit `drain_threads = N >= 1` is always honored verbatim;
+only the sentinel `0` triggers the auto-compute path.
+
+### When to raise each knob
+
+1. **`ringBufferCapacity` first.** If operators see
+   `TickPlant queue full! Dropping tick seq=…` in logs, the producers
+   are outrunning the drain threads *momentarily*. Absorbing the burst
+   in the queue avoids the sync fallback.
+2. **`drainThreads` second.** Once the queue no longer fills but
+   storage can't keep up with sustained load (`ticks_ingested` grows
+   faster than `ticks_stored`), add drain parallelism.
+3. **Stop raising when** `stats.ticks_dropped` stays near-zero under
+   peak load *and* drain threads show idle time (instrumented via
+   `drain_sleep_us`). Further ingestion scale-out is horizontal —
+   stateless `zepto_ingest_node` tier, tracked in `BACKLOG.md` P8.
+
+### Observability
+
+Both effective values are logged at pipeline startup:
+
+```
+ZeptoPipeline 시작 완료 (drain_threads=4, ring_capacity=262144)
+```
+
+Helm exposure: `pipeline.drainThreads` / `pipeline.ringBufferCapacity`
+in `deploy/helm/zeptodb/values.yaml`. CLI: `--drain-threads N` and
+`--ring-buffer-capacity N` on `zepto_http_server`.
+
+Last updated: 2026-04-25 (devlog 102)

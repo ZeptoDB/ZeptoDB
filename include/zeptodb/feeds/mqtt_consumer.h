@@ -40,7 +40,7 @@
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/cluster/partition_router.h"
-#include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/rpc_client_base.h"
 
 #include <atomic>
 #include <memory>
@@ -130,7 +130,7 @@ public:
         zeptodb::cluster::NodeId local_id,
         std::shared_ptr<zeptodb::cluster::PartitionRouter> router,
         std::unordered_map<zeptodb::cluster::NodeId,
-            std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes);
+            std::shared_ptr<zeptodb::cluster::RpcClientBase>> remotes);
 
     // ------------------------------------------------------------------
     // Lifecycle
@@ -202,7 +202,7 @@ private:
     zeptodb::cluster::NodeId local_id_ = 0;
     std::shared_ptr<zeptodb::cluster::PartitionRouter> router_;
     std::unordered_map<zeptodb::cluster::NodeId,
-        std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes_;
+        std::shared_ptr<zeptodb::cluster::RpcClientBase>> remotes_;
 
     std::atomic<bool> running_{false};
 

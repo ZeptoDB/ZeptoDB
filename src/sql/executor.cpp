@@ -7,6 +7,7 @@
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/sql/parser.h"
 #include "zeptodb/sql/mv_rewriter.h"
+#include "zeptodb/cluster/cluster_node_base.h"
 #include "zeptodb/execution/join_operator.h"
 #include "zeptodb/execution/query_planner.h"
 #include "zeptodb/execution/window_function.h"
@@ -737,7 +738,11 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
         msg.msg_type  = 0;  // Trade
         msg.table_id  = pipeline_.schema_registry().get_table_id(stmt.table_name);
 
-        pipeline_.ingest_tick(msg);
+        if (cluster_node_) {
+            cluster_node_->ingest_tick(msg);   // route to partition owner (devlog 103)
+        } else {
+            pipeline_.ingest_tick(msg);        // single-node fallback
+        }
         ++inserted;
     }
 

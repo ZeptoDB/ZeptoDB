@@ -15,3 +15,6 @@ data:
     hdb_compression: {{ .Values.config.hdbCompression }}
     query_cache_size: {{ .Values.config.queryCacheSize }}
     parallel_threshold: {{ .Values.config.parallelThreshold }}
+    # devlog 102 — 0 = engine default
+    drain_threads: {{ .Values.pipeline.drainThreads | default 0 }}
+    ring_buffer_capacity: {{ .Values.pipeline.ringBufferCapacity | default 0 }}

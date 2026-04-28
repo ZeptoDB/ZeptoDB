@@ -1,8 +1,16 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1129 tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1284 tests passing
 >
-> Last cleaned: 2026-04-19
+> Last cleaned: 2026-04-27
+
+> ✅ 2026-04-27: **OPC-UA Sprint 3 — Tier-3 observability closeout** shipped (devlog 110). Three Tier-3 items (2r atomic-stats audit, 2s `RpcClientBase` extraction closing `route_remote` unit-test coverage across all three consumers, 2t Kafka/MQTT/OPC-UA microbench parity — Kafka 2.69 M / MQTT 2.48 M / OPC-UA 6.69 M ticks/s cheap-path) plus three Sprint-2 polish items (explicit `decode_errors` for unsupported variants, devlog-107 wording, reconnect test comment). OPC-UA connector is now SLA-grade.
+
+> ✅ 2026-04-26: **OPC-UA Sprint 2 — first-commercial-ready closeout** shipped (devlogs 107, 108, 109). Four Tier-2 items: Basic256Sha256 security (2c), integration test against open62541 tutorial server (2k), reconnect / failover with exponential backoff + jitter (2i), UA StatusCode → `TickMessage.volume` quality mapping (2j). OPC-UA connector is now ready for first-commercial industrial deployments (Samsung / SK / TSMC / POSCO sectors).
+
+> ✅ 2026-04-26: **OPC-UA Sprint 1 — production-blocker closeout** shipped (devlogs 105, 106). Five Tier-1 items in one sprint: real open62541 `UA_Client` integration (2b), float-safety clamp in `coerce_variant_to_int64` (2n), duplicate/empty `node_id` validation (2p), sector-aware profiles Fab/Auto/Steel/Generic (2q), reconnect/timeout config knobs (2o). OPC-UA connector is now pilot-ready for industrial deployments — Sprint 2 closeout above brings it to first-commercial-ready.
+
+> ✅ 2026-04-26: **Pod placement hardening** shipped (devlog 104). Helm `podAntiAffinity.required: true` default + `topologySpreadConstraints` (`maxSkew: 1`) + ingest-tuned resource defaults. Closes P8-I3-placement: soft `preferredDuringScheduling` was silently co-locating replicas on HPA scale-out, halving ingest CPU scaling and breaking failure isolation. `required: false` toggle and full sector-sized sizing table documented in `docs/operations/KUBERNETES_OPERATIONS.md`.
 
 > ✅ 2026-04-18: **Fast parallel cross-arch EKS test pipeline** shipped (devlog 083). `run_arch_comparison_fast.sh` replaces the legacy sequential script: ~28 min cold, ~\$1.30/run, fail-fast teardown, Auto Mode-compatible.
 >
@@ -85,6 +93,8 @@
 | ~~**SIMD-ify WindowJoin aggregate loop**~~ | ✅ Done (devlog 080) — Contiguous fast-path + sum_i64() SIMD for SUM/AVG, gather+SIMD for large non-contiguous, scalar fallback for small windows — 10 tests | — |
 | ~~**JIT SIMD emit**~~ | ✅ Done (devlog 079) — Explicit `<4 x i64>` vector IR generation in LLVM JIT, cttz mask extraction, scalar tail | — |
 | ~~**DuckDB embedding**~~ | ✅ Done (devlog 076) — Embedded DuckDB engine, Arrow bridge, Parquet offload, `duckdb()` table function | — |
+| ~~**P7-I1 — `drain_threads` auto default**~~ | ✅ Done (devlog 102) — Sentinel `0` in `PipelineConfig::drain_threads` resolves to `max(2, hw_concurrency()/4)` at `start()`; explicit `>=1` values honored verbatim; raises single-pod ingest ceiling by lifting the single-drain-thread cap without any architectural change. Exposed as `pipeline.drainThreads` in Helm + `--drain-threads` CLI flag. | — |
+| ~~**P7-I2 — Configurable ring-buffer capacity**~~ | ✅ Done (devlog 102) — New `PipelineConfig::ring_buffer_capacity` (default `65536` via `0` sentinel; power of two in `[4096, 16 777 216]`) with new `MPMCRingBufferDynamic<T>` runtime-sized twin. Absorbs ingest bursts before the synchronous `store_tick()` fallback (~34× cliff, 6.6 M/s → 197 K/s). Exposed as `pipeline.ringBufferCapacity` in Helm + `--ring-buffer-capacity` CLI flag; invalid values throw at construction. | — |
 | **Limited DSL AOT compilation** | — | M |
 
 > ✅ Done: Composite index, MV query rewrite, INTERVAL, Prepared statements, Query result cache, SAMPLE, Scalar subqueries, FlatHashMap joins, DuckDB embedding, Table-scoped partitioning (devlog 082)
@@ -110,16 +120,117 @@
 | **Tier C cold query offload** | Historical data → DuckDB on S3 | M |
 | **Global symbol registry** | Distributed string symbol routing | M |
 
-> ✅ Done: P8-Critical, P8-High, P8-Medium all complete. Live rebalancing, Dual-write, Partial-move, Bandwidth throttling, PTP clock sync, etc.
+### P8-Ingest — Horizontal ingest scale-out (Phase 2 of devlog 102)
+
+Phase 1 (devlog 102, ✅ P7-I1 + P7-I2) lifted the single-pod ingest
+ceiling by exposing `drain_threads` + `ring_buffer_capacity`. Phase 2
+scales ingest past a single pod by splitting it into its own stateless
+tier.
+
+| Task | Why | Effort |
+|------|-----|--------|
+| ~~**P8-I3-prep — Cluster-aware `INSERT` routing**~~ ✅ (devlog 103) — HTTP/SQL/Python INSERT now dispatches via `ClusterNodeBase::ingest_tick` when `QueryExecutor::set_cluster_node()` is wired, restoring the one-owner-per-partition invariant across pods. Prerequisite for P8-I3. | Prerequisite unblocked | — |
+| ~~**P8-I3-placement — Pod placement hardening**~~ ✅ (devlog 104) — Helm `podAntiAffinity.required: true` default + `topologySpreadConstraints` (`maxSkew: 1`) + ingest-tuned resource defaults. Prevents silent co-location that halved ingest CPU scaling and broke failure isolation on HPA scale-out. | Scale-out model validated | — |
+| **P8-I3 — Stateless `zepto_ingest_node` binary** | Ingest-only pod, no storage/query; forwards over cluster RPC to data nodes. Lets ingest scale independently of the query tier. Wiring is now a one-liner (`executor.set_cluster_node(&cluster_node)`) thanks to P8-I3-prep. | M |
+| **P8-I4 — Ingest-rate HPA** | Custom metric `zepto_pipeline_ticks_per_sec` → HPA target so the ingest tier autoscales on real load, not on CPU/mem proxy. | S |
+| **P8-I5 — Python cluster hook** | Expose `PyPipeline.set_cluster_node(ClusterNodeBase*)` to Python via pybind11 so Python-side DSL writes also route correctly. Plumbing in place (devlog 103); pending pybind11 binding. | S |
+
+> ✅ Done: P8-Critical, P8-High, P8-Medium all complete. Live rebalancing, Dual-write, Partial-move, Bandwidth throttling, PTP clock sync, Cluster-aware INSERT routing (devlog 103), Pod placement hardening (devlog 104).
 
 ---
 
 ## P9 — Physical AI / Industry
 
-| Task | Why | Effort |
-|------|-----|--------|
-| **OPC-UA connector** | Siemens S7, industrial PLCs | M |
-| **ROS2 plugin** | ROS2 topics → ZeptoDB | M |
+Ordered by strategic impact. Engine is ready (MQTT ✅, table-scoped partitioning ✅, ASOF/Window JOIN ✅, Python zero-copy ✅); the gap is at the ingestion-protocol layer. See [`docs/design/physical_ai_market.md`](design/physical_ai_market.md).
+
+| # | Task | Why | Unlocks | Effort |
+|---|------|-----|---------|--------|
+| 1 | **ROS2 plugin** | `rclcpp` subscriber → `TickMessage`; sensor_data / reliable QoS; bag replay; Isaac Sim hook | Autonomous vehicles + robotics (2 sectors at once) | M |
+
+### OPC-UA — priority-ordered
+
+**Shipped (✅)**
+
+| # | Task | Notes |
+|---|------|-------|
+| 2a | ~~**OPC-UA connector (PoC)**~~ ✅ (devlog 101) | Scalar client connector, open62541 optional-dep scaffolding, NodeId→SymbolId mapping, SourceTimestamp conversion, routing + backpressure + table-aware ingest, 22 unit tests |
+| 2m | ~~**OPC-UA: PoC test-coverage hardening**~~ ✅ (devlog 101) | 11 edge tests — unknown-`table_name`, local-route counter, float overflow/NaN/Inf, far-future datetime, stats-under-contention, large node map, tiny/zero `value_scale`, duplicate and empty `node_id`. Tests 2/3/4/10/11 document latent bugs → tracked as 2n/2p below |
+
+**Tier 1 — Production blockers (Sprint 1 ✅ shipped)**
+
+| # | Task | Notes |
+|---|------|-------|
+| 2b | ~~**OPC-UA: real open62541 client integration**~~ ✅ (devlog 106) | `UA_Client` session honouring `connect_timeout_ms` / `session_timeout_ms`, `CreateSubscription`, `CreateMonitoredItems` per configured node, data-change callback wired through `on_data_change()`, single `UA_Client_run_iterate` thread, idempotent `stop()`. `ZEPTO_USE_OPCUA=OFF` default build byte-identical to PoC |
+| 2n | ~~**OPC-UA: float-safety clamp in `coerce_variant_to_int64`**~~ ✅ (devlog 105) | `std::isfinite` guard rejects `NaN` / ±`Inf` → `decode_errors++`; saturating clamp to `INT64_MIN` / `INT64_MAX` on overflow |
+| 2p | ~~**OPC-UA: config validation pass**~~ ✅ (devlog 105) | `start()` rejects empty and duplicate `node_id` up-front with `ZEPTO_ERROR` |
+| 2q | ~~**OPC-UA: sector-aware default profiles**~~ ✅ (devlog 105) | `OpcUaConfig::apply_profile(Profile{Fab,Auto,Steel,Generic})` presets `queue_size`, `sampling_interval_ms`, `publishing_interval_ms`, `backpressure_retries` |
+| 2o | ~~**OPC-UA: `OpcUaConfig` reconnect / timeout knobs**~~ ✅ (devlog 105) | `connect_timeout_ms=5000`, `session_timeout_ms=60000`, `reconnect_interval_ms=2000`; 2b consumes the first two, 2i (devlog 109) consumes the third |
+
+**Tier 2 — Production MVP (first pilot → first commercial deployment)**
+
+| # | Task | Why | Effort |
+|---|------|-----|--------|
+| 2c | ~~**OPC-UA: Basic256Sha256 security**~~ ✅ (devlog 108) | Certificate-based Sign / SignAndEncrypt via `UA_ClientConfig_setDefaultEncryption`; cert/key/server-cert paths already on `OpcUaConfig` are now wired; `start()` rejects Sign/SignAndEncrypt with empty cert/key paths before the license gate. MVP limits: single-cert trust list, no revocation list — Sprint 3 follow-up | M |
+| 2k | ~~**OPC-UA: integration test**~~ ✅ (devlog 107) | Round-trip against open62541's bundled tutorial-style server (`ns=1;s=the.answer`, Int32=42) in `tests/unit/test_opcua_integration.cpp` — guarded by `ZEPTO_OPCUA_AVAILABLE`, in-process server thread, `messages_consumed ≥ 1` assertion, clean <10 s teardown. CI must install `open62541-devel`/`libopen62541-dev` for the test to run | S |
+| 2i | ~~**OPC-UA: reconnect / failover policy**~~ ✅ (devlog 109) | Background iterate-thread now detects `BADCONNECTIONCLOSED` / `BADSERVERNOTCONNECTED` / `BADSECURECHANNELCLOSED`, sleeps `reconnect_interval_ms` ± 25% jitter, retries `UA_Client_connect` with exponential backoff up to 16× base (≈ 32 s ceiling on default 2 s base). Successful reconnect rebuilds subscription + MonitoredItems via new `setup_subscription()` and bumps `OpcUaStats::reconnects`. Live disconnect simulation deferred to Sprint 3 | S |
+| 2j | ~~**OPC-UA: volume/quality field mapping**~~ ✅ (devlog 107) | `OpcUaConfig::QualityHandling { IgnoreBad, AcceptAll, AcceptAllGoodAs1 (default) }` — default stamps `TickMessage.volume = 1` if `UA_STATUSCODE_GOOD` else `0`; `AcceptAll` preserves raw 32-bit status; `IgnoreBad` drops non-GOOD at decode time with `decode_errors++` | S |
+
+**Tier 3 — Quality & observability (before SLA commitments, Sprint 3 ✅ shipped)**
+
+| # | Task | Notes |
+|---|------|-------|
+| 2r | ~~**OPC-UA: atomic stats snapshot**~~ ✅ (devlog 110) | Audit of every multi-field stats transition in `opcua_consumer.cpp` — no torn-read windows exist; every outcome path updates exactly one field under one `lock_guard`, and the `messages_consumed++/bytes_consumed++` pre-dispatch pair is already combined. Existing Sprint-1 test `OpcUaEdgeConcurrency.StatsUnderThreadedWrites` covers the post-quiescence invariant. Audit comment added to code |
+| 2s | ~~**OPC-UA: `TcpRpcClient` test injection**~~ ✅ (devlog 110) | `include/zeptodb/cluster/rpc_client_base.h` — virtual base; `TcpRpcClient` inherits; `remotes_` map in all three consumers (`OpcUaConsumer`, `MqttConsumer`, `KafkaConsumer`) widened to `shared_ptr<RpcClientBase>`. Tests: `OpcUaRouting.RouteRemote_IncrementsOnSuccessfulDispatch` + `..._DoesNotIncrementOnFailedDispatch` via `CountingRpcClient` stub |
+| 2t | ~~**Kafka/MQTT/OPC-UA connector microbench parity**~~ ✅ (devlog 110) | `KafkaPerf.DISABLED_SingleThreadHotPath` + `MqttPerf.DISABLED_SingleThreadHotPath` mirror the existing OPC-UA harness (pass1 1 M on_message + pass2 p50/p99 + pass3 cheap-path). Pass3 baselines: Kafka 2.69 M ticks/s, MQTT 2.48 M ticks/s, OPC-UA 6.69 M ticks/s (x86_64 single-thread, directly comparable) |
+
+**Tier 4 — DX & advanced data (after MVP)**
+
+| # | Task | Why | Effort |
+|---|------|-----|--------|
+| 2f | **OPC-UA: browse + auto-discover** | `zepto-opcua-browse` CLI to enumerate a server's address space and auto-populate `nodes[]` | S |
+| 2d | **OPC-UA: structured & array variant support** | Beyond scalar coercion — engineering units, array → multiple `TickMessage` | M |
+| 2g | **OPC-UA: Historical Access (HA)** | Backfill from server-side historian for initial load — Sector-B initial-load story | M |
+| 2h | **OPC-UA: Alarms & Conditions (A&C)** | Ingest alarm events as a separate tick stream — factory ops observability | M |
+| 2e | **OPC-UA: string values** | Map UA `String` variants to symbol columns — blocked on string-column support | S |
+
+**Tier 5 — Long-term / P10 candidates**
+
+| # | Task | Why | Effort |
+|---|------|-----|--------|
+| 2l | **OPC-UA: server mode** | Expose ZeptoDB query results as an OPC-UA server — reverse integration (rare but asked) | L |
+
+### Remaining Physical AI items (non-OPC-UA)
+
+| # | Task | Why | Unlocks | Effort |
+|---|------|-----|---------|--------|
+| 3 | **Physical AI reference examples** | End-to-end: (a) robot joint RL replay buffer, (b) LiDAR+camera ASOF JOIN, (c) CMP sensor anomaly | Sales artifacts, onboarding | S |
+| 4 | **Factory 10KHz benchmark vs InfluxDB / TimescaleDB** | Key Sector-B sales proof point | Smart-factory GTM | S |
+| 5 | **Physical AI use-case docs promotion** | Promote from business-only to first-class `docs/usecases/` vertical; add `design/ros2_plugin.md` + `design/opcua_connector.md` ✅ (2a) | Discoverability | S |
+
+Notes:
+- Items 1 and 2 both reuse the `MqttConsumer` / `KafkaConsumer` `set_pipeline` + `set_routing` pattern — no new architecture needed.
+- Each uses the `ZEPTO_USE_*` optional-dep pattern so core builds stay dependency-free.
+- Devlog numbering: OPC-UA PoC landed as `101_opcua_connector_poc.md`; next available is `102_*.md` — ROS2 plugin should claim it.
+
+### Logistics / Warehouse — priority-ordered
+
+Logistics centers (Coupang, CJ, Amazon FC, DHL, Maersk / AMR vendors Geek+, Locus, HAI) sit at the intersection of Physical AI + Industrial IoT + Event Sourcing. Ingestion layer is already covered by OPC-UA ✅ / MQTT ✅ / Kafka ✅. The gap is **domain-specific query primitives** (spatial, entity-timeline) and **regulatory features** (cold-chain immutable audit). See proposal synthesized 2026-04-27 — design doc `docs/design/logistics_warehouse.md` to be authored alongside the first shipped item.
+
+| # | Task | Why | Unlocks | Effort |
+|---|------|-----|---------|--------|
+| 6a | **Spatial functions (`haversine`, `ST_Distance`, `ST_Within`)** | AGV/AMR collision prediction, geofence alerts, drone-swarm proximity. `physical_ai_market.md` already uses `haversine(...)` in the drone-swarm SQL example but the function is not implemented. Scalar SQL built-ins first; R-tree index later | Logistics + drone-swarm + autonomous-vehicle (3 sectors at once) | M |
+| 6b | **Cold-chain immutable table flag + retention** | Pharma/food/vaccine logistics require regulator-auditable temperature log (FDA 21 CFR Part 11, EU GDP, KR GMP). `CREATE TABLE ... WITH (immutable=true, retention='7 years')` — WAL-backed, DELETE/UPDATE rejected at executor. Premium-price sub-sector | Regulated cold-chain vertical | S |
+| 6c | **Entity-timeline / event-sourcing recipes** | Order/pallet state tracking: "current status of order X", "Pick→Ship SLA violations". Likely achievable with existing `LAST()` + window functions — verify then add to `SQL_REFERENCE.md` as a named recipe. If a gap exists, add `LAST(value, timestamp)` aggregate | WMS/OMS query patterns | S |
+| 6d | **`docs/design/logistics_warehouse.md` + physical_ai_market.md section E** | Formalize logistics as a first-class GTM sector (currently only implicit in drone-swarm D). Sales message, data profile, competitive positioning | Sales collateral, website target-market expansion | S |
+| 6e | **Edge-deployment guide (`docs/deployment/EDGE_DEPLOYMENT.md`)** | Logistics centers prefer on-prem edge (network isolation, latency). Single-binary ARM64 already proven via Graviton CI; needs documented recipe (k3s / Docker Compose / systemd on industrial PC) | On-prem pilot onboarding | S |
+| 6f | **Logistics benchmark suite** | 2K AGV @ 10Hz + 1M sorter pts/s + 50K RFID peak events — vs TimescaleDB/InfluxDB/Redis. Companion to item 4 (factory bench) | Logistics GTM proof point | S |
+| 6g | **Digital Twin / Isaac Sim hook for logistics** | Omniverse-based warehouse digital twin real-time feed. Depends on ROS2 plugin (P9 #1) | Long-term Isaac ecosystem tie-in | M |
+
+Notes:
+- 6a is the highest-leverage item — it simultaneously unlocks logistics, drone-swarm (item 1's stated use case), and autonomous-vehicle proximity queries. Design doc `docs/design/spatial_functions.md` should land with the first implementation.
+- 6b is small but opens the only regulated sub-sector of logistics — direct path to premium pricing.
+- 6c/6d/6e/6f are documentation-weighted and can proceed in parallel with the code items above.
+- No new ingestion connector is needed for logistics — OPC-UA (PLC/sorter), MQTT (IoT gateway), Kafka (WMS event bus) already cover all three primary data sources.
 
 ---
 
@@ -148,11 +259,11 @@
 | **P4** | Tool Integration | 2 | ClickHouse protocol |
 | **P5** | Data Pipelines | 4 | Kafka Connect, CDC |
 | **P6** | Enterprise / Cloud | 3 | Marketplace, Geo-rep, SAML |
-| **P7** | Engine Performance | 5 | JOINs/Window virtual tables |
-| **P8** | Cluster | 7 | RDMA transport, Cold query |
-| **P9** | Physical AI / IoT | 2 | OPC-UA, ROS2 |
+| **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
+| **P8** | Cluster | 9 | RDMA transport, Cold query, Horizontal ingest tier |
+| **P9** | Physical AI / IoT | 15 | ROS2, OPC-UA HA + A&C + CLI browse + string variants + structured variants + examples, docs |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total remaining: 34 items + 4 manual tasks**
+**Total remaining: 47 items + 4 manual tasks**
 
 **Critical path: P2 (launch) → P4 (ClickHouse protocol) → P7 (JOINs/Window virtual tables)**

@@ -38,9 +38,15 @@ static_assert(sizeof(TickMessage) == 64, "TickMessage must be exactly 1 cache li
 // ============================================================================
 class TickPlant {
 public:
-    using TickQueue = MPMCRingBuffer<TickMessage, 65536>; // 64K slots
+    /// Default capacity kept at 65536 for backward compat with all existing
+    /// callers, tests, and benches written before devlog 102.
+    static constexpr size_t kDefaultCapacity = 65536;
 
-    TickPlant();
+    using TickQueue = MPMCRingBufferDynamic<TickMessage>;
+
+    /// Construct with a runtime ring-buffer capacity (power of two). The
+    /// default value reproduces the pre-102 behaviour exactly.
+    explicit TickPlant(size_t capacity = kDefaultCapacity);
 
     /// 외부 데이터 수신 (NIC → TickPlant)
     /// 자동으로 seq_num 및 recv_ts 할당
@@ -56,6 +62,9 @@ public:
 
     /// 큐 상태
     [[nodiscard]] size_t queue_depth() const { return queue_.approx_size(); }
+
+    /// Ring-buffer slot capacity actually in use (runtime).
+    [[nodiscard]] size_t capacity() const { return queue_.capacity(); }
 
 private:
     static Timestamp now_ns();

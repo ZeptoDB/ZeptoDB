@@ -8,8 +8,8 @@
 
 namespace zeptodb::ingestion {
 
-TickPlant::TickPlant() {
-    ZEPTO_INFO("TickPlant initialized (queue capacity={})", TickQueue::capacity());
+TickPlant::TickPlant(size_t capacity) : queue_(capacity) {
+    ZEPTO_INFO("TickPlant initialized (queue capacity={})", queue_.capacity());
 }
 
 Timestamp TickPlant::now_ns() {

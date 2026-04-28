@@ -394,6 +394,125 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set nodeSelector."node\.kubernetes\.io/instance-type"=c7g.4xlarge
 ```
 
+### Vertical ingest tuning (devlog 102)
+
+Phase 1 of the ingest scale-out plan exposes two single-pod ingest
+knobs via Helm. Both default to `0` (engine default) so existing
+charts are unchanged.
+
+| Helm value | Engine default (when `0`) | Purpose |
+|---|---|---|
+| `pipeline.drainThreads` | `max(2, hw_concurrency() / 4)` | Number of drain threads moving ticks from `TickPlant` → storage. Lock-free MPMC → scales near-linearly. |
+| `pipeline.ringBufferCapacity` | `65536` slots | `TickPlant` ring-buffer size. Absorbs ingest bursts before the synchronous `store_tick()` fallback (~34× slower) kicks in. Must be a power of two in `[4096, 16777216]`. |
+
+#### When to tune
+
+| Workload | Tags × rate | `pipeline.drainThreads` | `pipeline.ringBufferCapacity` |
+|---|---|---|---|
+| IoT pilot | 1 k × 1 Hz | `0` (auto) | `65536` (default) |
+| Auto factory | 5 k × 100 Hz | `4` | `262144` |
+| Semi fab (CMP burst) | 30 k × 10 kHz | `8` | `1048576` |
+
+```bash
+# Raise both for a CMP-burst semi-fab workload
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
+  --set pipeline.drainThreads=8 \
+  --set pipeline.ringBufferCapacity=1048576
+```
+
+#### How to observe
+
+Both effective values are emitted on `ZeptoPipeline::start()`:
+
+```bash
+kubectl logs -n zeptodb zeptodb-0 | grep "drain_threads="
+# [info] ZeptoPipeline 시작 완료 (drain_threads=8, ring_capacity=1048576)
+```
+
+Also exposed as pod env vars for K8s-side inspection:
+`ZEPTO_DRAIN_THREADS`, `ZEPTO_RING_BUFFER_CAPACITY`.
+
+When `TickPlant queue full! Dropping tick seq=…` appears in logs,
+raise `pipeline.ringBufferCapacity` first (power of two), then
+`pipeline.drainThreads`. A non-power-of-two or out-of-range capacity
+causes the pod to fail fast at startup with a clear
+`std::invalid_argument` in the crash log.
+
+This is a **single-pod vertical** scaling knob. Horizontal scale-out
+— a stateless `zepto_ingest_node` tier plus an ingest-rate HPA — is
+Phase 2 and is tracked in `docs/BACKLOG.md` under **P8 — Cluster**.
+
+---
+
+### Sizing and placement for enterprise factory workloads
+
+Horizontal scale-out only delivers linear ingest gain when each replica lands on a
+**distinct node**. The Helm chart defaults enforce this via hard podAntiAffinity plus
+topologySpread; see `docs/devlog/104_pod_placement_hardening.md` for the root-cause
+analysis. Use this table as a starting point and right-size per sector.
+
+| Sector | Replicas | Nodes | `resources.requests` (cpu / memory) | `podAntiAffinity.required` |
+|--------|----------|-------|-------------------------------------|----------------------------|
+| Dev / sandbox | 2 | 1 is OK | 1c / 2 Gi | `false` |
+| Small IoT pilot | 3 | 3 | 2c / 4 Gi *(default)* | `true` |
+| Auto factory | 5 | 5 | 4c / 8 Gi | `true` |
+| Semi fab (CMP / lithography) | 10 | 10 | 8c / 16 Gi | `true` |
+
+#### Why `required: true` is the production default
+
+A soft `preferredDuringSchedulingIgnoredDuringExecution` lets Kubernetes co-locate
+two pods on the same node as soon as HPA scales `replicas > nodes`. When that happens
+the two ZeptoDB processes fight for the same CPU, halving ingest throughput, and a
+single node failure takes down both replicas at once — breaking the scale-out
+guarantee silently.
+
+Flip to `required: false` only on dev clusters where a tight fixed node count makes
+co-location acceptable (e.g. a 3-replica chart on a 1-node kind cluster). Everywhere
+else, leave it on and rely on EKS Auto Mode / Karpenter to provision the Nth node
+(typically 30–60 s per §5 above) when a hard antiAffinity leaves a pod `Pending`.
+
+#### Why `topologySpread` + `maxSkew: 1` alongside
+
+`required: true` alone refuses to schedule extras beyond the current node count.
+`topologySpreadConstraints` with `maxSkew: 1` is the smarter complement when
+`replicas > nodes` is a legitimate transient state (brief HPA spike ahead of node
+provision, planned drain): it spreads pods as evenly as possible across hostnames
+and still allows more replicas than nodes. Set
+`topologySpread.whenUnsatisfiable: ScheduleAnyway` if you want the spread hint
+without the scheduling block.
+
+#### Resource sizing rules of thumb
+
+- **CPU request** = 1 core for HTTP/RPC + `pipeline.drainThreads` cores for ingest
+  draining. If `drainThreads` is `0` (auto), the engine picks `max(2, hw_concurrency / 4)`,
+  so plan for 1 + 2 = 3 cores minimum on any node smaller than 16 vCPU. The 2c/4c
+  default covers a 2-core drain pool plus HTTP/RPC, sized for ~200K–500K ticks/s.
+- **Memory request** = ~100 MB baseline + 32 MB per active arena + `ringBufferCapacity × 64` bytes
+  for the `TickPlant` ring. Example: 200 active partitions + 1 M-slot ring ≈
+  100 MB + 6.4 GB + 64 MB ≈ 6.6 GB — round up to 8 GB limit for headroom. Raise
+  `limits.memory` before raising `pipeline.ringBufferCapacity`.
+- **Bare-metal trading (Guaranteed QoS)** — pin `requests.cpu == limits.cpu` and
+  `requests.memory == limits.memory` in an overlay. Keep `hugepages-2Mi` on both
+  sides to retain HugePages reservation.
+
+```bash
+# Auto-factory profile (5 replicas × 5 nodes × 4c/8G)
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
+  --set replicaCount=5 \
+  --set autoscaling.minReplicas=5 \
+  --set resources.requests.cpu=4000m \
+  --set resources.requests.memory=8Gi \
+  --set resources.limits.cpu=8000m \
+  --set resources.limits.memory=16Gi
+
+# Dev overlay (2 replicas on 1 node, co-location OK)
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
+  --set replicaCount=2 \
+  --set podAntiAffinity.required=false \
+  --set resources.requests.cpu=1000m \
+  --set resources.requests.memory=2Gi
+```
+
 ---
 
 ## 6. Backup & Recovery
