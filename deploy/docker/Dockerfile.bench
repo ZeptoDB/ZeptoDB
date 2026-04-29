@@ -53,12 +53,18 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libssl3 libcurl4 liblz4-1 libnuma1 liburing2 ca-certificates curl \
+      libedit2 libz3-4 libxml2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/zeptodb
 COPY --from=builder /build/build/zepto_http_server .
 COPY --from=builder /build/build/zepto_data_node   .
 COPY --from=builder /build/build/bench_rebalance   .
+# DuckDB shared lib — JIT/cold-query path depends on it at runtime
+COPY --from=builder /build/build/_deps/duckdb-build/src/libduckdb.so /usr/local/lib/libduckdb.so
+# LLVM (JIT codegen) runtime
+COPY --from=builder /usr/lib/llvm-19/lib/libLLVM.so.19.1 /usr/local/lib/
+RUN ldconfig
 
 EXPOSE 8123
 ENTRYPOINT ["./zepto_http_server"]
