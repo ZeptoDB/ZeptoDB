@@ -42,6 +42,7 @@ add_executable(zepto_tests
     unit/test_feed_table_id.cpp
     unit/test_table_acl_ddl.cpp
     unit/test_distributed_insert.cpp
+    unit/test_coordinator_routing_adapter.cpp
 )
 if(ZEPTO_USE_JIT)
     target_sources(zepto_tests PRIVATE unit/test_jit_simd.cpp)

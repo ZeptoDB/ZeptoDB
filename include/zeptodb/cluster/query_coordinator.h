@@ -156,6 +156,13 @@ public:
     PartitionRouter&       router()       { return external_router_ ? *external_router_ : own_router_; }
     const PartitionRouter& router() const { return external_router_ ? *external_router_ : own_router_; }
 
+    /// Access the router mutex directly (external if shared, else internal).
+    /// Used by CoordinatorRoutingAdapter (devlog 111) to share the same
+    /// reader/writer lock the coordinator itself uses.
+    std::shared_mutex& router_mutex() const {
+        return external_router_mu_ ? *external_router_mu_ : router_mu_;
+    }
+
     /// Lock the router for reading (uses external mutex if shared, else internal).
     std::shared_lock<std::shared_mutex> router_read_lock() const {
         return std::shared_lock<std::shared_mutex>(

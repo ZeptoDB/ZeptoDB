@@ -14,6 +14,7 @@
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/coordinator_ha.h"
+#include "zeptodb/cluster/coordinator_routing_adapter.h"
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/partition_migrator.h"
@@ -29,6 +30,8 @@
 #include <atomic>
 #include <fstream>
 #include <filesystem>
+#include <memory>
+#include <unordered_map>
 
 #ifdef __linux__
 #include <cstring>
@@ -296,13 +299,11 @@ int main(int argc, char* argv[]) {
 
     // HTTP server
     zeptodb::sql::QueryExecutor executor(pipeline);
-    // TODO(devlog 103): when zepto_http_server is wired into cluster mode
-    // (i.e. a ClusterNode<Transport> is constructed here), call
-    //   executor.set_cluster_node(&cluster_node);
-    // so that INSERT statements route to the partition owner via
-    // PartitionRouter instead of landing on whichever pod received the
-    // HTTP request. Currently single-node HTTP only → null cluster_node
-    // preserves original direct-to-pipeline behaviour.
+    // Cluster-aware INSERT routing (BACKLOG P8-I3-wire, devlog 111): when
+    // remote_nodes is non-empty we construct a CoordinatorRoutingAdapter
+    // later in main() and call executor.set_cluster_node(&adapter). Single-
+    // pod deployments keep executor.cluster_node_ = nullptr (original direct-
+    // to-pipeline behaviour).
     zeptodb::server::HttpServer server(executor, port, zeptodb::auth::TlsConfig{}, auth);
     server.set_ready(true);
 
@@ -408,27 +409,73 @@ int main(int argc, char* argv[]) {
         std::cout << "\n=== Dev API Keys: already exist (skipped creation) ===\n";
     }
 
-    // ── Rebalance manager (when remote nodes exist) ──
-    std::unique_ptr<zeptodb::cluster::PartitionRouter> rebalance_router;
-    std::unique_ptr<zeptodb::cluster::PartitionMigrator> rebalance_migrator;
-    std::unique_ptr<zeptodb::cluster::RebalanceManager> rebalance_mgr;
+    // ── Cluster wire-up (when remote nodes exist) ──
+    // BACKLOG P8-I3-wire (devlog 111): unify the PartitionRouter so the
+    // rebalance path and the routing-adapter path both read/write the same
+    // ring under the same shared_mutex, exposed by QueryCoordinator.
+    std::unique_ptr<zeptodb::cluster::PartitionMigrator>       rebalance_migrator;
+    std::unique_ptr<zeptodb::cluster::RebalanceManager>        rebalance_mgr;
+    std::unordered_map<zeptodb::cluster::NodeId,
+                       std::shared_ptr<zeptodb::cluster::RpcClientBase>> peer_rpc;
+    std::unique_ptr<zeptodb::cluster::CoordinatorRoutingAdapter> routing_adapter;
 
-    if (!remote_nodes.empty()) {
-        rebalance_router = std::make_unique<zeptodb::cluster::PartitionRouter>();
+    if (!remote_nodes.empty() && coordinator) {
+        // --- Migrator ring (separate from the routing ring: migrator holds
+        // host:port for physical moves; the routing PartitionRouter inside
+        // coordinator holds just NodeId→slot). ---
         rebalance_migrator = std::make_unique<zeptodb::cluster::PartitionMigrator>();
-
-        rebalance_router->add_node(node_id);
         rebalance_migrator->add_node(node_id, "127.0.0.1", static_cast<uint16_t>(port + 100));
-
         for (auto& rn : remote_nodes) {
-            rebalance_router->add_node(rn.id);
             rebalance_migrator->add_node(rn.id, rn.host, static_cast<uint16_t>(rn.port + 100));
         }
 
+        // Rebalance manager mutates the COORDINATOR'S router (not a separate
+        // instance) so the routing-adapter sees fresh ring state after any
+        // add_node/remove_node.
         rebalance_mgr = std::make_unique<zeptodb::cluster::RebalanceManager>(
-            *rebalance_router, *rebalance_migrator);
+            coordinator->router(), *rebalance_migrator);
         server.set_rebalance_manager(rebalance_mgr.get());
         std::cout << "Rebalance manager: enabled (" << (remote_nodes.size() + 1) << " nodes)\n";
+
+        // --- Peer RPC clients: one per remote node, keyed by NodeId ---
+        for (auto& rn : remote_nodes) {
+            // Peer RPC port = peer HTTP port + 100 (convention from
+            // cluster_node.h:436 and migrator above).
+            peer_rpc.emplace(rn.id,
+                std::make_shared<zeptodb::cluster::TcpRpcClient>(
+                    rn.host, static_cast<uint16_t>(rn.port + 100),
+                    /*timeout_ms=*/2000));
+        }
+
+        // --- Peer RPC server so other pods can forward ticks TO us ---
+        // HA mode already starts an RPC server for peer SQL; non-HA needs a
+        // symmetric one with a tick_cb for TICK_INGEST.
+        if (!rpc_srv) {
+            rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+            rpc_srv->start(
+                static_cast<uint16_t>(port + 100),
+                // sql_cb: scatter-gathered SQL from another coordinator
+                [&](const std::string& sql) {
+                    zeptodb::sql::QueryExecutor ex(pipeline);
+                    return ex.execute(sql);
+                },
+                // tick_cb: forwarded tick lands directly in local pipeline
+                [&](const zeptodb::ingestion::TickMessage& msg) {
+                    return pipeline.ingest_tick(msg);
+                });
+            std::cout << "Peer RPC server: port " << (port + 100) << "\n";
+        }
+
+        // --- The actual wire-up: cluster-aware INSERT routing ---
+        routing_adapter = std::make_unique<zeptodb::cluster::CoordinatorRoutingAdapter>(
+            &coordinator->router(),
+            &coordinator->router_mutex(),
+            &pipeline,
+            static_cast<zeptodb::cluster::NodeId>(node_id),
+            &peer_rpc);
+        executor.set_cluster_node(routing_adapter.get());
+        std::cout << "Cluster routing: enabled (" << remote_nodes.size()
+                  << " remote nodes)\n";
     }
 
     server.start_async();

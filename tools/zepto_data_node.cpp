@@ -91,6 +91,11 @@ static bool register_with_coordinator(
 }
 
 int main(int argc, char* argv[]) {
+    // zepto_data_node is a leaf node in the cluster topology: it accepts SQL
+    // and tick ingest via TcpRpcServer from an upstream coordinator that has
+    // already performed routing. It never receives raw-client INSERT. No
+    // CoordinatorRoutingAdapter is wired here (would double-route). See
+    // docs/devlog/111_http_server_cluster_routing.md.
     if (argc < 2 || std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") {
         std::cerr << "Usage: " << argv[0]
                   << " <port> [num_ticks] [options]\n\n"

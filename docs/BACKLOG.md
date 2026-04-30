@@ -1,8 +1,10 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1284 tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1288 tests passing
 >
-> Last cleaned: 2026-04-27
+> Last cleaned: 2026-04-30
+
+> ✅ 2026-04-30: **HTTP INSERT cluster-aware routing wired** (devlog 111). `CoordinatorRoutingAdapter` bridges `QueryExecutor::set_cluster_node()` to the existing `QueryCoordinator` + peer `TcpRpcClient` pool in `tools/zepto_http_server.cpp`. Router unified — `RebalanceManager` now mutates `coordinator->router()` in place (no more stale ring view). Non-HA cluster mode now starts a peer `TcpRpcServer` on `port + 100` for forwarded ticks. `zepto_data_node` documented as a leaf node (no wire-up needed). 4 new `CoordinatorRoutingAdapter.*` tests (1284 → 1288). **Closes P8-I3-wire.** EKS re-bench in stage 3.
 
 > ✅ 2026-04-27: **OPC-UA Sprint 3 — Tier-3 observability closeout** shipped (devlog 110). Three Tier-3 items (2r atomic-stats audit, 2s `RpcClientBase` extraction closing `route_remote` unit-test coverage across all three consumers, 2t Kafka/MQTT/OPC-UA microbench parity — Kafka 2.69 M / MQTT 2.48 M / OPC-UA 6.69 M ticks/s cheap-path) plus three Sprint-2 polish items (explicit `decode_errors` for unsupported variants, devlog-107 wording, reconnect test comment). OPC-UA connector is now SLA-grade.
 
@@ -131,7 +133,7 @@ tier.
 |------|-----|--------|
 | ~~**P8-I3-prep — Cluster-aware `INSERT` routing**~~ ✅ (devlog 103) — HTTP/SQL/Python INSERT now dispatches via `ClusterNodeBase::ingest_tick` when `QueryExecutor::set_cluster_node()` is wired, restoring the one-owner-per-partition invariant across pods. Prerequisite for P8-I3. | Prerequisite unblocked | — |
 | ~~**P8-I3-placement — Pod placement hardening**~~ ✅ (devlog 104) — Helm `podAntiAffinity.required: true` default + `topologySpreadConstraints` (`maxSkew: 1`) + ingest-tuned resource defaults. Prevents silent co-location that halved ingest CPU scaling and broke failure isolation on HPA scale-out. | Scale-out model validated | — |
-| **P8-I3-wire — `zepto_http_server` set_cluster_node wire-up** | `tools/zepto_http_server.cpp:297-304` has an explicit TODO: construct a `ClusterNode<TcpBackend>` + seeds and call `executor.set_cluster_node(&cluster_node)`. Without it, HTTP INSERT bypasses `PartitionRouter` and lands on whichever pod the Service LB picks — confirmed by EKS multinode benchmark 2026-04-28 (`docs/bench/results_multinode.md`): 1/2/3-pod amd64 ingest is flat at ~370 /s and all writes land on one pod. **Blocks every horizontal ingest scaling claim** for deployments serving HTTP (which is all current deployments). | S–M |
+| ~~**P8-I3-wire — `zepto_http_server` set_cluster_node wire-up**~~ ✅ (devlog 111) — `CoordinatorRoutingAdapter` bridges `QueryExecutor::set_cluster_node()` to the existing `QueryCoordinator` `PartitionRouter` + a peer `TcpRpcClient` pool. Router unified (rebalance manager now mutates `coordinator->router()` in place). Non-HA cluster mode starts a `TcpRpcServer` on `port + 100` so peers can forward ticks. `zepto_data_node` confirmed as a leaf node — no wire-up needed. 4 new unit tests (1284 → 1288). EKS re-bench pending as stage 3. | Unblocks horizontal INSERT scaling | — |
 | **P8-I3 — Stateless `zepto_ingest_node` binary** | Ingest-only pod, no storage/query; forwards over cluster RPC to data nodes. Lets ingest scale independently of the query tier. Wiring is a one-liner (`executor.set_cluster_node(&cluster_node)`) once P8-I3-wire lands. | M |
 | **P8-I4 — Ingest-rate HPA** | Custom metric `zepto_pipeline_ticks_per_sec` → HPA target so the ingest tier autoscales on real load, not on CPU/mem proxy. | S |
 | **P8-I5 — Python cluster hook** | Expose `PyPipeline.set_cluster_node(ClusterNodeBase*)` to Python via pybind11 so Python-side DSL writes also route correctly. Plumbing in place (devlog 103); pending pybind11 binding. | S |
