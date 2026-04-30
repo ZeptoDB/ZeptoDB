@@ -840,11 +840,56 @@ route through their own `set_routing()` hook, bypassing the HTTP LB
 entirely — use them as the primary ingest path for production multi-pod
 deployments.
 
-**Known limitation — DDL replication.** `CREATE / DROP / ALTER TABLE`
-currently executes on a single pod only (the LB-picked pod). Other pods
-keep their existing schema. Mitigation: pre-provision all tables at
-deploy time via an init job, or run DDL directly against each pod's
-headless endpoint in a loop. Tracked as BACKLOG **P8-DDL-replication**.
+**DDL replication (devlog 112).** `CREATE / DROP / ALTER TABLE` sent to
+any pod is fire-and-forget replicated to every remote pod via
+`QueryCoordinator::forward_ddl_to_remotes`. Per-remote failures emit
+`ZEPTO_WARN` but never fail the client request, so operators should
+still pre-provision critical tables at deploy time if a pod might be
+unreachable at DDL time.
+
+### Stateless ingest tier (optional)
+
+For workloads where ingest load scales independently of query/storage
+load, deploy a dedicated stateless ingest tier (P8-I3, devlog 113).
+Each ingest pod runs the `zepto_ingest_node` binary, holds zero data,
+and forwards every HTTP INSERT to the correct storage pod via
+`CoordinatorRoutingAdapter` (same routing path as devlog 111).
+
+Topology:
+
+```
+clients ──► ingest Service (ClusterIP) ──► N × zepto_ingest_node pods
+                                                │  (owns no data,
+                                                │   node_id=99999)
+                                                ▼
+                                            TCP RPC fan-out
+                                                ▼
+                                         storage StatefulSet (zeptodb-N)
+                                         — owns partitions, runs queries
+```
+
+Enable via Helm (opt-in):
+
+```bash
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
+  --set ingest.enabled=true \
+  --set ingest.replicas=3 \
+  --set-string 'ingest.extraArgs={--add-node,0:zeptodb-0.zeptodb-headless:8123,--add-node,1:zeptodb-1.zeptodb-headless:8123,--add-node,2:zeptodb-2.zeptodb-headless:8123}'
+```
+
+Notes:
+
+- Storage-pod discovery is currently manual via `ingest.extraArgs`. A
+  future init container will generate `--add-node` flags from the
+  headless service automatically.
+- `ingest.noAuth: true` is the default — put the ingest Service behind
+  an auth-enforcing ingress if you expose it outside the cluster.
+- The ingest tier can be scaled with its own HPA independently of the
+  storage StatefulSet. Ingest-rate HPA on `zepto_pipeline_ticks_per_sec`
+  is tracked as BACKLOG **P8-I4**.
+- DDL (`CREATE / DROP / ALTER TABLE`) sent to an ingest pod replicates
+  to every storage pod automatically via devlog 112's
+  `forward_ddl_to_remotes`.
 
 ### Cluster Health
 

@@ -39,8 +39,8 @@ RUN mkdir -p build && cd build && \
       -DZEPTO_USE_PARQUET=OFF -DZEPTO_USE_FLIGHT=OFF \
       -DZEPTO_BUILD_PYTHON=OFF -DAPEX_USE_IO_URING=ON \
       -DBUILD_TESTS=OFF && \
-    ninja -j"$(nproc)" zepto_http_server zepto_data_node bench_rebalance bench_ingest_scale && \
-    strip zepto_http_server zepto_data_node bench_rebalance bench_ingest_scale
+    ninja -j"$(nproc)" zepto_http_server zepto_data_node zepto_ingest_node bench_rebalance bench_ingest_scale && \
+    strip zepto_http_server zepto_data_node zepto_ingest_node bench_rebalance bench_ingest_scale
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -51,6 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/zeptodb
 COPY --from=builder /build/build/zepto_http_server .
 COPY --from=builder /build/build/zepto_data_node   .
+COPY --from=builder /build/build/zepto_ingest_node .
 COPY --from=builder /build/build/bench_rebalance   .
 COPY --from=builder /build/build/bench_ingest_scale .
 # DuckDB shared lib — JIT/cold-query path depends on it at runtime

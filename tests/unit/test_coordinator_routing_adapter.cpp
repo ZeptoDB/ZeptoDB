@@ -189,3 +189,44 @@ TEST(CoordinatorRoutingAdapter, ConcurrentRouteLocksAreCorrect) {
     EXPECT_GT(stub2->calls.load(), 0);
     EXPECT_GT(stub3->calls.load(), 0);
 }
+
+// ----------------------------------------------------------------------------
+// Case 5: ingest-node invariant — self NOT in ring → zero local ticks
+// Mirrors the zepto_ingest_node wire-up: add_local_node then remove_node(self)
+// so route() never returns self_id. Every tick must go to a remote stub.
+// ----------------------------------------------------------------------------
+TEST(CoordinatorRoutingAdapter, IngestNodeInvariant_ZeroLocalTicks) {
+    // Simulate the ingest-node wire-up: coordinator with self removed from ring
+    zeptodb::cluster::PartitionRouter router;
+    std::shared_mutex router_mu;
+    // Add self + 2 storage nodes, then remove self
+    router.add_node(65534);  // self (ingest node)
+    router.add_node(1);      // storage pod 1
+    router.add_node(2);      // storage pod 2
+    router.remove_node(65534);  // ← the critical step
+
+    auto pipeline = make_pipeline();
+    auto stub1 = std::make_shared<CountingRpcClient>();
+    auto stub2 = std::make_shared<CountingRpcClient>();
+    zeptodb::cluster::CoordinatorRoutingAdapter::RpcClientMap remotes;
+    remotes.emplace(1, stub1);
+    remotes.emplace(2, stub2);
+
+    zeptodb::cluster::CoordinatorRoutingAdapter adapter(
+        &router, &router_mu, pipeline.get(), /*self_id=*/65534, &remotes);
+
+    // Drive 10K ticks across many symbols
+    int successes = 0;
+    for (int i = 0; i < 10000; ++i) {
+        auto sym = static_cast<zeptodb::SymbolId>(i % 5000 + 1);
+        if (adapter.ingest_tick(make_tick(sym))) ++successes;
+    }
+
+    EXPECT_EQ(successes, 10000);
+    // The invariant: ZERO ticks in local pipeline
+    EXPECT_EQ(pipeline->stats().ticks_ingested.load(), 0u)
+        << "Ingest node must forward ALL ticks to storage pods; "
+           "self must not be in the hash ring";
+    // All ticks went to the two stubs
+    EXPECT_EQ(stub1->calls.load() + stub2->calls.load(), 10000);
+}

@@ -833,6 +833,13 @@ target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include
 target_link_libraries(zepto_http_server PRIVATE
     zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster)
 
+# Stateless ingest node (P8-I3, devlog 113) — HTTP ingest-only pod that
+# forwards every tick to the right storage pod via CoordinatorRoutingAdapter.
+add_executable(zepto_ingest_node tools/zepto_ingest_node.cpp)
+target_include_directories(zepto_ingest_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(zepto_ingest_node PRIVATE
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster)
+
 # Arrow Flight + HTTP server
 add_executable(zepto_flight_server tools/zepto_flight_server.cpp)
 target_include_directories(zepto_flight_server PRIVATE ${CMAKE_SOURCE_DIR}/include)

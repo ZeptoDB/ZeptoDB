@@ -250,3 +250,33 @@ karpenter:
     expireAfter: "24h"                 # recycle nodes daily (fresh AMI, no drift)
     budgets:
       - nodes: "20%"                   # allow 20% disruption for consolidation
+
+# ---------------------------------------------------------------------------
+# Stateless ingest tier (P8-I3, devlog 113) — opt-in
+# ---------------------------------------------------------------------------
+# Deploys N pods running `zepto_ingest_node`. Each pod receives HTTP INSERT
+# and forwards every tick to the correct storage pod via the
+# CoordinatorRoutingAdapter (devlog 111). Owns zero data.
+#
+# Enable with: --set ingest.enabled=true
+# Storage node discovery is not yet automatic — pass storage peers explicitly
+# via extraArgs until the discovery init container lands (see
+# docs/devlog/113_stateless_ingest_node.md):
+#
+#   --set ingest.enabled=true \
+#   --set-string 'ingest.extraArgs={--add-node,0:zeptodb-0.zeptodb-headless:8123,--add-node,1:zeptodb-1.zeptodb-headless:8123}'
+# ---------------------------------------------------------------------------
+ingest:
+  enabled: false
+  replicas: 2
+  noAuth: true
+  extraArgs: []
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
