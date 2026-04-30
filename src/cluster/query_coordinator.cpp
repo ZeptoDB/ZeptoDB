@@ -5,6 +5,7 @@
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/sql/parser.h"
 #include "zeptodb/sql/ast.h"
+#include "zeptodb/common/logger.h"
 
 #include <algorithm>
 #include <cctype>
@@ -68,6 +69,40 @@ void QueryCoordinator::connect_health_monitor(HealthMonitor& hm) {
             remove_node(id);
         }
     });
+}
+
+// ============================================================================
+// DDL replication (fire-and-forget — devlog 112)
+// ============================================================================
+// After a successful local DDL execution, HttpServer calls this to replicate
+// the same SQL string to every remote pod so the cluster converges on a
+// shared schema.  Remote failures are logged but never thrown — DDL is
+// idempotent (CREATE/DROP ... IF [NOT] EXISTS) and a down pod will re-sync
+// on its next schema-touching op.  Strong consistency is out of scope.
+// ============================================================================
+void QueryCoordinator::forward_ddl_to_remotes(const std::string& sql) {
+    // Snapshot remote endpoints under the lock — keep shared_ptrs alive so
+    // a concurrent remove_node() cannot invalidate our iterator.
+    std::vector<std::shared_ptr<NodeEndpoint>> remotes;
+    {
+        std::shared_lock lock(mutex_);
+        for (const auto& ep : endpoints_) {
+            if (!ep->is_local && ep->rpc) remotes.push_back(ep);
+        }
+    }
+    for (const auto& ep : remotes) {
+        try {
+            auto result = ep->rpc->execute_sql(sql);
+            if (!result.ok()) {
+                ZEPTO_WARN("DDL replication to node {} ({}:{}) failed: {}",
+                           ep->addr.id, ep->addr.host, ep->addr.port,
+                           result.error);
+            }
+        } catch (const std::exception& e) {
+            ZEPTO_WARN("DDL replication to node {} ({}:{}) exception: {}",
+                       ep->addr.id, ep->addr.host, ep->addr.port, e.what());
+        }
+    }
 }
 
 // ============================================================================

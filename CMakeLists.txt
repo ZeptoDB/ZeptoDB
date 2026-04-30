@@ -1016,6 +1016,21 @@ if(ZEPTO_BUILD_BENCH)
     target_compile_options(bench_rebalance PRIVATE
         -O3 -march=native
     )
+
+    # Multi-pod ingest scaling benchmark (HTTP client, runs on EKS loadgen pod)
+    add_executable(bench_ingest_scale
+        tests/bench/bench_ingest_scale.cpp
+    )
+    target_include_directories(bench_ingest_scale PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+    target_link_libraries(bench_ingest_scale PRIVATE Threads::Threads)
+    if(OPENSSL_FOUND)
+        target_link_libraries(bench_ingest_scale PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    target_compile_options(bench_ingest_scale PRIVATE
+        -O3 -march=native
+    )
 endif()
 
 # ============================================================================

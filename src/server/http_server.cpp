@@ -517,6 +517,16 @@ void HttpServer::setup_routes() {
             return;
         }
 
+        // DDL replication to remote pods (fire-and-forget — devlog 112).
+        // Only runs in cluster mode (coordinator_ wired).  We rely on the
+        // ACL-path pre-parse (`cached_ps`) to classify DDL — no extra parse,
+        // no string matching.
+        if (coordinator_ && have_parsed &&
+            (cached_ps.create_table || cached_ps.drop_table ||
+             cached_ps.alter_table)) {
+            coordinator_->forward_ddl_to_remotes(req.body);
+        }
+
         res.set_content(build_json_response(result), "application/json");
     });
 

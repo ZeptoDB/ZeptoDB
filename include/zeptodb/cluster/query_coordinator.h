@@ -149,6 +149,13 @@ public:
     zeptodb::sql::QueryResultSet execute_sql_for_symbol(const std::string& sql,
                                                      SymbolId           symbol_id);
 
+    /// Fire-and-forget: forward a DDL SQL string to every *remote* node's
+    /// TcpRpcClient so all pods converge on the same schema (devlog 112).
+    /// Called by HttpServer after a successful *local* DDL execution.
+    /// Local endpoints and endpoints without an rpc client are skipped.
+    /// Per-node failures are logged as warnings and never thrown.
+    void forward_ddl_to_remotes(const std::string& sql);
+
     // ----------------------------------------------------------------
     // Router access (internal or shared)
     // ----------------------------------------------------------------

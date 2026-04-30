@@ -312,6 +312,16 @@ INSERTs to those pods. Harmless in production (schema is
 pre-provisioned), but a real issue for multi-pod test harnesses that
 exercise DDL via the LB. Tracked as BACKLOG **P8-DDL-replication**.
 
+**Resolution (2026-04-30, devlog 112):** `HttpServer` now calls
+`QueryCoordinator::forward_ddl_to_remotes(sql)` after a successful
+local `CREATE / DROP / ALTER TABLE`. The forward is fire-and-forget —
+per-remote failures emit `ZEPTO_WARN` but never fail the client
+request. DDL statements must be idempotent (`IF [NOT] EXISTS`) when
+re-applied by a catch-up path on a pod that was down during the
+original DDL. Strong schema consistency (Raft-based schema log,
+2PC across pods) is explicitly out of scope — the benchmark-harness
+use case that motivated the fix does not require it.
+
 ### 4-C. Distributed Query Flow
 
 ```
