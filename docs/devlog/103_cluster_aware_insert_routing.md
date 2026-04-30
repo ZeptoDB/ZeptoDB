@@ -98,11 +98,14 @@ one-line binding. Tracked as a small follow-up.
 
 ### 5. `zepto_http_server`
 
-Does not currently construct a `ClusterNode<Transport>`. A `TODO` comment
-pointing at this devlog has been placed where the wiring belongs, so once
-`zepto_http_server` gains cluster mode (or a stateless `zepto_ingest_node`
-variant, BACKLOG P8-I3) the one-line `executor.set_cluster_node(&cluster_node)`
-is the only change required.
+At the time of devlog 103, this did not construct a `ClusterNode<Transport>`
+and the `TODO` comment at `tools/zepto_http_server.cpp:297-304` held the
+future wire-up site. **Landed in devlog 111 (2026-04-30) via a
+non-template `CoordinatorRoutingAdapter`** that reuses the existing
+`QueryCoordinator`'s `PartitionRouter` + a peer `TcpRpcClient` pool —
+no duplicate pipeline, no full `ClusterNode<T>` construction. See
+`docs/devlog/111_http_server_cluster_routing.md` and the Round 2 EKS
+verification in `docs/bench/results_multinode.md`.
 
 ## Backward compatibility
 
@@ -139,7 +142,7 @@ Full suite: **1266 passed / 1266** (was 1262 / 1262 pre-change).
 | `include/zeptodb/sql/executor.h` | forward decl + `cluster_node_` member + `set_cluster_node()` |
 | `src/sql/executor.cpp` | 1-line branch in `exec_insert`; `#include` of base header |
 | `src/transpiler/python_binding.cpp` | `ingest_routed_()` helper + 3 call sites rewrapped + member |
-| `tools/zepto_http_server.cpp` | TODO comment at the future wire-up point |
+| `tools/zepto_http_server.cpp` | TODO comment at the future wire-up point (replaced with the actual wire-up in devlog 111) |
 | `tests/unit/test_distributed_insert.cpp` | **new** — 4 correctness tests |
 | `tests/CMakeLists.txt` | register new test file |
 

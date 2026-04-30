@@ -265,23 +265,52 @@ Client Tick → PartitionRouter.route(symbol)
                               → Remote node Ring Buffer (zero-copy)
 ```
 
-#### Write-path routing (devlog 103)
+#### Write-path routing (devlogs 103, 111)
 
 Feed consumers (`KafkaConsumer`, `MqttConsumer`, `OpcUaConsumer`) already
 dispatch through `ClusterNode::ingest_tick` via each consumer's
 `set_routing()` hook, so feed-driven ingest is partition-correct by default.
 
 The HTTP/SQL and Python write paths previously bypassed this and wrote
-directly to whichever pod received the request. `QueryExecutor` now holds
-an optional `zeptodb::cluster::ClusterNodeBase*`, set once at startup via
-`set_cluster_node()`. When non-null, `exec_insert()` dispatches through
-`ClusterNodeBase::ingest_tick` (routed to the partition owner via the
-same `PartitionRouter`); when null, it falls back to direct local
-`pipeline_.ingest_tick()` — preserving single-node behaviour. The same
-`ingest_routed_()` pattern covers the three Python `PyPipeline` call sites
-(single ingest, int batch, float batch). This closes the HTTP/Python
-parity gap with feed consumers and is the prerequisite for the stateless
-`zepto_ingest_node` tier (BACKLOG P8-I3).
+directly to whichever pod received the request. **Devlog 103** added
+`QueryExecutor::cluster_node_` and the routing branch in `exec_insert`;
+**devlog 111** wired the adapter into the production `zepto_http_server`
+binary. `QueryExecutor` holds an optional `zeptodb::cluster::ClusterNodeBase*`,
+set once at startup via `set_cluster_node()`. When non-null, `exec_insert()`
+dispatches through `ClusterNodeBase::ingest_tick` (routed to the partition
+owner via the same `PartitionRouter`); when null, it falls back to direct
+local `pipeline_.ingest_tick()` — preserving single-node behaviour. The
+same `ingest_routed_()` pattern covers the three Python `PyPipeline` call
+sites (single ingest, int batch, float batch).
+
+In `zepto_http_server` cluster mode:
+
+1. `CoordinatorRoutingAdapter` (devlog 111) is a non-template
+   `ClusterNodeBase` implementation that reuses `QueryCoordinator`'s
+   existing `PartitionRouter` + a peer `TcpRpcClient` pool. No duplicate
+   `ZeptoPipeline` is constructed.
+2. `RebalanceManager` now mutates `coordinator->router()` in place
+   (rather than a separate `rebalance_router`), so every ring change is
+   visible to the adapter's next `route()` call under the same
+   `shared_mutex`.
+3. A peer `TcpRpcServer` listens on `port + 100` for
+   `TICK_INGEST` RPCs from other pods; the callback writes directly to
+   the local pipeline (owner path).
+4. `zepto_data_node` is a leaf binary and does NOT wire the adapter —
+   it accepts only coordinator-forwarded RPC, so wiring would
+   double-route. Documented in-code.
+
+**EKS verification (stage 3, 2026-04-30):** routing distributes writes
+per hash ring (30/49/21 at N=3 vs 100/0/0 before the fix). Full Round 1
+vs Round 2 comparison in `docs/bench/results_multinode.md`.
+
+Known gap discovered during verification: DDL (`CREATE / DROP / ALTER
+TABLE`) runs on a single pod only — the pod the Service LB happened to
+pick — and does not propagate. Other pods keep the old `table_id`,
+which causes silent `table_id` divergence when the adapter routes
+INSERTs to those pods. Harmless in production (schema is
+pre-provisioned), but a real issue for multi-pod test harnesses that
+exercise DDL via the LB. Tracked as BACKLOG **P8-DDL-replication**.
 
 ### 4-C. Distributed Query Flow
 

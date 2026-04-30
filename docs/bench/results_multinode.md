@@ -1,5 +1,7 @@
 # Multi-Node Benchmark Results (EKS) — 2026-04-28
 
+> **Update 2026-04-30:** Round 1 below documents the null-result that motivated the P8-I3-wire fix. That fix has since landed (devlog 111) and was verified on EKS (commit `4d8889b`). See the **Round 2** section at the bottom of this file for post-fix numbers. The Round 1 text is preserved verbatim as historical context.
+
 **Cluster:** EKS `zepto-bench` (1.35, Auto Mode), region ap-northeast-2
 **Instance:** c6i.xlarge (amd64) / r8g.xlarge equivalent (arm64 / Graviton)
 **Image:** `060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb:bench-multinode-10a8268-{amd64,arm64}`

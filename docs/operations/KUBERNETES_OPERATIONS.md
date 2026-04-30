@@ -1,6 +1,6 @@
 # ZeptoDB Kubernetes Operations Guide
 
-Last updated: 2026-03-24
+Last updated: 2026-04-30
 
 ---
 
@@ -816,6 +816,35 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
 Direct pod-to-pod communication via Headless Service:
 - RPC: `<pod-name>.zeptodb-headless.zeptodb.svc:8223`
 - Heartbeat: UDP `:9100`
+
+### Write-path routing (devlog 111)
+
+When cluster mode is enabled, every pod automatically wires a
+`CoordinatorRoutingAdapter` so that HTTP/SQL `INSERT` statements and
+Python `Pipeline.ingest_*` calls are routed to the partition owner via
+the `PartitionRouter` consistent-hash ring. Without this wire-up (the
+state before devlog 111), writes would land on whichever pod the Service
+LoadBalancer happened to pick, silently mis-partitioning data.
+
+Verify the routing is live by checking any pod's startup log:
+
+```bash
+kubectl logs -n zeptodb zeptodb-0 | grep -E 'Cluster routing|Peer RPC'
+# Expected output:
+#   Peer RPC server: port 8223
+#   Cluster routing: enabled (N remote nodes)
+```
+
+**Feed consumers** (`KafkaConsumer`, `MqttConsumer`, `OpcUaConsumer`)
+route through their own `set_routing()` hook, bypassing the HTTP LB
+entirely — use them as the primary ingest path for production multi-pod
+deployments.
+
+**Known limitation — DDL replication.** `CREATE / DROP / ALTER TABLE`
+currently executes on a single pod only (the LB-picked pod). Other pods
+keep their existing schema. Mitigation: pre-provision all tables at
+deploy time via an init job, or run DDL directly against each pod's
+headless endpoint in a loop. Tracked as BACKLOG **P8-DDL-replication**.
 
 ### Cluster Health
 
