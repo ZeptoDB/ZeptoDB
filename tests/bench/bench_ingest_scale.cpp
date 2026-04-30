@@ -118,12 +118,14 @@ int main(int argc, char* argv[]) {
            cfg.host.c_str(), cfg.port, cfg.pods, cfg.threads, cfg.batch,
            cfg.symbols, cfg.seconds);
 
-    // Ensure table exists (DDL replication will propagate to all pods)
+    // Ensure table exists (DDL replication will propagate to all pods).
+    // Do NOT drop+recreate — that causes table_id divergence across pods
+    // because IF NOT EXISTS on a pod that already has the table keeps the
+    // old table_id while the recreating pod gets a new one.
     {
         httplib::Client cli(cfg.host, cfg.port);
         cli.set_connection_timeout(5);
         cli.set_read_timeout(5);
-        cli.Post("/", "DROP TABLE IF EXISTS trades", "text/plain");
         cli.Post("/", "CREATE TABLE IF NOT EXISTS trades (symbol INT64, timestamp TIMESTAMP_NS, price INT64, volume INT64)", "text/plain");
         std::this_thread::sleep_for(std::chrono::seconds(2));  // let DDL replicate
     }
