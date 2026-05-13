@@ -1,6 +1,6 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-04-26
+Last updated: 2026-05-02
 
 ---
 
@@ -67,7 +67,7 @@ Last updated: 2026-04-26
 - [x] **Data Durability** — Intra-day auto-snapshot (60s default), recovery replays on restart — max data loss ≤ 60s
 
 ## Ingestion & Feed Handlers
-- [x] **Feed Handlers** — FIX, NASDAQ ITCH (350ns parsing)
+- [x] **Feed Handlers** — NASDAQ ITCH (250ns parsing), FIX (350ns parsing)
 - [x] **Kafka consumer** — JSON/binary/human-readable decode, backpressure retry, Prometheus metrics, commit modes — 26 tests
 - [x] **MQTT consumer** — IoT / Physical AI ingestion, QoS 0/1/2, topic wildcards (`#`, `+`), shared JSON/BINARY/JSON_HUMAN decoders with Kafka, Paho async client with `ZEPTO_USE_MQTT` optional-dep pattern — 18 tests (devlog 081)
 - [x] **OPC-UA connector (PoC)** — scalar-only client connector, open62541 (MPL 2.0) optional-dep scaffolding (`ZEPTO_USE_OPCUA=ON` + `find_library(open62541)`), NodeId→SymbolId mapping, Int16/32/64 + Float/Double (with per-node `value_scale`) + Boolean variant coercion, SourceTimestamp UA DateTime 1601→1970 ns conversion, single-node + multi-node routing via shared dispatch path, backpressure retry, table-aware ingest (`OpcUaConfig::table_name` → `SchemaRegistry`), license-gated on `Feature::IOT_CONNECTORS` — 22 tests (devlog 101). Production features (real UA_Client integration, Basic256Sha256 security, reconnect, Historical Access, Alarms & Conditions, structured variants, browse/discover, server mode) tracked in BACKLOG P9 items 2b–2l.
@@ -77,6 +77,7 @@ Last updated: 2026-04-26
 - [x] **P8-I3-wire — HTTP INSERT cluster-aware routing** (devlog 111) — `zepto_http_server` now constructs a `CoordinatorRoutingAdapter` and calls `executor.set_cluster_node()` in cluster mode. Bridges the library-level fix from devlog 103 to the production HTTP binary. Rebalance manager now mutates the same `PartitionRouter` the adapter reads (unified under `QueryCoordinator::router()` + `router_mutex()`). Non-HA cluster mode starts a peer `TcpRpcServer` on `port + 100`. `zepto_data_node` documented as a leaf node (no wire-up needed). 4 new `CoordinatorRoutingAdapter.*` tests (1284 → 1288). EKS re-bench tracked as stage 3.
 - [x] **P8-DDL-replication — DDL replication across cluster pods** (devlog 112) — `QueryCoordinator::forward_ddl_to_remotes()` fire-and-forget replicates `CREATE / DROP / ALTER TABLE` to every remote pod after the HTTP server executes the DDL locally. Uses the already-parsed `cached_ps` for classification — no extra parse, no string matching. Remote failures emit `ZEPTO_WARN` but never fail the client request. Fixes the multi-pod test/benchmark gap discovered during EKS Round 2. 4 new `DDLReplication.*` tests (1288 → 1292).
 - [x] **P8-I3 — Stateless `zepto_ingest_node` binary** (devlog 113) — new `tools/zepto_ingest_node.cpp` ingest-only pod that forwards every HTTP INSERT to the right storage pod via `CoordinatorRoutingAdapter` (devlog 111). Owns zero data: self `node_id=99999` keeps the consistent-hash ring from ever picking self (Option A — zero adapter changes). DDL replicates via devlog 112. Dockerfile.bench (x86_64 + arm64) ships the binary; Helm opt-in template `ingest-deployment.yaml` + `values.yaml` `ingest:` block (disabled by default). Unlocks independent ingest↔storage scaling. Baseline 1292/1292 preserved — routing covered by `test_coordinator_routing_adapter.cpp`.
+- [x] **P8-I5 — Python cluster hook** (devlog 114) — `zeptodb.Pipeline.enable_cluster_routing(self_id, peers, remove_self_from_ring=True, rpc_timeout_ms=2000)` pybind11 method lands the last Sprint-2 horizontal-ingest item. Internally builds+owns a `QueryCoordinator`, a `NodeId → shared_ptr<RpcClientBase>` peer pool, and a `CoordinatorRoutingAdapter`; wires the executor via the devlog-103 `set_cluster_node()` hook. Idempotent teardown in the adapter → peer-map → coordinator order. Argument validation is strong-exception — a bad peer tuple raises `TypeError` / `ValueError` before any internal state is touched. 5 new `TestClusterRouting` pytest cases (empty peers, self-in-ring local ingest, idempotent rewiring, unreachable peer no-segfault, malformed tuple). Python module now links `zepto_cluster`.
 - [x] **Connection hooks & session tracking** — on_connect/on_disconnect callbacks, session list, idle eviction, query count — 7 tests
 
 ## Python Ecosystem
@@ -259,6 +260,11 @@ Last updated: 2026-04-26
 
 ## Test Infrastructure
 - [x] **Parallel test execution (`ctest -j$(nproc)`)** — Removed static `/tmp/zepto_test_*` path collisions via `zepto_test_util::unique_test_path()`; serialised `HttpClusterHA.*` suite. 1364/1364 pass, ~7.5× faster than `-j1` on 8 cores (`docs/devlog/087_parallel_test_execution.md`)
+
+---
+
+## Marketing / Website
+- [x] **Marketing site rebrand — general-purpose time-series DB** (devlog 115) — 5-page IA (`/home`, `/solutions`, `/features`, `/performance`, `/pricing`) under `web/src/app/(marketing)/**` pivots the public-facing site from "HFT/quant-only" to "general-purpose industry time-series DB." `/home` now leads with "The Time-Series Database for Physical AI, IoT, and Real-Time Analytics" + 4-stat proof strip (5.52M ticks/s · 272µs filter · 6 native feeds · kdb+-class) + 5 industry cards deep-linking into `/solutions#{physical-ai,finance,game,iot}` + `/solutions` for "+ more verticals". `/solutions` has one section per vertical with a pain → capability table → proof-point → killer-line shape pulled verbatim from `docs/business/product_positioning.md` and `docs/design/physical_ai_market.md` (Physical AI cites OPC-UA SLA-grade per devlog 110 + sector profiles per devlog 105). `/features` replaces the legacy 3-card layout with 4 capability groups (Ingest / Query / Deploy / Secure). `/performance` is new: 4×5 benchmark comparison (ZeptoDB vs kdb+ vs ClickHouse vs InfluxDB on Ingestion, 1M-row filter p50, ASOF JOIN, License cost, Deployment) + per-op detail card + methodology footer citing clang-19 / devlogs 097–098 / `docs/bench/results_multinode.md`. `/pricing` neutralises the old finance-specific copy and now targets "finance, factory floors, game backends, and Physical AI platforms," with a "Cloud-hosted tier coming soon" teaser. Technical details: in-repo Next.js 14 App Router + MUI (not the separate-repo Astro + Tailwind proposed in the old PRD); new `(marketing)/layout.tsx` provides cross-page nav; every page uses `"use client"` so `component={Link}` works under Next.js 16's server-component build; pre-existing Vitest/Playwright spec collision fixed by adding `e2e/**` to `vitest.config.ts` excludes. Tests: 4 files (`home`, `solutions`, `performance`, `pricing`) for a total of 20 Vitest cases; full suite 79/79 green, 19-page Next.js static export succeeds, zero lint issues in new/modified files. Docs: `docs/business/WEBSITE_PRD.md` rewritten to reflect the shipped IA and stack; KIRO.md + orchestrator.md devlog pointers refreshed.
 
 ---
 

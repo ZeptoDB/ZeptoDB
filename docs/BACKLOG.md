@@ -2,14 +2,16 @@
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | 1293 tests passing
 >
-> Last cleaned: 2026-05-01
+> Last cleaned: 2026-05-13
 >
-> Devlog: last `113_stateless_ingest_node.md` → next `114_*.md`
+> Devlog: last `115_marketing_rebrand.md` → next `116_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **Marketing site rebrand** (devlog 115) — 5-page IA (`/home`, `/solutions`, `/features`, `/performance`, `/pricing`) pivots the site from "HFT/quant-only" to "general-purpose industry time-series DB" serving Physical AI, Finance, Game, IoT/Smart Factory, and real-time observability. WEBSITE_PRD.md updated to the Next.js + MUI stack that actually shipped. Unblocks the P2 demo-video item.
+- ✅ **Python cluster hook** (devlog 114) — `Pipeline.enable_cluster_routing(self_id, peers, …)` pybind11 method. In-process cluster front-door finally wired. Closes P8-I5.
 - ✅ **Stateless `zepto_ingest_node`** (devlog 113) — ingest-only binary, forwards all ticks to storage pods. Helm opt-in. Closes P8-I3.
 - ✅ **DDL replication** (devlog 112) — fire-and-forget `CREATE/DROP/ALTER TABLE` scatter-gather. Closes P8-DDL-replication.
 - ✅ **HTTP INSERT cluster routing** (devlog 111) — `CoordinatorRoutingAdapter` wired in `zepto_http_server`. EKS verified (Round 2+3). Closes P8-I3-wire.
@@ -21,9 +23,9 @@
 
 ## P2 — Visibility & Launch
 
-| Task | Effort |
-|------|--------|
-| **YouTube / Loom demo video** | S |
+| Task | Effort | Notes |
+|------|--------|-------|
+| **YouTube / Loom demo video** | S | Unblocked by devlog 115: `/solutions` is a 5-vertical script-ready walkthrough (Physical AI, Finance, Game, IoT, Observability). Multi-industry messaging foundation is live. |
 
 Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `docs/community/`.
 
@@ -93,10 +95,9 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **P8-I4 — Ingest-rate HPA** | Custom Prometheus metric `zepto_ingest_ticks_per_sec` → HPA target. Autoscale on real ingest load, not CPU/mem proxy. | S |
-| **P8-I5 — Python cluster hook** | `PyPipeline.set_cluster_node()` via pybind11. C++ plumbing in place (devlog 103); pending binding. | S |
 | **Bench: symbol-aware / batched HTTP client** | Current HTTP bench is latency-bound at ~90/s under N≥2 (RPC hop per non-local INSERT). Need a driver that either batches or computes ownership client-side. | S |
 
-> ✅ Done: P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
+> ✅ Done: P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
 
 ---
 
@@ -153,10 +154,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **P5** | Data Pipelines | 4 | Kafka Connect Sink |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
-| **P8** | Cluster | 10 | Ingest-rate HPA, RDMA transport |
+| **P8** | Cluster | 9 | Ingest-rate HPA, RDMA transport |
 | **P9** | Physical AI / IoT | 17 | ROS2 plugin, OPC-UA browse CLI |
 | **P10** | Extensions | 9 | UDF, Edge mode |
 
-**Total open: 49 items + 4 manual tasks**
+**Total open: 48 items + 4 manual tasks**
 
 **Critical path: P2 (launch) → P8-I4 (ingest HPA) → P4 (ClickHouse protocol)**
