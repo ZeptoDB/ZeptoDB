@@ -19,7 +19,7 @@ rsync -az \
 RESULT=$(ssh $SSH_OPTS "$REMOTE_HOST" "
   cd $REMOTE_DIR/build &&
   ninja -j\$(nproc) zepto_tests 2>&1 | tail -1 &&
-  ./tests/zepto_tests --gtest_output=xml:/tmp/zepto_test_results.xml 2>&1 | tail -3
+  ./tests/zepto_tests --gtest_output=xml:/tmp/zepto_test_results.xml 2>&1 | tail -10
 " 2>&1)
 
 echo "$RESULT"
