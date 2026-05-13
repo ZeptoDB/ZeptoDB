@@ -1088,6 +1088,7 @@ if(ZEPTO_BUILD_PYTHON)
         zepto_ingestion
         zepto_execution
         zepto_sql
+        zepto_cluster
     )
     target_compile_options(zeptodb PRIVATE
         -O3 -march=native

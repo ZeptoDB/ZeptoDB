@@ -18,6 +18,28 @@ Quick Start
 >>>
 >>> # Query → polars
 >>> result = db.query_polars("SELECT * FROM trades WHERE sym='AAPL' LIMIT 1000")
+
+Cluster routing (in-process pybind11 pipeline)
+-----------------------------------------------
+For in-process workloads that participate in a ZeptoDB cluster, the low-level
+``zeptodb.Pipeline`` exposes ``enable_cluster_routing`` (devlog 114). INSERT
+and ingest calls are then dispatched via the consistent-hash ring instead of
+landing on whichever pod the request hit:
+
+>>> import zeptodb
+>>> p = zeptodb.Pipeline()
+>>> p.start()
+>>> p.enable_cluster_routing(
+...     self_id=0,
+...     peers=[(1, "storage-1", 8123), (2, "storage-2", 8123)],
+...     remove_self_from_ring=False,     # full cluster node; keep self in ring
+...     rpc_timeout_ms=2000,
+... )
+
+See ``docs/api/PYTHON_REFERENCE.md`` for the full signature. ``zepto_py`` (the
+HTTP client package) does not need a corresponding helper — cluster routing
+is handled server-side by ``zepto_http_server`` once the binary is in cluster
+mode (devlog 111).
 """
 
 from .connection import ZeptoConnection, connect

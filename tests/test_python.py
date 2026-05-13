@@ -390,3 +390,104 @@ class TestMultiSymbol:
         assert abs(r50.value - 1000.0) < 1.0
         assert abs(r51.value - 2000.0) < 1.0
         db.stop()
+
+
+# ============================================================================
+# Cluster routing hook (devlog 114 — P8-I5)
+#
+# The C++ plumbing is already covered end-to-end by the Google Tests in
+# `tests/unit/test_coordinator_routing_adapter.cpp` and
+# `tests/unit/test_distributed_insert.cpp`. These Python tests cover only the
+# pybind11 surface: argument validation, idempotent teardown, and graceful
+# failure when a peer is unreachable.
+# ============================================================================
+
+
+class TestClusterRouting:
+
+    def test_enable_cluster_routing_empty_peers(self):
+        """Empty peers + self_id=0: must not raise; pipeline still usable."""
+        db = zeptodb.Pipeline()
+        db.start()
+        db.enable_cluster_routing(self_id=0, peers=[])
+        # With remove_self_from_ring=True (default) and an empty ring, every
+        # tick has no owner. The binding must not crash; ingest_routed_()
+        # returns false and the Python wrapper raises a runtime_error.
+        # For queries against local data the pipeline is still fully usable.
+        r = db.count(symbol=400)
+        assert r.ok()
+        assert r.ivalue == 0
+        db.stop()
+
+    def test_enable_cluster_routing_self_in_ring_ingests_locally(self):
+        """remove_self_from_ring=False → self owns every symbol → local ingest works."""
+        db = zeptodb.Pipeline()
+        db.start()
+        db.enable_cluster_routing(
+            self_id=1,
+            peers=[],
+            remove_self_from_ring=False,
+        )
+        # Self is the only node → it owns every partition → all ingests land
+        # in the local pipeline via the adapter's local_->ingest_tick() branch.
+        db.ingest(symbol=401, price=10000, volume=10)
+        db.drain()
+        r = db.count(symbol=401)
+        assert r.ok()
+        assert r.ivalue == 1
+        db.stop()
+
+    def test_enable_cluster_routing_idempotent(self):
+        """Calling twice with different configs must tear down cleanly."""
+        db = zeptodb.Pipeline()
+        db.start()
+        # First wiring: standalone self, no peers.
+        db.enable_cluster_routing(self_id=1, peers=[], remove_self_from_ring=False)
+        db.ingest(symbol=410, price=5000, volume=5)
+        db.drain()
+        # Second wiring: different self_id, one unreachable peer. Must not
+        # leak state from the first wiring and must not crash.
+        db.enable_cluster_routing(
+            self_id=2,
+            peers=[(3, "127.0.0.1", 1)],  # port 1 is almost certainly closed
+            remove_self_from_ring=False,
+            rpc_timeout_ms=100,
+        )
+        # Data ingested before rewiring should still be queryable locally.
+        r = db.count(symbol=410)
+        assert r.ok()
+        assert r.ivalue == 1
+        db.stop()
+
+    def test_enable_cluster_routing_unreachable_peer(self):
+        """Routing to an unreachable peer must not segfault."""
+        db = zeptodb.Pipeline()
+        db.start()
+        # self_id=99999 is not on the ring (Option A, devlog 113) → every
+        # tick is routed to the one peer, which is deliberately closed.
+        db.enable_cluster_routing(
+            self_id=99999,
+            peers=[(7, "127.0.0.1", 1)],  # port 1 → connection refused
+            remove_self_from_ring=True,
+            rpc_timeout_ms=100,
+        )
+        # INSERT for any symbol must either raise a Python exception (queue
+        # full / routing failure) or return cleanly without crashing the
+        # interpreter. Both outcomes are acceptable — the forbidden outcome
+        # is a segfault, which pytest would surface as a non-zero exit code.
+        try:
+            db.ingest(symbol=420, price=10000, volume=10)
+        except Exception:
+            pass
+        db.stop()
+
+    def test_enable_cluster_routing_bad_tuple(self):
+        """Peer tuples of the wrong arity must raise, not crash."""
+        db = zeptodb.Pipeline()
+        db.start()
+        with pytest.raises((ValueError, TypeError)):
+            db.enable_cluster_routing(
+                self_id=0,
+                peers=[(0, "host")],  # missing port
+            )
+        db.stop()

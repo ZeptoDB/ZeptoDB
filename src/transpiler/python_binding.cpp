@@ -19,11 +19,18 @@
 #include "zeptodb/storage/column_store.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/cluster/cluster_node_base.h"
+#include "zeptodb/cluster/coordinator_routing_adapter.h"
+#include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/cluster/rpc_client_base.h"
+#include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/transport.h"
 
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace py = pybind11;
@@ -272,6 +279,9 @@ public:
     py::dict execute_sql(const std::string& sql) {
         if (!executor_) {
             executor_ = std::make_unique<zeptodb::sql::QueryExecutor>(*pipeline_);
+            if (cluster_node_) {
+                executor_->set_cluster_node(cluster_node_);
+            }
         }
         auto result = executor_->execute(sql);
 
@@ -303,6 +313,111 @@ public:
         }
         d["data"] = rows;
         return d;
+    }
+
+    // -------------------------------------------------------------------------
+    // Cluster routing (devlog 114 — P8-I5)
+    //
+    // Joins this PyPipeline as a node in an N-node cluster. INSERT / ingest
+    // calls are routed through the PartitionRouter ring to the node that
+    // owns the target partition — if self_id is the owner, the tick is
+    // written directly to the local pipeline_; otherwise it is forwarded
+    // to the owning peer via TcpRpcClient.
+    //
+    // Same pattern as zepto_ingest_node (Option A, devlog 113):
+    //   - remove_self_from_ring=True together with a self_id that does not
+    //     appear in peers means the hash ring never returns self, so every
+    //     tick is forwarded to a remote peer (stateless front-door).
+    //   - For a regular cluster member, leave remove_self_from_ring=False
+    //     so self stays on the ring and owns a slice of partitions.
+    //
+    // Calling this method twice is safe: the previous state is torn down
+    // in adapter → peer RPC map → coordinator order before the new wiring
+    // is built, so a failure mid-rebuild cannot leave dangling pointers.
+    // -------------------------------------------------------------------------
+    void enable_cluster_routing(uint32_t self_id,
+                                const py::list& peers,
+                                bool remove_self_from_ring = true,
+                                uint32_t rpc_timeout_ms = 2000)
+    {
+        // Parse peer tuples up-front so an exception leaves state untouched.
+        struct PeerSpec {
+            uint32_t    id;
+            std::string host;
+            uint16_t    port;
+        };
+        std::vector<PeerSpec> parsed;
+        parsed.reserve(peers.size());
+        for (py::handle h : peers) {
+            if (!py::isinstance<py::tuple>(h)) {
+                throw py::type_error(
+                    "enable_cluster_routing: peers must be a list of "
+                    "(node_id, host, http_port) tuples");
+            }
+            py::tuple t = py::reinterpret_borrow<py::tuple>(h);
+            if (t.size() != 3) {
+                throw py::value_error(
+                    "enable_cluster_routing: each peer tuple must have exactly "
+                    "3 elements (node_id, host, http_port); got " +
+                    std::to_string(t.size()));
+            }
+            PeerSpec spec;
+            spec.id   = t[0].cast<uint32_t>();
+            spec.host = t[1].cast<std::string>();
+            spec.port = t[2].cast<uint16_t>();
+            parsed.push_back(std::move(spec));
+        }
+
+        // Idempotent teardown — adapter is read through `cluster_node_` by
+        // every `ingest_routed_()` call, so null it out first.
+        cluster_node_ = nullptr;
+        if (executor_) {
+            executor_->set_cluster_node(nullptr);
+        }
+        routing_adapter_.reset();
+        peer_rpc_.clear();
+        coordinator_.reset();
+
+        // Rebuild. Coordinator owns the shared PartitionRouter; adapter reads it.
+        coordinator_ = std::make_unique<zeptodb::cluster::QueryCoordinator>();
+        zeptodb::cluster::NodeAddress self_addr{
+            "localhost",
+            /*port=*/0,
+            static_cast<zeptodb::cluster::NodeId>(self_id)};
+        coordinator_->add_local_node(self_addr, *pipeline_);
+
+        if (remove_self_from_ring) {
+            auto wlock = coordinator_->router_write_lock();
+            coordinator_->router().remove_node(
+                static_cast<zeptodb::cluster::NodeId>(self_id));
+        }
+
+        for (const auto& spec : parsed) {
+            zeptodb::cluster::NodeAddress addr{
+                spec.host,
+                spec.port,
+                static_cast<zeptodb::cluster::NodeId>(spec.id)};
+            coordinator_->add_remote_node(addr);
+            peer_rpc_.emplace(
+                static_cast<zeptodb::cluster::NodeId>(spec.id),
+                std::make_shared<zeptodb::cluster::TcpRpcClient>(
+                    spec.host,
+                    static_cast<uint16_t>(spec.port + 100),
+                    rpc_timeout_ms));
+        }
+
+        routing_adapter_ =
+            std::make_unique<zeptodb::cluster::CoordinatorRoutingAdapter>(
+                &coordinator_->router(),
+                &coordinator_->router_mutex(),
+                pipeline_.get(),
+                static_cast<zeptodb::cluster::NodeId>(self_id),
+                &peer_rpc_);
+
+        cluster_node_ = routing_adapter_.get();
+        if (executor_) {
+            executor_->set_cluster_node(cluster_node_);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -438,9 +553,18 @@ private:
 
     std::unique_ptr<ZeptoPipeline> pipeline_;
     std::unique_ptr<zeptodb::sql::QueryExecutor> executor_;
-    // devlog 103: cluster-aware routing. Currently C++-only — exposing a
-    // ClusterNodeBase* setter to Python requires pybind11 plumbing beyond
-    // scope of the write-path correctness fix. TODO: Python cluster hook (BACKLOG P8-I5).
+
+    // Cluster routing state (devlog 114 — P8-I5).
+    // Non-null after `enable_cluster_routing()` succeeds; `ingest_routed_()`
+    // forwards through `cluster_node_` (which points to `routing_adapter_`)
+    // when set, else falls back to direct `pipeline_->ingest_tick()`.
+    // Destruction order: adapter first (it holds raw pointers into the map
+    // and into `coordinator_->router()`), then the RPC client map, then the
+    // coordinator itself.
+    std::unique_ptr<zeptodb::cluster::QueryCoordinator> coordinator_;
+    std::unordered_map<zeptodb::cluster::NodeId,
+                       std::shared_ptr<zeptodb::cluster::RpcClientBase>> peer_rpc_;
+    std::unique_ptr<zeptodb::cluster::CoordinatorRoutingAdapter> routing_adapter_;
     zeptodb::cluster::ClusterNodeBase* cluster_node_ = nullptr;
 };
 
@@ -560,6 +684,28 @@ PYBIND11_MODULE(zeptodb, m) {
              "파이프라인 활성 여부 (liveness)")
         .def("is_ready", &PyPipeline::is_ready,
              "데이터 수신 완료 여부 (readiness)")
+
+        // 클러스터 라우팅 (devlog 114)
+        .def("enable_cluster_routing",
+             &PyPipeline::enable_cluster_routing,
+             py::arg("self_id"),
+             py::arg("peers"),
+             py::arg("remove_self_from_ring") = true,
+             py::arg("rpc_timeout_ms") = 2000,
+             "Enable cluster-aware INSERT/ingest routing.\n\n"
+             "Subsequent ingest/INSERT calls route via a consistent-hash ring:\n"
+             "  - local pipeline if self_id owns the symbol\n"
+             "  - remote peer via TcpRpcClient (port = peer_http_port + 100)\n\n"
+             "Args:\n"
+             "  self_id (int): this node's ID in the cluster.\n"
+             "  peers (list of (int, str, int)): (node_id, host, http_port) "
+             "tuples for every remote storage node.\n"
+             "  remove_self_from_ring (bool): if True, the hash ring never picks\n"
+             "    self (Option A / zepto_ingest_node pattern, devlog 113). Set\n"
+             "    False when this pipeline is a full cluster node that should\n"
+             "    also own a slice of the ring.\n"
+             "  rpc_timeout_ms (int): per-peer TCP RPC timeout in milliseconds.\n\n"
+             "Idempotent: calling twice tears down prior state cleanly.")
 
         // 금융 함수
         .def("xbar", &PyPipeline::xbar,

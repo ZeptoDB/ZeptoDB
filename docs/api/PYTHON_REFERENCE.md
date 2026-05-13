@@ -223,6 +223,84 @@ stats.partitions_created # int
 stats.last_ingest_latency_ns  # int
 ```
 
+#### Cluster routing (devlog 114 — P8-I5)
+
+Participate in a ZeptoDB cluster as an in-process node. After
+`enable_cluster_routing()`, every `ingest*` / `INSERT` call dispatches
+via the consistent-hash `PartitionRouter` — to the local pipeline when
+`self_id` owns the symbol, otherwise forwarded over TCP RPC to the
+owning peer.
+
+```python
+def enable_cluster_routing(
+    self_id: int,
+    peers: list[tuple[int, str, int]],   # (node_id, host, http_port)
+    remove_self_from_ring: bool = True,
+    rpc_timeout_ms: int = 2000,
+) -> None
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `self_id` | `int` | This node's ID in the cluster. |
+| `peers` | `list[tuple[int, str, int]]` | `(node_id, host, http_port)` for every remote storage pod. Each tuple **must** have exactly three elements; a wrong shape raises `TypeError` / `ValueError` before any internal state is touched. |
+| `remove_self_from_ring` | `bool` | `True` (default) matches the stateless ingest-node pattern (Option A, devlog 113) — the hash ring never picks self, so every tick is forwarded. `False` means this pipeline is a full cluster node that also owns a slice of the ring. |
+| `rpc_timeout_ms` | `int` | Per-peer TCP RPC timeout. Used for every `TcpRpcClient` in the peer pool. |
+
+**Port convention:** peer RPC port = peer HTTP port + 100 (same as
+`zepto_http_server` and `zepto_ingest_node`). You pass the HTTP port;
+the binding derives the RPC port internally.
+
+**Idempotent.** Calling twice tears down the prior wiring (adapter →
+peer RPC map → coordinator) cleanly, then rebuilds. Argument parsing
+happens *before* teardown, so a bad peer tuple on the second call
+leaves the first wiring intact.
+
+**Example — in-process cluster front-door:**
+
+```python
+import zeptodb
+
+p = zeptodb.Pipeline()
+p.start()
+
+# Forward every tick to one of two storage pods.
+p.enable_cluster_routing(
+    self_id=99999,                       # not in the ring → always forward
+    peers=[
+        (0, "storage-0.zeptodb-headless", 8123),
+        (1, "storage-1.zeptodb-headless", 8123),
+    ],
+    remove_self_from_ring=True,
+    rpc_timeout_ms=2000,
+)
+
+# SQL INSERT and ingest() now route via PartitionRouter.
+p.execute("CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)")
+p.ingest_batch(syms, prices, vols, table_name="trades")
+```
+
+**Example — full cluster node:**
+
+```python
+p.enable_cluster_routing(
+    self_id=0,
+    peers=[(1, "node-1", 8123), (2, "node-2", 8123)],
+    remove_self_from_ring=False,   # self owns a slice of the ring
+)
+```
+
+**Errors:**
+
+- `TypeError` — `peers` element is not a tuple, or `self_id` / port is
+  not castable to `uint32_t` / `uint16_t`.
+- `ValueError` — a `peers` tuple does not have exactly 3 elements.
+- `RuntimeError` — after successful wiring, an ingest fails because the
+  ring is empty (no peers, self removed) or every peer is unreachable.
+  Same error type as the pre-existing "queue full" path.
+
 ---
 
 ### zeptodb.sql.QueryExecutor
