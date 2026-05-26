@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <cctype>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
@@ -403,6 +404,26 @@ TEST_F(MetricsProviderTest, DefaultMetricsContainApexCounters) {
     const std::string body = http_get(test_port_, "/metrics");
     EXPECT_NE(body.find("zepto_ticks_ingested_total"), std::string::npos);
     EXPECT_NE(body.find("zepto_server_ready"),          std::string::npos);
+}
+
+TEST_F(MetricsProviderTest, PrometheusMetricsExposesIngestRate) {
+    // P8-I4 (devlog 117): /metrics must expose `zepto_ingest_ticks_per_sec`
+    // as a gauge so prometheus-adapter can map it onto the HPA Pods metric.
+    const std::string body = http_get(test_port_, "/metrics");
+
+    EXPECT_NE(body.find("# HELP zepto_ingest_ticks_per_sec"), std::string::npos)
+        << "missing HELP line for zepto_ingest_ticks_per_sec\n" << body;
+    EXPECT_NE(body.find("# TYPE zepto_ingest_ticks_per_sec gauge"), std::string::npos)
+        << "missing TYPE line (must be gauge)\n" << body;
+
+    // Value line: "zepto_ingest_ticks_per_sec 0.00" or some non-negative
+    // floating-point number. We require the prefix + a digit so that test
+    // failure points at a missing or malformed value rather than just text.
+    auto val_pos = body.find("\nzepto_ingest_ticks_per_sec ");
+    ASSERT_NE(val_pos, std::string::npos) << "missing value line\n" << body;
+    char first = body[val_pos + std::string("\nzepto_ingest_ticks_per_sec ").size()];
+    EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(first)))
+        << "value should start with a digit, got '" << first << "'";
 }
 
 TEST_F(MetricsProviderTest, RegisteredProviderAppearsInOutput) {

@@ -217,6 +217,51 @@ pnpm build                      # web/out/ static files
 # zepto_server serves at GET /ui/*
 ```
 
+## 7.1 Responsive Layout
+
+The UI targets a 375 px viewport (iPhone SE) as its narrowest supported
+phone width. A single MUI breakpoint, `md` (≥ 900 px), separates desktop
+from mobile rendering. Desktop behavior is unchanged from the layout
+diagram in §2.1; mobile collapses the side and top chrome as described
+below. (See devlog `116_responsive_mobile_nav.md` for the implementation.)
+
+**Marketing pages (`/home`, `/solutions`, `/features`, `/performance`, `/pricing`)**
+
+| Breakpoint | Nav rendering |
+|------------|----------------|
+| ≥ `md` | Existing centered `Stack` of horizontal text-button links |
+| < `md` | Compact row: small ZeptoDB wordmark on the left → `MenuIcon` `IconButton` on the right. Tapping opens an MUI `Drawer` (`anchor="right"`, width 240 px) listing the same five links as a vertical `List`. The drawer closes on link click, on backdrop tap, and on ESC. |
+
+The switch is driven by `useMediaQuery(theme.breakpoints.down("md"))` in
+`web/src/app/(marketing)/layout.tsx`.
+
+**Console layout (Sidebar + TopBar)**
+
+| Breakpoint | Sidebar | TopBar (`AppBar`) | Main content `<Box>` |
+|------------|---------|-------------------|----------------------|
+| ≥ `md` | `variant="permanent"`, 220 px wide | `width: calc(100% − 220px)`, `ml: 220px` | `ml: 220px`, `p: 4` |
+| < `md` | `variant="temporary"` (overlay), opened by TopBar hamburger, closes on backdrop / ESC / nav click | `width: 100%`, `ml: 0`, prepends `MenuIcon` `IconButton` | `ml: 0`, `width: 100%`, `p: 2` |
+
+Additional mobile-only TopBar adjustments:
+
+* The role `Chip` is hidden on `xs` (`display: { xs: "none", sm: "flex" }`)
+  so the breadcrumb title, connection pill, and theme-toggle button still
+  fit on a 375 px row without horizontal scroll.
+* Toolbar horizontal padding tightens (`px: { xs: 1.5, md: 3 }`).
+
+`SIDEBAR_WIDTH` is exported as `220` from `web/src/components/Sidebar.tsx`
+and remains the single source of truth for the desktop offset. The mobile
+overlay drawer reuses the same paper width so brand and nav items render
+identically once opened.
+
+**Verification**
+
+A Playwright suite at `viewport: { width: 375, height: 667 }` (iPhone SE)
+asserts: (a) the marketing page exposes a hamburger button that opens the
+right-anchored drawer listing all five links; (b) on `/dashboard` the
+console body has no horizontal overflow (`document.documentElement.scrollWidth
+≤ clientWidth + 1`) and the `AppBar` spans the full viewport width.
+
 ## 8. Success Criteria
 
 - [ ] Able to demo SQL execution in investor meetings

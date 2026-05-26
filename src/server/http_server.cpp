@@ -13,6 +13,7 @@
 // httplib is header-only — include only in .cpp (compile speed)
 #include "third_party/httplib.h"
 #include "zeptodb/server/http_server.h"
+#include "zeptodb/server/arrow_ipc.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/auth/cancellation_token.h"
 #include "zeptodb/auth/tenant_manager.h"
@@ -23,6 +24,7 @@
 #include "zeptodb/auth/license_validator.h"
 
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <cstdio>
 #include <future>
@@ -525,6 +527,64 @@ void HttpServer::setup_routes() {
             (cached_ps.create_table || cached_ps.drop_table ||
              cached_ps.alter_table)) {
             coordinator_->forward_ddl_to_remotes(req.body);
+        }
+
+        // ----------------------------------------------------------------
+        // Arrow IPC content negotiation (devlog 119).
+        // Triggered by:
+        //   - Accept header containing `application/vnd.apache.arrow.stream`
+        //   - `?default_format=Arrow` or `Arrow`/`ArrowStream` (ClickHouse)
+        //   - `?format=arrow`
+        // Errors (parse, executor, ACL) always stay JSON — only successful
+        // result sets get encoded as Arrow. Matches ClickHouse semantics.
+        // ----------------------------------------------------------------
+        bool want_arrow = false;
+        {
+            auto ieq = [](const std::string& a, const std::string& b) {
+                if (a.size() != b.size()) return false;
+                for (size_t i = 0; i < a.size(); ++i)
+                    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                        std::tolower(static_cast<unsigned char>(b[i])))
+                        return false;
+                return true;
+            };
+            std::string default_fmt = req.get_param_value("default_format");
+            std::string fmt         = req.get_param_value("format");
+            if (ieq(default_fmt, "Arrow") || ieq(default_fmt, "ArrowStream") ||
+                ieq(fmt, "arrow") || ieq(fmt, "arrowstream")) {
+                want_arrow = true;
+            } else if (req.has_header("Accept")) {
+                std::string accept = req.get_header_value("Accept");
+                std::string accept_lc = accept;
+                std::transform(accept_lc.begin(), accept_lc.end(),
+                               accept_lc.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (accept_lc.find("application/vnd.apache.arrow.stream") !=
+                    std::string::npos) {
+                    want_arrow = true;
+                }
+            }
+        }
+
+        if (want_arrow) {
+            if (!arrow_ipc_available()) {
+                res.status = 406;
+                res.set_content(
+                    R"({"error":"Arrow IPC not available in this build"})",
+                    "application/json");
+                return;
+            }
+            std::string body, err;
+            if (!encode_result_set_ipc(result, &body, &err)) {
+                res.status = 500;
+                res.set_content(build_error_json("Arrow IPC encode failed: " + err),
+                                "application/json");
+                return;
+            }
+            res.set_header("X-Zepto-Format", "arrow-stream");
+            res.set_content(std::move(body),
+                            "application/vnd.apache.arrow.stream");
+            return;
         }
 
         res.set_content(build_json_response(result), "application/json");
@@ -2328,6 +2388,20 @@ std::string HttpServer::build_prometheus_metrics() const {
     os << "# HELP zepto_ticks_ingested_total Total number of ticks ingested\n";
     os << "# TYPE zepto_ticks_ingested_total counter\n";
     os << "zepto_ticks_ingested_total " << stats.ticks_ingested.load() << "\n\n";
+
+    // Instantaneous ingest rate (P8-I4, devlog 117) — used as the HPA Pods
+    // metric `zepto_ingest_ticks_per_sec` so Kubernetes autoscales on real
+    // ingest load instead of CPU/memory proxies. Computed from the last two
+    // MetricsCollector snapshots; emits 0.00 if the collector is absent or
+    // hasn't captured at least two snapshots yet.
+    os << "# HELP zepto_ingest_ticks_per_sec Instantaneous ingest rate (ticks/sec), computed from last two metrics snapshots\n";
+    os << "# TYPE zepto_ingest_ticks_per_sec gauge\n";
+    {
+        double rate = metrics_collector_ ? metrics_collector_->ingest_ticks_per_sec() : 0.0;
+        os << "zepto_ingest_ticks_per_sec "
+           << std::fixed << std::setprecision(2) << rate
+           << std::defaultfloat << "\n\n";
+    }
 
     os << "# HELP zepto_ticks_stored_total Total number of ticks stored\n";
     os << "# TYPE zepto_ticks_stored_total counter\n";

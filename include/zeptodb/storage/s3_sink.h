@@ -37,6 +37,24 @@
 namespace zeptodb::storage {
 
 // ============================================================================
+// S3Layout: cold-tier S3 path layout (devlog 118)
+// ============================================================================
+//   FLAT  — backward-compatible: {prefix}/{symbol}/{hour_epoch}.{ext}
+//   HIVE  — Hive-partitioned for Athena/DuckDB/Polars/Spark auto-discovery:
+//           {prefix}/year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].{ext}
+//
+// HIVE filename appends a 4-char lower-case hex hash of `gethostname()` to
+// protect against multi-pod collisions on the same partition. Hash is
+// computed once at S3Sink construction; if `gethostname()` fails, the
+// suffix is omitted. Tests may set `disable_host_hash` for deterministic
+// keys.
+// ============================================================================
+enum class S3Layout : uint8_t {
+    FLAT = 0,
+    HIVE = 1,
+};
+
+// ============================================================================
 // S3SinkConfig
 // ============================================================================
 struct S3SinkConfig {
@@ -46,6 +64,17 @@ struct S3SinkConfig {
     std::string endpoint_url = "";               // MinIO 등 custom endpoint ("" = AWS 기본)
     bool        use_path_style = false;          // MinIO: true, AWS S3: false
     size_t      multipart_threshold = 64ULL * 1024 * 1024; // 64MB 초과 시 Multipart
+
+    // --- devlog 118: cold-tier path layout ---
+    /// S3 path layout. FLAT (default) preserves byte-identical pre-118 keys.
+    /// HIVE emits Hive-partitioned keys that Athena / DuckDB / Polars / Spark
+    /// auto-discover.
+    S3Layout    layout = S3Layout::FLAT;
+
+    /// Force-disable the per-host filename hash (deterministic unit tests).
+    /// When `false` and layout=HIVE, S3Sink computes a 4-char hex hash of
+    /// gethostname() once at construction and appends it to the filename.
+    bool        disable_host_hash = false;
 };
 
 // ============================================================================
@@ -78,7 +107,10 @@ public:
                                         const std::string& s3_key);
 
     /// 파티션 키로 S3 오브젝트 키 생성
-    /// 형식: {prefix}/{symbol}/{hour_epoch}.parquet
+    /// 형식 (FLAT, default):
+    ///   {symbol}/{hour_epoch}.{ext}
+    /// 형식 (HIVE, devlog 118):
+    ///   year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].{ext}
     std::string make_s3_key(SymbolId symbol, int64_t hour_epoch,
                              const std::string& ext = "parquet") const;
 
@@ -110,6 +142,12 @@ private:
 #endif
 
     S3SinkConfig config_;
+
+    /// 4-char lower-case hex hash of gethostname() — populated once at
+    /// construction. Empty string = no hash (gethostname failed or
+    /// `config_.disable_host_hash == true`). Used by HIVE layout filenames
+    /// to keep partitions written by different pods from colliding.
+    std::string host_hash_;
 
     std::atomic<size_t> uploads_succeeded_{0};
     std::atomic<size_t> uploads_failed_{0};

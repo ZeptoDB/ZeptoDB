@@ -370,6 +370,42 @@ Client Query(VWAP, symbol=AAPL, range=24h)
 5. Activate warm pool node
 ```
 
+### Ingest-rate HPA (P8-I4, devlog 117)
+
+CPU/memory utilization is a poor proxy for ingest pressure: a pod can be
+CPU-idle while its ring buffer is saturated, or CPU-busy on query while
+ingest is light. Each pod therefore exposes
+`zepto_ingest_ticks_per_sec` — an instantaneous gauge computed from the
+last two `MetricsCollector` snapshots — on `GET /metrics`. Kubernetes
+autoscales on this Pods metric so replica count tracks real ingest load
+instead of indirect signals.
+
+CPU and memory remain configured as `Resource` metrics on the same HPA
+to act as a safety net (e.g. query-heavy or non-ingest workloads). The
+Pods metric is opt-in via `autoscaling.ingestRateEnabled=true` because
+it requires `prometheus-adapter` in the cluster:
+
+```yaml
+# prometheus-adapter ConfigMap (excerpt)
+rules:
+  - seriesQuery: 'zepto_ingest_ticks_per_sec{namespace!="",pod!=""}'
+    resources:
+      overrides:
+        namespace: { resource: namespace }
+        pod:       { resource: pod }
+    name:
+      matches: "^(.*)$"
+      as: "$1"
+    metricsQuery: |
+      avg_over_time(<<.Series>>{<<.LabelMatchers>>}[1m])
+```
+
+This maps the per-pod ZeptoDB gauge onto `pods/zepto_ingest_ticks_per_sec`
+so the HPA `Pods` metric (`AverageValue: <targetIngestRate>`) drives
+scale-out when sustained per-pod ingest exceeds the configured target.
+Standard HPA → Karpenter scale-out works unchanged: pending pods from
+HPA replica increase trigger Karpenter node provisioning normally.
+
 ---
 
 ## 6. Tech Stack

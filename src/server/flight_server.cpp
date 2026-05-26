@@ -2,6 +2,7 @@
 // ZeptoDB: Arrow Flight Server — Implementation
 // ============================================================================
 #include "zeptodb/server/flight_server.h"
+#include "zeptodb/server/arrow_ipc.h"
 #include "zeptodb/common/logger.h"
 
 #ifdef ZEPTO_FLIGHT_ENABLED
@@ -15,94 +16,6 @@
 #include <arrow/ipc/writer.h>
 
 namespace flight = arrow::flight;
-
-namespace {
-
-// Convert ZeptoDB ColumnType to Arrow DataType
-std::shared_ptr<arrow::DataType> to_arrow_type(zeptodb::storage::ColumnType ct) {
-    using CT = zeptodb::storage::ColumnType;
-    switch (ct) {
-        case CT::INT64:     return arrow::int64();
-        case CT::FLOAT32:   return arrow::float32();
-        case CT::FLOAT64:   return arrow::float64();
-        case CT::STRING:    return arrow::utf8();
-        default:            return arrow::int64();
-    }
-}
-
-// Build Arrow schema from QueryResultSet
-std::shared_ptr<arrow::Schema> build_schema(const zeptodb::sql::QueryResultSet& rs) {
-    arrow::FieldVector fields;
-    fields.reserve(rs.column_names.size());
-    for (size_t i = 0; i < rs.column_names.size(); ++i) {
-        auto type = (i < rs.column_types.size()) ? to_arrow_type(rs.column_types[i])
-                                                  : arrow::int64();
-        fields.push_back(arrow::field(rs.column_names[i], type));
-    }
-    return arrow::schema(fields);
-}
-
-// Build RecordBatch from QueryResultSet
-arrow::Result<std::shared_ptr<arrow::RecordBatch>> result_to_batch(
-        const zeptodb::sql::QueryResultSet& rs,
-        const std::shared_ptr<arrow::Schema>& schema) {
-    const size_t ncols = rs.column_names.size();
-    const bool use_typed = !rs.typed_rows.empty();
-    const size_t nrows = use_typed ? rs.typed_rows.size() : rs.rows.size();
-
-    std::vector<std::shared_ptr<arrow::Array>> arrays;
-    arrays.reserve(ncols);
-
-    for (size_t c = 0; c < ncols; ++c) {
-        auto ct = (c < rs.column_types.size()) ? rs.column_types[c]
-                                                : zeptodb::storage::ColumnType::INT64;
-        using CT = zeptodb::storage::ColumnType;
-
-        if (ct == CT::STRING && rs.symbol_dict) {
-            arrow::StringBuilder sb;
-            ARROW_RETURN_NOT_OK(sb.Reserve(static_cast<int64_t>(nrows)));
-            for (size_t r = 0; r < nrows; ++r) {
-                int64_t code = use_typed ? rs.typed_rows[r][c].i
-                                         : rs.rows[r][c];
-                auto name = rs.symbol_dict->lookup(static_cast<int32_t>(code));
-                ARROW_RETURN_NOT_OK(sb.Append(name));
-            }
-            std::shared_ptr<arrow::Array> arr;
-            ARROW_RETURN_NOT_OK(sb.Finish(&arr));
-            arrays.push_back(std::move(arr));
-        } else if (ct == CT::FLOAT64 && use_typed) {
-            arrow::DoubleBuilder db;
-            ARROW_RETURN_NOT_OK(db.Reserve(static_cast<int64_t>(nrows)));
-            for (size_t r = 0; r < nrows; ++r)
-                ARROW_RETURN_NOT_OK(db.Append(rs.typed_rows[r][c].f));
-            std::shared_ptr<arrow::Array> arr;
-            ARROW_RETURN_NOT_OK(db.Finish(&arr));
-            arrays.push_back(std::move(arr));
-        } else if (ct == CT::FLOAT32 && use_typed) {
-            arrow::FloatBuilder fb;
-            ARROW_RETURN_NOT_OK(fb.Reserve(static_cast<int64_t>(nrows)));
-            for (size_t r = 0; r < nrows; ++r)
-                ARROW_RETURN_NOT_OK(fb.Append(static_cast<float>(rs.typed_rows[r][c].f)));
-            std::shared_ptr<arrow::Array> arr;
-            ARROW_RETURN_NOT_OK(fb.Finish(&arr));
-            arrays.push_back(std::move(arr));
-        } else {
-            arrow::Int64Builder ib;
-            ARROW_RETURN_NOT_OK(ib.Reserve(static_cast<int64_t>(nrows)));
-            for (size_t r = 0; r < nrows; ++r) {
-                int64_t v = use_typed ? rs.typed_rows[r][c].i : rs.rows[r][c];
-                ARROW_RETURN_NOT_OK(ib.Append(v));
-            }
-            std::shared_ptr<arrow::Array> arr;
-            ARROW_RETURN_NOT_OK(ib.Finish(&arr));
-            arrays.push_back(std::move(arr));
-        }
-    }
-
-    return arrow::RecordBatch::Make(schema, static_cast<int64_t>(nrows), arrays);
-}
-
-} // anonymous namespace
 
 // ============================================================================
 // ZeptoFlightServer — FlightServerBase implementation
@@ -124,7 +37,7 @@ public:
         if (!rs.ok())
             return arrow::Status::ExecutionError(rs.error);
 
-        auto schema = build_schema(rs);
+        auto schema = zeptodb::server::build_arrow_schema(rs);
         size_t nrows = !rs.typed_rows.empty() ? rs.typed_rows.size() : rs.rows.size();
 
         flight::FlightEndpoint ep;
@@ -146,8 +59,9 @@ public:
         if (!rs.ok())
             return arrow::Status::ExecutionError(rs.error);
 
-        auto schema = build_schema(rs);
-        ARROW_ASSIGN_OR_RAISE(auto batch, result_to_batch(rs, schema));
+        auto schema = zeptodb::server::build_arrow_schema(rs);
+        ARROW_ASSIGN_OR_RAISE(auto batch,
+            zeptodb::server::result_to_record_batch(rs, schema));
 
         auto reader = arrow::RecordBatchReader::Make({batch}, schema);
         if (!reader.ok())

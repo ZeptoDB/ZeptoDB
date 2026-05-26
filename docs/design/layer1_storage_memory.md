@@ -256,3 +256,63 @@ change is required for Stage B**:
 
 See devlog 084 for the full Stage B changelog.
 
+
+## 11. Cold tier S3 Parquet sink (devlog 118)
+
+The `FlushManager` Parquet path emits files to S3 via `S3Sink`. The S3 path
+layout is now operator-selectable:
+
+```
+FLAT  (default, byte-identical to pre-118):
+  s3://{bucket}/{prefix}/{symbol}/{hour_epoch}.parquet
+
+HIVE  (recommended for external analytics):
+  s3://{bucket}/{prefix}/year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].parquet
+```
+
+### Layout choice rationale
+
+- **HIVE is the default for new deployments.** Athena, DuckDB, Polars, and
+  Spark all auto-discover Hive-partitioned columns (`year=…/month=…/day=…/
+  symbol=…`) without table DDL gymnastics — point the reader at the bucket
+  and partition pruning works on day one. This is the operator-facing
+  output of the cold-tier story (`docs/operations/COLD_TIER_S3.md`).
+- **FLAT stays as the explicit opt-out** for environments that already
+  consume the legacy `{symbol}/{hour}.parquet` shape and need byte-for-byte
+  compatibility. `S3Layout::FLAT` is the C++ default, but every operator
+  surface (Helm `coldTier.layout`, CLI `--cold-tier-layout`) defaults to
+  HIVE.
+- The HIVE date components are computed from `hour_epoch * 3600` seconds
+  via `gmtime_r()` so the partitioning is UTC-stable across regions and
+  daylight-saving boundaries. Month and day are zero-padded.
+
+### Multi-pod path-collision protection
+
+Two pods writing the same `(symbol, hour_epoch)` partition (e.g. during a
+rebalance window or a stateless ingest tier) would otherwise produce two
+files with the same key and the last writer would silently win.
+
+`S3Sink` defends against that by appending a 4-char lower-case hex hash of
+`gethostname()` to the HIVE filename:
+
+```
+year=2026/month=05/day=01/symbol=42/42-476256-a1b2.parquet
+                                              ^^^^
+```
+
+The hash is computed once at `S3Sink` construction (FNV-1a 32-bit, low 16
+bits emitted as 4 hex chars). If `gethostname()` fails or is unavailable
+the suffix is omitted and the filename remains stable for that pod —
+collisions are then theoretically possible but only across pods running on
+the same hostname-less environment, which Linux EKS/EC2 does not produce
+in practice. Unit tests force the suffix off via
+`S3SinkConfig::disable_host_hash` for deterministic golden keys.
+
+The conversion from the partition's nanosecond `hour_epoch` (the unit
+`PartitionManager::to_hour_epoch` produces) to "hours since epoch" (the
+unit `S3Sink::make_s3_key` consumes for HIVE) happens inside
+`FlushManager::flush_partition_parquet`. FLAT keeps the byte-identical
+nanosecond form for backward compat.
+
+See devlog 118 and `docs/operations/COLD_TIER_S3.md` for the full operator
+recipe (Helm + CLI + IAM + Athena/DuckDB/Polars/Spark read patterns).

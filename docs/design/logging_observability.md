@@ -327,6 +327,7 @@ Separately from logs, Prometheus metrics are provided for real-time monitoring.
 | `zepto_ticks_ingested_total` | counter | Total ingested tick count |
 | `zepto_ticks_stored_total` | counter | Total stored tick count |
 | `zepto_ticks_dropped_total` | counter | Dropped tick count |
+| `zepto_ingest_ticks_per_sec` | gauge | Instantaneous ingest rate (ticks/sec); HPA Pods metric (P8-I4) |
 | `zepto_queries_executed_total` | counter | Total query execution count |
 | `zepto_rows_scanned_total` | counter | Total scanned row count |
 | `zepto_server_up` | gauge | Server up status |

@@ -1,15 +1,18 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1293 tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1317 tests passing
 >
-> Last cleaned: 2026-05-13
+> Last cleaned: 2026-05-15
 >
-> Devlog: last `115_marketing_rebrand.md` → next `116_*.md`
+> Devlog: last `119_arrow_ipc_query_response.md` → next `120_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **Arrow IPC query response** (devlog 119) — `POST /` (port 8123) now honours Arrow IPC content negotiation: `Accept: application/vnd.apache.arrow.stream`, `?default_format=Arrow` (ClickHouse-style), or `?format=arrow` returns an Arrow IPC RecordBatchStream (~2–3× faster than JSON on large result sets, same DuckDB engine). JSON remains the default. Errors stay JSON regardless of Accept (matches ClickHouse). Built with `ZEPTO_USE_FLIGHT=ON` (default) → working; built without → `406 Not Acceptable` with JSON error. Pulled the Arrow encoder out of `flight_server.cpp` into a shared `zepto_arrow_ipc` static lib so HTTP and Flight share one `to_arrow_type` / `build_schema` / `result_to_batch`; encoder also now maps `SYMBOL` columns to Arrow `utf8` via `symbol_dict` (was returning raw int64 codes). +7 tests in new `test_http_arrow_ipc.cpp`. Closes P4 "Arrow IPC query response" (S effort).
+- ✅ **S3 Parquet sink connector** (devlog 118) — operator-facing surface for the cold-tier S3 Parquet path that has shipped as C++ infra since devlog 012. New `S3Layout::HIVE` (default) emits Athena/DuckDB/Polars/Spark auto-discoverable `year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].parquet` keys; FLAT kept byte-identical for backward compat. New Helm `coldTier:` block, matching `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars (Helm interop), per-pod hostname-hash filename collision protection, new operator recipe doc (`docs/operations/COLD_TIER_S3.md`). +14 tests (`test_s3_sink.cpp`, `test_parquet_writer.cpp`, `test_cold_tier.cpp`). Closes the P5 row.
+- ✅ **Ingest-rate HPA** (devlog 117) — `zepto_ingest_ticks_per_sec` per-pod gauge on `/metrics`, wired into the Helm HPA as a custom `Pods` metric (`autoscaling.ingestRateEnabled`). Kubernetes now autoscales on real ingest load instead of CPU/memory proxies; CPU/memory remain configured as the safety net. Closes P8-I4.
 - ✅ **Marketing site rebrand** (devlog 115) — 5-page IA (`/home`, `/solutions`, `/features`, `/performance`, `/pricing`) pivots the site from "HFT/quant-only" to "general-purpose industry time-series DB" serving Physical AI, Finance, Game, IoT/Smart Factory, and real-time observability. WEBSITE_PRD.md updated to the Next.js + MUI stack that actually shipped. Unblocks the P2 demo-video item.
 - ✅ **Python cluster hook** (devlog 114) — `Pipeline.enable_cluster_routing(self_id, peers, …)` pybind11 method. In-process cluster front-door finally wired. Closes P8-I5.
 - ✅ **Stateless `zepto_ingest_node`** (devlog 113) — ingest-only binary, forwards all ticks to storage pods. Helm opt-in. Closes P8-I3.
@@ -26,6 +29,7 @@
 | Task | Effort | Notes |
 |------|--------|-------|
 | **YouTube / Loom demo video** | S | Unblocked by devlog 115: `/solutions` is a 5-vertical script-ready walkthrough (Physical AI, Finance, Game, IoT, Observability). Multi-industry messaging foundation is live. |
+| **Replication-cluster vs MPP-cluster design doc** | S | New section in `docs/design/phase_c_distributed.md` formalising the architectural diff vs Arc/MotherDuck/DuckDB-replicas (HA + write-sharding vs true scatter-gather). Doubles as an enterprise-sales artefact ("scale beyond a single DuckDB") and an internal design north star. From Arc competitive analysis (2026-05-13). |
 
 Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `docs/community/`.
 
@@ -37,6 +41,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **ClickHouse wire protocol** | DBeaver, DataGrip, Grafana native | L |
 | **JDBC/ODBC drivers** | Tableau, Excel, Power BI | L |
+| **Arrow IPC ingest endpoint** (`POST /insert/arrow`) | First-class binary columnar ingest path. Removes per-tick JSON parse, enables a symbol-aware batched client. Targets the N≥2 cluster ceiling currently capped at ~90/s by the JSON HTTP bench. Pairs with the existing P8 "batched HTTP client" item. From Arc analysis (2026-05-13). | M |
+| **MessagePack columnar ingest endpoint** | Wire-compatible with Telegraf and InfluxDB Line Protocol clients. Single batch decode replaces per-tick JSON parse. Smaller scope than Arrow IPC, faster to ship; complementary to it. From Arc analysis (2026-05-13). | S |
+
+> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept.
 
 ---
 
@@ -48,6 +56,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **CDC connector (Debezium)** | PostgreSQL/MySQL → real-time sync | M |
 | **AWS Kinesis consumer** | AWS-native streaming | S |
 | **Apache Pulsar consumer** | Kafka alternative | S |
+| **Telegraf output plugin** | One plugin unlocks 300+ Telegraf input integrations (industrial PLCs, server metrics, network gear). Highest leverage-per-effort connector. Arc shipped this and it visibly drove adoption. From Arc analysis (2026-05-13). | S |
+| **MQTT consumer** | Industrial IoT standard. Topic → measurement mapping; QoS 0/1/2; reconnection. Currently a gap vs Arc (`internal/mqtt/`) and a P9 prerequisite for many IoT/Smart-Factory use cases. From Arc analysis (2026-05-13). | S |
+
+> ✅ Done: S3 Parquet sink connector (devlog 118) — Hive-partitioned S3 keys, Helm `coldTier.*`, `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars, operator recipe doc.
 
 ---
 
@@ -87,17 +99,16 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Tier C cold query offload** | Historical data → DuckDB on S3 | M |
+| **Tier C cold query offload** | Historical data → DuckDB on S3. **Elevated importance after Arc analysis (2026-05-13)**: Parquet+S3 is now the de-facto cold-tier standard, and shipping this neutralises the "vendor lock-in" critique without sacrificing our hot-tier differentiation. | M |
 | **Global symbol registry** | Distributed string symbol routing | M |
 
 ### Horizontal Ingest (remaining)
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **P8-I4 — Ingest-rate HPA** | Custom Prometheus metric `zepto_ingest_ticks_per_sec` → HPA target. Autoscale on real ingest load, not CPU/mem proxy. | S |
 | **Bench: symbol-aware / batched HTTP client** | Current HTTP bench is latency-bound at ~90/s under N≥2 (RPC hop per non-local INSERT). Need a driver that either batches or computes ownership client-side. | S |
 
-> ✅ Done: P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
+> ✅ Done: P8-I4 ingest-rate HPA (devlog 117), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
 
 ---
 
@@ -142,6 +153,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **Snowflake/Delta Lake hybrid** | — | M |
 | **Graph index (CSR)** | Fund flow tracking | L |
 | **InfluxDB migration** | InfluxQL → SQL | S |
+| **Continuous queries + retention policies scheduler** | User-facing "run this SELECT every N seconds → INSERT INTO target" plus age-based partition retention. Common operational expectation; Arc has it as `internal/scheduler/`. Implementation = SQL + cron-style scheduler on top of the existing executor. From Arc analysis (2026-05-13). | M |
+| **Single binary `zepto` with subcommands** | Replace `zepto_http_server` / `zepto_data_node` / `zepto_cli` with `zepto serve` / `zepto data-node` / `zepto cli`. Simplifies operator mental model; matches Arc's single-binary deployment story. CMake target consolidation + main dispatcher. From Arc analysis (2026-05-13). | S |
 
 ---
 
@@ -149,15 +162,17 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
-| **P2** | Visibility & Launch | 1 + 4 manual | Demo video → Show HN → Reddit |
-| **P4** | Tool Integration | 2 | ClickHouse wire protocol |
-| **P5** | Data Pipelines | 4 | Kafka Connect Sink |
+| **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
+| **P4** | Tool Integration | 4 | Arrow IPC ingest endpoint (M) → ClickHouse wire protocol (L) |
+| **P5** | Data Pipelines | 6 | Telegraf output plugin (S) → CDC connector (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
-| **P8** | Cluster | 9 | Ingest-rate HPA, RDMA transport |
+| **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
 | **P9** | Physical AI / IoT | 17 | ROS2 plugin, OPC-UA browse CLI |
-| **P10** | Extensions | 9 | UDF, Edge mode |
+| **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 48 items + 4 manual tasks**
+**Total open: 54 items + 4 manual tasks**
 
-**Critical path: P2 (launch) → P8-I4 (ingest HPA) → P4 (ClickHouse protocol)**
+**Critical path: P2 (launch) → P4 (ClickHouse protocol + Arrow IPC ingest) → P5 (Telegraf output plugin)**
+
+> **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

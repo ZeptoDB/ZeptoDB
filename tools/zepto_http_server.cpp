@@ -23,9 +23,11 @@
 #include "zeptodb/cluster/partition_migrator.h"
 #include "zeptodb/cluster/partition_router.h"
 #include "zeptodb/util/logger.h"
+#include "zeptodb/common/logger.h"  // ZEPTO_INFO (engine logger, devlog 118 cold-tier)
 
 #include <csignal>
 #include <cstdlib>
+#include <cctype>
 #include <iostream>
 #include <atomic>
 #include <fstream>
@@ -94,6 +96,46 @@ int main(int argc, char* argv[]) {
     if (const char* e = std::getenv("ZEPTO_RING_BUFFER_CAPACITY"); e && *e)
         ring_buffer_capacity_cfg = static_cast<size_t>(std::atoll(e));
 
+    // devlog 118: cold-tier S3 Parquet sink. Same precedence (CLI > env >
+    // default). Env vars are set by the Helm `coldTier.*` block.
+    bool        cold_tier_enabled        = false;
+    std::string cold_tier_format         = "parquet";   // parquet | both
+    std::string cold_tier_layout         = "hive";      // hive | flat
+    int         cold_tier_age_hours      = 24;
+    bool        cold_tier_delete_local   = true;
+    std::string cold_tier_s3_bucket;
+    std::string cold_tier_s3_region      = "us-east-1";
+    std::string cold_tier_s3_prefix      = "hdb";
+    std::string cold_tier_s3_endpoint;
+    bool        cold_tier_s3_path_style  = false;
+
+    auto env_truthy = [](const char* v) {
+        if (!v || !*v) return false;
+        std::string s(v);
+        for (auto& c : s) c = static_cast<char>(std::tolower(c));
+        return s == "1" || s == "true" || s == "yes" || s == "on";
+    };
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_ENABLED"))
+        cold_tier_enabled = env_truthy(e);
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_FORMAT"); e && *e)
+        cold_tier_format = e;
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_LAYOUT"); e && *e)
+        cold_tier_layout = e;
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_AGE_HOURS"); e && *e)
+        cold_tier_age_hours = std::atoi(e);
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_DELETE_LOCAL_AFTER_S3"))
+        cold_tier_delete_local = env_truthy(e);
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_S3_BUCKET"); e && *e)
+        cold_tier_s3_bucket = e;
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_S3_REGION"); e && *e)
+        cold_tier_s3_region = e;
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_S3_PREFIX"); e && *e)
+        cold_tier_s3_prefix = e;
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_S3_ENDPOINT_URL"); e && *e)
+        cold_tier_s3_endpoint = e;
+    if (const char* e = std::getenv("ZEPTO_COLD_TIER_S3_USE_PATH_STYLE"))
+        cold_tier_s3_path_style = env_truthy(e);
+
     // devlog 091 F1: provision tenants at startup.
     std::vector<std::pair<std::string, std::string>> tenants;  // (id, namespace)
 
@@ -136,6 +178,27 @@ int main(int argc, char* argv[]) {
             drain_threads_cfg = static_cast<size_t>(std::atoll(argv[++i]));
         else if (arg == "--ring-buffer-capacity" && i + 1 < argc)
             ring_buffer_capacity_cfg = static_cast<size_t>(std::atoll(argv[++i]));
+        // --- devlog 118: cold-tier S3 Parquet sink CLI flags ---
+        else if (arg == "--cold-tier-enabled")
+            cold_tier_enabled = true;
+        else if (arg == "--cold-tier-format" && i + 1 < argc)
+            cold_tier_format = argv[++i];
+        else if (arg == "--cold-tier-layout" && i + 1 < argc)
+            cold_tier_layout = argv[++i];
+        else if (arg == "--cold-tier-age-hours" && i + 1 < argc)
+            cold_tier_age_hours = std::atoi(argv[++i]);
+        else if (arg == "--cold-tier-delete-local-after-s3")
+            cold_tier_delete_local = true;
+        else if (arg == "--cold-tier-s3-bucket" && i + 1 < argc)
+            cold_tier_s3_bucket = argv[++i];
+        else if (arg == "--cold-tier-s3-region" && i + 1 < argc)
+            cold_tier_s3_region = argv[++i];
+        else if (arg == "--cold-tier-s3-prefix" && i + 1 < argc)
+            cold_tier_s3_prefix = argv[++i];
+        else if (arg == "--cold-tier-s3-endpoint-url" && i + 1 < argc)
+            cold_tier_s3_endpoint = argv[++i];
+        else if (arg == "--cold-tier-s3-use-path-style")
+            cold_tier_s3_path_style = true;
         else if (arg == "--tenant" && i + 1 < argc) {
             // --tenant <id:namespace>  (repeatable) — devlog 091 F1
             std::string spec = argv[++i];
@@ -176,6 +239,18 @@ int main(int argc, char* argv[]) {
                       << "Ingest tuning (devlog 102):\n"
                       << "  --drain-threads N        0 = auto (max(2, hw/4)); N>0 = explicit drain thread count\n"
                       << "  --ring-buffer-capacity N Ring-buffer slots, power-of-two in [4096, 16777216]; 0 = default 65536\n\n"
+                      << "Cold tier S3 Parquet sink (devlog 118):\n"
+                      << "  --cold-tier-enabled                       Enable Parquet+S3 cold-tier flush\n"
+                      << "  --cold-tier-format parquet|both           Output format (default: parquet)\n"
+                      << "  --cold-tier-layout hive|flat              S3 path layout (default: hive)\n"
+                      << "  --cold-tier-age-hours N                   Promote partitions older than N hours (default 24)\n"
+                      << "  --cold-tier-delete-local-after-s3         Delete local Parquet after successful upload\n"
+                      << "  --cold-tier-s3-bucket <name>              Target S3 bucket (required when enabled)\n"
+                      << "  --cold-tier-s3-region <region>            AWS region (default: us-east-1)\n"
+                      << "  --cold-tier-s3-prefix <prefix>            S3 key prefix (default: hdb)\n"
+                      << "  --cold-tier-s3-endpoint-url <url>         Custom endpoint (MinIO / non-AWS)\n"
+                      << "  --cold-tier-s3-use-path-style             MinIO compatibility\n"
+                      << "  Env vars: ZEPTO_COLD_TIER_* (CLI > env > default)\n\n"
                       << "Tenants:\n"
                       << "  --tenant <id:namespace>  Register a tenant with a table-namespace prefix (repeatable)\n\n"
                       << "HA mode:\n"
@@ -232,6 +307,51 @@ int main(int argc, char* argv[]) {
     }
     cfg.drain_threads = drain_threads_cfg;
     cfg.ring_buffer_capacity = ring_buffer_capacity_cfg;
+
+    // devlog 118: cold-tier S3 Parquet sink. When enabled, switches HDB
+    // tier on (TIERED) so the FlushManager runs, sets output_format to
+    // PARQUET (or BOTH for binary+parquet), and configures the S3 sink
+    // with the resolved bucket/region/prefix/layout. CLI flags win over
+    // env vars (already merged above).
+    if (cold_tier_enabled) {
+        if (cold_tier_s3_bucket.empty()) {
+            std::cerr << "Error: --cold-tier-enabled requires --cold-tier-s3-bucket "
+                         "(or ZEPTO_COLD_TIER_S3_BUCKET)\n";
+            return 1;
+        }
+        // Cold-tier needs HDB on disk; switch to tiered if user hasn't
+        // already supplied a path.
+        if (cfg.storage_mode == zeptodb::core::StorageMode::PURE_IN_MEMORY) {
+            cfg.storage_mode  = zeptodb::core::StorageMode::TIERED;
+            if (cfg.hdb_base_path.empty()) cfg.hdb_base_path = "/tmp/zepto_hdb";
+        }
+        auto& fc = cfg.flush_config;
+        fc.output_format = (cold_tier_format == "both")
+            ? zeptodb::storage::HDBOutputFormat::BOTH
+            : zeptodb::storage::HDBOutputFormat::PARQUET;
+        fc.enable_s3_upload      = true;
+        fc.delete_local_after_s3 = cold_tier_delete_local;
+        fc.auto_seal_age_hours   = cold_tier_age_hours;
+        fc.s3_config.bucket         = cold_tier_s3_bucket;
+        fc.s3_config.region         = cold_tier_s3_region;
+        fc.s3_config.prefix         = cold_tier_s3_prefix;
+        fc.s3_config.endpoint_url   = cold_tier_s3_endpoint;
+        fc.s3_config.use_path_style = cold_tier_s3_path_style;
+        fc.s3_config.layout         = (cold_tier_layout == "flat")
+            ? zeptodb::storage::S3Layout::FLAT
+            : zeptodb::storage::S3Layout::HIVE;
+
+        ZEPTO_INFO("Cold tier S3 Parquet sink ENABLED: format={} layout={} "
+                   "age_hours={} delete_local={} bucket={} region={} prefix={} "
+                   "endpoint={} path_style={}",
+                   cold_tier_format, cold_tier_layout,
+                   cold_tier_age_hours, cold_tier_delete_local,
+                   cold_tier_s3_bucket, cold_tier_s3_region,
+                   cold_tier_s3_prefix,
+                   cold_tier_s3_endpoint.empty() ? "<aws>" : cold_tier_s3_endpoint,
+                   cold_tier_s3_path_style);
+    }
+
     zeptodb::core::ZeptoPipeline pipeline(cfg);
 
     // Register default trades schema

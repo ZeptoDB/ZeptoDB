@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-03-25*
+*Last updated: 2026-05-15*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -245,6 +245,66 @@ All responses are JSON.
   "execution_time_us": 88.1
 }
 ```
+
+### Arrow IPC response (binary)
+
+`POST /` will return an Apache Arrow IPC stream (RecordBatchStream format)
+instead of JSON when the client opts in. Same DuckDB engine, ~2–3× faster
+than JSON on large result sets — the JSON encoding is the bottleneck. Drop-in
+for Pandas/Polars/BI tools (devlog 119).
+
+**Trigger** (any one of):
+
+| Method | Example |
+|--------|---------|
+| `Accept` header | `Accept: application/vnd.apache.arrow.stream` |
+| ClickHouse-compatible query param | `?default_format=Arrow` (or `ArrowStream`) |
+| Short-form query param | `?format=arrow` |
+
+**Response**:
+
+| Field | Value |
+|-------|-------|
+| Content-Type | `application/vnd.apache.arrow.stream` |
+| Body | Arrow IPC stream bytes (one RecordBatch) |
+| `X-Zepto-Format` | `arrow-stream` (debug aid) |
+
+**Notes**:
+
+- Errors (parse, executor, ACL, tenant denial) **always** return JSON
+  regardless of `Accept`. Only successful result sets are encoded as Arrow.
+  Matches ClickHouse behaviour.
+- If the server returns 406, the binary was built without Arrow support.
+  Rebuild with `-DZEPTO_USE_FLIGHT=ON` (default ON when Arrow C++ is found at
+  configure time) or install Arrow / pyarrow before reconfiguring.
+- The encoder converts `STRING` and `SYMBOL` columns (with the result's
+  `symbol_dict`) to Arrow `utf8`. Other types map directly: `INT64` → int64,
+  `FLOAT64` → double, `FLOAT32` → float.
+
+**Example**:
+
+```bash
+curl -s -X POST http://localhost:8123/ \
+     -H 'Accept: application/vnd.apache.arrow.stream' \
+     -d 'SELECT * FROM trades LIMIT 1000' \
+     --output result.arrow
+
+python3 -c "import pyarrow.ipc as ipc; \
+            r = ipc.RecordBatchStreamReader('result.arrow'); \
+            print(r.read_all().to_pandas())"
+```
+
+ClickHouse-style query parameter form (no special header needed):
+
+```bash
+curl -s -X POST 'http://localhost:8123/?default_format=Arrow' \
+     -d 'SELECT vwap(price, volume), count(*) FROM trades' \
+     --output result.arrow
+```
+
+**Why use it**: removes JSON encoding overhead (~2–3× faster on large result
+sets in the Arc 26.05 bench, identical engine) and lands data in Arrow memory
+layout for zero-copy hand-off to Pandas/Polars/DuckDB.
 
 ---
 

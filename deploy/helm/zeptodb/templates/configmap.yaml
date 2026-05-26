@@ -18,3 +18,16 @@ data:
     # devlog 102 — 0 = engine default
     drain_threads: {{ .Values.pipeline.drainThreads | default 0 }}
     ring_buffer_capacity: {{ .Values.pipeline.ringBufferCapacity | default 0 }}
+    {{- if .Values.coldTier.enabled }}
+    # devlog 118 — cold-tier S3 Parquet sink
+    cold_tier_enabled: true
+    cold_tier_format: {{ .Values.coldTier.format | default "parquet" }}
+    cold_tier_layout: {{ .Values.coldTier.layout | default "hive" }}
+    cold_tier_age_hours: {{ .Values.coldTier.ageHours | default 24 }}
+    cold_tier_delete_local_after_s3: {{ .Values.coldTier.deleteLocalAfterS3 | default true }}
+    cold_tier_s3_bucket: {{ .Values.coldTier.s3.bucket | quote }}
+    cold_tier_s3_region: {{ .Values.coldTier.s3.region | default "us-east-1" | quote }}
+    cold_tier_s3_prefix: {{ .Values.coldTier.s3.prefix | default "hdb" | quote }}
+    cold_tier_s3_endpoint_url: {{ .Values.coldTier.s3.endpointUrl | default "" | quote }}
+    cold_tier_s3_use_path_style: {{ .Values.coldTier.s3.usePathStyle | default false }}
+    {{- end }}

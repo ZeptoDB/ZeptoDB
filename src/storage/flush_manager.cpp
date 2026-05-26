@@ -265,8 +265,18 @@ void FlushManager::flush_partition_parquet(const Partition& partition)
 
     // S3 업로드
     if (s3_sink_) {
+        // Partition `key.hour_epoch` is nanoseconds at hour boundary
+        // (PartitionManager::to_hour_epoch). HIVE layout interprets the
+        // make_s3_key arg as *hours since epoch UTC* (spec) so it can
+        // emit `year=YYYY/month=MM/day=DD/...`. Convert here; FLAT keeps
+        // the byte-identical pre-118 behaviour (passes ns through).
+        const int64_t hour_for_s3 =
+            (s3_sink_->config().layout == S3Layout::HIVE)
+                ? (key.hour_epoch / (3600LL * 1'000'000'000LL))
+                : key.hour_epoch;
+
         const std::string s3_key = s3_sink_->make_s3_key(
-            key.symbol_id, key.hour_epoch, "parquet");
+            key.symbol_id, hour_for_s3, "parquet");
 
         const bool uploaded = s3_sink_->upload_file(filepath, s3_key);
 

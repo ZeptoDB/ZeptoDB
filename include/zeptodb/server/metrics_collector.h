@@ -163,6 +163,39 @@ public:
         return count_.load(std::memory_order_acquire);
     }
 
+    /// Instantaneous ingest rate (ticks/sec) computed from the two most recent
+    /// snapshots in the ring buffer. Used by Prometheus and by the HPA Pods
+    /// metric (P8-I4, devlog 117). Thread-safe lock-free read against the
+    /// single-writer collector thread — uses acquire loads on `head_` and
+    /// `count_` so we observe a consistent (entry, head) pair.
+    ///
+    /// Returns 0.0 when:
+    ///   - fewer than 2 snapshots exist
+    ///   - the time delta between the two latest snapshots is 0 ms
+    ///   - the tick counter went backwards (counter restart / wrap)
+    double ingest_ticks_per_sec() const {
+        size_t cnt = count_.load(std::memory_order_acquire);
+        if (cnt < 2) return 0.0;
+
+        size_t h = head_.load(std::memory_order_acquire);
+        // h points to the next write slot; last two writes are at h-1 and h-2.
+        size_t latest_idx = (h - 1) % cfg_.capacity;
+        size_t prev_idx   = (h - 2) % cfg_.capacity;
+
+        const auto& latest = ring_[latest_idx];
+        const auto& prev   = ring_[prev_idx];
+
+        int64_t dt_ms = latest.timestamp_ms - prev.timestamp_ms;
+        if (dt_ms <= 0) return 0.0;
+
+        // Clamp negative deltas (counter reset / wrap) to zero rather than
+        // emitting a negative rate.
+        if (latest.ticks_ingested < prev.ticks_ingested) return 0.0;
+
+        uint64_t d_ticks = latest.ticks_ingested - prev.ticks_ingested;
+        return static_cast<double>(d_ticks) * 1000.0 / static_cast<double>(dt_ms);
+    }
+
     size_t capacity() const { return cfg_.capacity; }
 
     size_t memory_bytes() const {

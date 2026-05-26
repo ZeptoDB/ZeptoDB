@@ -611,6 +611,36 @@ if(ZEPTO_HAS_OPENSSL)
 endif()
 
 # --- Layer 6: HTTP API Server ---
+
+# Shared Arrow IPC encoder (used by both HTTP `POST /` content negotiation
+# and the Arrow Flight server's `DoGet` / `GetFlightInfo`). Always built;
+# when ZEPTO_HAS_FLIGHT is OFF the TU compiles to a stub that reports
+# `arrow_ipc_available() == false`. devlog 119.
+add_library(zepto_arrow_ipc STATIC
+    src/server/arrow_ipc.cpp
+)
+target_include_directories(zepto_arrow_ipc PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_arrow_ipc PUBLIC
+    zepto_sql
+    zepto_common
+)
+if(ZEPTO_HAS_FLIGHT)
+    if(ArrowFlight_FOUND)
+        target_link_libraries(zepto_arrow_ipc PUBLIC ArrowFlight::arrow_flight_shared)
+    elseif(ZEPTO_FLIGHT_VIA_PYARROW)
+        if(TARGET PyArrow::arrow)
+            target_link_libraries(zepto_arrow_ipc PUBLIC PyArrow::arrow)
+        elseif(Arrow_FOUND)
+            target_link_libraries(zepto_arrow_ipc PUBLIC Arrow::arrow_shared)
+        elseif(ARROW_FOUND)
+            target_link_libraries(zepto_arrow_ipc PUBLIC PkgConfig::ARROW)
+        endif()
+    endif()
+    target_compile_definitions(zepto_arrow_ipc PUBLIC ZEPTO_FLIGHT_ENABLED=1)
+endif()
+
 add_library(zepto_server STATIC
     src/server/http_server.cpp
 )
@@ -622,6 +652,7 @@ target_link_libraries(zepto_server PUBLIC
     zepto_sql
     zepto_auth
     zepto_cluster
+    zepto_arrow_ipc
 )
 # httplib requires POSIX threads
 find_package(Threads REQUIRED)
@@ -646,6 +677,7 @@ target_include_directories(zepto_flight PUBLIC
 target_link_libraries(zepto_flight PUBLIC
     zepto_sql
     zepto_common
+    zepto_arrow_ipc
 )
 if(ZEPTO_HAS_FLIGHT)
     if(ArrowFlight_FOUND)

@@ -7,6 +7,12 @@
 //
 // Endpoints:
 //   POST /        — Execute SQL query (body: SQL string)
+//                    Response is JSON by default; returns Arrow IPC stream
+//                    (`application/vnd.apache.arrow.stream`) when the client
+//                    requests it via `Accept: application/vnd.apache.arrow.stream`,
+//                    `?default_format=Arrow`, or `?format=arrow`. Errors
+//                    always stay JSON regardless of Accept (devlog 119).
+//   GET  /        — Execute SQL via `?query=` param (always JSON)
 //   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe
 //   GET  /ready   — Kubernetes readiness probe

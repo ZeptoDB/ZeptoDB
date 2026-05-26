@@ -39,4 +39,17 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetMemory }}
+    {{- if .Values.autoscaling.ingestRateEnabled }}
+    # Custom Pods metric (P8-I4, devlog 117) — autoscale on real ingest
+    # load. Requires prometheus-adapter mapping `zepto_ingest_ticks_per_sec`
+    # → `pods/zepto_ingest_ticks_per_sec`. CPU/memory above remain as the
+    # safety net for non-ingest workloads.
+    - type: Pods
+      pods:
+        metric:
+          name: zepto_ingest_ticks_per_sec
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.autoscaling.targetIngestRate }}"
+    {{- end }}
 {{- end }}

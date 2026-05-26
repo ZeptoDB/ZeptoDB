@@ -220,3 +220,56 @@ test.describe("Routing", () => {
     expect(page.url()).toMatch(/\/(dashboard|login|query)/);
   });
 });
+
+// ─── 9. Mobile responsive (375×667 / iPhone SE) ─────────────────────────────
+
+test.describe("Mobile responsive @ 375×667", () => {
+  test.use({ viewport: { width: 375, height: 667 } });
+
+  test("marketing page shows hamburger and drawer opens with links", async ({ page }) => {
+    // Marketing routes share the AuthGuard'd shell, so we must log in first.
+    await login(page);
+    await page.goto("/home");
+    await page.waitForTimeout(500);
+    // Find the marketing-layout hamburger (there will also be one in the TopBar
+    // on mobile — pick the one inside the marketing content area, not the AppBar).
+    const marketingHamburger = page
+      .locator("main")
+      .getByRole("button", { name: /open navigation menu/i })
+      .first();
+    await expect(marketingHamburger).toBeVisible();
+    await marketingHamburger.click();
+    const drawer = page.locator(".MuiDrawer-root .MuiDrawer-paperAnchorRight").first();
+    await expect(drawer).toBeVisible();
+    await expect(drawer.getByText("Solutions")).toBeVisible();
+    await expect(drawer.getByText("Features")).toBeVisible();
+    await expect(drawer.getByText("Performance")).toBeVisible();
+    await expect(drawer.getByText("Pricing")).toBeVisible();
+  });
+
+  test("console TopBar is full-width with no horizontal scroll", async ({ page }) => {
+    await login(page);
+    await page.goto("/dashboard");
+    await page.waitForTimeout(1000);
+
+    // No horizontal page scroll
+    const overflow = await page.evaluate(() => {
+      const w = document.documentElement;
+      return { scrollW: w.scrollWidth, clientW: w.clientWidth };
+    });
+    expect(overflow.scrollW).toBeLessThanOrEqual(overflow.clientW + 1);
+
+    // AppBar should span full viewport (no SIDEBAR_WIDTH offset)
+    const appBar = page.locator(".MuiAppBar-root").first();
+    const box = await appBar.boundingBox();
+    expect(box).not.toBeNull();
+    if (box) {
+      expect(box.x).toBeLessThanOrEqual(1);
+      expect(box.width).toBeGreaterThanOrEqual(370);
+    }
+
+    // Hamburger toggle is present in TopBar
+    const topbarHamburger = appBar.getByRole("button", { name: /open navigation menu/i });
+    await expect(topbarHamburger).toBeVisible();
+  });
+});

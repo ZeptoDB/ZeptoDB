@@ -1,5 +1,12 @@
 # Parquet + S3 Activation Guide
 
+> **Operators:** the recommended way to enable the cold-tier S3 Parquet
+> sink is the single Helm flag (or the matching `--cold-tier-*` CLI flags)
+> documented in **[`../operations/COLD_TIER_S3.md`](../operations/COLD_TIER_S3.md)**
+> (devlog 118). The C++ snippet below remains the lower-level alternative
+> for embedding ZeptoDB in a custom binary or wiring `FlushConfig` directly
+> from a non-`zepto_http_server` host process.
+
 ## Current Status (2026-03-26)
 
 - `ZEPTO_USE_PARQUET=ON` ✅ Enabled (pyarrow 21.0.0 bundled C++ library)
@@ -51,12 +58,18 @@ make -j$(nproc) && sudo make install
 
 ## Runtime Configuration (FlushConfig)
 
+> Lower-level alternative — most operators should prefer the Helm
+> `coldTier.*` block or the `--cold-tier-*` CLI flags described in
+> [`../operations/COLD_TIER_S3.md`](../operations/COLD_TIER_S3.md). The
+> snippet below is for embedded / custom-binary use cases.
+
 ```cpp
 FlushConfig config;
 config.output_format      = HDBOutputFormat::PARQUET;  // or BOTH
 config.enable_s3_upload   = true;
 config.s3_config.bucket   = "zeptodb-hdb";
 config.s3_config.region   = "us-east-1";
+config.s3_config.layout   = S3Layout::HIVE;            // devlog 118 (FLAT for legacy)
 config.delete_local_after_s3 = true;
 
 // Storage Tiering

@@ -360,6 +360,56 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set autoscaling.targetCPU=60
 ```
 
+### Ingest-rate HPA (P8-I4, devlog 117)
+
+For production ingest workloads, CPU/memory utilization is a poor proxy:
+a pod can be CPU-idle while its ring buffer saturates, or CPU-busy on
+queries while ingest is light. ZeptoDB exposes
+`zepto_ingest_ticks_per_sec` on `GET /metrics` (a per-pod gauge of the
+instantaneous ingest rate) so the HPA can autoscale on real ingest load.
+CPU/memory metrics remain configured on the same HPA as a safety net.
+
+**Prerequisites.** The custom Pods metric requires
+[`prometheus-adapter`](https://github.com/kubernetes-sigs/prometheus-adapter)
+to expose `zepto_ingest_ticks_per_sec` as `pods/zepto_ingest_ticks_per_sec`.
+A minimal rule snippet:
+
+```yaml
+# prometheus-adapter ConfigMap
+rules:
+  - seriesQuery: 'zepto_ingest_ticks_per_sec{namespace!="",pod!=""}'
+    resources:
+      overrides:
+        namespace: { resource: namespace }
+        pod:       { resource: pod }
+    name:
+      matches: "^(.*)$"
+      as: "$1"
+    metricsQuery: |
+      avg_over_time(<<.Series>>{<<.LabelMatchers>>}[1m])
+```
+
+**Enable on the chart.** Off by default; set both flags on `helm upgrade`:
+
+```bash
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
+  --set autoscaling.ingestRateEnabled=true \
+  --set autoscaling.targetIngestRate=50000   # ticks/sec per pod
+```
+
+`targetIngestRate` is `AverageValue` for the HPA Pods metric — scale-out
+is triggered when the per-pod 1-minute average ingest rate exceeds it.
+Tune to ~70–80% of a single pod's measured sustained ingest ceiling
+(see `docs/devlog/102_ingest_scale_phase1.md` for the underlying
+ingest-path tunables and `pipeline.drainThreads` /
+`pipeline.ringBufferCapacity`).
+
+**Karpenter compatibility.** No special config required — the standard
+HPA → pending pods → Karpenter scale-out path works unchanged. When the
+ingest-rate metric pushes HPA above currently-scheduled capacity,
+Karpenter provisions a new node from the realtime pool in the usual
+30–60s.
+
 ### Scale-Down Protection
 
 ```yaml

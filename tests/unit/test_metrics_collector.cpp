@@ -13,8 +13,10 @@
 
 #include <gtest/gtest.h>
 #include "zeptodb/server/metrics_collector.h"
-#include <thread>
+#include <atomic>
 #include <chrono>
+#include <thread>
+#include <vector>
 
 using namespace zeptodb::server;
 using namespace zeptodb::core;
@@ -273,4 +275,108 @@ TEST_F(MetricsCollectorTest, LongRunning_MemoryStable) {
     // Latest data is correct
     auto history = mc.get_history();
     EXPECT_EQ(history.back().ticks_ingested, 9999);
+}
+
+// ============================================================================
+// ingest_ticks_per_sec — gauge consumed by Prometheus + HPA Pods metric
+// (P8-I4, devlog 117)
+// ============================================================================
+class MetricsCollectorIngestRateTest : public ::testing::Test {
+protected:
+    PipelineStats stats;
+};
+
+TEST_F(MetricsCollectorIngestRateTest, FirstSampleRateIsZero) {
+    MetricsCollector mc(stats, std::chrono::milliseconds(1000), 100);
+    // No captures yet — must return 0.0 (no division by anything).
+    EXPECT_DOUBLE_EQ(mc.ingest_ticks_per_sec(), 0.0);
+
+    // One capture is still not enough for a rate.
+    stats.ticks_ingested.store(1000);
+    mc.capture_now();
+    EXPECT_DOUBLE_EQ(mc.ingest_ticks_per_sec(), 0.0);
+}
+
+TEST_F(MetricsCollectorIngestRateTest, SteadyStateRate) {
+    MetricsCollector mc(stats, std::chrono::milliseconds(1000), 100);
+
+    stats.ticks_ingested.store(0);
+    mc.capture_now();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    stats.ticks_ingested.store(1000);
+    mc.capture_now();
+
+    // Expect ~10000 ticks/s — wall clock variance can be substantial on
+    // CI runners, so allow ± 50% tolerance. The point of the test is to
+    // verify we compute a positive rate, not benchmark the OS scheduler.
+    double rate = mc.ingest_ticks_per_sec();
+    EXPECT_GT(rate, 5000.0);
+    EXPECT_LT(rate, 20000.0);
+}
+
+TEST_F(MetricsCollectorIngestRateTest, IdlePeriodDecaysToZero) {
+    MetricsCollector mc(stats, std::chrono::milliseconds(1000), 100);
+
+    stats.ticks_ingested.store(500);
+    mc.capture_now();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // No new ticks ingested between the two snapshots.
+    mc.capture_now();
+
+    EXPECT_DOUBLE_EQ(mc.ingest_ticks_per_sec(), 0.0);
+}
+
+TEST_F(MetricsCollectorIngestRateTest, CounterResetClampsToZero) {
+    MetricsCollector mc(stats, std::chrono::milliseconds(1000), 100);
+
+    stats.ticks_ingested.store(1000);
+    mc.capture_now();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Counter restart (e.g. process restart, downstream reset).
+    stats.ticks_ingested.store(500);
+    mc.capture_now();
+
+    // Must clamp to 0.0 instead of returning a negative rate.
+    EXPECT_DOUBLE_EQ(mc.ingest_ticks_per_sec(), 0.0);
+}
+
+TEST_F(MetricsCollectorIngestRateTest, ConcurrentReadersNoCrash) {
+    // 4 threads call ingest_ticks_per_sec() while the collector thread
+    // captures every 10ms. Validates lock-free read path under concurrency.
+    MetricsCollector mc(stats, std::chrono::milliseconds(10), 100);
+    mc.start();
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> reads{0};
+
+    auto worker = [&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            // Result must be finite and non-negative.
+            double r = mc.ingest_ticks_per_sec();
+            EXPECT_GE(r, 0.0);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; ++i) readers.emplace_back(worker);
+
+    // Bump the counter while readers run so the rate is non-trivial.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    while (std::chrono::steady_clock::now() < deadline) {
+        stats.ticks_ingested.fetch_add(1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    stop.store(true);
+    for (auto& t : readers) t.join();
+    mc.stop();
+
+    EXPECT_GT(reads.load(), 0u);
 }

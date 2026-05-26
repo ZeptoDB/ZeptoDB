@@ -4,9 +4,20 @@
 
 #include "zeptodb/storage/s3_sink.h"
 
+#include <array>
+#include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string_view>
+
+#if __has_include(<unistd.h>)
+    #include <unistd.h>
+    #define ZEPTO_HAS_GETHOSTNAME 1
+#else
+    #define ZEPTO_HAS_GETHOSTNAME 0
+#endif
 
 #if ZEPTO_S3_AVAILABLE
     #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -20,16 +31,60 @@ namespace zeptodb::storage {
 
 namespace fs = std::filesystem;
 
+namespace {
+
+// 4-char hex hash of `s` using FNV-1a 32-bit. Stable across processes /
+// architectures; only the bottom 16 bits are emitted (4 hex chars).
+std::string fnv1a_hex4(std::string_view s) {
+    uint32_t h = 0x811C9DC5u;
+    for (unsigned char c : s) {
+        h ^= c;
+        h *= 0x01000193u;
+    }
+    char buf[5];
+    std::snprintf(buf, sizeof(buf), "%04x", static_cast<unsigned>(h & 0xFFFFu));
+    return std::string(buf, 4);
+}
+
+// Read hostname via POSIX gethostname(). Returns empty string on failure or
+// when the platform lacks gethostname.
+std::string read_hostname() {
+#if ZEPTO_HAS_GETHOSTNAME
+    std::array<char, 256> buf{};
+    if (::gethostname(buf.data(), buf.size() - 1) != 0) {
+        return {};
+    }
+    buf[buf.size() - 1] = '\0';
+    return std::string(buf.data());
+#else
+    return {};
+#endif
+}
+
+} // namespace
+
 // ============================================================================
 // 생성자 / 소멸자
 // ============================================================================
 S3Sink::S3Sink(S3SinkConfig config)
     : config_(std::move(config))
 {
+    // devlog 118: compute per-process hostname hash once for HIVE layout
+    // filename collision protection. Empty string when disabled or when
+    // gethostname() is unavailable / fails.
+    if (!config_.disable_host_hash) {
+        const std::string host = read_hostname();
+        if (!host.empty()) {
+            host_hash_ = fnv1a_hex4(host);
+        }
+    }
+
 #if ZEPTO_S3_AVAILABLE
     init_aws_sdk();
-    ZEPTO_INFO("S3Sink 초기화: bucket={}, prefix={}, region={}",
-              config_.bucket, config_.prefix, config_.region);
+    ZEPTO_INFO("S3Sink 초기화: bucket={}, prefix={}, region={}, layout={}, host_hash={}",
+              config_.bucket, config_.prefix, config_.region,
+              config_.layout == S3Layout::HIVE ? "hive" : "flat",
+              host_hash_.empty() ? "<none>" : host_hash_);
 #else
     ZEPTO_WARN("S3Sink: aws-sdk-cpp 없음 — S3 업로드 비활성화");
     ZEPTO_WARN("  설치: sudo dnf install -y aws-sdk-cpp-s3");
@@ -167,13 +222,57 @@ std::future<bool> S3Sink::upload_file_async(const std::string& local_path,
 
 // ============================================================================
 // make_s3_key: 파티션 키 → S3 오브젝트 키
-// 형식: {symbol}/{hour_epoch}.{ext}
+//
+// FLAT (default — byte-identical to pre-118 keys):
+//   {symbol}/{hour_epoch}.{ext}
+//
+// HIVE (devlog 118 — Athena/DuckDB/Polars/Spark Hive auto-discovery):
+//   year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].{ext}
+//
+// Year/month/day are derived from `hour_epoch * 3600` seconds via
+// `gmtime_r()` so the partitioning is UTC-stable. The optional 4-char
+// hostname hash protects against multi-pod filename collisions on the
+// same partition; absent when disabled or when gethostname() failed.
 // ============================================================================
 std::string S3Sink::make_s3_key(SymbolId symbol, int64_t hour_epoch,
                                  const std::string& ext) const
 {
-    return std::to_string(symbol) + "/" +
-           std::to_string(hour_epoch) + "." + ext;
+    if (config_.layout == S3Layout::FLAT) {
+        return std::to_string(symbol) + "/" +
+               std::to_string(hour_epoch) + "." + ext;
+    }
+
+    // --- HIVE layout ---
+    // Convert hour_epoch (hours since 1970-01-01 UTC) to broken-down UTC.
+    const std::time_t epoch_seconds = static_cast<std::time_t>(hour_epoch) * 3600;
+    std::tm tm_utc{};
+    // gmtime_r is the thread-safe POSIX variant; falls back to gmtime if
+    // the platform lacks it. Both produce UTC.
+#if defined(_POSIX_VERSION) || defined(__linux__)
+    ::gmtime_r(&epoch_seconds, &tm_utc);
+#else
+    if (const std::tm* g = std::gmtime(&epoch_seconds)) tm_utc = *g;
+#endif
+
+    // tm_year is years since 1900; tm_mon is 0–11; tm_mday is 1–31.
+    char buf[80];
+    std::snprintf(buf, sizeof(buf),
+                  "year=%04d/month=%02d/day=%02d/symbol=%u/%u-%lld",
+                  tm_utc.tm_year + 1900,
+                  tm_utc.tm_mon + 1,
+                  tm_utc.tm_mday,
+                  static_cast<unsigned>(symbol),
+                  static_cast<unsigned>(symbol),
+                  static_cast<long long>(hour_epoch));
+
+    std::string key(buf);
+    if (!host_hash_.empty()) {
+        key += "-";
+        key += host_hash_;
+    }
+    key += ".";
+    key += ext;
+    return key;
 }
 
 // ============================================================================

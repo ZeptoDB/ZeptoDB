@@ -34,17 +34,43 @@ export function getVisibleNav(role: string): NavItem[] {
   return nav.filter((n) => n.roles.includes(role));
 }
 
-export default function Sidebar() {
+interface SidebarProps {
+  /** When set, render as a temporary drawer (mobile). Otherwise permanent (desktop). */
+  variant?: "permanent" | "temporary";
+  /** Required when variant="temporary": controls open state. */
+  open?: boolean;
+  /** Required when variant="temporary": close handler (backdrop click, ESC, link click). */
+  onClose?: () => void;
+}
+
+export default function Sidebar({ variant = "permanent", open, onClose }: SidebarProps = {}) {
   const pathname = usePathname();
   const router = useRouter();
   const { auth, logout } = useAuth();
   const license = useLicense();
 
-  const handleLogout = () => { logout().then(() => router.push("/login")); };
+  const handleLogout = () => {
+    if (variant === "temporary") onClose?.();
+    logout().then(() => router.push("/login"));
+  };
+  const handleNav = (href: string) => {
+    if (variant === "temporary") onClose?.();
+    router.push(href);
+  };
+  const handleExternal = () => {
+    if (variant === "temporary") onClose?.();
+  };
   const visible = getVisibleNav(auth?.role ?? "reader");
 
+  const drawerProps = variant === "temporary"
+    ? { variant: "temporary" as const, open: open ?? false, onClose, ModalProps: { keepMounted: true } }
+    : { variant: "permanent" as const };
+
   return (
-    <Drawer variant="permanent" sx={{ width: WIDTH, flexShrink: 0, "& .MuiDrawer-paper": { width: WIDTH, boxSizing: "border-box" } }}>
+    <Drawer
+      {...drawerProps}
+      sx={{ width: WIDTH, flexShrink: 0, "& .MuiDrawer-paper": { width: WIDTH, boxSizing: "border-box" } }}
+    >
       <Toolbar sx={{ px: 3, pt: 2, pb: 1, justifyContent: "center" }}>
         <Typography variant="h5" sx={{ display: "flex", alignItems: "center", gap: 0.5, userSelect: "none" }}>
           <Box component="span" sx={{ 
@@ -61,7 +87,7 @@ export default function Sidebar() {
         {visible.map((n) => {
           const gated = n.gatedFeature && !hasFeature(license, n.gatedFeature);
           return (
-            <ListItemButton key={n.href} selected={pathname === n.href} onClick={() => router.push(n.href)}>
+            <ListItemButton key={n.href} selected={pathname === n.href} onClick={() => handleNav(n.href)}>
               <ListItemIcon sx={{ minWidth: 40, color: pathname === n.href ? "primary.main" : "text.secondary" }}>{n.icon}</ListItemIcon>
               <ListItemText primary={n.label} primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: pathname === n.href ? 600 : 500 }} />
               {gated && <Chip label="Enterprise" size="small" variant="outlined" sx={{ height: 20, fontSize: 9 }} />}
@@ -71,7 +97,7 @@ export default function Sidebar() {
       </List>
       <Divider sx={{ mx: 2, my: 1, opacity: 0.5 }} />
       <List sx={{ px: 1, pb: 2 }}>
-        <ListItemButton component="a" href="https://discord.gg/zeptodb" target="_blank" rel="noopener noreferrer">
+        <ListItemButton component="a" href="https://discord.gg/zeptodb" target="_blank" rel="noopener noreferrer" onClick={handleExternal}>
           <ListItemIcon sx={{ minWidth: 40, color: "text.secondary" }}><ForumIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Discord" primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500, color: "text.secondary" }} />
         </ListItemButton>

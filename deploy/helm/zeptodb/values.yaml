@@ -94,6 +94,12 @@ autoscaling:
     stabilizationSeconds: 300
   scaleUp:
     stabilizationSeconds: 60
+  # Custom-metric autoscaling on real ingest load (P8-I4, devlog 117).
+  # Requires prometheus-adapter installed and configured to expose
+  # `zepto_ingest_ticks_per_sec` as a Pods metric. CPU/memory above act
+  # as a safety net for non-ingest workloads.
+  targetIngestRate: 50000  # ticks/sec per pod; scale up when avg exceeds this
+  ingestRateEnabled: false  # opt-in until prometheus-adapter is part of the chart
 
 podAntiAffinity:
   enabled: true
@@ -250,6 +256,25 @@ karpenter:
     expireAfter: "24h"                 # recycle nodes daily (fresh AMI, no drift)
     budgets:
       - nodes: "20%"                   # allow 20% disruption for consolidation
+
+# ---------------------------------------------------------------------------
+# Cold tier: stream sealed/aged partitions to S3 as Parquet (devlog 118).
+# Required when `coldTier.enabled=true`: an S3 bucket the pod can write to
+# (IRSA / instance role / explicit creds). External tools (Athena, DuckDB,
+# Spark, Polars) auto-discover Hive-partitioned data — default to `hive`.
+# ---------------------------------------------------------------------------
+coldTier:
+  enabled: false
+  format: parquet            # parquet | both (binary+parquet)
+  layout: hive               # hive | flat
+  deleteLocalAfterS3: true   # delete local Parquet after successful upload
+  ageHours: 24               # promote partitions older than N hours to cold
+  s3:
+    bucket: ""
+    region: "us-east-1"
+    prefix: "hdb"
+    endpointUrl: ""          # MinIO / non-AWS endpoints
+    usePathStyle: false      # MinIO: true
 
 # ---------------------------------------------------------------------------
 # Stateless ingest tier (P8-I3, devlog 113) — opt-in

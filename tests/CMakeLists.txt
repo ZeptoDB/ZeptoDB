@@ -26,6 +26,7 @@ add_executable(zepto_tests
     unit/test_opcua_integration.cpp
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
+    unit/test_http_arrow_ipc.cpp
     unit/test_flat_hash_map.cpp
     unit/test_rebalance.cpp
     unit/test_bandwidth_throttler.cpp
@@ -44,6 +45,9 @@ add_executable(zepto_tests
     unit/test_distributed_insert.cpp
     unit/test_coordinator_routing_adapter.cpp
     unit/test_ddl_replication.cpp
+    unit/test_s3_sink.cpp
+    unit/test_parquet_writer.cpp
+    unit/test_cold_tier.cpp
 )
 if(ZEPTO_USE_JIT)
     target_sources(zepto_tests PRIVATE unit/test_jit_simd.cpp)

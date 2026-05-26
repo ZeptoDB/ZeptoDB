@@ -131,6 +131,29 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- if .Values.coldTier.enabled }}
+            # --- devlog 118: cold-tier S3 Parquet sink ---
+            - name: ZEPTO_COLD_TIER_ENABLED
+              value: "true"
+            - name: ZEPTO_COLD_TIER_FORMAT
+              value: {{ .Values.coldTier.format | default "parquet" | quote }}
+            - name: ZEPTO_COLD_TIER_LAYOUT
+              value: {{ .Values.coldTier.layout | default "hive" | quote }}
+            - name: ZEPTO_COLD_TIER_AGE_HOURS
+              value: {{ .Values.coldTier.ageHours | default 24 | quote }}
+            - name: ZEPTO_COLD_TIER_DELETE_LOCAL_AFTER_S3
+              value: {{ .Values.coldTier.deleteLocalAfterS3 | default true | quote }}
+            - name: ZEPTO_COLD_TIER_S3_BUCKET
+              value: {{ .Values.coldTier.s3.bucket | quote }}
+            - name: ZEPTO_COLD_TIER_S3_REGION
+              value: {{ .Values.coldTier.s3.region | default "us-east-1" | quote }}
+            - name: ZEPTO_COLD_TIER_S3_PREFIX
+              value: {{ .Values.coldTier.s3.prefix | default "hdb" | quote }}
+            - name: ZEPTO_COLD_TIER_S3_ENDPOINT_URL
+              value: {{ .Values.coldTier.s3.endpointUrl | default "" | quote }}
+            - name: ZEPTO_COLD_TIER_S3_USE_PATH_STYLE
+              value: {{ .Values.coldTier.s3.usePathStyle | default false | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
