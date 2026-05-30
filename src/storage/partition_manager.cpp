@@ -4,6 +4,7 @@
 
 #include "zeptodb/storage/partition_manager.h"
 #include <algorithm>
+#include <shared_mutex>
 
 namespace zeptodb::storage {
 
@@ -67,16 +68,17 @@ int64_t PartitionManager::to_hour_epoch(Timestamp ts) {
 Partition& PartitionManager::get_or_create(uint16_t table_id, SymbolId symbol, Timestamp ts) {
     PartitionKey key{table_id, symbol, to_hour_epoch(ts)};
 
-    // Fast path: check without lock (대부분의 경우 이미 존재)
+    // Fast path: existing active partitions only need a shared map lock.
     {
+        std::shared_lock lock(mutex_);
         auto it = partitions_.find(key);
         if (it != partitions_.end() && it->second->state() == Partition::State::ACTIVE) {
             return *it->second;
         }
     }
 
-    // Slow path: 파티션 생성 (rare)
-    std::lock_guard<std::mutex> lock(mutex_);
+    // Slow path: create the partition under the exclusive map lock.
+    std::unique_lock lock(mutex_);
     auto it = partitions_.find(key);
     if (it != partitions_.end()) {
         return *it->second;
@@ -99,6 +101,7 @@ Partition& PartitionManager::get_or_create(uint16_t table_id, SymbolId symbol, T
 std::vector<Partition*> PartitionManager::seal_old_partitions(
     Timestamp current_ts, int64_t max_age_hours
 ) {
+    std::unique_lock lock(mutex_);
     constexpr int64_t NS_PER_HOUR = 3600LL * 1'000'000'000LL;
     int64_t cutoff = to_hour_epoch(current_ts) - (max_age_hours * NS_PER_HOUR);
 
@@ -115,6 +118,7 @@ std::vector<Partition*> PartitionManager::seal_old_partitions(
 }
 
 std::vector<Partition*> PartitionManager::get_sealed_partitions() {
+    std::shared_lock lock(mutex_);
     std::vector<Partition*> result;
     for (auto& [key, partition] : partitions_) {
         if (partition->state() == Partition::State::SEALED) {
@@ -125,6 +129,7 @@ std::vector<Partition*> PartitionManager::get_sealed_partitions() {
 }
 
 std::vector<Partition*> PartitionManager::get_all_partitions() {
+    std::shared_lock lock(mutex_);
     std::vector<Partition*> result;
     result.reserve(partitions_.size());
     for (auto& [key, partition] : partitions_) {
@@ -134,6 +139,7 @@ std::vector<Partition*> PartitionManager::get_all_partitions() {
 }
 
 std::vector<Partition*> PartitionManager::get_partitions_for_symbol(uint16_t table_id, SymbolId symbol) {
+    std::shared_lock lock(mutex_);
     std::vector<Partition*> result;
     for (auto& [key, partition] : partitions_) {
         if (key.table_id == table_id && key.symbol_id == symbol) {
@@ -147,6 +153,7 @@ std::vector<Partition*> PartitionManager::get_partitions_for_symbol(uint16_t tab
 std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
     int64_t lo, int64_t hi)
 {
+    std::shared_lock lock(mutex_);
     constexpr int64_t NS_PER_HOUR = 3600LL * 1'000'000'000LL;
     std::vector<Partition*> result;
     for (auto& [key, partition] : partitions_) {
@@ -162,6 +169,7 @@ std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
 std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
     uint16_t table_id, int64_t lo, int64_t hi)
 {
+    std::shared_lock lock(mutex_);
     constexpr int64_t NS_PER_HOUR = 3600LL * 1'000'000'000LL;
     std::vector<Partition*> result;
     for (auto& [key, partition] : partitions_) {
@@ -175,6 +183,7 @@ std::vector<Partition*> PartitionManager::get_partitions_for_time_range(
 }
 
 std::vector<Partition*> PartitionManager::get_partitions_for_table(uint16_t table_id) {
+    std::shared_lock lock(mutex_);
     std::vector<Partition*> result;
     for (auto& [key, partition] : partitions_) {
         if (key.table_id == table_id) {
@@ -185,7 +194,7 @@ std::vector<Partition*> PartitionManager::get_partitions_for_table(uint16_t tabl
 }
 
 size_t PartitionManager::evict_older_than(int64_t cutoff_ns) {
-    std::lock_guard<std::mutex> lk(mutex_);
+    std::unique_lock lk(mutex_);
     size_t count = 0;
     for (auto it = partitions_.begin(); it != partitions_.end(); ) {
         if (it->first.hour_epoch < cutoff_ns) {
@@ -199,7 +208,7 @@ size_t PartitionManager::evict_older_than(int64_t cutoff_ns) {
 }
 
 size_t PartitionManager::drop_table_partitions(uint16_t table_id) {
-    std::lock_guard<std::mutex> lk(mutex_);
+    std::unique_lock lk(mutex_);
     size_t count = 0;
     for (auto it = partitions_.begin(); it != partitions_.end(); ) {
         if (it->first.table_id == table_id) {
@@ -213,4 +222,3 @@ size_t PartitionManager::drop_table_partitions(uint16_t table_id) {
 }
 
 } // namespace zeptodb::storage
-

@@ -14,6 +14,7 @@
 #   ./tests/k8s/run_eks_bench.sh --skip-wake  # cluster already running
 #   ./tests/k8s/run_eks_bench.sh --k8s-only   # skip engine bench
 #   ./tests/k8s/run_eks_bench.sh --engine-only # skip K8s tests
+#   ./tests/k8s/run_eks_bench.sh --skip-agent-e2e
 #
 # Cost: ~$4.60/hr. Full run ~20min ≈ $1.50
 set -euo pipefail
@@ -25,8 +26,12 @@ KEEP=false
 SKIP_WAKE=false
 K8S_ONLY=false
 ENGINE_ONLY=false
+SKIP_AGENT_E2E=false
 RESULT_DIR="/tmp/eks_bench_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RESULT_DIR"
+AGENT_IMAGE_REPO="${ZEPTO_EKS_AGENT_IMAGE_REPO:-060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb}"
+AGENT_X86_TAG="${ZEPTO_EKS_AGENT_X86_TAG:-bench-x86}"
+AGENT_ARM64_TAG="${ZEPTO_EKS_AGENT_ARM64_TAG:-bench-arm64}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
@@ -39,8 +44,13 @@ while [[ $# -gt 0 ]]; do
     --skip-wake)   SKIP_WAKE=true; shift ;;
     --k8s-only)    K8S_ONLY=true; shift ;;
     --engine-only) ENGINE_ONLY=true; shift ;;
+    --skip-agent-e2e) SKIP_AGENT_E2E=true; shift ;;
+    --agent-image-repo) AGENT_IMAGE_REPO="$2"; shift 2 ;;
+    --agent-x86-tag) AGENT_X86_TAG="$2"; shift 2 ;;
+    --agent-arm64-tag) AGENT_ARM64_TAG="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: $0 [--keep] [--skip-wake] [--k8s-only] [--engine-only]"
+      echo "Usage: $0 [--keep] [--skip-wake] [--k8s-only] [--engine-only] [--skip-agent-e2e]"
+      echo "       [--agent-image-repo REPO] [--agent-x86-tag TAG] [--agent-arm64-tag TAG]"
       exit 0 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
@@ -48,7 +58,7 @@ done
 
 # ── Cleanup function ──────────────────────────────────────
 force_clean_namespaces() {
-  for NS in zeptodb-test zeptodb-ha zeptodb-test-arm64 zeptodb-ha-arm64 karpenter-trigger; do
+  for NS in zeptodb-test zeptodb-ha zeptodb-test-arm64 zeptodb-ha-arm64 zeptodb-agent-amd64 zeptodb-agent-arm64 karpenter-trigger; do
     REL=$(helm list -n "$NS" -q 2>/dev/null || true)
     [ -n "$REL" ] && { helm uninstall "$REL" -n "$NS" 2>/dev/null || true; }
     kubectl delete namespace "$NS" --wait=false 2>/dev/null || true
@@ -71,7 +81,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-RC_AC=0; RC_AH=0; RC_ARM=0; RC_BENCH=0
+RC_AC=0; RC_AH=0; RC_ARM=0; RC_AGENT=0; RC_BENCH=0
 
 # ═══════════════════════════════════════════════════════════
 # 1. Wake EKS
@@ -94,27 +104,67 @@ fi
 if ! $ENGINE_ONLY; then
   step "2. Ensure arm64 nodes available (Auto Mode, reuse zepto-bench-arm64 NodePool)"
 
-  # devlog 094 #10: skip provision when ≥3 arm64 nodes already Ready.
+  # devlog 094 #10: skip provision when enough nodes are already Ready. Both
+  # arches need pending pods to trigger Auto Mode provisioning; waking the
+  # NodePool only raises the CPU limit.
+  EXISTING_AMD=$(kubectl get nodes -l kubernetes.io/arch=amd64 --no-headers 2>/dev/null | grep -c Ready || true)
   EXISTING_ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
-  if [ "$EXISTING_ARM" -ge 3 ]; then
-    info "arm64 nodes already present ($EXISTING_ARM ready) — skipping provision"
+  if [ "$EXISTING_AMD" -ge 3 ] && [ "$EXISTING_ARM" -ge 3 ]; then
+    info "amd64/arm64 nodes already present (${EXISTING_AMD}/${EXISTING_ARM} ready) — skipping provision"
   else
     # zepto-bench-arm64 is a persistent NodePool managed via eksctl/eks-bench.sh.
     # If limits.cpu=0 (asleep), wake it; if missing, fail loudly — do NOT try
     # to create it here (Auto Mode schema is owned by the cluster bootstrap).
+    if ! kubectl get nodepool zepto-bench-x86 >/dev/null 2>&1; then
+      fail "NodePool zepto-bench-x86 missing — create via eksctl/kubectl once"
+      exit 1
+    fi
     if ! kubectl get nodepool zepto-bench-arm64 >/dev/null 2>&1; then
       fail "NodePool zepto-bench-arm64 missing — create via eksctl/kubectl once"
       exit 1
     fi
+    AMD_LIMIT=$(kubectl get nodepool zepto-bench-x86 -o jsonpath='{.spec.limits.cpu}' 2>/dev/null || echo 0)
     ARM_LIMIT=$(kubectl get nodepool zepto-bench-arm64 -o jsonpath='{.spec.limits.cpu}' 2>/dev/null || echo 0)
-    if [ "${ARM_LIMIT:-0}" = "0" ]; then
-      info "zepto-bench-arm64 limits.cpu=0 — running eks-bench.sh wake"
+    if [ "${AMD_LIMIT:-0}" = "0" ] || [ "${ARM_LIMIT:-0}" = "0" ]; then
+      info "bench NodePool limit is 0 — running eks-bench.sh wake"
       "$EKS_BENCH" wake
     fi
 
-    # Trigger 3 arm64 pods spread across nodes to force Karpenter scale-up.
+    # Trigger 3 pods per missing arch, spread across nodes, to force Auto Mode
+    # scale-up before the preflight count check.
     kubectl create namespace karpenter-trigger --dry-run=client -o yaml | kubectl apply -f -
     kubectl apply -n karpenter-trigger -f - <<'TEOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amd64-trigger
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: amd64-trigger
+  template:
+    metadata:
+      labels:
+        app: amd64-trigger
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: amd64-trigger
+      containers:
+        - name: pause
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.9
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -147,10 +197,11 @@ spec:
               memory: "512Mi"
 TEOF
 
-    info "Waiting for 3+ arm64 nodes (max 5min)..."
+    info "Waiting for 3+ nodes per arch (max 5min)..."
     for i in $(seq 1 30); do
+      AMD=$(kubectl get nodes -l kubernetes.io/arch=amd64 --no-headers 2>/dev/null | grep -c Ready || true)
       ARM=$(kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers 2>/dev/null | grep -c Ready || true)
-      [ "$ARM" -ge 3 ] && break
+      [ "$AMD" -ge 3 ] && [ "$ARM" -ge 3 ] && break
       sleep 10
     done
     kubectl delete namespace karpenter-trigger --wait=false 2>/dev/null || true
@@ -177,6 +228,7 @@ if ! $ENGINE_ONLY; then
 
   # amd64 chain
   (
+    set +e
     python3.13 -u tests/k8s/test_k8s_compat.py > "$RESULT_DIR/amd64_compat.log" 2>&1
     RC_AC_IN=$?
     python3.13 -u tests/k8s/test_k8s_ha_perf.py > "$RESULT_DIR/amd64_ha_perf.log" 2>&1
@@ -187,6 +239,7 @@ if ! $ENGINE_ONLY; then
 
   # arm64 chain
   (
+    set +e
     python3.13 -u -c "
 import sys, time, importlib; sys.path.insert(0, '$PROJECT_ROOT')
 
@@ -212,7 +265,8 @@ for t in hp.HA_TESTS+hp.PERF_TESTS:
 ha_ok=suite2.summary(); hp.cleanup()
 sys.exit(0 if (compat_ok and ha_ok) else 1)
 " > "$RESULT_DIR/arm64_all.log" 2>&1
-    echo $? > "$RESULT_DIR/arm64_rc"
+    RC_ARM_IN=$?
+    echo "$RC_ARM_IN" > "$RESULT_DIR/arm64_rc"
   ) &
   PID_ARM=$!
 
@@ -220,16 +274,48 @@ sys.exit(0 if (compat_ok and ha_ok) else 1)
   wait $PID_AMD || true
   wait $PID_ARM || true
 
-  read RC_AC RC_AH < "$RESULT_DIR/amd64_rc"
-  RC_ARM=$(cat "$RESULT_DIR/arm64_rc")
+  if [[ -f "$RESULT_DIR/amd64_rc" ]]; then
+    read RC_AC RC_AH < "$RESULT_DIR/amd64_rc"
+  else
+    fail "amd64 result file missing"
+    RC_AC=1
+    RC_AH=1
+  fi
+  if [[ -f "$RESULT_DIR/arm64_rc" ]]; then
+    RC_ARM=$(cat "$RESULT_DIR/arm64_rc")
+  else
+    fail "arm64 result file missing"
+    RC_ARM=1
+  fi
   info "amd64 compat: exit=$RC_AC  amd64 HA+perf: exit=$RC_AH  arm64: exit=$RC_ARM"
 fi
 
 # ═══════════════════════════════════════════════════════════
-# 4. Native engine benchmarks
+# 4. Agent Memory E2E
+# ═══════════════════════════════════════════════════════════
+if ! $ENGINE_ONLY && ! $SKIP_AGENT_E2E; then
+  step "4. Agent Memory E2E (real ZeptoDB images, amd64 + arm64)"
+  AGENT_E2E="$PROJECT_ROOT/tests/k8s/test_k8s_agent_memory.py"
+  if [ -x "$AGENT_E2E" ] || [ -f "$AGENT_E2E" ]; then
+    python3.13 -u "$AGENT_E2E" \
+      --image-repo "$AGENT_IMAGE_REPO" \
+      --x86-tag "$AGENT_X86_TAG" \
+      --arm64-tag "$AGENT_ARM64_TAG" \
+      > "$RESULT_DIR/agent_memory_e2e.log" 2>&1 && RC_AGENT=0 || RC_AGENT=$?
+    info "Agent Memory E2E: exit=$RC_AGENT"
+  else
+    fail "test_k8s_agent_memory.py not found"
+    RC_AGENT=1
+  fi
+elif ! $ENGINE_ONLY; then
+  info "Agent Memory E2E skipped"
+fi
+
+# ═══════════════════════════════════════════════════════════
+# 5. Native engine benchmarks
 # ═══════════════════════════════════════════════════════════
 if ! $K8S_ONLY; then
-  step "4. Native engine benchmarks (SIMD, ingestion, SQL, parallel, HDB)"
+  step "5. Native engine benchmarks (SIMD, ingestion, SQL, parallel, HDB)"
   ARCH_BENCH="$PROJECT_ROOT/tests/bench/run_arch_bench.sh"
   if [ -x "$ARCH_BENCH" ]; then
     "$ARCH_BENCH" --skip-build > "$RESULT_DIR/arch_bench.log" 2>&1 && RC_BENCH=0 || RC_BENCH=$?
@@ -240,9 +326,9 @@ if ! $K8S_ONLY; then
 fi
 
 # ═══════════════════════════════════════════════════════════
-# 5. Report
+# 6. Report
 # ═══════════════════════════════════════════════════════════
-step "5. Results"
+step "6. Results"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -260,6 +346,12 @@ if ! $ENGINE_ONLY; then
   ARM_H=$(grep "HA Test Results:" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | head -1)
   printf "  %-20s %s\n" "arm64 compat:" "$ARM_C"
   printf "  %-20s %s\n" "arm64 HA+perf:" "$ARM_H"
+  if ! $SKIP_AGENT_E2E; then
+    AGENT_SUMMARY=$(grep "Agent Memory E2E Results:" "$RESULT_DIR/agent_memory_e2e.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | tail -1)
+    printf "  %-20s %s\n" "agent memory:" "$AGENT_SUMMARY"
+  else
+    printf "  %-20s %s\n" "agent memory:" "skipped"
+  fi
 
   echo ""
   echo "── K8s Performance: amd64 ──"
@@ -283,10 +375,13 @@ echo "Full logs: $RESULT_DIR/"
 # ═══════════════════════════════════════════════════════════
 # Exit
 # ═══════════════════════════════════════════════════════════
-TOTAL=$((RC_AC + RC_AH + RC_ARM))
+TOTAL=$((RC_AC + RC_AH + RC_ARM + RC_AGENT))
+if ! $K8S_ONLY; then
+  TOTAL=$((TOTAL + RC_BENCH))
+fi
 if [ $TOTAL -eq 0 ]; then
-  info "ALL K8S TESTS PASSED ✅"
+  info "ALL EKS TESTS PASSED ✅"
 else
-  fail "FAILURES: amd64_compat=$RC_AC amd64_ha=$RC_AH arm64=$RC_ARM"
+  fail "FAILURES: amd64_compat=$RC_AC amd64_ha=$RC_AH arm64=$RC_ARM agent=$RC_AGENT bench=$RC_BENCH"
 fi
 exit $TOTAL

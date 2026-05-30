@@ -267,11 +267,15 @@ def test_pod_anti_affinity(suite: TestSuite):
     spec = pods[0].get("spec", {})
     affinity = spec.get("affinity", {}).get("podAntiAffinity", {})
     preferred = affinity.get("preferredDuringSchedulingIgnoredDuringExecution", [])
-    passed = any(
+    required = affinity.get("requiredDuringSchedulingIgnoredDuringExecution", [])
+    has_preferred_hostname = any(
         t.get("podAffinityTerm", {}).get("topologyKey") == "kubernetes.io/hostname"
         for t in preferred
     )
-    suite.add(TestResult("T10_anti_affinity", passed, f"{len(preferred)} rules", time.monotonic() - t0))
+    has_required_hostname = any(t.get("topologyKey") == "kubernetes.io/hostname" for t in required)
+    passed = has_preferred_hostname or has_required_hostname
+    msg = f"preferred={len(preferred)}, required={len(required)}"
+    suite.add(TestResult("T10_anti_affinity", passed, msg, time.monotonic() - t0))
 
 
 def test_labels(suite: TestSuite):

@@ -64,6 +64,7 @@ option(ZEPTO_USE_MQTT       "Enable MQTT consumer (requires paho-mqttpp3)" OFF)
 option(ZEPTO_USE_OPCUA      "Enable OPC-UA consumer (requires open62541)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
 option(ZEPTO_ENABLE_DUCKDB "Enable embedded DuckDB engine for Parquet offload" ON)
+option(ZEPTO_ENABLE_HNSWLIB "Enable optional hnswlib backend for Agent Memory ANN" OFF)
 
 # ============================================================================
 # Platform-specific prefix paths for find_package()
@@ -223,12 +224,25 @@ if(ZEPTO_ENABLE_DUCKDB)
     )
 endif()
 
+if(ZEPTO_ENABLE_HNSWLIB)
+    FetchContent_Declare(
+        hnswlib
+        GIT_REPOSITORY https://github.com/nmslib/hnswlib.git
+        GIT_TAG        v0.8.0
+        GIT_SHALLOW    TRUE
+    )
+endif()
+
 set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(fmt spdlog)
 
 if(ZEPTO_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
     enable_testing()
+endif()
+
+if(ZEPTO_ENABLE_HNSWLIB)
+    FetchContent_MakeAvailable(hnswlib)
 endif()
 
 # --- NUMA (Linux only) ---
@@ -580,6 +594,24 @@ target_link_libraries(zepto_sql PUBLIC
     zepto_core
 )
 
+# --- AI Agent Memory Layer ---
+add_library(zepto_ai STATIC
+    src/ai/ann_index.cpp
+    src/ai/agent_memory.cpp
+    src/ai/agent_memory_router.cpp
+    src/ai/agent_memory_wire.cpp
+)
+target_include_directories(zepto_ai PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_ai PUBLIC
+    zepto_common
+)
+if(ZEPTO_ENABLE_HNSWLIB)
+    target_include_directories(zepto_ai SYSTEM PUBLIC ${hnswlib_SOURCE_DIR})
+    target_compile_definitions(zepto_ai PUBLIC ZEPTO_ENABLE_HNSWLIB=1)
+endif()
+
 # --- Auth Library (RBAC + API Key + JWT + AuthManager + Rate Limiting + Secrets) ---
 add_library(zepto_auth STATIC
     src/auth/api_key_store.cpp
@@ -650,6 +682,7 @@ target_include_directories(zepto_server PUBLIC
 )
 target_link_libraries(zepto_server PUBLIC
     zepto_sql
+    zepto_ai
     zepto_auth
     zepto_cluster
     zepto_arrow_ipc
@@ -945,6 +978,17 @@ if(ZEPTO_BUILD_BENCH)
         -O3 -march=native
     )
 
+    add_executable(bench_agent_memory
+        tests/bench/bench_agent_memory.cpp
+    )
+    target_link_libraries(bench_agent_memory PRIVATE
+        zepto_ai
+        zepto_common
+    )
+    target_compile_options(bench_agent_memory PRIVATE
+        -O3 -march=native
+    )
+
     # Phase C: Cluster 벤치마크
     add_executable(bench_cluster
         tests/bench/bench_cluster.cpp
@@ -1173,5 +1217,6 @@ message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
 message(STATUS "  Arrow Flight:  ${ZEPTO_HAS_FLIGHT}")
 message(STATUS "  DuckDB:        ${ZEPTO_ENABLE_DUCKDB}")
+message(STATUS "  hnswlib ANN:   ${ZEPTO_ENABLE_HNSWLIB}")
 message(STATUS "  Tests:         ${ZEPTO_BUILD_TESTS}")
 message(STATUS "=================================")

@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-05-15*
+*Last updated: 2026-05-28*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -10,6 +10,7 @@ using the ClickHouse data source plugin with no modification.
 ## Table of Contents
 
 - [Endpoints](#endpoints)
+- [AI Agent Memory API](#ai-agent-memory-api)
 - [SQL Query — POST /](#sql-query--post-)
 - [Response Format](#response-format)
 - [Authentication](#authentication)
@@ -56,6 +57,20 @@ cd build && ninja -j$(nproc)
 |------|-------|--------|
 | `--hdb-dir <path>` | directory path | Enables tiered storage (RDB + HDB) rooted at `<path>`. `_schema.json` and column files live under this dir. Implies `--storage-mode tiered`. |
 | `--storage-mode <mode>` | `pure` (default) \| `tiered` | `pure` = in-memory only (fastest, lost on exit). `tiered` = persist to `--hdb-dir` or `/tmp/zepto_hdb` if unset. |
+| `--agent-memory-dir <path>` | directory path | Enables Agent Memory sidecar persistence. Standalone mode writes directly under this path; routed mode writes under `node-{node_id}/shard-0/`. When HDB is enabled and this flag is omitted, defaults to `<hdb-dir>/agent_memory`. |
+| `--agent-memory-flush-every N` | mutation count | Saves Agent Memory sidecar snapshots after `N` memory/cache mutations. `0` means flush only during server stop. Default: `100`. |
+| `--agent-memory-max-memories N` | entry count | Maximum retained Agent Memory records. `0` means unbounded. Pinned memories are protected from capacity eviction. Default: `0`. |
+| `--agent-memory-max-cache-entries N` | entry count | Maximum retained Agent Cache records. `0` means unbounded. Default: `0`. |
+| `--agent-memory-replication-mode local\|routed\|quorum\|sync` | mode | Owner WAL replica acknowledgement policy. `local`/`routed` acknowledge after the owner-local commit marker. `quorum` waits for enough replica WAL ACKs to form a majority with the owner commit. `sync` waits for every configured replica before owner commit. Default: `routed`. |
+| `--agent-memory-ann off\|auto\|sparse_projection\|hnsw` | mode | Enables optional ANN candidate generation for memory search/context. `hnsw` requires `ZEPTO_ENABLE_HNSWLIB=ON`. Default: `off`. |
+| `--agent-memory-ann-min-records N` | entry count | Auto-mode threshold before ANN is used. Default: `50000`. |
+| `--agent-memory-ann-max-candidates N` | entry count | Maximum ANN candidates reranked per search. Default: `50000`. |
+| `--agent-memory-ring-epoch N` | integer | Initial routed Agent Memory ring epoch used in owner-scoped ids and remote RPC fencing. Default: `1`. |
+| `--failover-enabled` | flag | In non-HA cluster mode, starts `HealthMonitor` + `FailoverManager` and wires Agent Memory deterministic owner failover. |
+| `--health-heartbeat-port N` | port | UDP heartbeat port for `--failover-enabled`. Default: `9100`. |
+| `--health-tcp-port N` | port | TCP heartbeat probe port for `--failover-enabled`. Default: `9101`. |
+| `--health-suspect-ms N` | milliseconds | Time before a missing peer becomes `SUSPECT`. Default: `3000`. |
+| `--health-dead-ms N` | milliseconds | Time before a missing peer becomes `DEAD` and triggers failover. Default: `10000`. |
 | `--tenant <id:namespace>` | `tenant-id:prefix` | **(repeatable, devlog 091)** Register a tenant at startup with a table-namespace prefix. Any request carrying `X-Zepto-Tenant-Id: <id>` is then limited to tables whose names start with `<namespace>`. A tenant with an empty namespace is unrestricted. Example: `--tenant deska_:deska_` restricts tenant `deska_` to tables like `deska_trades`, `deska_quotes`. |
 
 When `--hdb-dir` is supplied, `CREATE TABLE` DDL is persisted to
@@ -128,9 +143,9 @@ curl -s -X POST http://localhost:8123/ \
 ### Python client (zepto_py)
 
 ```python
-import zepto_py as apex
+import zepto_py as zepto
 
-db = zeptodb.connect("localhost", 8123)
+db = zepto.connect("localhost", 8123)
 
 # DataFrame results
 df = db.query_pandas("SELECT symbol, avg(price) FROM trades GROUP BY symbol")
@@ -153,6 +168,15 @@ print(df)
 | `GET` | `/metrics` | no | Prometheus OpenMetrics |
 | `GET` | `/admin/keys` | admin | List API keys |
 | `GET` | `/api/license` | no | Current license edition and features |
+| `GET` | `/api/ai/stats` | yes | Agent Memory counts, eviction counters, and retention config |
+| `POST` | `/api/ai/memories` | yes | Store or update an agent memory |
+| `GET` | `/api/ai/memories/:memory_id` | yes | Fetch one agent memory by id |
+| `DELETE` | `/api/ai/memories/:memory_id` | yes | Delete one agent memory by id |
+| `POST` | `/api/ai/memories/search` | yes | Filtered memory search with optional embedding similarity |
+| `POST` | `/api/ai/context` | yes | Assemble ranked memories under a token budget |
+| `POST` | `/api/ai/cache/store` | yes | Store an exact/semantic LLM cache entry |
+| `DELETE` | `/api/ai/cache` | yes | Delete one exact prompt cache entry |
+| `POST` | `/api/ai/cache/lookup` | yes | Exact prompt cache lookup with semantic fallback |
 | `GET` | `/admin/license` | admin | Full license details |
 | `POST` | `/admin/license` | admin | Upload license key |
 | `POST` | `/admin/license/trial` | admin | Generate and load 30-day trial |
@@ -178,6 +202,346 @@ print(df)
 Public paths (`/ping`, `/health`, `/ready`) are always exempt from authentication.
 
 Every response includes an `X-Request-Id` header for tracing (e.g., `X-Request-Id: r0001a3`).
+
+---
+
+## AI Agent Memory API
+
+The AI memory endpoints are an additive in-memory layer for agent working memory,
+context retrieval, and application-level LLM cache hits. Embeddings are always
+client-supplied `float32[]`; the server does not call embedding providers or LLMs.
+Use `--agent-memory-dir <path>` to persist memory/cache records across server
+restarts. When HDB is enabled, the default path is `<hdb-dir>/agent_memory`.
+Standalone mode stores `records.bin` and `vectors.bin` directly in this
+directory. Routed multi-node mode stores this pod's local shard at
+`<path>/node-{node_id}/shard-0/` with a `manifest.json` that validates
+`node_id`, `shard_id`, and `ring_epoch` before startup load. Mutations after the
+last snapshot are appended to `wal.log` as prepared records plus commit markers,
+replayed on restart only after commit, and truncated after the next successful
+snapshot.
+Snapshots flush after `--agent-memory-flush-every` mutations and again during
+server stop. Set `--agent-memory-flush-every 1` for immediate write-through
+snapshots, or `0` for stop-only snapshots with WAL replay in between.
+Set `--agent-memory-replication-mode quorum` or `sync` in routed mode to copy
+prepared WAL records and commit markers to configured Agent Memory replicas
+before acknowledging memory/cache writes. Failed persisted writes are rolled
+back from the live owner store. Replicas write those records under the source
+owner shard path and do not expose them in live search until explicit shard
+adoption.
+
+Bound memory growth with `--agent-memory-max-memories` and
+`--agent-memory-max-cache-entries`. Capacity eviction removes expired entries
+first, then the lowest-retention unpinned memories or least-retained cache
+entries based on recency, importance, and access count. Pinned memories are
+protected from capacity eviction, so the memory count can exceed the configured
+limit when all remaining candidates are pinned.
+
+The default retrieval path uses exact filtered top-K scan and parallelizes large
+full scans internally. Optional experimental ANN candidate generation can be
+enabled with `--agent-memory-ann auto`, `--agent-memory-ann sparse_projection`,
+or, in hnswlib-enabled builds, `--agent-memory-ann hnsw`. ANN only selects
+semantic candidates; the final result still applies
+tenant/session/type filters, TTL checks, and the normal
+pinned/importance/recency/access-count ranking. The index is derived state and is
+rebuilt from memory vectors after snapshot load.
+
+When `X-Zepto-Tenant-Id` is present it is copied into the request tenant scope. If
+the JSON body also has `tenant_id` and it differs, the request returns `400`.
+
+In multi-node routed mode, memory/cache writes and deletes route to the Agent
+Memory owner node over internal `TcpRpc`. Remote write clients carry the
+configured `ring_epoch`; when the owner data node has `TcpRpcServer` fencing
+enabled, stale-epoch mutations are rejected. If persistence is enabled on the
+owner node, the owner appends a prepared WAL record and commit marker before
+acknowledging the write/delete. `GET /api/ai/memories/:memory_id` routes point
+lookup to the memory owner, exact prompt cache lookup routes to the prompt owner,
+and search/context fan out to Agent Memory nodes before merging the global
+top-K. Semantic cache fallback also fans out to configured Agent Memory nodes
+after the exact prompt owner misses.
+
+### `GET /api/ai/stats`
+
+Returns Agent Memory counts, eviction counters, embedding dimension, and the
+current eviction config. It does not expose memory content, prompts, responses,
+or metadata.
+
+```bash
+curl -s http://localhost:8123/api/ai/stats
+```
+
+Response:
+
+```json
+{
+  "memory_count": 1,
+  "cache_count": 0,
+  "embedding_dim": 2,
+  "evicted_memory_count": 1,
+  "evicted_cache_count": 0,
+  "ann": {
+    "mode": "auto",
+    "enabled": true,
+    "min_records": 50000,
+    "oversample": 8,
+    "indexed_vectors": 100000,
+    "partitions": 2,
+    "buckets": 16342,
+    "max_bucket_size": 345,
+    "rebuild_count": 1,
+    "last_rebuild_ms": 138.37,
+    "search_count": 10,
+    "fallback_count": 0
+  },
+  "eviction_config": {
+    "max_memories": 100000,
+    "max_cache_entries": 10000,
+    "evict_expired_on_write": true,
+    "protect_pinned": true
+  }
+}
+```
+
+### `DELETE /api/ai/memories/:memory_id`
+
+Deletes one memory by id and records a WAL tombstone when persistence is enabled.
+Query parameters match point lookup: `tenant_id` and `namespace`.
+
+```bash
+curl -s -X DELETE \
+  'http://localhost:8123/api/ai/memories/mem_2_11_7?tenant_id=tenant_a&namespace=agent'
+```
+
+Response:
+
+```json
+{"ok":true,"memory_id":"mem_2_11_7"}
+```
+
+Missing memories return `404`.
+
+### `POST /api/ai/memories`
+
+Stores or updates a memory object. In routed multi-node mode, the owner node
+stores the record and generates the returned `memory_id` when the caller omits
+one.
+
+```bash
+curl -s -X POST http://localhost:8123/api/ai/memories \
+  -H 'Content-Type: application/json' \
+  -H 'X-Zepto-Tenant-Id: tenant_a' \
+  -d '{
+    "namespace": "agent",
+    "user_id": "u1",
+    "session_id": "s1",
+    "agent_id": "planner",
+    "type": "preference",
+    "content": "User prefers concise answers.",
+    "metadata_json": "{\"source\":\"profile\",\"trusted\":true}",
+    "embedding": [1.0, 0.0],
+    "token_count": 5,
+    "importance": 2.0,
+    "pinned": true
+  }'
+```
+
+Response:
+
+```json
+{"ok":true,"memory_id":"mem_1"}
+```
+
+Supported fields: `memory_id`, `tenant_id`, `namespace`, `user_id`,
+`session_id`, `agent_id`, `type`, `content`, `metadata_json`, `embedding`,
+`token_count`, `importance`, `created_at_ns`, `expires_at_ns`, and `pinned`.
+
+### `GET /api/ai/memories/:memory_id`
+
+Fetches one memory by id. Query parameters:
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `tenant_id` | empty | Optional tenant scope. `X-Zepto-Tenant-Id` also applies and must not conflict. |
+| `namespace` | `default` | Namespace used for caller-supplied id routing. Owner-scoped ids route by embedded owner id. |
+
+In routed multi-node mode, owner-scoped ids such as
+`mem_<node_id>_<epoch>_<counter>` route directly to the owner. For caller-supplied
+ids, pass the same namespace used at write time when it is not `default`.
+
+```bash
+curl -s 'http://localhost:8123/api/ai/memories/mem_2_11_7?tenant_id=tenant_a&namespace=agent'
+```
+
+Response:
+
+```json
+{
+  "found": true,
+  "memory": {
+    "memory_id": "mem_2_11_7",
+    "tenant_id": "tenant_a",
+    "namespace": "agent",
+    "content": "User prefers concise answers."
+  }
+}
+```
+
+Missing memories return `404` with `{"found":false}`. Remote owner errors return
+`502`.
+
+### `POST /api/ai/memories/search`
+
+Searches memories after applying tenant, namespace, user, session, agent, type,
+and TTL filters. Ranking combines embedding cosine similarity, pinned status,
+importance, recency, and access count. The implementation keeps only the top-K
+matches requested by `limit` instead of sorting every candidate.
+
+In routed multi-node mode, the coordinator sends the query to Agent Memory nodes,
+merges each node's local top-K by `score` and `created_at_ns`, then trims to the
+requested `limit`. Remote shard failures return `502`.
+
+```bash
+curl -s -X POST http://localhost:8123/api/ai/memories/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "tenant_a",
+    "namespace": "agent",
+    "user_id": "u1",
+    "query_embedding": [1.0, 0.0],
+    "limit": 5
+  }'
+```
+
+Response:
+
+```json
+{
+  "matches": [
+    {
+      "memory_id": "mem_1",
+      "tenant_id": "tenant_a",
+      "namespace": "agent",
+      "content": "User prefers concise answers.",
+      "score": 18.0,
+      "similarity": 1.0
+    }
+  ],
+  "rows": 1
+}
+```
+
+### `POST /api/ai/context`
+
+Assembles the same ranked memories under an optional token budget. Duplicate
+content is omitted. In routed multi-node mode, context assembly first performs
+the same global fan-out search merge, then applies deduplication and the token
+budget. Remote shard failures return `502`.
+
+```bash
+curl -s -X POST http://localhost:8123/api/ai/context \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "tenant_a",
+    "namespace": "agent",
+    "query_embedding": [1.0, 0.0],
+    "token_budget": 64,
+    "limit": 20
+  }'
+```
+
+Response:
+
+```json
+{
+  "memories": [],
+  "token_count": 0,
+  "rows": 0
+}
+```
+
+### `POST /api/ai/cache/store`
+
+Stores an application-level LLM cache entry. The exact key is normalized prompt
+text scoped by `(tenant_id, namespace)`, with the embedding retained for semantic
+fallback. In routed multi-node mode, the normalized prompt routes to one owner
+node and that owner stores the cache entry.
+
+```bash
+curl -s -X POST http://localhost:8123/api/ai/cache/store \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "tenant_a",
+    "namespace": "agent",
+    "prompt": "Summarize the latest task",
+    "response": "Short task summary",
+    "embedding": [0.9, 0.1],
+    "token_count": 12
+  }'
+```
+
+Response:
+
+```json
+{"ok":true,"cache_id":"cache_1"}
+```
+
+### `DELETE /api/ai/cache`
+
+Deletes one exact prompt cache entry by `(tenant_id, namespace, prompt)` and
+records a WAL tombstone when persistence is enabled. Query parameters:
+`tenant_id`, `namespace` (default `default`), and required `prompt`.
+
+```bash
+curl -s -X DELETE \
+  'http://localhost:8123/api/ai/cache?tenant_id=tenant_a&namespace=agent&prompt=Summarize%20the%20latest%20task'
+```
+
+Response:
+
+```json
+{"ok":true,"cache_id":"cache_1"}
+```
+
+Missing cache entries return `404`.
+
+### `POST /api/ai/cache/lookup`
+
+Performs exact normalized prompt lookup first, then semantic lookup when an
+embedding is supplied and a candidate is above `semantic_threshold`. In routed
+multi-node mode, the exact prompt lookup routes to the prompt owner. Semantic
+fallback fans out to configured Agent Memory nodes after the exact lookup misses.
+
+```bash
+curl -s -X POST http://localhost:8123/api/ai/cache/lookup \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "tenant_a",
+    "namespace": "agent",
+    "prompt": " summarize   THE latest task ",
+    "embedding": [0.88, 0.12],
+    "semantic_threshold": 0.92
+  }'
+```
+
+Miss response:
+
+```json
+{"hit":false}
+```
+
+Hit response:
+
+```json
+{
+  "hit": true,
+  "kind": "exact",
+  "score": 1.0,
+  "entry": {
+    "cache_id": "cache_1",
+    "prompt": "Summarize the latest task",
+    "response": "Short task summary"
+  }
+}
+```
 
 ---
 
@@ -412,6 +776,42 @@ zepto_partitions_total 10
 # HELP zepto_last_ingest_latency_ns Last ingest latency in nanoseconds
 # TYPE zepto_last_ingest_latency_ns gauge
 zepto_last_ingest_latency_ns 181
+
+# HELP zepto_agent_memory_records Current Agent Memory record count
+# TYPE zepto_agent_memory_records gauge
+zepto_agent_memory_records 1
+
+# HELP zepto_agent_cache_entries Current Agent Cache entry count
+# TYPE zepto_agent_cache_entries gauge
+zepto_agent_cache_entries 0
+
+# HELP zepto_agent_memory_evictions_total Total Agent Memory records evicted by TTL or capacity policy
+# TYPE zepto_agent_memory_evictions_total counter
+zepto_agent_memory_evictions_total 1
+
+# HELP zepto_agent_cache_evictions_total Total Agent Cache entries evicted by TTL or capacity policy
+# TYPE zepto_agent_cache_evictions_total counter
+zepto_agent_cache_evictions_total 0
+
+# HELP zepto_agent_memory_ann_indexed_vectors Agent Memory vectors indexed by ANN
+# TYPE zepto_agent_memory_ann_indexed_vectors gauge
+zepto_agent_memory_ann_indexed_vectors 100000
+
+# HELP zepto_agent_memory_ann_rebuilds_total Agent Memory ANN index rebuild count
+# TYPE zepto_agent_memory_ann_rebuilds_total counter
+zepto_agent_memory_ann_rebuilds_total 1
+
+# HELP zepto_agent_memory_ann_last_rebuild_ms Last Agent Memory ANN rebuild duration in ms
+# TYPE zepto_agent_memory_ann_last_rebuild_ms gauge
+zepto_agent_memory_ann_last_rebuild_ms 138.37
+
+# HELP zepto_agent_memory_ann_searches_total Agent Memory searches served from ANN candidates
+# TYPE zepto_agent_memory_ann_searches_total counter
+zepto_agent_memory_ann_searches_total 10
+
+# HELP zepto_agent_memory_ann_fallbacks_total Agent Memory ANN searches that fell back to filtered scan
+# TYPE zepto_agent_memory_ann_fallbacks_total counter
+zepto_agent_memory_ann_fallbacks_total 0
 ```
 
 ### Grafana setup

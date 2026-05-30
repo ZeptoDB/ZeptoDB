@@ -1,6 +1,6 @@
 # ZeptoDB API Reference
 
-*Last updated: 2026-03-22*
+*Last updated: 2026-05-26*
 
 This is the top-level index. Each reference is in a separate file under `docs/api/`.
 
@@ -11,9 +11,9 @@ This is the top-level index. Each reference is in a separate file under `docs/ap
 | Document | Contents |
 |----------|----------|
 | [docs/api/SQL_REFERENCE.md](SQL_REFERENCE.md) | Full SQL syntax — SELECT, WHERE, aggregates, window functions, financial functions, date/time functions, JOINs, set operations, CASE WHEN |
-| [docs/api/PYTHON_REFERENCE.md](PYTHON_REFERENCE.md) | `zeptodb` pybind11 binding, `zepto_py` package — connection, dataframe, arrow, streaming |
-| [docs/api/CPP_REFERENCE.md](CPP_REFERENCE.md) | `ZeptoPipeline`, `QueryExecutor`, `PartitionManager`, `TickMessage`, `CancellationToken` |
-| [docs/api/HTTP_REFERENCE.md](HTTP_REFERENCE.md) | HTTP endpoints, JSON response format, authentication, Prometheus metrics, roles |
+| [docs/api/PYTHON_REFERENCE.md](PYTHON_REFERENCE.md) | `zeptodb` pybind11 binding, `zepto_py` package — connection, dataframe, arrow, streaming, agent memory/cache |
+| [docs/api/CPP_REFERENCE.md](CPP_REFERENCE.md) | `ZeptoPipeline`, `QueryExecutor`, `PartitionManager`, `TickMessage`, `AgentMemoryStore`, `CancellationToken` |
+| [docs/api/HTTP_REFERENCE.md](HTTP_REFERENCE.md) | HTTP endpoints, AI memory endpoints, JSON response format, authentication, Prometheus metrics, roles |
 
 ---
 
@@ -49,6 +49,7 @@ FROM trades GROUP BY DATE_TRUNC('min', timestamp)
 
 ```python
 import zeptodb
+import zepto_py as zepto
 from zepto_py import from_polars, to_pandas, ArrowSession
 
 # Setup
@@ -65,8 +66,13 @@ result_df = to_pandas(pipeline, symbol=1)
 prices = pipeline.get_column(symbol=1, name="price")
 
 # HTTP client
-db = zeptodb.connect("localhost", 8123)
+db = zepto.connect("localhost", 8123)
 df = db.query_pandas("SELECT avg(price) FROM trades GROUP BY symbol")
+
+# Agent memory / cache
+db.memory.put("User prefers concise answers.", embedding=[1.0, 0.0])
+ctx = db.memory.get_context([1.0, 0.0], token_budget=128)
+hit = db.cache.lookup("Summarize the task", embedding=[0.9, 0.1])
 ```
 
 ### C++ — most common patterns
@@ -100,6 +106,11 @@ curl -X POST http://localhost:8123/ \
 # Stats
 curl http://localhost:8123/stats -H "Authorization: Bearer zepto_<key>"
 
+# Agent memory
+curl -X POST http://localhost:8123/api/ai/context \
+  -H 'Content-Type: application/json' \
+  -d '{"query_embedding":[1.0,0.0],"token_budget":128}'
+
 # Health (no auth)
 curl http://localhost:8123/ping
 ```
@@ -111,7 +122,7 @@ curl http://localhost:8123/ping
 | From \ To | pandas | polars | numpy | Arrow | DuckDB | HTTP |
 |-----------|--------|--------|-------|-------|--------|------|
 | ZeptoDB (in-proc) | `to_pandas()` | `to_polars()` | `get_column()` | `to_arrow()` | `to_duckdb()` | — |
-| ZeptoDB (HTTP) | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — | `POST /` |
+| ZeptoDB (HTTP) | `query_pandas()` | `query_polars()` | `query_numpy()` | — | — | `POST /`, `/api/ai/*` |
 | pandas → APEX | `from_pandas()` | — | — | — | — | `ingest_pandas()` |
 | polars → APEX | — | `from_polars()` | — | — | — | `ingest_polars()` |
 | Arrow → APEX | — | — | — | `ingest_arrow()` | — | — |

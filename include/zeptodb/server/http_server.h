@@ -39,6 +39,7 @@
 #include "zeptodb/auth/query_tracker.h"
 #include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/server/metrics_collector.h"
+#include "zeptodb/ai/agent_memory_router.h"
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/ptp_clock_detector.h"
@@ -55,7 +56,34 @@
 // Forward declaration — httplib is included only in the .cpp (compile speed)
 namespace httplib { class Server; }
 
+namespace zeptodb::ai {
+class AgentMemoryStore;
+struct CacheEntry;
+struct CacheLookup;
+struct CacheLookupResult;
+struct MemoryGetResult;
+struct MemoryQuery;
+struct MemoryRecord;
+struct MemorySearchResult;
+struct StoreResult;
+}
+namespace zeptodb::cluster { class TcpRpcClient; }
+
 namespace zeptodb::server {
+
+enum class AgentMemoryReplicationMode {
+    Routed,
+    Quorum,
+    Sync,
+};
+
+/// Result for an Agent Memory owner failover transition.
+struct AgentMemoryOwnerFailoverResult {
+    bool ok = false;
+    bool adopted = false;
+    zeptodb::ai::AgentMemoryNodeId replacement_node_id = 0;
+    std::string error;
+};
 
 // ============================================================================
 // ConnectionInfo — active client session tracking (.z.po/.z.pc equivalent)
@@ -152,6 +180,78 @@ public:
     /// Access the internal metrics collector (for testing or custom queries).
     MetricsCollector* metrics_collector() { return metrics_collector_.get(); }
 
+    /// Access the agent memory store backing /api/ai/* endpoints.
+    /// The store lives with the HTTP server and is in-memory for v0.
+    zeptodb::ai::AgentMemoryStore& agent_memory_store();
+
+    /// Enable Agent Memory sidecar persistence and load any existing snapshot.
+    /// Standalone mode uses the directory directly; routed mode uses
+    /// node-{node_id}/shard-0 under it and validates the shard manifest. The
+    /// server saves after flush_every_mutations memory/cache mutations and again
+    /// during stop(). Set flush_every_mutations=0 to flush only on stop().
+    bool set_agent_memory_persistence(const std::string& directory,
+                                      std::string* error = nullptr,
+                                      size_t flush_every_mutations = 100);
+
+    /// Enable routed Agent Memory HTTP operations. The default remains
+    /// node-local until this is called. Remote writes, point memory lookup,
+    /// search fan-out, context fan-out, and exact cache lookup use TcpRpc opaque
+    /// payloads. Remote write clients inherit config.ring_epoch so data nodes
+    /// with fencing enabled can reject stale owner mutations. Returns false
+    /// when shard-local persistence validation or load fails for this node.
+    bool set_agent_memory_routing(
+        zeptodb::ai::AgentMemoryRouterConfig config,
+        const std::vector<zeptodb::ai::AgentMemoryNodeId>& nodes,
+        std::unordered_map<zeptodb::ai::AgentMemoryNodeId,
+                           std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes,
+        std::string* error = nullptr);
+
+    /// Configure owner-side Agent Memory WAL replica acknowledgement policy.
+    /// Routed is the default single-owner mode. Quorum requires enough replica
+    /// WAL acknowledgements to form a majority with the owner commit marker.
+    /// Sync requires every configured remote replica before owner commit/ACK.
+    void set_agent_memory_replication_mode(AgentMemoryReplicationMode mode) {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        agent_memory_replication_mode_ = mode;
+    }
+    AgentMemoryReplicationMode agent_memory_replication_mode() const {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        return agent_memory_replication_mode_;
+    }
+
+    /// Load a failed owner's shard-local snapshot/WAL into this node's current
+    /// Agent Memory store, then publish it into this node's configured shard
+    /// snapshot path. Intended for explicit failover orchestration after the
+    /// routing ring has reassigned the old owner away from source_node_id.
+    bool adopt_agent_memory_owner_shard(
+        zeptodb::ai::AgentMemoryNodeId source_node_id,
+        uint64_t source_ring_epoch,
+        std::string* error = nullptr);
+
+    /// Apply a failed Agent Memory owner transition to this HTTP server. The
+    /// server switches its local Agent Memory ring to live_nodes/new_ring_epoch.
+    /// The deterministic replacement is the first live node whose id is greater
+    /// than source_node_id, wrapping to the lowest live id; only that node
+    /// adopts the failed owner's persisted shard.
+    AgentMemoryOwnerFailoverResult handle_agent_memory_owner_failover(
+        zeptodb::ai::AgentMemoryNodeId source_node_id,
+        uint64_t source_ring_epoch,
+        uint64_t new_ring_epoch,
+        const std::vector<zeptodb::ai::AgentMemoryNodeId>& live_nodes);
+
+    /// TcpRpc callbacks for remote Agent Memory operations. Write callbacks
+    /// return serialized StoreResult payloads and mark local persistence dirty
+    /// on successful writes. Read callbacks return serialized lookup payloads.
+    std::vector<uint8_t> handle_agent_memory_put_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_cache_store_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_memory_delete_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_cache_delete_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_memory_get_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_memory_search_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_cache_lookup_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_memory_replica_append_rpc(const uint8_t* data,
+                                                                size_t len);
+
     /// Set query coordinator for cluster mode.
     /// When set, /admin/nodes and /admin/metrics/history aggregate from all nodes.
     /// @param node_id  This node's ID (used to tag local metrics snapshots).
@@ -181,6 +281,63 @@ private:
     // Track a request from remote_addr; fires on_connect_ / on_disconnect_.
     // is_closing=true when client sends "Connection: close".
     void track_session(const std::string& remote_addr, bool is_closing);
+    bool persist_agent_memory_snapshot_(std::string* error = nullptr,
+                                        bool force = false);
+    bool mark_agent_memory_dirty_(std::string* error = nullptr);
+    bool replay_agent_memory_wal_(const std::string& directory,
+                                  std::string* error = nullptr);
+    bool append_agent_memory_wal_record_(uint32_t type,
+                                         const std::vector<uint8_t>& payload,
+                                         std::string* error = nullptr);
+    bool replicate_agent_memory_wal_record_(uint32_t type,
+                                            const std::vector<uint8_t>& payload,
+                                            bool local_record_counts,
+                                            std::string* error = nullptr);
+    uint64_t next_agent_memory_wal_tx_id_();
+    bool truncate_agent_memory_wal_locked_(std::string* error = nullptr);
+    bool persist_agent_memory_record_mutation_(
+        const std::string& memory_id,
+        const std::string& tenant_id,
+        std::string* error = nullptr);
+    bool persist_agent_cache_entry_mutation_(
+        const std::string& tenant_id,
+        const std::string& namespace_id,
+        const std::string& prompt,
+        std::string* error = nullptr);
+    bool persist_agent_memory_delete_mutation_(
+        const std::string& memory_id,
+        const std::string& tenant_id,
+        std::string* error = nullptr);
+    bool persist_agent_cache_delete_mutation_(
+        const std::string& tenant_id,
+        const std::string& namespace_id,
+        const std::string& prompt,
+        std::string* error = nullptr);
+    zeptodb::ai::StoreResult put_agent_memory_routed_(
+        zeptodb::ai::MemoryRecord record,
+        bool* local_write);
+    zeptodb::ai::StoreResult store_agent_cache_routed_(
+        zeptodb::ai::CacheEntry entry,
+        bool* local_write);
+    zeptodb::ai::StoreResult delete_agent_memory_routed_(
+        const std::string& memory_id,
+        const std::string& namespace_id,
+        const std::string& tenant_id,
+        bool* local_write);
+    zeptodb::ai::StoreResult delete_agent_cache_routed_(
+        const std::string& tenant_id,
+        const std::string& namespace_id,
+        const std::string& prompt,
+        bool* local_write);
+    zeptodb::ai::MemoryGetResult get_agent_memory_routed_(
+        const std::string& memory_id,
+        const std::string& namespace_id,
+        const std::string& tenant_id);
+    std::vector<zeptodb::ai::MemorySearchResult> search_agent_memory_routed_(
+        zeptodb::ai::MemoryQuery query,
+        std::string* error);
+    zeptodb::ai::CacheLookupResult lookup_agent_cache_routed_(
+        zeptodb::ai::CacheLookup lookup);
 
     // Execute a query with optional timeout and QueryTracker registration.
     // subject is the identity string (remote_addr when auth is off).
@@ -224,6 +381,26 @@ private:
 
     // Self-metrics history collector
     std::unique_ptr<MetricsCollector>                       metrics_collector_;
+
+    // Agent memory/context/cache API store
+    std::unique_ptr<zeptodb::ai::AgentMemoryStore>           agent_memory_;
+    std::mutex                                               agent_memory_persist_mu_;
+    std::string                                              agent_memory_persist_base_dir_;
+    std::string                                              agent_memory_persist_dir_;
+    bool                                                     agent_memory_persist_routed_ = false;
+    zeptodb::ai::AgentMemoryNodeId                           agent_memory_persist_node_id_ = 0;
+    uint64_t                                                 agent_memory_persist_ring_epoch_ = 0;
+    uint32_t                                                 agent_memory_persist_shard_id_ = 0;
+    size_t                                                   agent_memory_dirty_mutations_ = 0;
+    size_t                                                   agent_memory_flush_every_mutations_ = 100;
+    mutable std::mutex                                       agent_memory_routing_mu_;
+    std::unique_ptr<zeptodb::ai::AgentMemoryRouter>          agent_memory_router_;
+    std::unordered_map<zeptodb::ai::AgentMemoryNodeId,
+                       std::shared_ptr<zeptodb::cluster::TcpRpcClient>>
+                                                              agent_memory_remotes_;
+    AgentMemoryReplicationMode                                 agent_memory_replication_mode_ =
+        AgentMemoryReplicationMode::Routed;
+    std::atomic<uint64_t>                                      agent_memory_wal_tx_counter_{1};
 
     // Cluster coordinator (null = standalone mode)
     zeptodb::cluster::QueryCoordinator*                     coordinator_ = nullptr;

@@ -35,6 +35,7 @@ using WalReplayCallback  = std::function<size_t(const std::vector<zeptodb::inges
 using StatsCallback      = std::function<std::string()>;  // returns JSON
 using MetricsCallback    = std::function<std::string(int64_t /*since_ms*/, uint32_t /*limit*/)>;
 using RingUpdateCallback = std::function<bool(const uint8_t* data, size_t len)>;
+using BinaryRpcCallback  = std::function<std::vector<uint8_t>(const uint8_t* data, size_t len)>;
 
 // ============================================================================
 // TcpRpcServer
@@ -74,6 +75,33 @@ public:
     /// Set ring update callback — invoked for RING_UPDATE messages.
     /// Returns true if the update was applied (epoch valid).
     void set_ring_update_callback(RingUpdateCallback cb) { ring_update_callback_ = std::move(cb); }
+
+    /// Set Agent Memory callbacks. Payloads are opaque to TcpRpc; the AI layer
+    /// owns serialization and returns the matching serialized result payload.
+    void set_agent_memory_put_callback(BinaryRpcCallback cb) {
+        agent_memory_put_callback_ = std::move(cb);
+    }
+    void set_agent_cache_store_callback(BinaryRpcCallback cb) {
+        agent_cache_store_callback_ = std::move(cb);
+    }
+    void set_agent_memory_delete_callback(BinaryRpcCallback cb) {
+        agent_memory_delete_callback_ = std::move(cb);
+    }
+    void set_agent_cache_delete_callback(BinaryRpcCallback cb) {
+        agent_cache_delete_callback_ = std::move(cb);
+    }
+    void set_agent_memory_get_callback(BinaryRpcCallback cb) {
+        agent_memory_get_callback_ = std::move(cb);
+    }
+    void set_agent_memory_search_callback(BinaryRpcCallback cb) {
+        agent_memory_search_callback_ = std::move(cb);
+    }
+    void set_agent_cache_lookup_callback(BinaryRpcCallback cb) {
+        agent_cache_lookup_callback_ = std::move(cb);
+    }
+    void set_agent_memory_replica_append_callback(BinaryRpcCallback cb) {
+        agent_memory_replica_append_callback_ = std::move(cb);
+    }
 
     /// Set security config for internal RPC authentication.
     /// When enabled, clients must send AUTH_HANDSHAKE before any other message.
@@ -120,6 +148,14 @@ private:
     StatsCallback      stats_callback_;
     MetricsCallback    metrics_callback_;
     RingUpdateCallback ring_update_callback_;
+    BinaryRpcCallback  agent_memory_put_callback_;
+    BinaryRpcCallback  agent_cache_store_callback_;
+    BinaryRpcCallback  agent_memory_delete_callback_;
+    BinaryRpcCallback  agent_cache_delete_callback_;
+    BinaryRpcCallback  agent_memory_get_callback_;
+    BinaryRpcCallback  agent_memory_search_callback_;
+    BinaryRpcCallback  agent_cache_lookup_callback_;
+    BinaryRpcCallback  agent_memory_replica_append_callback_;
     FencingToken*      fencing_token_ = nullptr;
     RpcSecurityConfig  security_;
     uint32_t           max_payload_size_ = 64u * 1024u * 1024u;  // 64MB default
@@ -179,6 +215,15 @@ public:
     /// Request metrics history from the remote node.
     /// Returns JSON array string, or empty string on failure.
     std::string request_metrics(int64_t since_ms = 0, uint32_t limit = 0);
+
+    /// Send an opaque typed request and return the response payload. When
+    /// include_epoch=true, the client's current fencing epoch is written into
+    /// the RpcHeader.
+    std::vector<uint8_t> request_binary(RpcType request_type,
+                                        RpcType response_type,
+                                        const std::vector<uint8_t>& payload,
+                                        bool include_epoch,
+                                        std::string* error = nullptr);
 
     const std::string& host() const { return host_; }
     uint16_t           port() const { return port_; }

@@ -5,8 +5,8 @@ Ultra-low latency time-series database with pandas/polars/arrow support.
 
 Quick Start
 -----------
->>> import zepto_py as apex
->>> db = zeptodb.connect("localhost", 8123)
+>>> import zepto_py as zepto
+>>> db = zepto.connect("localhost", 8123)
 >>>
 >>> # Ingest from pandas
 >>> import pandas as pd
@@ -42,7 +42,7 @@ is handled server-side by ``zepto_http_server`` once the binary is in cluster
 mode (devlog 111).
 """
 
-from .connection import ZeptoConnection, connect
+from .connection import AgentCacheClient, AgentMemoryClient, ZeptoConnection, connect
 from .dataframe import (
     from_pandas,
     from_polars,
@@ -61,6 +61,8 @@ __version__ = "0.0.3"
 __all__ = [
     "connect",
     "ZeptoConnection",
+    "AgentMemoryClient",
+    "AgentCacheClient",
     "from_pandas",
     "from_polars",
     "from_polars_arrow",

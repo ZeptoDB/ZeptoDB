@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-03-22*
+*Last updated: 2026-05-28*
 
 ---
 
@@ -10,6 +10,8 @@
 - [QueryExecutor (SQL)](#queryexecutor-sql)
 - [PartitionManager & Partition](#partitionmanager--partition)
 - [TickMessage](#tickmessage)
+- [AgentMemoryStore](#agentmemorystore)
+- [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
 
 ---
@@ -464,6 +466,277 @@ constexpr int64_t NS_PER_MIN = 60'000'000'000LL;
 constexpr int64_t NS_PER_H   = 3'600'000'000'000LL;
 constexpr int64_t NS_PER_DAY = 86'400'000'000'000LL;
 ```
+
+---
+
+## AgentMemoryStore
+
+`#include "zeptodb/ai/agent_memory.h"` — Namespace: `zeptodb::ai`
+
+`AgentMemoryStore` is the in-process engine behind the HTTP and Python AI memory
+APIs. It is thread-safe; all public methods take or return snapshots. Embeddings
+are client-supplied `std::vector<float>` values and must use a single dimension
+per store.
+
+```cpp
+#include "zeptodb/ai/agent_memory.h"
+using namespace zeptodb::ai;
+
+AgentMemoryStore store;
+
+MemoryRecord memory;
+memory.tenant_id = "tenant_a";
+memory.namespace_id = "agent";
+memory.user_id = "u1";
+memory.content = "User prefers concise answers.";
+memory.embedding = {1.0f, 0.0f};
+memory.token_count = 5;
+memory.pinned = true;
+
+auto put = store.put_memory(memory);
+if (!put.ok) {
+    throw std::runtime_error(put.error);
+}
+
+MemoryQuery query;
+query.tenant_id = "tenant_a";
+query.namespace_id = "agent";
+query.user_id = "u1";
+query.query_embedding = {1.0f, 0.0f};
+query.limit = 5;
+
+auto matches = store.search(query);
+```
+
+`search()` updates access counters and `last_accessed_ns` for returned memories
+by default. Set `query.update_access = false` for read-only diagnostics or
+benchmark comparisons that must not perturb later recency/access-count ranking.
+
+### Context assembly
+
+```cpp
+ContextRequest request;
+request.tenant_id = "tenant_a";
+request.namespace_id = "agent";
+request.query_embedding = {1.0f, 0.0f};
+request.token_budget = 128;
+request.limit = 20;
+
+ContextResult context = store.get_context(request);
+```
+
+### Exact and semantic cache
+
+```cpp
+CacheEntry entry;
+entry.tenant_id = "tenant_a";
+entry.namespace_id = "agent";
+entry.prompt = "Summarize the latest task";
+entry.response = "Short task summary";
+entry.embedding = {0.9f, 0.1f};
+store.store_cache(entry);
+
+CacheLookup lookup;
+lookup.tenant_id = "tenant_a";
+lookup.namespace_id = "agent";
+lookup.prompt = " summarize   THE latest task ";
+lookup.embedding = {0.88f, 0.12f};
+lookup.semantic_threshold = 0.92;
+
+CacheLookupResult hit = store.lookup_cache(lookup);
+```
+
+### Eviction
+
+```cpp
+AgentMemoryEvictionConfig eviction;
+eviction.max_memories = 100000;
+eviction.max_cache_entries = 10000;
+eviction.protect_pinned = true;
+
+store.set_eviction_config(eviction);
+store.evict_expired();
+```
+
+Capacity eviction removes expired entries first, then evicts the lowest-retention
+memory/cache entries. Memory retention combines importance, recency, access count,
+and pinned status; pinned memories are protected by default from capacity eviction
+but explicit TTL expiry still removes them.
+
+### ANN acceleration
+
+ANN is optional and only generates semantic candidates. The default exact path
+uses filtered top-K scan and parallelizes large full scans. `AgentMemoryStore`
+still applies tenant/session/type filters, TTL checks, and the final recency,
+importance, pinned, and access-count ranking.
+
+```cpp
+AgentMemoryAnnConfig ann;
+ann.mode = AgentMemoryAnnMode::Auto;
+ann.min_records = 50000;
+ann.oversample = 8;
+ann.index.max_candidates = 50000;
+
+store.set_ann_config(ann);
+store.rebuild_ann_index();  // optional; explicit synchronous rebuild
+```
+
+ANN rebuilds take a memory-vector snapshot under the store mutex, build the next
+index outside that mutex, and swap it in only if no newer mutation superseded
+the snapshot. Search schedules dirty rebuilds on the store's background ANN
+worker and falls back to exact scan until a fresh ANN candidate index is
+available. Once an ANN index is clean, append-only memory inserts are added to
+the index incrementally. Updates that preserve tenant, namespace, and embedding
+do not dirty ANN; updates that change ANN candidates, eviction, snapshot loads,
+and ANN config changes wait for the background replacement before using ANN
+again.
+
+`AgentMemoryAnnMode::SparseProjection` forces the ANN path below
+`min_records`. `AgentMemoryAnnMode::Hnsw` enables the optional hnswlib backend
+when the build was configured with `ZEPTO_ENABLE_HNSWLIB=ON`; HNSW uses
+normalized vectors with L2 distance, which is order-equivalent to cosine
+similarity. HNSW tuning fields are `ann.index.hnsw_m`,
+`ann.index.hnsw_ef_construction`, and `ann.index.hnsw_ef_search`. `Off`
+preserves the exact filtered scan. Set
+`MemoryQuery::force_scan = true` when comparing ANN results against exact
+retrieval, and set `MemoryQuery::update_access = false` when the comparison
+should not affect access-count or recency ranking. The v0 sparse-projection index
+and optional HNSW index are experimental derived state and are rebuilt from live
+memories after snapshot load.
+
+### Owner-scoped ids
+
+```cpp
+AgentMemoryIdConfig ids;
+ids.owner_scoped = true;
+ids.node_id = 7;
+ids.ring_epoch = 42;
+store.set_id_config(ids);
+
+// Next auto ids are mem_7_42_1 and cache_7_42_1.
+```
+
+The default remains the legacy local format: `mem_N` and `cache_N`.
+
+### Main methods
+
+| Method | Purpose |
+|---|---|
+| `put_memory(MemoryRecord)` | Store or update a memory; validates token count and embedding dimension |
+| `get_memory(memory_id, tenant_id)` | Return one memory snapshot, optionally tenant-scoped |
+| `get_cache(tenant_id, namespace_id, prompt)` | Return one exact cache snapshot without updating access counters |
+| `memory_records_snapshot()` | Return all memory records without updating access counters |
+| `cache_entries_snapshot()` | Return all cache entries without updating access counters |
+| `remove_memory(memory_id, tenant_id)` | Remove one memory by id, optionally tenant-scoped |
+| `search(MemoryQuery)` | Filter, rank, and return top-K memories |
+| `get_context(ContextRequest)` | Deduplicate and select memories under a token budget |
+| `store_cache(CacheEntry)` | Store exact/semantic cache entry |
+| `remove_cache(tenant_id, namespace_id, prompt)` | Remove one exact cache entry |
+| `lookup_cache(CacheLookup)` | Exact prompt cache lookup with semantic fallback |
+| `set_eviction_config(AgentMemoryEvictionConfig)` | Configure memory/cache capacity limits and pinned protection |
+| `eviction_config()` | Return the current eviction policy |
+| `set_ann_config(AgentMemoryAnnConfig)` | Configure optional ANN candidate generation |
+| `ann_config()` | Return the current ANN policy |
+| `rebuild_ann_index()` | Rebuild the derived ANN index from live memory vectors |
+| `set_id_config(AgentMemoryIdConfig)` | Configure legacy or owner-scoped automatic id generation |
+| `id_config()` | Return the current automatic id identity |
+| `evict_expired(now_ns)` | Remove expired memory/cache entries and return the number removed |
+| `save_to_directory(path)` | Write `records.bin` and `vectors.bin` sidecar snapshot files |
+| `load_from_directory(path)` | Load a sidecar snapshot atomically into the store |
+| `stats()` | Return memory/cache counts, embedding dimension, eviction counters, and ANN counters |
+
+---
+
+## AgentMemoryRouter
+
+`#include "zeptodb/ai/agent_memory_router.h"` — Namespace: `zeptodb::ai`
+
+`AgentMemoryRouter` is the multi-node Agent Memory ownership helper. It is a
+thread-safe consistent hash ring over Agent Memory nodes. It only returns an
+owner decision; callers still perform the local store call or remote RPC.
+
+```cpp
+AgentMemoryRouterConfig cfg;
+cfg.self_node_id = 2;
+cfg.ring_epoch = 11;
+cfg.mode = AgentMemoryRoutingMode::Routed;
+
+AgentMemoryRouter router(cfg);
+router.add_node(1);
+router.add_node(2);
+router.add_node(3);
+
+auto key = AgentMemoryRouter::memory_key(
+    "tenant_a", "agent", "session_1", "agent_1", "user_1", "mem_1");
+AgentMemoryOwner owner = router.route(key);
+```
+
+Default `Local` mode always returns `self_node_id`, even if nodes were added.
+`memory_key()` chooses the logical subject in this order: session, agent, user,
+then memory id. `cache_key()` uses the normalized prompt hash as the logical
+subject so exact prompt cache lookup can route directly to one owner.
+
+### Routed HTTP operations
+
+`HttpServer::set_agent_memory_routing()` wires routed Agent Memory HTTP
+operations. The server uses `AgentMemoryRouter` for owner selection and
+`TcpRpcClient::request_binary()` to send opaque Agent Memory payloads to remote
+owners. The routing config's `ring_epoch` is copied to those clients so remote
+writes carry the existing RPC fencing epoch. It returns `false` if shard-local
+persistence validation or load fails for the current node. The receiving pod
+registers `TcpRpcServer` callbacks with
+`HttpServer::handle_agent_memory_put_rpc()`,
+`HttpServer::handle_agent_cache_store_rpc()`,
+`HttpServer::handle_agent_memory_get_rpc()`,
+`HttpServer::handle_agent_memory_search_rpc()`, and
+`HttpServer::handle_agent_cache_lookup_rpc()`. Replicas that participate in
+`quorum` or `sync` durability also register
+`HttpServer::handle_agent_memory_replica_append_rpc()`.
+
+`HttpServer::set_agent_memory_replication_mode()` accepts
+`AgentMemoryReplicationMode::Routed`, `Quorum`, or `Sync`. `Routed` is the
+default single-owner ACK policy. `Quorum` waits for a majority of configured
+Agent Memory nodes across the prepared WAL record and commit marker. `Sync`
+waits for all configured Agent Memory nodes before the owner commit marker is
+published.
+
+Current routed operations are memory put/delete, cache store/delete, point
+memory lookup, exact prompt cache lookup, semantic cache fallback, search, and
+context. Search and context fan out through local top-K search on each Agent
+Memory node, followed by a coordinator-side global merge. Semantic cache fallback
+fans out after exact prompt lookup misses and returns the highest-score hit. The
+wire message types are `AGENT_MEMORY_PUT`, `AGENT_MEMORY_DELETE`,
+`AGENT_CACHE_STORE`, `AGENT_CACHE_DELETE`, `AGENT_MEMORY_GET`,
+`AGENT_MEMORY_SEARCH`, `AGENT_CACHE_LOOKUP_EXACT`, and
+`AGENT_MEMORY_REPLICA_APPEND`, with matching result/ack messages.
+
+When Agent Memory persistence is enabled, standalone mode stores snapshots in the
+configured directory. Routed mode stores this node's local shard under
+`node-{node_id}/shard-0/` and validates that shard's `manifest.json` before
+loading it. The HTTP server appends local owner mutations to `wal.log` as
+prepared records plus commit markers, replays only committed prepared records
+after snapshot load, and truncates the log after a successful snapshot publish.
+Explicit memory/cache deletes are persisted as committed tombstones. Failed
+persisted writes roll back the live owner store before returning an error.
+
+`HttpServer::adopt_agent_memory_owner_shard(source_node_id, source_ring_epoch)`
+is the explicit failover replay primitive. It validates the failed owner's shard
+manifest, loads that shard's snapshot, replays its WAL, merges the memory/cache
+records into the replacement node's live store, and publishes the replacement
+node's current shard snapshot. Owner-scoped ids from a removed node fall back to
+current-ring routing for point lookup when the embedded owner id is no longer a
+live Agent Memory node.
+
+`HttpServer::handle_agent_memory_owner_failover(source_node_id,
+source_ring_epoch, new_ring_epoch, live_nodes)` is the automatic orchestration
+hook for failover callbacks. It requires routed mode and `live_nodes` must
+include the current server's node id. The method advances the local Agent Memory
+ring to `new_ring_epoch`, removes the failed source node, persists the local
+shard under the new epoch, and returns `AgentMemoryOwnerFailoverResult`. Only
+the deterministic successor adopts the failed owner's shard; other live nodes
+return `ok=true` with `adopted=false`. The deterministic successor is the first
+live node id greater than `source_node_id`, wrapping to the lowest live node id.
+An empty source shard is treated as a successful no-op for the successor.
 
 ---
 

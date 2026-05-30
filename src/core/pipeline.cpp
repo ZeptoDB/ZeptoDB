@@ -295,6 +295,7 @@ size_t ZeptoPipeline::ingest_batch(int32_t symbol,
 void ZeptoPipeline::store_tick(const TickMessage& msg) {
     // 파티션 가져오기 (없으면 자동 생성) — table-scoped
     Partition& partition = partition_mgr_.get_or_create(msg.table_id, msg.symbol_id, msg.recv_ts);
+    auto partition_write = partition.lock_for_write();
 
     // 파티션 최초 접근 시 스키마 초기화
     if (partition.get_column(COL_TIMESTAMP) == nullptr) {
@@ -737,4 +738,3 @@ size_t ZeptoPipeline::total_stored_rows() const {
 }
 
 } // namespace zeptodb::core
-

@@ -27,6 +27,7 @@ add_executable(zepto_tests
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_http_arrow_ipc.cpp
+    unit/test_agent_memory.cpp
     unit/test_flat_hash_map.cpp
     unit/test_rebalance.cpp
     unit/test_bandwidth_throttler.cpp
@@ -62,6 +63,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_core
     zepto_cluster
     zepto_sql
+    zepto_ai
     zepto_auth
     zepto_scheduler
     zepto_server
@@ -145,5 +147,4 @@ target_link_libraries(test_migration PRIVATE
     GTest::gtest
 )
 gtest_discover_tests(test_migration)
-
 

@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 
 namespace zeptodb::storage {
 
@@ -78,6 +79,13 @@ public:
     [[nodiscard]] const PartitionKey& key() const { return key_; }
     [[nodiscard]] State state() const { return state_; }
     [[nodiscard]] ArenaAllocator& arena() { return *arena_; }
+
+    /// Acquire the per-partition write lock. Schema initialization and
+    /// ColumnVector append paths must hold this lock because column vectors are
+    /// append-only but not internally synchronized.
+    [[nodiscard]] std::unique_lock<std::mutex> lock_for_write() const {
+        return std::unique_lock<std::mutex>(write_mu_);
+    }
 
     /// 컬럼 등록 (파티션 생성 시 스키마에 따라)
     ColumnVector& add_column(const std::string& name, ColumnType type);
@@ -244,6 +252,7 @@ private:
     PartitionKey                              key_;
     State                                     state_ = State::ACTIVE;
     std::unique_ptr<ArenaAllocator>           arena_;
+    mutable std::mutex                        write_mu_;
     std::vector<std::unique_ptr<ColumnVector>> columns_;
     std::unordered_set<std::string>           sorted_columns_;
     StringDictionary                          string_dict_;
@@ -311,13 +320,13 @@ public:
 
     /// Approximate total memory used by all partitions.
     size_t total_memory_bytes() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock lock(mutex_);
         return partitions_.size() * arena_size_;
     }
 
     /// Return the partition with the smallest hour_epoch (oldest data).
     Partition* oldest_partition() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock lock(mutex_);
         Partition* oldest = nullptr;
         int64_t min_hour = INT64_MAX;
         for (auto& [key, p] : partitions_) {
@@ -331,7 +340,7 @@ public:
 
     /// Evict (remove) a specific partition from the manager.
     void evict_partition(Partition* target) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock lock(mutex_);
         for (auto it = partitions_.begin(); it != partitions_.end(); ++it) {
             if (it->second.get() == target) {
                 partitions_.erase(it);
@@ -341,14 +350,17 @@ public:
     }
 
     /// 전체 파티션 수
-    [[nodiscard]] size_t partition_count() const { return partitions_.size(); }
+    [[nodiscard]] size_t partition_count() const {
+        std::shared_lock lock(mutex_);
+        return partitions_.size();
+    }
 
 private:
     static int64_t to_hour_epoch(Timestamp ts);
 
     size_t arena_size_;
     std::unordered_map<PartitionKey, std::unique_ptr<Partition>, PartitionKeyHash> partitions_;
-    mutable std::mutex mutex_;  // 파티션 생성 시에만 사용 (쓰기는 lock-free)
+    mutable std::shared_mutex mutex_;
 };
 
 } // namespace zeptodb::storage

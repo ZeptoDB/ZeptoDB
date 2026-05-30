@@ -1,6 +1,6 @@
 # ZeptoDB Python API Reference
 
-*Last updated: 2026-04-18*
+*Last updated: 2026-05-27*
 
 Two Python interfaces are available:
 
@@ -17,6 +17,7 @@ Two Python interfaces are available:
   - [zeptodb.Pipeline](#zeptopipeline)
   - [zeptodb.sql.QueryExecutor](#zeptosqlqueryexecutor)
 - [zepto_py.connection — HTTP client](#zepto_pyconnection--http-client)
+- [Agent Memory and Cache](#agent-memory-and-cache)
 - [zepto_py.dataframe — bulk ingest/export](#zepto_pydataframe--bulk-ingestexport)
 - [zepto_py.arrow — Arrow / DuckDB interop](#zepto_pyarrow--arrow--duckdb-interop)
 - [zepto_py.streaming — high-throughput ingest](#zepto_pystreaming--high-throughput-ingest)
@@ -69,10 +70,10 @@ pipeline.stop()
 ### HTTP client quick start
 
 ```python
-import zepto_py as apex
+import zepto_py as zepto
 
 # Connect to running zepto_server
-db = zeptodb.connect("localhost", 8123)
+db = zepto.connect("localhost", 8123)
 
 # SQL → pandas
 df = db.query_pandas(
@@ -82,6 +83,57 @@ df = db.query_pandas(
     "GROUP BY xbar(timestamp, 300000000000) ORDER BY bar"
 )
 print(df)
+```
+
+### Agent memory and cache
+
+```python
+import zepto_py as zepto
+
+db = zepto.connect("localhost", 8123)
+
+memory_id = db.memory.put(
+    "User prefers concise answers.",
+    embedding=[1.0, 0.0],
+    tenant_id="tenant_a",
+    namespace="agent",
+    user_id="u1",
+    session_id="s1",
+    type="preference",
+    token_count=5,
+    importance=2.0,
+    pinned=True,
+)
+
+matches = db.memory.search(
+    [1.0, 0.0],
+    tenant_id="tenant_a",
+    namespace="agent",
+    user_id="u1",
+    limit=5,
+)
+
+context = db.memory.get_context(
+    [1.0, 0.0],
+    tenant_id="tenant_a",
+    namespace="agent",
+    token_budget=128,
+)
+
+cache_id = db.cache.store(
+    "Summarize the latest task",
+    "Short task summary",
+    embedding=[0.9, 0.1],
+    tenant_id="tenant_a",
+    namespace="agent",
+)
+
+hit = db.cache.lookup(
+    " summarize   THE latest task ",
+    embedding=[0.88, 0.12],
+    tenant_id="tenant_a",
+    namespace="agent",
+)
 ```
 
 ### High-throughput ingest with StreamingSession
@@ -336,18 +388,18 @@ for row in result.rows:
 
 ## zepto_py.connection — HTTP client
 
-Connects to a running `zepto_server` on port 8123 (ClickHouse-compatible HTTP API).
+Connects to a running `zepto_server` on port 8123 (ClickHouse-compatible HTTP
+API). The connection exposes SQL/dataframe helpers plus `memory` and `cache`
+wrappers for the AI memory HTTP endpoints.
 
 ```python
-import zepto_py as apex
-from zepto_py import ApexConnection
+import zepto_py as zepto
+from zepto_py import ZeptoConnection
 
 # Connect
-db = zeptodb.connect("localhost", 8123)
+db = zepto.connect("localhost", 8123)
 # or equivalently:
-db = ApexConnection(host="localhost", port=8123)
-db = ApexConnection(host="localhost", port=8123,
-                    api_key="zepto_<64-hex>")  # with auth
+db = ZeptoConnection(host="localhost", port=8123)
 
 # Health check
 db.ping()   # → True if server is up
@@ -387,6 +439,131 @@ db.create_table(
 db.list_tables()                          # → ['my_trades', ...]
 db.drop_table("my_trades", if_exists=True)
 ```
+
+## Agent Memory and Cache
+
+The high-level HTTP client mirrors the `/api/ai/*` endpoints. Embeddings are
+client-supplied lists of floats; ZeptoDB stores and ranks them but does not create
+embeddings or call LLM providers.
+
+### `db.memory.put(...)`
+
+Stores or updates a memory object and returns its `memory_id`.
+
+```python
+memory_id = db.memory.put(
+    content,
+    embedding=[1.0, 0.0],
+    memory_id="",
+    namespace="default",
+    tenant_id="",
+    user_id="",
+    session_id="",
+    agent_id="",
+    type="memory",
+    metadata_json="{}",
+    token_count=0,
+    importance=0.0,
+    expires_at_ns=0,
+    pinned=False,
+)
+```
+
+### `db.memory.search(...)`
+
+Returns the `matches` array from `/api/ai/memories/search`.
+
+```python
+matches = db.memory.search(
+    query_embedding=[1.0, 0.0],
+    namespace="default",
+    tenant_id="",
+    user_id="",
+    session_id="",
+    agent_id="",
+    type="",
+    limit=10,
+)
+```
+
+### `db.memory.get_context(...)`
+
+Returns ranked memories plus `token_count` under the requested budget.
+
+```python
+context = db.memory.get_context(
+    query_embedding=[1.0, 0.0],
+    token_budget=256,
+    namespace="default",
+    tenant_id="",
+    user_id="",
+    session_id="",
+    agent_id="",
+    type="",
+    limit=10,
+)
+```
+
+### `db.cache.store(...)`
+
+Stores a prompt/response cache entry and returns its `cache_id`.
+
+```python
+cache_id = db.cache.store(
+    prompt,
+    response,
+    embedding=[1.0, 0.0],
+    cache_id="",
+    namespace="default",
+    tenant_id="",
+    metadata_json="{}",
+    token_count=0,
+    expires_at_ns=0,
+)
+```
+
+### `db.cache.lookup(...)`
+
+Performs exact prompt lookup first, then semantic lookup using the supplied
+embedding and threshold.
+
+```python
+hit = db.cache.lookup(
+    prompt,
+    embedding=[1.0, 0.0],
+    namespace="default",
+    tenant_id="",
+    semantic_threshold=0.92,
+)
+```
+
+### Agent examples
+
+Runnable examples live in `examples/agent_memory/`:
+
+- `provider_cache.py` — application-level exact/semantic cache before a mock
+  provider call.
+- `langgraph_memory.py` — LangGraph-style retrieve/call/remember node functions
+  without requiring LangGraph at runtime.
+- `production_agent_demo.py` — production-shaped turn flow that retrieves
+  context, checks the cache, calls a provider on miss, stores the result, and
+  records AgentOps telemetry.
+- `agent_attached_timeseries_demo.py` — five vertical scenarios that seed live
+  time-series tables and related `MemoryRecord` context for finance, IoT,
+  observability, robotics, and game/live-ops agents.
+- `agentops_schema.py` — canonical `agent_runs`, `retrieval_events`,
+  `cache_events`, `llm_calls`, and `tool_calls` table definitions.
+
+The examples use deterministic client-side embeddings and mock model/provider
+functions, so they can run without API keys. Replace the embedding and provider
+functions with your production model stack.
+
+Optional adapters in `examples/agent_memory/adapters.py` connect the same flow to
+installed provider/framework SDKs without adding hard dependencies:
+
+- `OpenAIResponsesAdapter(model=...)`
+- `AnthropicMessagesAdapter(model=...)`
+- `build_langgraph_app(db, model, embed)`
 
 ### ZeptoConnection DDL helpers (devlog 088)
 

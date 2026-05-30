@@ -4,12 +4,15 @@
 >
 > Last cleaned: 2026-05-15
 >
-> Devlog: last `119_arrow_ipc_query_response.md` → next `120_*.md`
+> Devlog: last `141_eks_agent_memory_e2e.md` → next `142_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **EKS Agent Memory E2E** (devlog 141) — `tests/k8s/test_k8s_agent_memory.py` now deploys real ZeptoDB bench images on the x86 and arm64 EKS bench node pools, validates memory put/search/context/cache/tombstone/stats/metrics behavior, restarts the pod, and verifies persisted Agent Memory state replays. The EKS `--k8s-only` harness now includes this stage after compat/HA checks; final run `/tmp/eks_bench_20260530_035421/` passed amd64 compat 27/27, amd64 HA 11/11, arm64 compat 27/27, arm64 HA 11/11, and Agent Memory E2E 2/2.
+- ✅ **Agent-attached time-series demos** (devlog 129) — `examples/agent_memory/agent_attached_timeseries_demo.py` now runs five vertical scenarios for finance/HFT, IoT smart factory, observability/APM, robotics fleet, and game/live-ops. Each scenario seeds a live time-series table, stores scoped `MemoryRecord` context, retrieves memory under a token budget, and builds the attached-agent prompt that combines current timeline evidence with learned context.
+- ✅ **Agent Memory Layer** (devlog 120) — additive AI memory/context subsystem on top of ZeptoDB Core. Adds in-memory `MemoryRecord` storage, parallel exact top-K filtered embedding search, token-budget context assembly, exact prompt cache, semantic cache fallback, sidecar persistence with configurable flush cadence, bounded eviction, optional sparse-projection ANN candidate indexing, `/api/ai/stats` and Prometheus metrics, HTTP `/api/ai/*` endpoints, Python `connection.memory` / `connection.cache` helpers, provider-cache and LangGraph-style examples, optional OpenAI/Anthropic/LangGraph adapters, production-shaped AgentOps telemetry demo, and `bench_agent_memory` baseline/sweep harness. Current-instance 128-dim exact scan is under the 10 ms target at 100K and 300K records and ~16.7 ms at 1M; non-TTL 1M fixture load now completes in seconds instead of rescanning on every write. Sparse projection is faster but recall-sensitive. v0 uses client-supplied `float32[]` embeddings and deliberately avoids server-side LLM or embedding-provider calls.
 - ✅ **Arrow IPC query response** (devlog 119) — `POST /` (port 8123) now honours Arrow IPC content negotiation: `Accept: application/vnd.apache.arrow.stream`, `?default_format=Arrow` (ClickHouse-style), or `?format=arrow` returns an Arrow IPC RecordBatchStream (~2–3× faster than JSON on large result sets, same DuckDB engine). JSON remains the default. Errors stay JSON regardless of Accept (matches ClickHouse). Built with `ZEPTO_USE_FLIGHT=ON` (default) → working; built without → `406 Not Acceptable` with JSON error. Pulled the Arrow encoder out of `flight_server.cpp` into a shared `zepto_arrow_ipc` static lib so HTTP and Flight share one `to_arrow_type` / `build_schema` / `result_to_batch`; encoder also now maps `SYMBOL` columns to Arrow `utf8` via `symbol_dict` (was returning raw int64 codes). +7 tests in new `test_http_arrow_ipc.cpp`. Closes P4 "Arrow IPC query response" (S effort).
 - ✅ **S3 Parquet sink connector** (devlog 118) — operator-facing surface for the cold-tier S3 Parquet path that has shipped as C++ infra since devlog 012. New `S3Layout::HIVE` (default) emits Athena/DuckDB/Polars/Spark auto-discoverable `year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].parquet` keys; FLAT kept byte-identical for backward compat. New Helm `coldTier:` block, matching `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars (Helm interop), per-pod hostname-hash filename collision protection, new operator recipe doc (`docs/operations/COLD_TIER_S3.md`). +14 tests (`test_s3_sink.cpp`, `test_parquet_writer.cpp`, `test_cold_tier.cpp`). Closes the P5 row.
 - ✅ **Ingest-rate HPA** (devlog 117) — `zepto_ingest_ticks_per_sec` per-pod gauge on `/metrics`, wired into the Helm HPA as a custom `Pods` metric (`autoscaling.ingestRateEnabled`). Kubernetes now autoscales on real ingest load instead of CPU/memory proxies; CPU/memory remain configured as the safety net. Closes P8-I4.
@@ -32,6 +35,23 @@
 | **Replication-cluster vs MPP-cluster design doc** | S | New section in `docs/design/phase_c_distributed.md` formalising the architectural diff vs Arc/MotherDuck/DuckDB-replicas (HA + write-sharding vs true scatter-gather). Doubles as an enterprise-sales artefact ("scale beyond a single DuckDB") and an internal design north star. From Arc competitive analysis (2026-05-13). |
 
 Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `docs/community/`.
+
+---
+
+## P3 — Agent Memory / AI Context
+
+| Task | Why | Effort |
+|------|-----|--------|
+| **OpenTelemetry/LLM trace ingest mapping** | Map GenAI spans, tool calls, token counts, latency, model errors, and cache hits into ZeptoDB tables to make observability the first production-grade agent use case. | M |
+| **Context trace/replay** | Explain why each memory entered the prompt and replay the time-series state that surrounded the decision; useful for debugging, audits, and prompt-injection review. | M |
+| **Multi-node Agent Memory** | Foundation done in devlog 122, routed memory/cache write RPCs done in devlog 124, point memory/exact-cache lookup routing done in devlog 126, fan-out search/context merge done in devlog 128, shard-local snapshot paths with startup ownership validation done in devlog 130, local Agent Memory WAL replay done in devlog 131, remote owner WAL/fencing regression coverage done in devlog 132, semantic-cache fan-out done in devlog 133, explicit failed-owner shard adoption done in devlog 134, quorum/sync replica WAL ACK policy done in devlog 135, WAL prepare/commit markers with failed-write rollback done in devlog 136, explicit delete tombstones done in devlog 137, and deterministic owner failover orchestration done in devlog 138. Remaining gaps: tenant quotas, cluster stats, automatic TTL/capacity-eviction tombstones, replica promotion/degraded-state reporting, and full transactional rollback for capacity-eviction side effects. | L |
+| **Agent Memory snapshot failure/latency metrics** | Flush cadence and memory/eviction metrics now exist; operators still need snapshot latency and failure gauges. | S |
+| **Tenant-scoped Agent Memory eviction** | Global caps now exist; larger deployments may need per-tenant/namespace limits for fair sharing under memory pressure. | S |
+| **EKS Agent Memory agent-only harness mode** | Add `--agent-only` to `tests/k8s/run_eks_bench.sh` so Agent Memory E2E can be rerun quickly after the core K8s compat/HA harness is already green. | S |
+| **Agent Memory stronger ANN family** | Sparse projection and optional hnswlib HNSW are now comparable with the devlog 121/123 harness. HNSW gives much better semantic-only recall at low search latency, but first-build graph cost is high and mixed-ranking recall is still weak on random vectors. Devlog 125 moved rebuild work outside the store mutex and added append-only incremental maintenance for clean indexes; devlog 127 moved lazy rebuilds to a background worker with generation coalescing. Next: clustered/real embedding fixtures, update/delete graph maintenance, memory overhead, tenant-filter behavior, persisted index footprint, and IVF comparison before choosing a production default. | M |
+| **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
+
+> ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.
 
 ---
 
@@ -163,6 +183,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
+| **P3** | Agent Memory / AI Context | 7 | OpenTelemetry trace mapping → context trace/replay |
 | **P4** | Tool Integration | 4 | Arrow IPC ingest endpoint (M) → ClickHouse wire protocol (L) |
 | **P5** | Data Pipelines | 6 | Telegraf output plugin (S) → CDC connector (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
@@ -171,7 +192,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **P9** | Physical AI / IoT | 17 | ROS2 plugin, OPC-UA browse CLI |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 54 items + 4 manual tasks**
+**Total open: 61 items + 4 manual tasks**
 
 **Critical path: P2 (launch) → P4 (ClickHouse protocol + Arrow IPC ingest) → P5 (Telegraf output plugin)**
 

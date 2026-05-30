@@ -1,14 +1,20 @@
 # ZeptoDB — Product Positioning & Use Cases
 
-Last updated: 2026-03-24
+Last updated: 2026-05-26
 
 ---
 
 ## Core Thesis
 
-**"Built for quants. Ready for everything."**
+**"Built for quants. Agent-ready wherever time-series data exists."**
 
-ZeptoDB was born for quant research and HFT, but the technologies created in the process — μs latency, millions of ticks/sec ingestion, ASOF JOIN, zero-copy Python — are equally needed in every industry where large-scale time-series data exists.
+ZeptoDB was born for quant research and HFT, but the technologies created in the
+process — μs latency, millions of ticks/sec ingestion, ASOF JOIN, zero-copy Python
+— are equally needed in every industry where large-scale time-series data exists.
+The AI direction is additive rather than a standalone pivot: ZeptoDB Core remains
+the in-memory time-series/columnar engine, while the Agent Memory layer lets
+teams attach agents to existing real-time workflows without losing operational
+context, prior decisions, or prompt/cache history.
 
 ```
 Quant Research (origin)
@@ -16,6 +22,7 @@ Quant Research (origin)
     → Production Trading
       → Risk/Compliance
         → Crypto/DeFi
+          → Agent-Augmented Time-Series Workflows
           → IoT/Smart Factory
             → Autonomous Vehicles/Robotics
               → Anywhere time-series data exists
@@ -72,6 +79,38 @@ The stage where trading data is audited and reported.
 ## Beyond Finance: Industry Use Cases
 
 The technology built for quants solves the same problems in other industries.
+
+### Agentic AI / LLM Context
+
+Agent Memory is positioned as an attachment layer for ZeptoDB's existing
+time-series domains, not as a generic vector database replacement. The core
+split is:
+
+```
+time-series data = what happened
+agent memory     = what we learned, decided, or should reuse
+```
+
+| Agent Need | ZeptoDB Solution |
+|-----------|----------|
+| Live state | Query the latest ticks, metrics, sensor readings, traces, or player events directly from ZeptoDB Core |
+| Operational memory | Store prior decisions, incident summaries, maintenance notes, strategy context, and runbook outcomes as scoped `MemoryRecord`s |
+| Context retrieval | Combine time filters, tenant/session/agent filters, client-supplied embeddings, TTL, importance, pinned memory, recency, and access-count ranking |
+| Prompt/cache control | Use exact normalized prompt cache plus semantic embedding fallback before provider calls |
+| Traceability | Keep agent context, cache, and telemetry close enough to explain why a prompt included a memory or repeated a prior answer |
+| App integration | HTTP `/api/ai/*` endpoints and Python `connection.memory` / `connection.cache` helpers |
+
+**Killer message:** "Agents should remember what happened on the timeline, not just search a vector index."
+
+### Agent-Attached Vertical Examples
+
+| Domain | Time-Series Data | Agent Memory |
+|------|------------------|--------------|
+| Finance / HFT | Ticks, order book, signals, execution, risk events | Strategy notes, regime observations, post-trade explanations, compliance decisions |
+| IoT / Smart Factory | Vibration, temperature, current, pressure, equipment state | Maintenance history, operator notes, known failure modes, successful fixes |
+| Observability / APM | Metrics, logs, traces, deploy events, SLO burn rate | Incident summaries, root-cause hypotheses, runbook attempts, remediation outcomes |
+| Robotics / Vehicles | Sensor streams, CAN bus, IMU, route/replay data | Failure episodes, operator feedback, route decisions, environment-specific learnings |
+| Game / Live Ops | Player telemetry, matchmaking, economy events, A/B cohorts | Segment analysis, prior interventions, experiment interpretation, approved actions |
 
 ### IoT / Smart Factory
 
