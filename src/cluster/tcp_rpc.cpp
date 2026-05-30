@@ -357,6 +357,98 @@ void TcpRpcServer::handle_connection(int cfd) {
             continue;
         }
 
+        if (type == RpcType::AGENT_MEMORY_PUT ||
+            type == RpcType::AGENT_CACHE_STORE ||
+            type == RpcType::AGENT_MEMORY_DELETE ||
+            type == RpcType::AGENT_CACHE_DELETE) {
+            const RpcType response_type =
+                (type == RpcType::AGENT_MEMORY_PUT ||
+                 type == RpcType::AGENT_MEMORY_DELETE)
+                ? RpcType::AGENT_MEMORY_RESULT
+                : RpcType::AGENT_CACHE_RESULT;
+            if (fencing_token_ && hdr.epoch != 0 &&
+                !fencing_token_->validate(hdr.epoch)) {
+                if (!send_message(cfd, response_type, hdr.request_id, {}))
+                    break;
+                continue;
+            }
+
+            std::vector<uint8_t> response;
+            BinaryRpcCallback* cb = nullptr;
+            if (type == RpcType::AGENT_MEMORY_PUT) {
+                cb = &agent_memory_put_callback_;
+            } else if (type == RpcType::AGENT_CACHE_STORE) {
+                cb = &agent_cache_store_callback_;
+            } else if (type == RpcType::AGENT_MEMORY_DELETE) {
+                cb = &agent_memory_delete_callback_;
+            } else {
+                cb = &agent_cache_delete_callback_;
+            }
+            if (*cb) {
+                try {
+                    response = (*cb)(payload.data(), payload.size());
+                } catch (...) {
+                    response.clear();
+                }
+            }
+            if (!send_message(cfd, response_type, hdr.request_id, response))
+                break;
+            continue;
+        }
+
+        if (type == RpcType::AGENT_MEMORY_REPLICA_APPEND) {
+            if (fencing_token_ && hdr.epoch != 0 &&
+                !fencing_token_->validate(hdr.epoch)) {
+                const std::vector<uint8_t> rejected{0u};
+                if (!send_message(cfd, RpcType::AGENT_MEMORY_REPLICA_ACK,
+                                  hdr.request_id, rejected))
+                    break;
+                continue;
+            }
+
+            std::vector<uint8_t> response{0u};
+            if (agent_memory_replica_append_callback_) {
+                try {
+                    response = agent_memory_replica_append_callback_(
+                        payload.data(), payload.size());
+                } catch (...) {
+                    response = {0u};
+                }
+            }
+            if (!send_message(cfd, RpcType::AGENT_MEMORY_REPLICA_ACK,
+                              hdr.request_id, response))
+                break;
+            continue;
+        }
+
+        if (type == RpcType::AGENT_MEMORY_GET ||
+            type == RpcType::AGENT_MEMORY_SEARCH ||
+            type == RpcType::AGENT_CACHE_LOOKUP_EXACT) {
+            RpcType response_type = RpcType::AGENT_CACHE_LOOKUP_RESULT;
+            if (type == RpcType::AGENT_MEMORY_GET) {
+                response_type = RpcType::AGENT_MEMORY_GET_RESULT;
+            } else if (type == RpcType::AGENT_MEMORY_SEARCH) {
+                response_type = RpcType::AGENT_MEMORY_SEARCH_RESULT;
+            }
+            std::vector<uint8_t> response;
+            BinaryRpcCallback* cb = &agent_cache_lookup_callback_;
+            if (type == RpcType::AGENT_MEMORY_GET) {
+                cb = &agent_memory_get_callback_;
+            } else if (type == RpcType::AGENT_MEMORY_SEARCH) {
+                cb = &agent_memory_search_callback_;
+            }
+            if (*cb) {
+                try {
+                    response = (*cb)(payload.data(), payload.size());
+                } catch (...) {
+                    response.clear();
+                }
+            }
+            if (!send_message(cfd, response_type, hdr.request_id, response))
+                break;
+            continue;
+        }
+
         if (type == RpcType::STATS_REQUEST) {
             std::string json = "{}";
             if (stats_callback_) {
@@ -392,10 +484,9 @@ void TcpRpcServer::handle_connection(int cfd) {
         }
 
         if (type == RpcType::RING_UPDATE) {
-            bool applied = false;
             if (ring_update_callback_) {
                 try {
-                    applied = ring_update_callback_(payload.data(), payload.size());
+                    (void)ring_update_callback_(payload.data(), payload.size());
                 } catch (...) {}
             }
             RpcHeader ack{};
@@ -730,6 +821,67 @@ std::string TcpRpcClient::request_metrics(int64_t since_ms, uint32_t limit) {
     }
     release(fd, true);
     return json;
+}
+
+std::vector<uint8_t> TcpRpcClient::request_binary(
+    RpcType request_type,
+    RpcType response_type,
+    const std::vector<uint8_t>& payload,
+    bool include_epoch,
+    std::string* error) {
+    int fd = acquire();
+    if (fd < 0) {
+        if (error) {
+            *error = "TcpRpcClient: cannot connect to "
+                + host_ + ":" + std::to_string(port_);
+        }
+        return {};
+    }
+
+    if (query_timeout_ms_ > 0) {
+        struct timeval tv;
+        tv.tv_sec  = query_timeout_ms_ / 1000;
+        tv.tv_usec = (query_timeout_ms_ % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+
+    RpcHeader hdr{};
+    hdr.type        = static_cast<uint32_t>(request_type);
+    hdr.request_id  = 1;
+    hdr.payload_len = static_cast<uint32_t>(payload.size());
+    hdr.epoch       = include_epoch ? epoch_ : 0;
+    if (!send_all(fd, &hdr, sizeof(hdr)) ||
+        (!payload.empty() && !send_all(fd, payload.data(), payload.size()))) {
+        release(fd, false);
+        if (error) *error = "TcpRpcClient: send failed";
+        return {};
+    }
+
+    RpcHeader resp{};
+    if (!recv_all(fd, &resp, sizeof(resp))) {
+        release(fd, false);
+        if (error) {
+            *error = (errno == EAGAIN || errno == EWOULDBLOCK)
+                ? "TcpRpcClient: request timeout (" + std::to_string(query_timeout_ms_) + "ms)"
+                : "TcpRpcClient: recv header failed";
+        }
+        return {};
+    }
+
+    std::vector<uint8_t> response(resp.payload_len);
+    if (resp.payload_len > 0 &&
+        !recv_all(fd, response.data(), resp.payload_len)) {
+        release(fd, false);
+        if (error) *error = "TcpRpcClient: recv payload failed";
+        return {};
+    }
+    release(fd, true);
+
+    if (static_cast<RpcType>(resp.type) != response_type) {
+        if (error) *error = "TcpRpcClient: unexpected response type";
+        return {};
+    }
+    return response;
 }
 
 bool TcpRpcClient::ping() {

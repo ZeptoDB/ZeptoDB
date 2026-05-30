@@ -13,6 +13,9 @@
 // httplib is header-only — include only in .cpp (compile speed)
 #include "third_party/httplib.h"
 #include "zeptodb/server/http_server.h"
+#include "zeptodb/ai/agent_memory.h"
+#include "zeptodb/ai/agent_memory_wire.h"
+#include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/server/arrow_ipc.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/auth/cancellation_token.h"
@@ -26,6 +29,7 @@
 #include <sstream>
 #include <iomanip>
 #include <string>
+#include <string_view>
 #include <cstdio>
 #include <future>
 #include <chrono>
@@ -33,6 +37,12 @@
 #include <atomic>
 #include <random>
 #include <filesystem>
+#include <fstream>
+#include <cstdlib>
+#include <limits>
+#include <iterator>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace zeptodb::server {
 
@@ -90,6 +100,734 @@ static std::string build_402_json(const std::string& feature_name) {
            R"( requires Enterprise license","upgrade_url":"https://zeptodb.com/pricing"})";
 }
 
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c < 0x20) {
+            std::ostringstream os;
+            os << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+               << static_cast<int>(c);
+            out += os.str();
+        } else {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    return out;
+}
+
+static std::string json_quote(const std::string& s) {
+    return "\"" + json_escape(s) + "\"";
+}
+
+static size_t find_json_value(const std::string& body, const std::string& key) {
+    int depth = 0;
+    for (size_t i = 0; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '{' || c == '[') {
+            ++depth;
+            continue;
+        }
+        if (c == '}' || c == ']') {
+            --depth;
+            continue;
+        }
+        if (depth != 1 || c != '"') continue;
+
+        std::string candidate;
+        bool esc = false;
+        size_t j = i + 1;
+        for (; j < body.size(); ++j) {
+            const char ch = body[j];
+            if (esc) {
+                candidate.push_back(ch);
+                esc = false;
+            } else if (ch == '\\') {
+                esc = true;
+            } else if (ch == '"') {
+                break;
+            } else {
+                candidate.push_back(ch);
+            }
+        }
+        if (j >= body.size()) return std::string::npos;
+
+        size_t colon = j + 1;
+        while (colon < body.size() &&
+               std::isspace(static_cast<unsigned char>(body[colon]))) {
+            ++colon;
+        }
+        if (colon >= body.size() || body[colon] != ':') {
+            i = j;
+            continue;
+        }
+        if (candidate != key) {
+            i = j;
+            continue;
+        }
+        size_t value = colon + 1;
+        while (value < body.size() &&
+               std::isspace(static_cast<unsigned char>(body[value]))) {
+            ++value;
+        }
+        return value;
+    }
+    return std::string::npos;
+}
+
+static std::string read_json_string_at(const std::string& body, size_t pos) {
+    if (pos == std::string::npos || pos >= body.size() || body[pos] != '"')
+        return {};
+    std::string out;
+    bool esc = false;
+    for (size_t i = pos + 1; i < body.size(); ++i) {
+        const char c = body[i];
+        if (esc) {
+            if (c == 'n') out.push_back('\n');
+            else if (c == 'r') out.push_back('\r');
+            else if (c == 't') out.push_back('\t');
+            else out.push_back(c);
+            esc = false;
+        } else if (c == '\\') {
+            esc = true;
+        } else if (c == '"') {
+            return out;
+        } else {
+            out.push_back(c);
+        }
+    }
+    return {};
+}
+
+static std::string json_string_field(const std::string& body,
+                                     const std::string& key,
+                                     const std::string& fallback = {}) {
+    const size_t pos = find_json_value(body, key);
+    const std::string value = read_json_string_at(body, pos);
+    return value.empty() ? fallback : value;
+}
+
+static int64_t json_i64_field(const std::string& body,
+                              const std::string& key,
+                              int64_t fallback = 0) {
+    const size_t pos = find_json_value(body, key);
+    if (pos == std::string::npos) return fallback;
+    char* end = nullptr;
+    const long long value = std::strtoll(body.c_str() + pos, &end, 10);
+    return end == body.c_str() + pos ? fallback : static_cast<int64_t>(value);
+}
+
+static bool json_nonnegative_size_field(const std::string& body,
+                                        const std::string& key,
+                                        size_t fallback,
+                                        size_t* out,
+                                        std::string* error) {
+    const int64_t value = json_i64_field(body, key, static_cast<int64_t>(fallback));
+    if (value < 0) {
+        if (error) *error = key + " must be non-negative";
+        return false;
+    }
+    *out = static_cast<size_t>(value);
+    return true;
+}
+
+static double json_double_field(const std::string& body,
+                                const std::string& key,
+                                double fallback = 0.0) {
+    const size_t pos = find_json_value(body, key);
+    if (pos == std::string::npos) return fallback;
+    char* end = nullptr;
+    const double value = std::strtod(body.c_str() + pos, &end);
+    return end == body.c_str() + pos ? fallback : value;
+}
+
+static bool json_bool_field(const std::string& body,
+                            const std::string& key,
+                            bool fallback = false) {
+    const size_t pos = find_json_value(body, key);
+    if (pos == std::string::npos) return fallback;
+    if (body.compare(pos, 4, "true") == 0) return true;
+    if (body.compare(pos, 5, "false") == 0) return false;
+    return fallback;
+}
+
+static bool json_float_array_field(const std::string& body,
+                                   const std::string& key,
+                                   std::vector<float>* out,
+                                   std::string* error) {
+    out->clear();
+    const size_t pos = find_json_value(body, key);
+    if (pos == std::string::npos) return true;
+    if (pos >= body.size() || body[pos] != '[') {
+        if (error) *error = key + " must be an array";
+        return false;
+    }
+    size_t cur = pos + 1;
+    while (cur < body.size()) {
+        while (cur < body.size() &&
+               std::isspace(static_cast<unsigned char>(body[cur]))) ++cur;
+        if (cur < body.size() && body[cur] == ']') return true;
+        char* end = nullptr;
+        const double value = std::strtod(body.c_str() + cur, &end);
+        if (end == body.c_str() + cur) {
+            if (error) *error = "Invalid float in " + key;
+            return false;
+        }
+        out->push_back(static_cast<float>(value));
+        cur = static_cast<size_t>(end - body.c_str());
+        while (cur < body.size() &&
+               std::isspace(static_cast<unsigned char>(body[cur]))) ++cur;
+        if (cur < body.size() && body[cur] == ',') {
+            ++cur;
+            continue;
+        }
+        if (cur < body.size() && body[cur] == ']') return true;
+        if (error) *error = "Invalid array syntax in " + key;
+        return false;
+    }
+    if (error) *error = "Unterminated array in " + key;
+    return false;
+}
+
+static std::string memory_json(const zeptodb::ai::MemorySearchResult& match) {
+    const auto& r = match.record;
+    std::ostringstream os;
+    os << "{\"memory_id\":" << json_quote(r.memory_id)
+       << ",\"tenant_id\":" << json_quote(r.tenant_id)
+       << ",\"namespace\":" << json_quote(r.namespace_id)
+       << ",\"user_id\":" << json_quote(r.user_id)
+       << ",\"session_id\":" << json_quote(r.session_id)
+       << ",\"agent_id\":" << json_quote(r.agent_id)
+       << ",\"type\":" << json_quote(r.type)
+       << ",\"content\":" << json_quote(r.content)
+       << ",\"metadata_json\":" << json_quote(r.metadata_json)
+       << ",\"token_count\":" << r.token_count
+       << ",\"importance\":" << r.importance
+       << ",\"created_at_ns\":" << r.created_at_ns
+       << ",\"last_accessed_ns\":" << r.last_accessed_ns
+       << ",\"expires_at_ns\":" << r.expires_at_ns
+       << ",\"pinned\":" << (r.pinned ? "true" : "false")
+       << ",\"access_count\":" << r.access_count
+       << ",\"score\":" << match.score
+       << ",\"similarity\":" << match.similarity
+       << "}";
+    return os.str();
+}
+
+static bool memory_match_better(const zeptodb::ai::MemorySearchResult& a,
+                                const zeptodb::ai::MemorySearchResult& b) {
+    if (a.score != b.score) return a.score > b.score;
+    return a.record.created_at_ns > b.record.created_at_ns;
+}
+
+static void trim_memory_matches(std::vector<zeptodb::ai::MemorySearchResult>* matches,
+                                size_t limit) {
+    std::sort(matches->begin(), matches->end(), memory_match_better);
+    if (matches->size() > limit) {
+        matches->resize(limit);
+    }
+}
+
+static zeptodb::ai::ContextResult assemble_context_from_matches(
+    std::vector<zeptodb::ai::MemorySearchResult> matches,
+    int64_t token_budget) {
+    if (token_budget < 0) return {};
+    zeptodb::ai::ContextResult out;
+    std::unordered_set<std::string> seen_content;
+    for (auto& match : matches) {
+        if (!match.record.content.empty() &&
+            !seen_content.insert(match.record.content).second) {
+            continue;
+        }
+        const int64_t tokens = match.record.token_count > 0
+            ? match.record.token_count
+            : zeptodb::ai::AgentMemoryStore::estimate_tokens(match.record.content);
+        if (token_budget > 0 && tokens > token_budget - out.token_count) {
+            continue;
+        }
+        out.token_count += tokens;
+        out.memories.push_back(std::move(match));
+    }
+    return out;
+}
+
+static std::string cache_entry_json(const zeptodb::ai::CacheEntry& entry) {
+    std::ostringstream os;
+    os << "{\"cache_id\":" << json_quote(entry.cache_id)
+       << ",\"tenant_id\":" << json_quote(entry.tenant_id)
+       << ",\"namespace\":" << json_quote(entry.namespace_id)
+       << ",\"prompt\":" << json_quote(entry.prompt)
+       << ",\"response\":" << json_quote(entry.response)
+       << ",\"metadata_json\":" << json_quote(entry.metadata_json)
+       << ",\"token_count\":" << entry.token_count
+       << ",\"created_at_ns\":" << entry.created_at_ns
+       << ",\"last_accessed_ns\":" << entry.last_accessed_ns
+       << ",\"expires_at_ns\":" << entry.expires_at_ns
+       << ",\"access_count\":" << entry.access_count
+       << "}";
+    return os.str();
+}
+
+static bool parse_owner_scoped_memory_id(
+    const std::string& memory_id,
+    zeptodb::ai::AgentMemoryNodeId* node_id) {
+    constexpr std::string_view prefix = "mem_";
+    if (!node_id || memory_id.rfind(prefix, 0) != 0) return false;
+    const size_t start = prefix.size();
+    const size_t end = memory_id.find('_', start);
+    if (end == std::string::npos || end == start) return false;
+    uint64_t parsed = 0;
+    for (size_t i = start; i < end; ++i) {
+        const char c = memory_id[i];
+        if (c < '0' || c > '9') return false;
+        parsed = parsed * 10 + static_cast<uint64_t>(c - '0');
+        if (parsed > std::numeric_limits<zeptodb::ai::AgentMemoryNodeId>::max()) {
+            return false;
+        }
+    }
+    *node_id = static_cast<zeptodb::ai::AgentMemoryNodeId>(parsed);
+    return true;
+}
+
+static std::string agent_memory_stats_json(const zeptodb::ai::AgentMemoryStore& store) {
+    const auto stats = store.stats();
+    const auto eviction = store.eviction_config();
+    const auto ann = store.ann_config();
+    auto ann_mode = [](zeptodb::ai::AgentMemoryAnnMode mode) {
+        switch (mode) {
+            case zeptodb::ai::AgentMemoryAnnMode::Auto: return "auto";
+            case zeptodb::ai::AgentMemoryAnnMode::SparseProjection:
+                return "sparse_projection";
+            case zeptodb::ai::AgentMemoryAnnMode::Hnsw:
+                return "hnsw";
+            case zeptodb::ai::AgentMemoryAnnMode::Off:
+            default:
+                return "off";
+        }
+    };
+    std::ostringstream os;
+    os << "{\"memory_count\":" << stats.memory_count
+       << ",\"cache_count\":" << stats.cache_count
+       << ",\"embedding_dim\":" << stats.embedding_dim
+       << ",\"evicted_memory_count\":" << stats.evicted_memory_count
+       << ",\"evicted_cache_count\":" << stats.evicted_cache_count
+       << ",\"ann\":{"
+       << "\"mode\":" << json_quote(ann_mode(ann.mode))
+       << ",\"enabled\":" << (stats.ann_enabled ? "true" : "false")
+       << ",\"min_records\":" << ann.min_records
+       << ",\"oversample\":" << ann.oversample
+       << ",\"indexed_vectors\":" << stats.ann_indexed_vectors
+       << ",\"partitions\":" << stats.ann_partitions
+       << ",\"buckets\":" << stats.ann_buckets
+       << ",\"max_bucket_size\":" << stats.ann_max_bucket_size
+       << ",\"rebuild_count\":" << stats.ann_rebuild_count
+       << ",\"last_rebuild_ms\":" << stats.ann_last_rebuild_ms
+       << ",\"search_count\":" << stats.ann_search_count
+       << ",\"fallback_count\":" << stats.ann_fallback_count
+       << "}"
+       << ",\"eviction_config\":{"
+       << "\"max_memories\":" << eviction.max_memories
+       << ",\"max_cache_entries\":" << eviction.max_cache_entries
+       << ",\"evict_expired_on_write\":"
+       << (eviction.evict_expired_on_write ? "true" : "false")
+       << ",\"protect_pinned\":" << (eviction.protect_pinned ? "true" : "false")
+       << "}}";
+    return os.str();
+}
+
+static bool apply_tenant_header(const httplib::Request& req,
+                                std::string* tenant_id,
+                                std::string* error) {
+    if (!req.has_header("X-Zepto-Tenant-Id")) return true;
+    const std::string header_tenant = req.get_header_value("X-Zepto-Tenant-Id");
+    if (header_tenant.empty()) return true;
+    if (!tenant_id->empty() && *tenant_id != header_tenant) {
+        if (error) *error = "Tenant header does not match request tenant_id";
+        return false;
+    }
+    *tenant_id = header_tenant;
+    return true;
+}
+
+static std::filesystem::path agent_memory_effective_snapshot_dir(
+    const std::string& base_dir,
+    bool routed,
+    zeptodb::ai::AgentMemoryNodeId node_id,
+    uint32_t shard_id) {
+    std::filesystem::path path(base_dir);
+    if (!routed) return path;
+    path /= "node-" + std::to_string(node_id);
+    path /= "shard-" + std::to_string(shard_id);
+    return path;
+}
+
+static bool read_agent_memory_manifest_u64(const std::string& text,
+                                           const std::string& key,
+                                           uint64_t* value) {
+    const std::string quoted_key = "\"" + key + "\"";
+    const size_t key_pos = text.find(quoted_key);
+    if (key_pos == std::string::npos) return false;
+    const size_t colon = text.find(':', key_pos + quoted_key.size());
+    if (colon == std::string::npos) return false;
+    size_t pos = colon + 1;
+    while (pos < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[pos]))) {
+        ++pos;
+    }
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(text.c_str() + pos, &end, 10);
+    if (end == text.c_str() + pos) return false;
+    *value = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+static bool validate_agent_memory_shard_manifest(
+    const std::filesystem::path& dir,
+    bool routed,
+    zeptodb::ai::AgentMemoryNodeId node_id,
+    uint64_t ring_epoch,
+    uint32_t shard_id,
+    bool allow_epoch_forward,
+    std::string* error) {
+    namespace fs = std::filesystem;
+    if (!routed) return true;
+
+    const fs::path manifest_path = dir / "manifest.json";
+    const bool has_records = fs::exists(dir / "records.bin");
+    const bool has_vectors = fs::exists(dir / "vectors.bin");
+    const bool has_wal = fs::exists(dir / "wal.log");
+    if (!fs::exists(manifest_path)) {
+        if (!has_records && !has_vectors && !has_wal) return true;
+        if (error) *error = "missing agent memory shard manifest";
+        return false;
+    }
+
+    std::ifstream manifest(manifest_path);
+    if (!manifest.is_open()) {
+        if (error) *error = "failed to open agent memory shard manifest";
+        return false;
+    }
+    const std::string text((std::istreambuf_iterator<char>(manifest)),
+                           std::istreambuf_iterator<char>());
+
+    uint64_t version = 0;
+    uint64_t manifest_node_id = 0;
+    uint64_t manifest_ring_epoch = 0;
+    uint64_t manifest_shard_id = 0;
+    if (!read_agent_memory_manifest_u64(text, "version", &version) ||
+        !read_agent_memory_manifest_u64(text, "node_id", &manifest_node_id) ||
+        !read_agent_memory_manifest_u64(text, "ring_epoch", &manifest_ring_epoch) ||
+        !read_agent_memory_manifest_u64(text, "shard_id", &manifest_shard_id)) {
+        if (error) *error = "invalid agent memory shard manifest";
+        return false;
+    }
+    if (version != 1) {
+        if (error) *error = "unsupported agent memory shard manifest version";
+        return false;
+    }
+    const bool epoch_matches = manifest_ring_epoch == ring_epoch ||
+        (allow_epoch_forward && manifest_ring_epoch <= ring_epoch);
+    if (manifest_node_id != node_id || manifest_shard_id != shard_id ||
+        !epoch_matches) {
+        if (error) {
+            *error = "agent memory shard manifest does not match current owner";
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool write_agent_memory_shard_manifest(
+    const std::filesystem::path& dir,
+    bool routed,
+    zeptodb::ai::AgentMemoryNodeId node_id,
+    uint64_t ring_epoch,
+    uint32_t shard_id,
+    std::string* error) {
+    namespace fs = std::filesystem;
+    if (!routed) return true;
+
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        if (error) *error = "failed to create shard manifest directory: " + ec.message();
+        return false;
+    }
+
+    const fs::path tmp_path = dir / "manifest.json.tmp";
+    const fs::path manifest_path = dir / "manifest.json";
+    std::ofstream manifest(tmp_path, std::ios::trunc);
+    if (!manifest.is_open()) {
+        if (error) *error = "failed to open shard manifest for writing";
+        return false;
+    }
+    manifest << "{\n"
+             << "  \"format\": \"zeptodb.agent_memory.shard_snapshot\",\n"
+             << "  \"version\": 1,\n"
+             << "  \"node_id\": " << node_id << ",\n"
+             << "  \"shard_id\": " << shard_id << ",\n"
+             << "  \"ring_epoch\": " << ring_epoch << "\n"
+             << "}\n";
+    manifest.close();
+    if (!manifest) {
+        if (error) *error = "failed to flush shard manifest";
+        return false;
+    }
+
+    fs::remove(manifest_path, ec);
+    ec.clear();
+    fs::rename(tmp_path, manifest_path, ec);
+    if (ec) {
+        if (error) *error = "failed to publish shard manifest: " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+constexpr uint32_t kAgentMemoryWalMagic = 0x4c574d41u; // "AMWL", little-endian
+constexpr uint32_t kAgentMemoryWalVersion = 1;
+constexpr uint32_t kAgentMemoryWalPutMemory = 1;
+constexpr uint32_t kAgentMemoryWalStoreCache = 2;
+constexpr uint32_t kAgentMemoryWalPrepareMemory = 3;
+constexpr uint32_t kAgentMemoryWalPrepareCache = 4;
+constexpr uint32_t kAgentMemoryWalCommit = 5;
+constexpr uint32_t kAgentMemoryWalDeleteMemory = 6;
+constexpr uint32_t kAgentMemoryWalDeleteCache = 7;
+constexpr uint32_t kAgentMemoryWalPrepareDeleteMemory = 8;
+constexpr uint32_t kAgentMemoryWalPrepareDeleteCache = 9;
+constexpr uint32_t kAgentMemoryWalMaxPayload = 64u * 1024u * 1024u;
+
+static void append_u32_le(std::vector<uint8_t>* out, uint32_t value) {
+    out->push_back(static_cast<uint8_t>(value));
+    out->push_back(static_cast<uint8_t>(value >> 8));
+    out->push_back(static_cast<uint8_t>(value >> 16));
+    out->push_back(static_cast<uint8_t>(value >> 24));
+}
+
+static void append_u64_le(std::vector<uint8_t>* out, uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+        out->push_back(static_cast<uint8_t>(value >> shift));
+    }
+}
+
+static bool read_u32_le(std::istream& in, uint32_t* value) {
+    uint8_t bytes[4] = {};
+    in.read(reinterpret_cast<char*>(bytes), sizeof(bytes));
+    if (!in) return false;
+    *value = static_cast<uint32_t>(bytes[0])
+        | (static_cast<uint32_t>(bytes[1]) << 8)
+        | (static_cast<uint32_t>(bytes[2]) << 16)
+        | (static_cast<uint32_t>(bytes[3]) << 24);
+    return true;
+}
+
+static bool read_u32_le_bytes(const uint8_t*& ptr, size_t& remaining,
+                              uint32_t* value) {
+    if (remaining < 4) return false;
+    *value = static_cast<uint32_t>(ptr[0])
+        | (static_cast<uint32_t>(ptr[1]) << 8)
+        | (static_cast<uint32_t>(ptr[2]) << 16)
+        | (static_cast<uint32_t>(ptr[3]) << 24);
+    ptr += 4;
+    remaining -= 4;
+    return true;
+}
+
+static bool read_u64_le_bytes(const uint8_t*& ptr, size_t& remaining,
+                              uint64_t* value) {
+    if (remaining < 8) return false;
+    uint64_t out = 0;
+    for (int shift = 0; shift < 64; shift += 8) {
+        out |= static_cast<uint64_t>(*ptr++) << shift;
+    }
+    remaining -= 8;
+    *value = out;
+    return true;
+}
+
+static void append_string_le(std::vector<uint8_t>* out,
+                             const std::string& value) {
+    append_u32_le(out, static_cast<uint32_t>(value.size()));
+    out->insert(out->end(), value.begin(), value.end());
+}
+
+static bool read_string_le_bytes(const uint8_t*& ptr,
+                                 size_t& remaining,
+                                 std::string* value) {
+    uint32_t len = 0;
+    if (!read_u32_le_bytes(ptr, remaining, &len) || remaining < len) {
+        return false;
+    }
+    value->assign(reinterpret_cast<const char*>(ptr), len);
+    ptr += len;
+    remaining -= len;
+    return true;
+}
+
+static bool replay_agent_memory_wal_into_store(
+    const std::string& directory,
+    zeptodb::ai::AgentMemoryStore& store,
+    std::string* error);
+
+static std::vector<uint8_t> serialize_agent_memory_wal_prepare(
+    uint64_t tx_id,
+    const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> out;
+    out.reserve(8 + payload.size());
+    append_u64_le(&out, tx_id);
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+static std::vector<uint8_t> serialize_agent_memory_wal_tx_id(uint64_t tx_id) {
+    std::vector<uint8_t> out;
+    out.reserve(8);
+    append_u64_le(&out, tx_id);
+    return out;
+}
+
+static std::vector<uint8_t> serialize_agent_memory_wal_delete_memory(
+    const std::string& memory_id,
+    const std::string& tenant_id) {
+    std::vector<uint8_t> out;
+    out.reserve(8 + memory_id.size() + tenant_id.size());
+    append_string_le(&out, memory_id);
+    append_string_le(&out, tenant_id);
+    return out;
+}
+
+static std::vector<uint8_t> serialize_agent_memory_wal_delete_cache(
+    const std::string& tenant_id,
+    const std::string& namespace_id,
+    const std::string& prompt) {
+    std::vector<uint8_t> out;
+    out.reserve(12 + tenant_id.size() + namespace_id.size() + prompt.size());
+    append_string_le(&out, tenant_id);
+    append_string_le(&out, namespace_id);
+    append_string_le(&out, prompt);
+    return out;
+}
+
+struct AgentMemoryWalPreparedMutation {
+    uint32_t committed_type = 0;
+    std::vector<uint8_t> payload;
+};
+
+static bool deserialize_agent_memory_wal_prepare(
+    uint32_t type,
+    const std::vector<uint8_t>& payload,
+    uint64_t* tx_id,
+    AgentMemoryWalPreparedMutation* mutation,
+    std::string* error) {
+    const uint8_t* ptr = payload.data();
+    size_t remaining = payload.size();
+    uint64_t parsed_tx_id = 0;
+    if (!read_u64_le_bytes(ptr, remaining, &parsed_tx_id)) {
+        if (error) *error = "invalid agent memory WAL prepare payload";
+        return false;
+    }
+    AgentMemoryWalPreparedMutation parsed;
+    if (type == kAgentMemoryWalPrepareMemory) {
+        parsed.committed_type = kAgentMemoryWalPutMemory;
+    } else if (type == kAgentMemoryWalPrepareCache) {
+        parsed.committed_type = kAgentMemoryWalStoreCache;
+    } else if (type == kAgentMemoryWalPrepareDeleteMemory) {
+        parsed.committed_type = kAgentMemoryWalDeleteMemory;
+    } else if (type == kAgentMemoryWalPrepareDeleteCache) {
+        parsed.committed_type = kAgentMemoryWalDeleteCache;
+    } else {
+        if (error) *error = "invalid agent memory WAL prepare type";
+        return false;
+    }
+    parsed.payload.assign(ptr, ptr + remaining);
+    *tx_id = parsed_tx_id;
+    *mutation = std::move(parsed);
+    return true;
+}
+
+static bool deserialize_agent_memory_wal_tx_id(
+    const std::vector<uint8_t>& payload,
+    uint64_t* tx_id,
+    std::string* error) {
+    const uint8_t* ptr = payload.data();
+    size_t remaining = payload.size();
+    if (!read_u64_le_bytes(ptr, remaining, tx_id) || remaining != 0) {
+        if (error) *error = "invalid agent memory WAL transaction payload";
+        return false;
+    }
+    return true;
+}
+
+static bool apply_agent_memory_wal_mutation(
+    uint32_t type,
+    const std::vector<uint8_t>& payload,
+    zeptodb::ai::AgentMemoryStore& store,
+    std::string* error) {
+    if (type == kAgentMemoryWalPutMemory) {
+        zeptodb::ai::MemoryRecord record;
+        if (!zeptodb::ai::deserialize_memory_record(
+                payload.data(), payload.size(), &record, error)) {
+            return false;
+        }
+        auto stored = store.put_memory(std::move(record));
+        if (!stored.ok) {
+            if (error) *error = stored.error;
+            return false;
+        }
+        return true;
+    }
+    if (type == kAgentMemoryWalStoreCache) {
+        zeptodb::ai::CacheEntry entry;
+        if (!zeptodb::ai::deserialize_cache_entry(
+                payload.data(), payload.size(), &entry, error)) {
+            return false;
+        }
+        auto stored = store.store_cache(std::move(entry));
+        if (!stored.ok) {
+            if (error) *error = stored.error;
+            return false;
+        }
+        return true;
+    }
+    if (type == kAgentMemoryWalDeleteMemory) {
+        const uint8_t* ptr = payload.data();
+        size_t remaining = payload.size();
+        std::string memory_id;
+        std::string tenant_id;
+        if (!read_string_le_bytes(ptr, remaining, &memory_id) ||
+            !read_string_le_bytes(ptr, remaining, &tenant_id) ||
+            remaining != 0) {
+            if (error) *error = "invalid agent memory WAL memory delete payload";
+            return false;
+        }
+        (void)store.remove_memory(memory_id, tenant_id);
+        return true;
+    }
+    if (type == kAgentMemoryWalDeleteCache) {
+        const uint8_t* ptr = payload.data();
+        size_t remaining = payload.size();
+        std::string tenant_id;
+        std::string namespace_id;
+        std::string prompt;
+        if (!read_string_le_bytes(ptr, remaining, &tenant_id) ||
+            !read_string_le_bytes(ptr, remaining, &namespace_id) ||
+            !read_string_le_bytes(ptr, remaining, &prompt) ||
+            remaining != 0) {
+            if (error) *error = "invalid agent memory WAL cache delete payload";
+            return false;
+        }
+        (void)store.remove_cache(tenant_id, namespace_id, prompt);
+        return true;
+    }
+    if (error) *error = "unknown agent memory WAL record type";
+    return false;
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -99,6 +837,9 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor, uint16_t port)
     , tls_{}
     , auth_(nullptr)
     , svr_(std::make_unique<httplib::Server>())
+    , agent_memory_(std::make_unique<zeptodb::ai::AgentMemoryStore>())
+    , agent_memory_wal_tx_counter_(
+          static_cast<uint64_t>(zeptodb::ai::AgentMemoryStore::now_ns()))
 {
     setup_routes();
     setup_auth_middleware();
@@ -114,6 +855,9 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
     , port_(port)
     , tls_(std::move(tls))
     , auth_(std::move(auth))
+    , agent_memory_(std::make_unique<zeptodb::ai::AgentMemoryStore>())
+    , agent_memory_wal_tx_counter_(
+          static_cast<uint64_t>(zeptodb::ai::AgentMemoryStore::now_ns()))
 {
 #ifdef ZEPTO_TLS_ENABLED
     if (tls_.enabled) {
@@ -139,6 +883,1471 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
 
 HttpServer::~HttpServer() {
     if (running_.load()) stop();
+}
+
+zeptodb::ai::AgentMemoryStore& HttpServer::agent_memory_store() {
+    return *agent_memory_;
+}
+
+bool HttpServer::set_agent_memory_persistence(const std::string& directory,
+                                              std::string* error,
+                                              size_t flush_every_mutations) {
+    if (directory.empty()) {
+        if (error) *error = "agent memory persistence directory is required";
+        return false;
+    }
+
+    bool routed = false;
+    zeptodb::ai::AgentMemoryNodeId node_id = 0;
+    uint64_t ring_epoch = 0;
+    uint32_t shard_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+        routed = agent_memory_persist_routed_;
+        node_id = agent_memory_persist_node_id_;
+        ring_epoch = agent_memory_persist_ring_epoch_;
+        shard_id = agent_memory_persist_shard_id_;
+    }
+
+    const auto effective_dir = agent_memory_effective_snapshot_dir(
+        directory, routed, node_id, shard_id);
+    if (!validate_agent_memory_shard_manifest(
+            effective_dir, routed, node_id, ring_epoch, shard_id,
+            true, error)) {
+        return false;
+    }
+    auto loaded = agent_memory_->load_from_directory(effective_dir.string());
+    if (!loaded.ok) {
+        if (error) *error = loaded.error;
+        return false;
+    }
+    if (!replay_agent_memory_wal_(effective_dir.string(), error)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+    agent_memory_persist_base_dir_ = directory;
+    agent_memory_persist_dir_ = effective_dir.string();
+    agent_memory_flush_every_mutations_ = flush_every_mutations;
+    agent_memory_dirty_mutations_ = 0;
+    return true;
+}
+
+bool HttpServer::set_agent_memory_routing(
+    zeptodb::ai::AgentMemoryRouterConfig config,
+    const std::vector<zeptodb::ai::AgentMemoryNodeId>& nodes,
+    std::unordered_map<zeptodb::ai::AgentMemoryNodeId,
+                       std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes,
+    std::string* error) {
+    if (config.virtual_nodes_per_node == 0) {
+        config.virtual_nodes_per_node = 1;
+    }
+    auto router = std::make_unique<zeptodb::ai::AgentMemoryRouter>(config);
+    for (const auto node_id : nodes) {
+        router->add_node(node_id);
+    }
+    for (auto& [node_id, client] : remotes) {
+        (void)node_id;
+        if (client) client->set_epoch(config.ring_epoch);
+    }
+
+    const bool routed = config.mode == zeptodb::ai::AgentMemoryRoutingMode::Routed;
+    constexpr uint32_t shard_id = 0;
+    std::string base_dir;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+        base_dir = agent_memory_persist_base_dir_;
+    }
+    const auto effective_dir = agent_memory_effective_snapshot_dir(
+        base_dir, routed, config.self_node_id, shard_id);
+    if (!base_dir.empty()) {
+        if (!validate_agent_memory_shard_manifest(
+                effective_dir, routed, config.self_node_id, config.ring_epoch,
+                shard_id, true, error)) {
+            return false;
+        }
+        auto loaded = agent_memory_->load_from_directory(effective_dir.string());
+        if (!loaded.ok) {
+            if (error) *error = loaded.error;
+            return false;
+        }
+        if (!replay_agent_memory_wal_(effective_dir.string(), error)) {
+            return false;
+        }
+    }
+
+    zeptodb::ai::AgentMemoryIdConfig ids;
+    ids.owner_scoped = routed;
+    ids.node_id = config.self_node_id;
+    ids.ring_epoch = config.ring_epoch;
+    agent_memory_->set_id_config(ids);
+
+    std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+    agent_memory_router_ = std::move(router);
+    agent_memory_remotes_ = std::move(remotes);
+    {
+        std::lock_guard<std::mutex> persist_lock(agent_memory_persist_mu_);
+        agent_memory_persist_routed_ = routed;
+        agent_memory_persist_node_id_ = config.self_node_id;
+        agent_memory_persist_ring_epoch_ = config.ring_epoch;
+        agent_memory_persist_shard_id_ = shard_id;
+        if (!agent_memory_persist_base_dir_.empty()) {
+            agent_memory_persist_dir_ = effective_dir.string();
+        }
+        agent_memory_dirty_mutations_ = 0;
+    }
+    return true;
+}
+
+AgentMemoryOwnerFailoverResult HttpServer::handle_agent_memory_owner_failover(
+    zeptodb::ai::AgentMemoryNodeId source_node_id,
+    uint64_t source_ring_epoch,
+    uint64_t new_ring_epoch,
+    const std::vector<zeptodb::ai::AgentMemoryNodeId>& live_nodes) {
+    AgentMemoryOwnerFailoverResult result;
+
+    if (source_node_id == 0) {
+        result.error = "agent memory failover source node is required";
+        return result;
+    }
+    if (new_ring_epoch < source_ring_epoch) {
+        result.error = "agent memory failover ring epoch is stale";
+        return result;
+    }
+
+    std::vector<zeptodb::ai::AgentMemoryNodeId> survivors;
+    survivors.reserve(live_nodes.size());
+    for (const auto node_id : live_nodes) {
+        if (node_id != 0 && node_id != source_node_id) {
+            survivors.push_back(node_id);
+        }
+    }
+    std::sort(survivors.begin(), survivors.end());
+    survivors.erase(std::unique(survivors.begin(), survivors.end()),
+                    survivors.end());
+    if (survivors.empty()) {
+        result.error = "agent memory failover requires at least one live node";
+        return result;
+    }
+
+    const auto successor = std::upper_bound(
+        survivors.begin(), survivors.end(), source_node_id);
+    result.replacement_node_id = successor == survivors.end()
+        ? survivors.front()
+        : *successor;
+
+    zeptodb::ai::AgentMemoryRouterConfig config;
+    std::unordered_map<zeptodb::ai::AgentMemoryNodeId,
+                       std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (!agent_memory_router_) {
+            result.error = "agent memory failover requires routing to be configured";
+            return result;
+        }
+        config = agent_memory_router_->config();
+        if (config.mode != zeptodb::ai::AgentMemoryRoutingMode::Routed) {
+            result.error = "agent memory failover requires routed mode";
+            return result;
+        }
+        if (config.self_node_id == 0) {
+            result.error = "agent memory failover requires self node id";
+            return result;
+        }
+        if (!std::binary_search(
+                survivors.begin(), survivors.end(), config.self_node_id)) {
+            result.error = "agent memory failover live nodes exclude this node";
+            return result;
+        }
+        if (new_ring_epoch < config.ring_epoch) {
+            result.error = "agent memory failover ring epoch is older than local routing";
+            return result;
+        }
+        remotes = agent_memory_remotes_;
+    }
+
+    config.mode = zeptodb::ai::AgentMemoryRoutingMode::Routed;
+    config.ring_epoch = new_ring_epoch;
+    remotes.erase(source_node_id);
+
+    std::string routing_error;
+    if (!set_agent_memory_routing(config, survivors, std::move(remotes),
+                                  &routing_error)) {
+        result.error = routing_error;
+        return result;
+    }
+
+    std::string persist_error;
+    if (!persist_agent_memory_snapshot_(&persist_error, true)) {
+        result.error = persist_error;
+        return result;
+    }
+
+    if (config.self_node_id != result.replacement_node_id) {
+        result.ok = true;
+        return result;
+    }
+
+    std::string adopt_error;
+    if (!adopt_agent_memory_owner_shard(source_node_id, source_ring_epoch,
+                                        &adopt_error)) {
+        if (adopt_error == "source agent memory shard is empty") {
+            result.ok = true;
+            return result;
+        }
+        result.error = adopt_error;
+        return result;
+    }
+
+    result.ok = true;
+    result.adopted = true;
+    return result;
+}
+
+bool HttpServer::adopt_agent_memory_owner_shard(
+    zeptodb::ai::AgentMemoryNodeId source_node_id,
+    uint64_t source_ring_epoch,
+    std::string* error) {
+    namespace fs = std::filesystem;
+
+    std::string base_dir;
+    uint32_t shard_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+        if (agent_memory_persist_base_dir_.empty() ||
+            agent_memory_persist_dir_.empty()) {
+            if (error) *error = "agent memory persistence is not enabled";
+            return false;
+        }
+        if (!agent_memory_persist_routed_) {
+            if (error) *error = "agent memory shard adoption requires routed mode";
+            return false;
+        }
+        base_dir = agent_memory_persist_base_dir_;
+        shard_id = agent_memory_persist_shard_id_;
+    }
+
+    const auto source_dir = agent_memory_effective_snapshot_dir(
+        base_dir, true, source_node_id, shard_id);
+    const bool has_records = fs::exists(source_dir / "records.bin");
+    const bool has_vectors = fs::exists(source_dir / "vectors.bin");
+    const bool has_wal = fs::exists(source_dir / "wal.log");
+    if (!has_records && !has_vectors && !has_wal) {
+        if (error) *error = "source agent memory shard is empty";
+        return false;
+    }
+    if (!validate_agent_memory_shard_manifest(
+            source_dir, true, source_node_id, source_ring_epoch, shard_id,
+            false, error)) {
+        return false;
+    }
+
+    zeptodb::ai::AgentMemoryStore source_store;
+    auto loaded = source_store.load_from_directory(source_dir.string());
+    if (!loaded.ok) {
+        if (error) *error = loaded.error;
+        return false;
+    }
+    if (!replay_agent_memory_wal_into_store(source_dir.string(), source_store,
+                                            error)) {
+        return false;
+    }
+
+    for (auto record : source_store.memory_records_snapshot()) {
+        auto stored = agent_memory_->put_memory(std::move(record));
+        if (!stored.ok) {
+            if (error) *error = stored.error;
+            return false;
+        }
+    }
+    for (auto entry : source_store.cache_entries_snapshot()) {
+        auto stored = agent_memory_->store_cache(std::move(entry));
+        if (!stored.ok) {
+            if (error) *error = stored.error;
+            return false;
+        }
+    }
+    return persist_agent_memory_snapshot_(error, true);
+}
+
+bool HttpServer::persist_agent_memory_snapshot_(std::string* error, bool force) {
+    std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+    if (agent_memory_persist_dir_.empty()) return true;
+    if (!force && agent_memory_dirty_mutations_ == 0) return true;
+    auto saved = agent_memory_->save_to_directory(agent_memory_persist_dir_);
+    if (!saved.ok) {
+        if (error) *error = saved.error;
+        return false;
+    }
+    if (!write_agent_memory_shard_manifest(
+            agent_memory_persist_dir_, agent_memory_persist_routed_,
+            agent_memory_persist_node_id_, agent_memory_persist_ring_epoch_,
+            agent_memory_persist_shard_id_, error)) {
+        return false;
+    }
+    if (!truncate_agent_memory_wal_locked_(error)) {
+        return false;
+    }
+    agent_memory_dirty_mutations_ = 0;
+    return true;
+}
+
+bool HttpServer::mark_agent_memory_dirty_(std::string* error) {
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+        if (agent_memory_persist_dir_.empty()) return true;
+        ++agent_memory_dirty_mutations_;
+        if (agent_memory_flush_every_mutations_ == 0 ||
+            agent_memory_dirty_mutations_ < agent_memory_flush_every_mutations_) {
+            return true;
+        }
+    }
+    return persist_agent_memory_snapshot_(error, true);
+}
+
+static bool replay_agent_memory_wal_into_store(
+    const std::string& directory,
+    zeptodb::ai::AgentMemoryStore& store,
+    std::string* error) {
+    namespace fs = std::filesystem;
+    const fs::path wal_path = fs::path(directory) / "wal.log";
+    if (!fs::exists(wal_path)) return true;
+
+    std::ifstream wal(wal_path, std::ios::binary);
+    if (!wal.is_open()) {
+        if (error) *error = "failed to open agent memory WAL for replay";
+        return false;
+    }
+
+    std::unordered_map<uint64_t, AgentMemoryWalPreparedMutation> prepared;
+    for (;;) {
+        if (wal.peek() == std::char_traits<char>::eof()) return true;
+
+        uint32_t magic = 0;
+        uint32_t version = 0;
+        uint32_t type = 0;
+        uint32_t payload_len = 0;
+        if (!read_u32_le(wal, &magic) ||
+            !read_u32_le(wal, &version) ||
+            !read_u32_le(wal, &type) ||
+            !read_u32_le(wal, &payload_len)) {
+            if (error) *error = "truncated agent memory WAL header";
+            return false;
+        }
+        if (magic != kAgentMemoryWalMagic ||
+            version != kAgentMemoryWalVersion ||
+            payload_len > kAgentMemoryWalMaxPayload) {
+            if (error) *error = "invalid agent memory WAL header";
+            return false;
+        }
+
+        std::vector<uint8_t> payload(payload_len);
+        if (payload_len > 0) {
+            wal.read(reinterpret_cast<char*>(payload.data()),
+                     static_cast<std::streamsize>(payload.size()));
+            if (!wal) {
+                if (error) *error = "truncated agent memory WAL payload";
+                return false;
+            }
+        }
+
+        if (type == kAgentMemoryWalPutMemory ||
+            type == kAgentMemoryWalStoreCache ||
+            type == kAgentMemoryWalDeleteMemory ||
+            type == kAgentMemoryWalDeleteCache) {
+            if (!apply_agent_memory_wal_mutation(type, payload, store, error)) {
+                return false;
+            }
+            continue;
+        }
+        if (type == kAgentMemoryWalPrepareMemory ||
+            type == kAgentMemoryWalPrepareCache ||
+            type == kAgentMemoryWalPrepareDeleteMemory ||
+            type == kAgentMemoryWalPrepareDeleteCache) {
+            uint64_t tx_id = 0;
+            AgentMemoryWalPreparedMutation mutation;
+            if (!deserialize_agent_memory_wal_prepare(
+                    type, payload, &tx_id, &mutation, error)) {
+                return false;
+            }
+            prepared[tx_id] = std::move(mutation);
+            continue;
+        }
+        if (type == kAgentMemoryWalCommit) {
+            uint64_t tx_id = 0;
+            if (!deserialize_agent_memory_wal_tx_id(payload, &tx_id, error)) {
+                return false;
+            }
+            const auto it = prepared.find(tx_id);
+            if (it == prepared.end()) {
+                if (error) *error = "agent memory WAL commit without prepare";
+                return false;
+            }
+            if (!apply_agent_memory_wal_mutation(
+                    it->second.committed_type, it->second.payload, store,
+                    error)) {
+                return false;
+            }
+            prepared.erase(it);
+            continue;
+        }
+        if (error) *error = "unknown agent memory WAL record type";
+        return false;
+    }
+}
+
+bool HttpServer::replay_agent_memory_wal_(const std::string& directory,
+                                          std::string* error) {
+    return replay_agent_memory_wal_into_store(directory, *agent_memory_, error);
+}
+
+static bool append_agent_memory_wal_record_to_dir(
+    const std::filesystem::path& dir,
+    bool routed,
+    zeptodb::ai::AgentMemoryNodeId node_id,
+    uint64_t ring_epoch,
+    uint32_t shard_id,
+    uint32_t type,
+    const std::vector<uint8_t>& payload,
+    std::string* error) {
+    if (payload.size() > kAgentMemoryWalMaxPayload) {
+        if (error) *error = "agent memory WAL payload too large";
+        return false;
+    }
+
+    if (!validate_agent_memory_shard_manifest(
+            dir, routed, node_id, ring_epoch, shard_id, false, error)) {
+        return false;
+    }
+    if (!write_agent_memory_shard_manifest(
+            dir, routed, node_id, ring_epoch, shard_id, error)) {
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        if (error) *error = "failed to create agent memory WAL directory: " + ec.message();
+        return false;
+    }
+
+    std::vector<uint8_t> header;
+    header.reserve(16);
+    append_u32_le(&header, kAgentMemoryWalMagic);
+    append_u32_le(&header, kAgentMemoryWalVersion);
+    append_u32_le(&header, type);
+    append_u32_le(&header, static_cast<uint32_t>(payload.size()));
+
+    std::ofstream wal(dir / "wal.log", std::ios::binary | std::ios::app);
+    if (!wal.is_open()) {
+        if (error) *error = "failed to open agent memory WAL for append";
+        return false;
+    }
+    wal.write(reinterpret_cast<const char*>(header.data()),
+              static_cast<std::streamsize>(header.size()));
+    if (!payload.empty()) {
+        wal.write(reinterpret_cast<const char*>(payload.data()),
+                  static_cast<std::streamsize>(payload.size()));
+    }
+    wal.flush();
+    if (!wal) {
+        if (error) *error = "failed to append agent memory WAL record";
+        return false;
+    }
+    return true;
+}
+
+bool HttpServer::append_agent_memory_wal_record_(
+    uint32_t type,
+    const std::vector<uint8_t>& payload,
+    std::string* error) {
+    std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+    if (agent_memory_persist_dir_.empty()) return true;
+    return append_agent_memory_wal_record_to_dir(
+        std::filesystem::path(agent_memory_persist_dir_),
+        agent_memory_persist_routed_,
+        agent_memory_persist_node_id_,
+        agent_memory_persist_ring_epoch_,
+        agent_memory_persist_shard_id_,
+        type,
+        payload,
+        error);
+}
+
+uint64_t HttpServer::next_agent_memory_wal_tx_id_() {
+    return agent_memory_wal_tx_counter_.fetch_add(1, std::memory_order_relaxed);
+}
+
+struct AgentMemoryReplicaAppendRecord {
+    zeptodb::ai::AgentMemoryNodeId source_node_id = 0;
+    uint64_t source_ring_epoch = 0;
+    uint32_t shard_id = 0;
+    uint32_t wal_type = 0;
+    std::vector<uint8_t> payload;
+};
+
+static std::vector<uint8_t> serialize_agent_memory_replica_append(
+    const AgentMemoryReplicaAppendRecord& record) {
+    std::vector<uint8_t> out;
+    out.reserve(24 + record.payload.size());
+    append_u32_le(&out, record.source_node_id);
+    append_u64_le(&out, record.source_ring_epoch);
+    append_u32_le(&out, record.shard_id);
+    append_u32_le(&out, record.wal_type);
+    append_u32_le(&out, static_cast<uint32_t>(record.payload.size()));
+    out.insert(out.end(), record.payload.begin(), record.payload.end());
+    return out;
+}
+
+static bool deserialize_agent_memory_replica_append(
+    const uint8_t* data,
+    size_t len,
+    AgentMemoryReplicaAppendRecord* record,
+    std::string* error) {
+    if (!record) {
+        if (error) *error = "agent memory replica record output is null";
+        return false;
+    }
+    const uint8_t* ptr = data;
+    size_t remaining = len;
+    AgentMemoryReplicaAppendRecord out;
+    uint32_t source_node_id = 0;
+    uint32_t payload_len = 0;
+    if (!read_u32_le_bytes(ptr, remaining, &source_node_id) ||
+        !read_u64_le_bytes(ptr, remaining, &out.source_ring_epoch) ||
+        !read_u32_le_bytes(ptr, remaining, &out.shard_id) ||
+        !read_u32_le_bytes(ptr, remaining, &out.wal_type) ||
+        !read_u32_le_bytes(ptr, remaining, &payload_len)) {
+        if (error) *error = "invalid agent memory replica append header";
+        return false;
+    }
+    if (payload_len > kAgentMemoryWalMaxPayload || remaining != payload_len) {
+        if (error) *error = "invalid agent memory replica append payload";
+        return false;
+    }
+    out.source_node_id = source_node_id;
+    out.payload.assign(ptr, ptr + remaining);
+    *record = std::move(out);
+    return true;
+}
+
+bool HttpServer::replicate_agent_memory_wal_record_(
+    uint32_t type,
+    const std::vector<uint8_t>& payload,
+    bool local_record_counts,
+    std::string* error) {
+    struct Target {
+        zeptodb::ai::AgentMemoryNodeId node_id = 0;
+        std::shared_ptr<zeptodb::cluster::TcpRpcClient> client;
+    };
+
+    AgentMemoryReplicationMode mode = AgentMemoryReplicationMode::Routed;
+    zeptodb::ai::AgentMemoryNodeId self_node_id = 0;
+    std::vector<Target> targets;
+    size_t total_nodes = 1;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        mode = agent_memory_replication_mode_;
+        if (mode == AgentMemoryReplicationMode::Routed) return true;
+        if (agent_memory_router_) {
+            const auto config = agent_memory_router_->config();
+            self_node_id = config.self_node_id;
+            const auto nodes = agent_memory_router_->nodes();
+            total_nodes = std::max<size_t>(nodes.size(), 1);
+            for (const auto node_id : nodes) {
+                if (node_id == config.self_node_id) continue;
+                auto it = agent_memory_remotes_.find(node_id);
+                targets.push_back({node_id,
+                    it == agent_memory_remotes_.end() ? nullptr : it->second});
+            }
+        }
+    }
+
+    zeptodb::ai::AgentMemoryNodeId source_node_id = 0;
+    uint64_t source_ring_epoch = 0;
+    uint32_t shard_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+        if (agent_memory_persist_dir_.empty() || !agent_memory_persist_routed_) {
+            if (error) {
+                *error = "agent memory replicated durability requires routed persistence";
+            }
+            return false;
+        }
+        source_node_id = agent_memory_persist_node_id_;
+        source_ring_epoch = agent_memory_persist_ring_epoch_;
+        shard_id = agent_memory_persist_shard_id_;
+    }
+    if (self_node_id != 0 && source_node_id != self_node_id) {
+        if (error) *error = "agent memory replication source node mismatch";
+        return false;
+    }
+
+    AgentMemoryReplicaAppendRecord record;
+    record.source_node_id = source_node_id;
+    record.source_ring_epoch = source_ring_epoch;
+    record.shard_id = shard_id;
+    record.wal_type = type;
+    record.payload = payload;
+    const auto wire = serialize_agent_memory_replica_append(record);
+
+    size_t successful_nodes = local_record_counts ? 1 : 0;
+    std::string first_error;
+    for (const auto& target : targets) {
+        if (!target.client) {
+            if (first_error.empty()) {
+                first_error = "missing Agent Memory replica RPC client for node " +
+                    std::to_string(target.node_id);
+            }
+            continue;
+        }
+        std::string rpc_error;
+        const auto response = target.client->request_binary(
+            zeptodb::cluster::RpcType::AGENT_MEMORY_REPLICA_APPEND,
+            zeptodb::cluster::RpcType::AGENT_MEMORY_REPLICA_ACK,
+            wire,
+            true,
+            &rpc_error);
+        if (response.size() == 1 && response[0] == 1u) {
+            ++successful_nodes;
+            continue;
+        }
+        if (first_error.empty()) {
+            first_error = rpc_error.empty()
+                ? "Agent Memory replica append rejected by node " +
+                    std::to_string(target.node_id)
+                : rpc_error;
+        }
+    }
+
+    const size_t required_total_nodes =
+        mode == AgentMemoryReplicationMode::Sync
+            ? total_nodes
+            : (total_nodes / 2) + 1;
+    const size_t required_nodes = local_record_counts
+        ? required_total_nodes
+        : (required_total_nodes == 0 ? 0 : required_total_nodes - 1);
+    if (successful_nodes >= required_nodes) return true;
+    if (error) {
+        *error = "Agent Memory replica acknowledgements " +
+            std::to_string(successful_nodes) + "/" +
+            std::to_string(local_record_counts ? total_nodes : total_nodes - 1) +
+            " below required " +
+            std::to_string(required_nodes);
+        if (!first_error.empty()) *error += ": " + first_error;
+    }
+    return false;
+}
+
+bool HttpServer::truncate_agent_memory_wal_locked_(std::string* error) {
+    namespace fs = std::filesystem;
+    if (agent_memory_persist_dir_.empty()) return true;
+    std::error_code ec;
+    fs::remove(fs::path(agent_memory_persist_dir_) / "wal.log", ec);
+    if (ec) {
+        if (error) *error = "failed to truncate agent memory WAL: " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+bool HttpServer::persist_agent_memory_record_mutation_(
+    const std::string& memory_id,
+    const std::string& tenant_id,
+    std::string* error) {
+    const auto record = agent_memory_->get_memory(memory_id, tenant_id);
+    if (!record.has_value()) {
+        if (error) *error = "stored memory not found for WAL append";
+        return false;
+    }
+    const auto payload = zeptodb::ai::serialize_memory_record(*record);
+    const uint64_t tx_id = next_agent_memory_wal_tx_id_();
+    const auto prepare_payload =
+        serialize_agent_memory_wal_prepare(tx_id, payload);
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareMemory,
+            prepare_payload,
+            error)) {
+        return false;
+    }
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareMemory,
+            prepare_payload,
+            true,
+            error)) {
+        return false;
+    }
+    const auto commit_payload = serialize_agent_memory_wal_tx_id(tx_id);
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            false,
+            error)) {
+        return false;
+    }
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            error)) {
+        return false;
+    }
+    return mark_agent_memory_dirty_(error);
+}
+
+bool HttpServer::persist_agent_cache_entry_mutation_(
+    const std::string& tenant_id,
+    const std::string& namespace_id,
+    const std::string& prompt,
+    std::string* error) {
+    const auto entry = agent_memory_->get_cache(tenant_id, namespace_id, prompt);
+    if (!entry.has_value()) {
+        if (error) *error = "stored cache entry not found for WAL append";
+        return false;
+    }
+    const auto payload = zeptodb::ai::serialize_cache_entry(*entry);
+    const uint64_t tx_id = next_agent_memory_wal_tx_id_();
+    const auto prepare_payload =
+        serialize_agent_memory_wal_prepare(tx_id, payload);
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareCache,
+            prepare_payload,
+            error)) {
+        return false;
+    }
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareCache,
+            prepare_payload,
+            true,
+            error)) {
+        return false;
+    }
+    const auto commit_payload = serialize_agent_memory_wal_tx_id(tx_id);
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            false,
+            error)) {
+        return false;
+    }
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            error)) {
+        return false;
+    }
+    return mark_agent_memory_dirty_(error);
+}
+
+bool HttpServer::persist_agent_memory_delete_mutation_(
+    const std::string& memory_id,
+    const std::string& tenant_id,
+    std::string* error) {
+    const auto payload =
+        serialize_agent_memory_wal_delete_memory(memory_id, tenant_id);
+    const uint64_t tx_id = next_agent_memory_wal_tx_id_();
+    const auto prepare_payload =
+        serialize_agent_memory_wal_prepare(tx_id, payload);
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareDeleteMemory,
+            prepare_payload,
+            error)) {
+        return false;
+    }
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareDeleteMemory,
+            prepare_payload,
+            true,
+            error)) {
+        return false;
+    }
+    const auto commit_payload = serialize_agent_memory_wal_tx_id(tx_id);
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            false,
+            error)) {
+        return false;
+    }
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            error)) {
+        return false;
+    }
+    return mark_agent_memory_dirty_(error);
+}
+
+bool HttpServer::persist_agent_cache_delete_mutation_(
+    const std::string& tenant_id,
+    const std::string& namespace_id,
+    const std::string& prompt,
+    std::string* error) {
+    const auto payload =
+        serialize_agent_memory_wal_delete_cache(tenant_id, namespace_id, prompt);
+    const uint64_t tx_id = next_agent_memory_wal_tx_id_();
+    const auto prepare_payload =
+        serialize_agent_memory_wal_prepare(tx_id, payload);
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareDeleteCache,
+            prepare_payload,
+            error)) {
+        return false;
+    }
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalPrepareDeleteCache,
+            prepare_payload,
+            true,
+            error)) {
+        return false;
+    }
+    const auto commit_payload = serialize_agent_memory_wal_tx_id(tx_id);
+    if (!replicate_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            false,
+            error)) {
+        return false;
+    }
+    if (!append_agent_memory_wal_record_(
+            kAgentMemoryWalCommit,
+            commit_payload,
+            error)) {
+        return false;
+    }
+    return mark_agent_memory_dirty_(error);
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_memory_put_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::MemoryRecord record;
+    std::string error;
+    if (!zeptodb::ai::deserialize_memory_record(data, len, &record, &error)) {
+        return zeptodb::ai::serialize_store_result({false, {}, error});
+    }
+    const auto previous = record.memory_id.empty()
+        ? std::optional<zeptodb::ai::MemoryRecord>{}
+        : agent_memory_->get_memory(record.memory_id, record.tenant_id);
+    const std::string tenant_id = record.tenant_id;
+    auto stored = agent_memory_->put_memory(std::move(record));
+    if (stored.ok &&
+        !persist_agent_memory_record_mutation_(stored.id, tenant_id, &error)) {
+        if (previous.has_value()) {
+            (void)agent_memory_->put_memory(*previous);
+        } else {
+            (void)agent_memory_->remove_memory(stored.id, tenant_id);
+        }
+        stored = {false, {}, error};
+    }
+    return zeptodb::ai::serialize_store_result(stored);
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_cache_store_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::CacheEntry entry;
+    std::string error;
+    if (!zeptodb::ai::deserialize_cache_entry(data, len, &entry, &error)) {
+        return zeptodb::ai::serialize_store_result({false, {}, error});
+    }
+    const std::string tenant_id = entry.tenant_id;
+    const std::string namespace_id = entry.namespace_id;
+    const std::string prompt = entry.prompt;
+    const auto previous = agent_memory_->get_cache(
+        tenant_id, namespace_id, prompt);
+    auto stored = agent_memory_->store_cache(std::move(entry));
+    if (stored.ok &&
+        !persist_agent_cache_entry_mutation_(tenant_id, namespace_id, prompt,
+                                             &error)) {
+        if (previous.has_value()) {
+            (void)agent_memory_->store_cache(*previous);
+        } else {
+            (void)agent_memory_->remove_cache(tenant_id, namespace_id, prompt);
+        }
+        stored = {false, {}, error};
+    }
+    return zeptodb::ai::serialize_store_result(stored);
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_memory_delete_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::MemoryDeleteRequest request;
+    std::string error;
+    if (!zeptodb::ai::deserialize_memory_delete_request(
+            data, len, &request, &error)) {
+        return zeptodb::ai::serialize_store_result({false, {}, error});
+    }
+    const auto previous =
+        agent_memory_->get_memory(request.memory_id, request.tenant_id);
+    if (!previous.has_value()) {
+        return zeptodb::ai::serialize_store_result(
+            {false, {}, "memory not found"});
+    }
+    if (!agent_memory_->remove_memory(request.memory_id, request.tenant_id)) {
+        return zeptodb::ai::serialize_store_result(
+            {false, {}, "memory not found"});
+    }
+    if (!persist_agent_memory_delete_mutation_(
+            request.memory_id, request.tenant_id, &error)) {
+        (void)agent_memory_->put_memory(*previous);
+        return zeptodb::ai::serialize_store_result({false, {}, error});
+    }
+    return zeptodb::ai::serialize_store_result({true, request.memory_id, {}});
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_cache_delete_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::CacheDeleteRequest request;
+    std::string error;
+    if (!zeptodb::ai::deserialize_cache_delete_request(
+            data, len, &request, &error)) {
+        return zeptodb::ai::serialize_store_result({false, {}, error});
+    }
+    const auto previous = agent_memory_->get_cache(
+        request.tenant_id, request.namespace_id, request.prompt);
+    if (!previous.has_value()) {
+        return zeptodb::ai::serialize_store_result(
+            {false, {}, "cache entry not found"});
+    }
+    if (!agent_memory_->remove_cache(
+            request.tenant_id, request.namespace_id, request.prompt)) {
+        return zeptodb::ai::serialize_store_result(
+            {false, {}, "cache entry not found"});
+    }
+    if (!persist_agent_cache_delete_mutation_(
+            request.tenant_id, request.namespace_id, request.prompt, &error)) {
+        (void)agent_memory_->store_cache(*previous);
+        return zeptodb::ai::serialize_store_result({false, {}, error});
+    }
+    return zeptodb::ai::serialize_store_result(
+        {true, previous->cache_id, {}});
+}
+
+zeptodb::ai::StoreResult HttpServer::put_agent_memory_routed_(
+    zeptodb::ai::MemoryRecord record,
+    bool* local_write) {
+    if (local_write) *local_write = true;
+
+    std::shared_ptr<zeptodb::cluster::TcpRpcClient> remote;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_) {
+            const auto key = zeptodb::ai::AgentMemoryRouter::memory_key(
+                record.tenant_id, record.namespace_id, record.session_id,
+                record.agent_id, record.user_id, record.memory_id);
+            const auto owner = agent_memory_router_->route(key);
+            if (!owner.local) {
+                auto it = agent_memory_remotes_.find(owner.node_id);
+                if (it == agent_memory_remotes_.end() || !it->second) {
+                    return {false, {}, "agent memory owner has no RPC client"};
+                }
+                remote = it->second;
+                if (local_write) *local_write = false;
+            }
+        }
+    }
+
+    if (!remote) {
+        return agent_memory_->put_memory(std::move(record));
+    }
+
+    const auto payload = zeptodb::ai::serialize_memory_record(record);
+    std::string error;
+    const auto response = remote->request_binary(
+        zeptodb::cluster::RpcType::AGENT_MEMORY_PUT,
+        zeptodb::cluster::RpcType::AGENT_MEMORY_RESULT,
+        payload,
+        true,
+        &error);
+    if (response.empty() && !error.empty()) {
+        return {false, {}, error};
+    }
+    zeptodb::ai::StoreResult stored;
+    if (!zeptodb::ai::deserialize_store_result(response.data(), response.size(),
+                                               &stored, &error)) {
+        return {false, {}, error};
+    }
+    return stored;
+}
+
+zeptodb::ai::StoreResult HttpServer::store_agent_cache_routed_(
+    zeptodb::ai::CacheEntry entry,
+    bool* local_write) {
+    if (local_write) *local_write = true;
+
+    std::shared_ptr<zeptodb::cluster::TcpRpcClient> remote;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_) {
+            const auto key = zeptodb::ai::AgentMemoryRouter::cache_key(
+                entry.tenant_id, entry.namespace_id,
+                zeptodb::ai::AgentMemoryStore::normalize_prompt(entry.prompt));
+            const auto owner = agent_memory_router_->route(key);
+            if (!owner.local) {
+                auto it = agent_memory_remotes_.find(owner.node_id);
+                if (it == agent_memory_remotes_.end() || !it->second) {
+                    return {false, {}, "agent cache owner has no RPC client"};
+                }
+                remote = it->second;
+                if (local_write) *local_write = false;
+            }
+        }
+    }
+
+    if (!remote) {
+        return agent_memory_->store_cache(std::move(entry));
+    }
+
+    const auto payload = zeptodb::ai::serialize_cache_entry(entry);
+    std::string error;
+    const auto response = remote->request_binary(
+        zeptodb::cluster::RpcType::AGENT_CACHE_STORE,
+        zeptodb::cluster::RpcType::AGENT_CACHE_RESULT,
+        payload,
+        true,
+        &error);
+    if (response.empty() && !error.empty()) {
+        return {false, {}, error};
+    }
+    zeptodb::ai::StoreResult stored;
+    if (!zeptodb::ai::deserialize_store_result(response.data(), response.size(),
+                                               &stored, &error)) {
+        return {false, {}, error};
+    }
+    return stored;
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_memory_get_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::MemoryGetRequest request;
+    std::string error;
+    if (!zeptodb::ai::deserialize_memory_get_request(data, len, &request, &error)) {
+        return zeptodb::ai::serialize_memory_get_result({false, {}, error});
+    }
+    const auto record = agent_memory_->get_memory(request.memory_id,
+                                                  request.tenant_id);
+    zeptodb::ai::MemoryGetResult result;
+    result.found = record.has_value();
+    if (record.has_value()) result.record = *record;
+    return zeptodb::ai::serialize_memory_get_result(result);
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_memory_search_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::MemoryQuery query;
+    std::string error;
+    if (!zeptodb::ai::deserialize_memory_query(data, len, &query, &error)) {
+        return zeptodb::ai::serialize_memory_search_result({{}, error});
+    }
+    auto matches = agent_memory_->search(std::move(query));
+    return zeptodb::ai::serialize_memory_search_result({std::move(matches), {}});
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_cache_lookup_rpc(
+    const uint8_t* data,
+    size_t len) {
+    zeptodb::ai::CacheLookup lookup;
+    std::string error;
+    if (!zeptodb::ai::deserialize_cache_lookup(data, len, &lookup, &error)) {
+        return zeptodb::ai::serialize_cache_lookup_result({});
+    }
+    const auto hit = agent_memory_->lookup_cache(std::move(lookup));
+    return zeptodb::ai::serialize_cache_lookup_result(hit);
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_memory_replica_append_rpc(
+    const uint8_t* data,
+    size_t len) {
+    AgentMemoryReplicaAppendRecord record;
+    std::string error;
+    if (!deserialize_agent_memory_replica_append(data, len, &record, &error)) {
+        return {0u};
+    }
+    if (record.wal_type != kAgentMemoryWalPutMemory &&
+        record.wal_type != kAgentMemoryWalStoreCache &&
+        record.wal_type != kAgentMemoryWalDeleteMemory &&
+        record.wal_type != kAgentMemoryWalDeleteCache &&
+        record.wal_type != kAgentMemoryWalPrepareMemory &&
+        record.wal_type != kAgentMemoryWalPrepareCache &&
+        record.wal_type != kAgentMemoryWalPrepareDeleteMemory &&
+        record.wal_type != kAgentMemoryWalPrepareDeleteCache &&
+        record.wal_type != kAgentMemoryWalCommit) {
+        return {0u};
+    }
+
+    std::lock_guard<std::mutex> lock(agent_memory_persist_mu_);
+    if (agent_memory_persist_base_dir_.empty()) return {0u};
+    const auto source_dir = agent_memory_effective_snapshot_dir(
+        agent_memory_persist_base_dir_, true, record.source_node_id,
+        record.shard_id);
+    const bool ok = append_agent_memory_wal_record_to_dir(
+        source_dir,
+        true,
+        record.source_node_id,
+        record.source_ring_epoch,
+        record.shard_id,
+        record.wal_type,
+        record.payload,
+        &error);
+    return {static_cast<uint8_t>(ok ? 1u : 0u)};
+}
+
+zeptodb::ai::StoreResult HttpServer::delete_agent_memory_routed_(
+    const std::string& memory_id,
+    const std::string& namespace_id,
+    const std::string& tenant_id,
+    bool* local_write) {
+    if (local_write) *local_write = true;
+
+    std::shared_ptr<zeptodb::cluster::TcpRpcClient> remote;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_) {
+            zeptodb::ai::AgentMemoryNodeId owner_node = 0;
+            const bool resolved_from_id = parse_owner_scoped_memory_id(
+                memory_id, &owner_node);
+            bool local = true;
+            const auto nodes = agent_memory_router_->nodes();
+            const bool parsed_owner_is_live = resolved_from_id &&
+                std::find(nodes.begin(), nodes.end(), owner_node) != nodes.end();
+            if (parsed_owner_is_live) {
+                local = owner_node == agent_memory_router_->config().self_node_id;
+            } else {
+                const auto key = zeptodb::ai::AgentMemoryRouter::memory_key(
+                    tenant_id, namespace_id, "", "", "", memory_id);
+                const auto owner = agent_memory_router_->route(key);
+                owner_node = owner.node_id;
+                local = owner.local;
+            }
+            if (!local) {
+                auto it = agent_memory_remotes_.find(owner_node);
+                if (it == agent_memory_remotes_.end() || !it->second) {
+                    return {false, {}, "agent memory owner has no RPC client"};
+                }
+                remote = it->second;
+                if (local_write) *local_write = false;
+            }
+        }
+    }
+
+    if (!remote) {
+        if (!agent_memory_->remove_memory(memory_id, tenant_id)) {
+            return {false, {}, "memory not found"};
+        }
+        return {true, memory_id, {}};
+    }
+
+    const zeptodb::ai::MemoryDeleteRequest request{memory_id, tenant_id};
+    const auto payload = zeptodb::ai::serialize_memory_delete_request(request);
+    std::string error;
+    const auto response = remote->request_binary(
+        zeptodb::cluster::RpcType::AGENT_MEMORY_DELETE,
+        zeptodb::cluster::RpcType::AGENT_MEMORY_RESULT,
+        payload,
+        true,
+        &error);
+    if (response.empty() && !error.empty()) {
+        return {false, {}, error};
+    }
+    zeptodb::ai::StoreResult deleted;
+    if (!zeptodb::ai::deserialize_store_result(response.data(), response.size(),
+                                               &deleted, &error)) {
+        return {false, {}, error};
+    }
+    return deleted;
+}
+
+zeptodb::ai::StoreResult HttpServer::delete_agent_cache_routed_(
+    const std::string& tenant_id,
+    const std::string& namespace_id,
+    const std::string& prompt,
+    bool* local_write) {
+    if (local_write) *local_write = true;
+
+    std::shared_ptr<zeptodb::cluster::TcpRpcClient> remote;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_) {
+            const auto key = zeptodb::ai::AgentMemoryRouter::cache_key(
+                tenant_id, namespace_id,
+                zeptodb::ai::AgentMemoryStore::normalize_prompt(prompt));
+            const auto owner = agent_memory_router_->route(key);
+            if (!owner.local) {
+                auto it = agent_memory_remotes_.find(owner.node_id);
+                if (it == agent_memory_remotes_.end() || !it->second) {
+                    return {false, {}, "agent cache owner has no RPC client"};
+                }
+                remote = it->second;
+                if (local_write) *local_write = false;
+            }
+        }
+    }
+
+    if (!remote) {
+        const auto previous = agent_memory_->get_cache(
+            tenant_id, namespace_id, prompt);
+        if (!previous.has_value() ||
+            !agent_memory_->remove_cache(tenant_id, namespace_id, prompt)) {
+            return {false, {}, "cache entry not found"};
+        }
+        return {true, previous->cache_id, {}};
+    }
+
+    const zeptodb::ai::CacheDeleteRequest request{
+        tenant_id, namespace_id, prompt};
+    const auto payload = zeptodb::ai::serialize_cache_delete_request(request);
+    std::string error;
+    const auto response = remote->request_binary(
+        zeptodb::cluster::RpcType::AGENT_CACHE_DELETE,
+        zeptodb::cluster::RpcType::AGENT_CACHE_RESULT,
+        payload,
+        true,
+        &error);
+    if (response.empty() && !error.empty()) {
+        return {false, {}, error};
+    }
+    zeptodb::ai::StoreResult deleted;
+    if (!zeptodb::ai::deserialize_store_result(response.data(), response.size(),
+                                               &deleted, &error)) {
+        return {false, {}, error};
+    }
+    return deleted;
+}
+
+zeptodb::ai::MemoryGetResult HttpServer::get_agent_memory_routed_(
+    const std::string& memory_id,
+    const std::string& namespace_id,
+    const std::string& tenant_id) {
+    std::shared_ptr<zeptodb::cluster::TcpRpcClient> remote;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_) {
+            zeptodb::ai::AgentMemoryNodeId owner_node = 0;
+            bool resolved_from_id = parse_owner_scoped_memory_id(
+                memory_id, &owner_node);
+            bool local = true;
+            const auto nodes = agent_memory_router_->nodes();
+            const bool parsed_owner_is_live = resolved_from_id &&
+                std::find(nodes.begin(), nodes.end(), owner_node) != nodes.end();
+            if (parsed_owner_is_live) {
+                local = owner_node == agent_memory_router_->config().self_node_id;
+            } else {
+                const auto key = zeptodb::ai::AgentMemoryRouter::memory_key(
+                    tenant_id, namespace_id, "", "", "", memory_id);
+                const auto owner = agent_memory_router_->route(key);
+                owner_node = owner.node_id;
+                local = owner.local;
+            }
+            if (!local) {
+                auto it = agent_memory_remotes_.find(owner_node);
+                if (it == agent_memory_remotes_.end() || !it->second) {
+                    return {false, {}, "agent memory owner has no RPC client"};
+                }
+                remote = it->second;
+            }
+        }
+    }
+
+    if (!remote) {
+        const auto record = agent_memory_->get_memory(memory_id, tenant_id);
+        zeptodb::ai::MemoryGetResult result;
+        result.found = record.has_value();
+        if (record.has_value()) result.record = *record;
+        return result;
+    }
+
+    const zeptodb::ai::MemoryGetRequest request{memory_id, tenant_id};
+    const auto payload = zeptodb::ai::serialize_memory_get_request(request);
+    std::string error;
+    const auto response = remote->request_binary(
+        zeptodb::cluster::RpcType::AGENT_MEMORY_GET,
+        zeptodb::cluster::RpcType::AGENT_MEMORY_GET_RESULT,
+        payload,
+        false,
+        &error);
+    if (response.empty() && !error.empty()) {
+        return {false, {}, error};
+    }
+    zeptodb::ai::MemoryGetResult result;
+    if (!zeptodb::ai::deserialize_memory_get_result(
+            response.data(), response.size(), &result, &error)) {
+        return {false, {}, error};
+    }
+    return result;
+}
+
+std::vector<zeptodb::ai::MemorySearchResult> HttpServer::search_agent_memory_routed_(
+    zeptodb::ai::MemoryQuery query,
+    std::string* error) {
+    if (query.limit == 0) return {};
+
+    struct RemoteSearch {
+        zeptodb::ai::AgentMemoryNodeId node_id = 0;
+        std::shared_ptr<zeptodb::cluster::TcpRpcClient> client;
+    };
+    struct RemoteSearchResult {
+        zeptodb::ai::AgentMemoryNodeId node_id = 0;
+        std::vector<zeptodb::ai::MemorySearchResult> matches;
+        std::string error;
+    };
+
+    std::vector<RemoteSearch> remotes;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (!agent_memory_router_ ||
+            agent_memory_router_->config().mode !=
+                zeptodb::ai::AgentMemoryRoutingMode::Routed) {
+            return agent_memory_->search(std::move(query));
+        }
+
+        const auto config = agent_memory_router_->config();
+        const auto nodes = agent_memory_router_->nodes();
+        for (const auto node_id : nodes) {
+            if (node_id == config.self_node_id) continue;
+            auto it = agent_memory_remotes_.find(node_id);
+            if (it == agent_memory_remotes_.end() || !it->second) {
+                if (error) {
+                    *error = "agent memory search node has no RPC client";
+                }
+                return {};
+            }
+            remotes.push_back({node_id, it->second});
+        }
+    }
+
+    std::vector<std::future<RemoteSearchResult>> futures;
+    futures.reserve(remotes.size());
+    for (const auto& remote : remotes) {
+        futures.push_back(std::async(
+            std::launch::async,
+            [remote, query] {
+                RemoteSearchResult out;
+                out.node_id = remote.node_id;
+                const auto payload = zeptodb::ai::serialize_memory_query(query);
+                std::string rpc_error;
+                const auto response = remote.client->request_binary(
+                    zeptodb::cluster::RpcType::AGENT_MEMORY_SEARCH,
+                    zeptodb::cluster::RpcType::AGENT_MEMORY_SEARCH_RESULT,
+                    payload,
+                    false,
+                    &rpc_error);
+                if (response.empty()) {
+                    out.error = rpc_error.empty()
+                        ? "empty agent memory search response"
+                        : rpc_error;
+                    return out;
+                }
+                zeptodb::ai::MemorySearchRpcResult decoded;
+                if (!zeptodb::ai::deserialize_memory_search_result(
+                        response.data(), response.size(), &decoded,
+                        &rpc_error)) {
+                    out.error = rpc_error;
+                    return out;
+                }
+                out.matches = std::move(decoded.matches);
+                out.error = std::move(decoded.error);
+                return out;
+            }));
+    }
+
+    auto merged = agent_memory_->search(query);
+    for (auto& future : futures) {
+        auto result = future.get();
+        if (!result.error.empty()) {
+            if (error) {
+                *error = "agent memory search failed on node " +
+                    std::to_string(result.node_id) + ": " + result.error;
+            }
+            return {};
+        }
+        merged.insert(merged.end(),
+                      std::make_move_iterator(result.matches.begin()),
+                      std::make_move_iterator(result.matches.end()));
+    }
+    trim_memory_matches(&merged, query.limit);
+    return merged;
+}
+
+zeptodb::ai::CacheLookupResult HttpServer::lookup_agent_cache_routed_(
+    zeptodb::ai::CacheLookup lookup) {
+    std::shared_ptr<zeptodb::cluster::TcpRpcClient> remote;
+    std::vector<std::shared_ptr<zeptodb::cluster::TcpRpcClient>> semantic_remotes;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_) {
+            const auto key = zeptodb::ai::AgentMemoryRouter::cache_key(
+                lookup.tenant_id, lookup.namespace_id,
+                zeptodb::ai::AgentMemoryStore::normalize_prompt(lookup.prompt));
+            const auto owner = agent_memory_router_->route(key);
+            if (!owner.local) {
+                auto it = agent_memory_remotes_.find(owner.node_id);
+                if (it != agent_memory_remotes_.end() && it->second) {
+                    remote = it->second;
+                }
+            }
+            if (agent_memory_router_->config().mode ==
+                zeptodb::ai::AgentMemoryRoutingMode::Routed) {
+                const auto config = agent_memory_router_->config();
+                for (const auto node_id : agent_memory_router_->nodes()) {
+                    if (node_id == config.self_node_id) continue;
+                    auto it = agent_memory_remotes_.find(node_id);
+                    if (it != agent_memory_remotes_.end() && it->second) {
+                        semantic_remotes.push_back(it->second);
+                    }
+                }
+            }
+        } else {
+            return agent_memory_->lookup_cache(std::move(lookup));
+        }
+    }
+
+    auto exact_lookup = lookup;
+    exact_lookup.embedding.clear();
+    zeptodb::ai::CacheLookupResult exact_hit;
+    if (remote) {
+        const auto payload = zeptodb::ai::serialize_cache_lookup(exact_lookup);
+        std::string error;
+        const auto response = remote->request_binary(
+            zeptodb::cluster::RpcType::AGENT_CACHE_LOOKUP_EXACT,
+            zeptodb::cluster::RpcType::AGENT_CACHE_LOOKUP_RESULT,
+            payload,
+            false,
+            &error);
+        if (!response.empty()) {
+            zeptodb::ai::deserialize_cache_lookup_result(
+                response.data(), response.size(), &exact_hit, nullptr);
+        }
+    } else {
+        exact_hit = agent_memory_->lookup_cache(exact_lookup);
+    }
+    if (exact_hit.hit) return exact_hit;
+
+    if (lookup.embedding.empty()) return {};
+    lookup.prompt.clear();
+    auto best = agent_memory_->lookup_cache(lookup);
+    const auto payload = zeptodb::ai::serialize_cache_lookup(lookup);
+    for (const auto& semantic_remote : semantic_remotes) {
+        std::string error;
+        const auto response = semantic_remote->request_binary(
+            zeptodb::cluster::RpcType::AGENT_CACHE_LOOKUP_EXACT,
+            zeptodb::cluster::RpcType::AGENT_CACHE_LOOKUP_RESULT,
+            payload,
+            false,
+            &error);
+        if (response.empty()) continue;
+        zeptodb::ai::CacheLookupResult candidate;
+        if (!zeptodb::ai::deserialize_cache_lookup_result(
+                response.data(), response.size(), &candidate, &error)) {
+            continue;
+        }
+        if (candidate.hit && (!best.hit || candidate.score > best.score)) {
+            best = std::move(candidate);
+        }
+    }
+    return best;
 }
 
 // ============================================================================
@@ -389,6 +2598,91 @@ void HttpServer::setup_routes() {
         res.set_content(json, "application/json");
     });
 
+    // GET /api/ai/stats — Agent Memory counts, counters, and retention config.
+    // Does not expose memory content, prompts, responses, or metadata.
+    svr_->Get("/api/ai/stats", [this](const httplib::Request& /*req*/,
+                                       httplib::Response& res) {
+        res.set_content(agent_memory_stats_json(*agent_memory_), "application/json");
+    });
+
+    // GET /api/ai/memories/:id — point lookup, routed by owner-scoped id when enabled.
+    svr_->Get(R"(/api/ai/memories/([^/]+))", [this](const httplib::Request& req,
+                                                     httplib::Response& res) {
+        const std::string memory_id = req.matches[1];
+        const std::string namespace_id = req.has_param("namespace")
+            ? req.get_param_value("namespace")
+            : "default";
+        std::string tenant_id = req.has_param("tenant_id")
+            ? req.get_param_value("tenant_id")
+            : "";
+        std::string error;
+        if (!apply_tenant_header(req, &tenant_id, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+
+        const auto result = get_agent_memory_routed_(memory_id, namespace_id,
+                                                     tenant_id);
+        if (!result.error.empty()) {
+            res.status = 502;
+            res.set_content(build_error_json(result.error), "application/json");
+            return;
+        }
+        if (!result.found) {
+            res.status = 404;
+            res.set_content(build_error_json("memory not found"), "application/json");
+            return;
+        }
+        zeptodb::ai::MemorySearchResult match;
+        match.record = result.record;
+        std::ostringstream os;
+        os << "{\"found\":true,\"memory\":" << memory_json(match) << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // DELETE /api/ai/memories/:id — remove one memory and append a WAL tombstone.
+    svr_->Delete(R"(/api/ai/memories/([^/]+))", [this](
+        const httplib::Request& req, httplib::Response& res) {
+        const std::string memory_id = req.matches[1];
+        const std::string namespace_id = req.has_param("namespace")
+            ? req.get_param_value("namespace")
+            : "default";
+        std::string tenant_id = req.has_param("tenant_id")
+            ? req.get_param_value("tenant_id")
+            : "";
+        std::string error;
+        if (!apply_tenant_header(req, &tenant_id, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+
+        const auto previous = agent_memory_->get_memory(memory_id, tenant_id);
+        bool local_write = true;
+        auto deleted = delete_agent_memory_routed_(
+            memory_id, namespace_id, tenant_id, &local_write);
+        if (!deleted.ok) {
+            res.status = deleted.error.find("not found") != std::string::npos
+                ? 404
+                : 400;
+            res.set_content(build_error_json(deleted.error), "application/json");
+            return;
+        }
+        if (local_write &&
+            !persist_agent_memory_delete_mutation_(memory_id, tenant_id, &error)) {
+            if (previous.has_value()) {
+                (void)agent_memory_->put_memory(*previous);
+            }
+            res.status = 500;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        res.set_content(R"({"ok":true,"memory_id":")" +
+                        json_escape(memory_id) + R"("})",
+                        "application/json");
+    });
+
     // GET /api/license — public license info
     svr_->Get("/api/license", [](const httplib::Request& /*req*/,
                                   httplib::Response& res) {
@@ -432,6 +2726,266 @@ void HttpServer::setup_routes() {
             os << ",\"upgrade_url\":\"https://zeptodb.com/pricing\"";
         }
         os << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // POST /api/ai/memories — upsert an agent memory object.
+    svr_->Post("/api/ai/memories", [this](const httplib::Request& req,
+                                           httplib::Response& res) {
+        if (req.body.empty()) {
+            res.status = 400;
+            res.set_content(build_error_json("Empty JSON body"), "application/json");
+            return;
+        }
+        zeptodb::ai::MemoryRecord record;
+        record.memory_id      = json_string_field(req.body, "memory_id");
+        record.tenant_id      = json_string_field(req.body, "tenant_id");
+        record.namespace_id   = json_string_field(req.body, "namespace", "default");
+        record.user_id        = json_string_field(req.body, "user_id");
+        record.session_id     = json_string_field(req.body, "session_id");
+        record.agent_id       = json_string_field(req.body, "agent_id");
+        record.type           = json_string_field(req.body, "type", "memory");
+        record.content        = json_string_field(req.body, "content");
+        record.metadata_json  = json_string_field(req.body, "metadata_json", "{}");
+        record.token_count    = json_i64_field(req.body, "token_count", 0);
+        record.importance     = json_double_field(req.body, "importance", 0.0);
+        record.created_at_ns  = json_i64_field(req.body, "created_at_ns", 0);
+        record.expires_at_ns  = json_i64_field(req.body, "expires_at_ns", 0);
+        record.pinned         = json_bool_field(req.body, "pinned", false);
+
+        std::string error;
+        if (!apply_tenant_header(req, &record.tenant_id, &error) ||
+            !json_float_array_field(req.body, "embedding", &record.embedding, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        const std::string tenant_id = record.tenant_id;
+        const auto previous = record.memory_id.empty()
+            ? std::optional<zeptodb::ai::MemoryRecord>{}
+            : agent_memory_->get_memory(record.memory_id, tenant_id);
+        bool local_write = true;
+        auto stored = put_agent_memory_routed_(std::move(record), &local_write);
+        if (!stored.ok) {
+            res.status = 400;
+            res.set_content(build_error_json(stored.error), "application/json");
+            return;
+        }
+        if (local_write &&
+            !persist_agent_memory_record_mutation_(stored.id, tenant_id, &error)) {
+            if (previous.has_value()) {
+                (void)agent_memory_->put_memory(*previous);
+            } else {
+                (void)agent_memory_->remove_memory(stored.id, tenant_id);
+            }
+            res.status = 500;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        res.set_content(R"({"ok":true,"memory_id":")" + json_escape(stored.id) + R"("})",
+                        "application/json");
+    });
+
+    // POST /api/ai/memories/search — filtered vector/metadata memory search.
+    svr_->Post("/api/ai/memories/search", [this](const httplib::Request& req,
+                                                  httplib::Response& res) {
+        zeptodb::ai::MemoryQuery query;
+        query.tenant_id    = json_string_field(req.body, "tenant_id");
+        query.namespace_id = json_string_field(req.body, "namespace", "default");
+        query.user_id      = json_string_field(req.body, "user_id");
+        query.session_id   = json_string_field(req.body, "session_id");
+        query.agent_id     = json_string_field(req.body, "agent_id");
+        query.type         = json_string_field(req.body, "type");
+        std::string error;
+        if (!json_nonnegative_size_field(req.body, "limit", 10, &query.limit, &error) ||
+            !apply_tenant_header(req, &query.tenant_id, &error) ||
+            !json_float_array_field(req.body, "query_embedding",
+                                    &query.query_embedding, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        auto matches = search_agent_memory_routed_(query, &error);
+        if (!error.empty()) {
+            res.status = 502;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        std::ostringstream os;
+        os << "{\"matches\":[";
+        for (size_t i = 0; i < matches.size(); ++i) {
+            if (i) os << ",";
+            os << memory_json(matches[i]);
+        }
+        os << "],\"rows\":" << matches.size() << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // POST /api/ai/context — assemble memories under a token budget.
+    svr_->Post("/api/ai/context", [this](const httplib::Request& req,
+                                          httplib::Response& res) {
+        zeptodb::ai::ContextRequest query;
+        query.tenant_id    = json_string_field(req.body, "tenant_id");
+        query.namespace_id = json_string_field(req.body, "namespace", "default");
+        query.user_id      = json_string_field(req.body, "user_id");
+        query.session_id   = json_string_field(req.body, "session_id");
+        query.agent_id     = json_string_field(req.body, "agent_id");
+        query.type         = json_string_field(req.body, "type");
+        query.token_budget = json_i64_field(req.body, "token_budget", 0);
+
+        std::string error;
+        if (!json_nonnegative_size_field(req.body, "limit", 10, &query.limit, &error) ||
+            !apply_tenant_header(req, &query.tenant_id, &error) ||
+            !json_float_array_field(req.body, "query_embedding",
+                                    &query.query_embedding, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        auto matches = search_agent_memory_routed_(query, &error);
+        if (!error.empty()) {
+            res.status = 502;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        auto context = assemble_context_from_matches(std::move(matches),
+                                                     query.token_budget);
+        std::ostringstream os;
+        os << "{\"memories\":[";
+        for (size_t i = 0; i < context.memories.size(); ++i) {
+            if (i) os << ",";
+            os << memory_json(context.memories[i]);
+        }
+        os << "],\"token_count\":" << context.token_count
+           << ",\"rows\":" << context.memories.size() << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // POST /api/ai/cache/store — store exact/semantic LLM cache entry.
+    svr_->Post("/api/ai/cache/store", [this](const httplib::Request& req,
+                                              httplib::Response& res) {
+        zeptodb::ai::CacheEntry entry;
+        entry.cache_id      = json_string_field(req.body, "cache_id");
+        entry.tenant_id     = json_string_field(req.body, "tenant_id");
+        entry.namespace_id  = json_string_field(req.body, "namespace", "default");
+        entry.prompt        = json_string_field(req.body, "prompt");
+        entry.response      = json_string_field(req.body, "response");
+        entry.metadata_json = json_string_field(req.body, "metadata_json", "{}");
+        entry.token_count   = json_i64_field(req.body, "token_count", 0);
+        entry.expires_at_ns = json_i64_field(req.body, "expires_at_ns", 0);
+
+        std::string error;
+        if (!apply_tenant_header(req, &entry.tenant_id, &error) ||
+            !json_float_array_field(req.body, "embedding", &entry.embedding, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        const std::string tenant_id = entry.tenant_id;
+        const std::string namespace_id = entry.namespace_id;
+        const std::string prompt = entry.prompt;
+        const auto previous = agent_memory_->get_cache(
+            tenant_id, namespace_id, prompt);
+        bool local_write = true;
+        auto stored = store_agent_cache_routed_(std::move(entry), &local_write);
+        if (!stored.ok) {
+            res.status = 400;
+            res.set_content(build_error_json(stored.error), "application/json");
+            return;
+        }
+        if (local_write &&
+            !persist_agent_cache_entry_mutation_(tenant_id, namespace_id, prompt,
+                                                 &error)) {
+            if (previous.has_value()) {
+                (void)agent_memory_->store_cache(*previous);
+            } else {
+                (void)agent_memory_->remove_cache(tenant_id, namespace_id, prompt);
+            }
+            res.status = 500;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        res.set_content(R"({"ok":true,"cache_id":")" + json_escape(stored.id) + R"("})",
+                        "application/json");
+    });
+
+    // DELETE /api/ai/cache — remove one exact cache entry and append a WAL tombstone.
+    svr_->Delete("/api/ai/cache", [this](const httplib::Request& req,
+                                          httplib::Response& res) {
+        std::string tenant_id = req.has_param("tenant_id")
+            ? req.get_param_value("tenant_id")
+            : "";
+        const std::string namespace_id = req.has_param("namespace")
+            ? req.get_param_value("namespace")
+            : "default";
+        const std::string prompt = req.has_param("prompt")
+            ? req.get_param_value("prompt")
+            : "";
+        std::string error;
+        if (prompt.empty()) {
+            res.status = 400;
+            res.set_content(build_error_json("prompt is required"), "application/json");
+            return;
+        }
+        if (!apply_tenant_header(req, &tenant_id, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+
+        const auto previous = agent_memory_->get_cache(
+            tenant_id, namespace_id, prompt);
+        bool local_write = true;
+        auto deleted = delete_agent_cache_routed_(
+            tenant_id, namespace_id, prompt, &local_write);
+        if (!deleted.ok) {
+            res.status = deleted.error.find("not found") != std::string::npos
+                ? 404
+                : 400;
+            res.set_content(build_error_json(deleted.error), "application/json");
+            return;
+        }
+        if (local_write &&
+            !persist_agent_cache_delete_mutation_(
+                tenant_id, namespace_id, prompt, &error)) {
+            if (previous.has_value()) {
+                (void)agent_memory_->store_cache(*previous);
+            }
+            res.status = 500;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        res.set_content(R"({"ok":true,"cache_id":")" +
+                        json_escape(deleted.id) + R"("})",
+                        "application/json");
+    });
+
+    // POST /api/ai/cache/lookup — exact prompt cache first, semantic fallback.
+    svr_->Post("/api/ai/cache/lookup", [this](const httplib::Request& req,
+                                               httplib::Response& res) {
+        zeptodb::ai::CacheLookup lookup;
+        lookup.tenant_id = json_string_field(req.body, "tenant_id");
+        lookup.namespace_id = json_string_field(req.body, "namespace", "default");
+        lookup.prompt = json_string_field(req.body, "prompt");
+        lookup.semantic_threshold =
+            json_double_field(req.body, "semantic_threshold", 0.92);
+
+        std::string error;
+        if (!apply_tenant_header(req, &lookup.tenant_id, &error) ||
+            !json_float_array_field(req.body, "embedding", &lookup.embedding, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+        auto hit = lookup_agent_cache_routed_(std::move(lookup));
+        if (!hit.hit) {
+            res.set_content(R"({"hit":false})", "application/json");
+            return;
+        }
+        std::ostringstream os;
+        os << "{\"hit\":true,\"kind\":\"" << (hit.exact ? "exact" : "semantic")
+           << "\",\"score\":" << hit.score
+           << ",\"entry\":" << cache_entry_json(hit.entry) << "}";
         res.set_content(os.str(), "application/json");
     });
 
@@ -2022,7 +4576,7 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // POST /admin/upgrade/start — rolling upgrade (placeholder, gated)
     // -------------------------------------------------------------------------
-    svr_->Post("/admin/upgrade/start", [this, require_admin, require_feature](
+    svr_->Post("/admin/upgrade/start", [require_admin, require_feature](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
@@ -2213,6 +4767,13 @@ std::string HttpServer::coordinator_scatter_metrics(int64_t since_ms, size_t lim
 void HttpServer::stop() {
     zeptodb::util::Logger::instance().info(
         "{\"event\":\"server_stop\",\"port\":" + std::to_string(port_) + "}", "http");
+    std::string persist_error;
+    persist_agent_memory_snapshot_(&persist_error, true);
+    if (!persist_error.empty()) {
+        zeptodb::util::Logger::instance().error(
+            "{\"event\":\"agent_memory_snapshot_failed\",\"error\":\"" +
+            json_escape(persist_error) + "\"}", "http");
+    }
     if (metrics_collector_) metrics_collector_->stop();
     svr_->stop();
     if (thread_.joinable()) thread_.join();
@@ -2436,6 +4997,65 @@ std::string HttpServer::build_prometheus_metrics() const {
     {
         std::lock_guard<std::mutex> lk(sessions_mu_);
         os << "zepto_http_active_sessions " << sessions_.size() << "\n";
+    }
+
+    {
+        const auto memory_stats = agent_memory_->stats();
+        const auto eviction = agent_memory_->eviction_config();
+        os << "\n# HELP zepto_agent_memory_records Current Agent Memory record count\n";
+        os << "# TYPE zepto_agent_memory_records gauge\n";
+        os << "zepto_agent_memory_records " << memory_stats.memory_count << "\n\n";
+
+        os << "# HELP zepto_agent_cache_entries Current Agent Cache entry count\n";
+        os << "# TYPE zepto_agent_cache_entries gauge\n";
+        os << "zepto_agent_cache_entries " << memory_stats.cache_count << "\n\n";
+
+        os << "# HELP zepto_agent_memory_embedding_dim Agent Memory embedding dimension, or 0 before first embedding\n";
+        os << "# TYPE zepto_agent_memory_embedding_dim gauge\n";
+        os << "zepto_agent_memory_embedding_dim " << memory_stats.embedding_dim << "\n\n";
+
+        os << "# HELP zepto_agent_memory_evictions_total Total Agent Memory records evicted by TTL or capacity policy\n";
+        os << "# TYPE zepto_agent_memory_evictions_total counter\n";
+        os << "zepto_agent_memory_evictions_total "
+           << memory_stats.evicted_memory_count << "\n\n";
+
+        os << "# HELP zepto_agent_cache_evictions_total Total Agent Cache entries evicted by TTL or capacity policy\n";
+        os << "# TYPE zepto_agent_cache_evictions_total counter\n";
+        os << "zepto_agent_cache_evictions_total "
+           << memory_stats.evicted_cache_count << "\n\n";
+
+        os << "# HELP zepto_agent_memory_max_records Configured Agent Memory capacity limit, 0 means unbounded\n";
+        os << "# TYPE zepto_agent_memory_max_records gauge\n";
+        os << "zepto_agent_memory_max_records " << eviction.max_memories << "\n\n";
+
+        os << "# HELP zepto_agent_cache_max_entries Configured Agent Cache capacity limit, 0 means unbounded\n";
+        os << "# TYPE zepto_agent_cache_max_entries gauge\n";
+        os << "zepto_agent_cache_max_entries " << eviction.max_cache_entries << "\n";
+
+        os << "\n# HELP zepto_agent_memory_ann_indexed_vectors Agent Memory vectors indexed by ANN\n";
+        os << "# TYPE zepto_agent_memory_ann_indexed_vectors gauge\n";
+        os << "zepto_agent_memory_ann_indexed_vectors "
+           << memory_stats.ann_indexed_vectors << "\n\n";
+
+        os << "# HELP zepto_agent_memory_ann_rebuilds_total Agent Memory ANN index rebuild count\n";
+        os << "# TYPE zepto_agent_memory_ann_rebuilds_total counter\n";
+        os << "zepto_agent_memory_ann_rebuilds_total "
+           << memory_stats.ann_rebuild_count << "\n\n";
+
+        os << "# HELP zepto_agent_memory_ann_last_rebuild_ms Last Agent Memory ANN rebuild duration in ms\n";
+        os << "# TYPE zepto_agent_memory_ann_last_rebuild_ms gauge\n";
+        os << "zepto_agent_memory_ann_last_rebuild_ms "
+           << memory_stats.ann_last_rebuild_ms << "\n\n";
+
+        os << "# HELP zepto_agent_memory_ann_searches_total Agent Memory searches served from ANN candidates\n";
+        os << "# TYPE zepto_agent_memory_ann_searches_total counter\n";
+        os << "zepto_agent_memory_ann_searches_total "
+           << memory_stats.ann_search_count << "\n\n";
+
+        os << "# HELP zepto_agent_memory_ann_fallbacks_total Agent Memory ANN searches that fell back to filtered scan\n";
+        os << "# TYPE zepto_agent_memory_ann_fallbacks_total counter\n";
+        os << "zepto_agent_memory_ann_fallbacks_total "
+           << memory_stats.ann_fallback_count << "\n";
     }
 
     // Append output from registered metrics providers (e.g. Kafka consumers).

@@ -2,21 +2,21 @@
 
 # ⚡ ZeptoDB
 
-### In-Memory Time-Series Database for High-Throughput Workloads
+### Agent Memory for Live Time-Series Data
 
-*Ingest millions of events per second. Analyze them in microseconds.*
+*Ingest millions of events per second. Retrieve the evidence, context, and cache entries AI agents need before they act.*
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/20)
 [![LLVM 19](https://img.shields.io/badge/LLVM-19-orange?logo=llvm)](https://llvm.org/)
 [![Highway SIMD](https://img.shields.io/badge/SIMD-Highway-green)](https://github.com/google/highway)
 [![Tests](https://img.shields.io/badge/tests-830%2B%20passing-brightgreen?logo=googletest)](tests/)
 [![License](https://img.shields.io/badge/License-BUSL_1.1-blue)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-docs.zeptodb.com-blue?logo=readthedocs)](https://docs.zeptodb.com)
+[![Website](https://img.shields.io/badge/website-zeptodb.com-00e5a0?logo=astro)](https://zeptodb.com)
 [![Discord](https://img.shields.io/discord/1492174712359354590?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/zeptodb)
 [![Docker Pulls](https://img.shields.io/docker/pulls/zeptodb/zeptodb?logo=docker)](https://hub.docker.com/r/zeptodb/zeptodb)
 [![PyPI](https://img.shields.io/pypi/v/zeptodb?logo=python&logoColor=white)](https://pypi.org/project/zeptodb/)
 
-[Quick Start](#-quick-start) · [Why ZeptoDB](#-why-zeptodb) · [Performance](#-performance) · [SQL Examples](#-sql-examples) · [Docs](https://docs.zeptodb.com) · [Community](#-community)
+[Website](https://zeptodb.com) · [Agent Memory](https://zeptodb.com/use-cases/agent-memory/) · [Quick Start](https://zeptodb.com/getting-started/quick_start/) · [Benchmarks](https://zeptodb.com/benchmarks/) · [Docs](https://zeptodb.com/docs/) · [Community](#-community)
 
 </div>
 
@@ -31,15 +31,39 @@
 
 ## What is ZeptoDB?
 
-ZeptoDB is an in-memory columnar database purpose-built for time-series analytics at scale.
+ZeptoDB is an in-memory columnar database purpose-built for live time-series analytics
+and AI agent memory.
 
 It handles **high-throughput ingestion** and **real-time analytical queries** simultaneously — without trade-offs between the two.
 
-The engine is hardware-software co-optimized: Highway SIMD vectorization, LLVM JIT compilation, lock-free ring buffers, NUMA-aware allocation, and UCX/RDMA networking — all working together to eliminate unnecessary copies, allocations, and cache misses.
+The core engine is hardware-software co-optimized: Highway SIMD vectorization,
+LLVM JIT compilation, lock-free ring buffers, NUMA-aware allocation, and
+UCX/RDMA networking — all working together to eliminate unnecessary copies,
+allocations, and cache misses. The AI memory layer adds agent-scoped context for
+applications built on live time-series data: client-supplied embedding storage,
+parallel filtered context retrieval, optional experimental ANN candidate
+generation, token-budget assembly, and exact/semantic prompt cache lookup
+without calling LLM providers from the server. Agent examples live
+under [`examples/agent_memory`](examples/agent_memory/) and include provider
+cache, LangGraph-style memory, optional provider adapters, AgentOps telemetry,
+and agent-attached time-series demos for finance, IoT, observability, robotics,
+and game/live-ops.
+
+New to the project? Start with the website:
+
+| Path | What it gives you |
+|------|-------------------|
+| [Agent Memory](https://zeptodb.com/use-cases/agent-memory/) | How live time-series becomes agent context, cache, and replay |
+| [Python Agent Memory Quickstart](https://zeptodb.com/use-cases/agent-memory-python-quickstart/) | Copy-paste memory, context, cache, and write-back flow |
+| [Benchmarks](https://zeptodb.com/benchmarks/) | Ingestion, query latency, zero-copy Python, and Agent Memory numbers |
+| [Features](https://zeptodb.com/features/) | Time-series core, memory layer, APIs, storage, and security |
+| [Quick Start](https://zeptodb.com/getting-started/quick_start/) | First local query and client setup |
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Clients: HTTP API · Python DSL · C++ API · Arrow Flight    │
+├─────────────────────────────────────────────────────────────┤
+│  AI Memory: vertical context · agent telemetry · cache      │
 ├─────────────────────────────────────────────────────────────┤
 │  SQL Engine: Parser (1.5μs) · AST Optimizer · Executor      │
 ├─────────────────────────────────────────────────────────────┤
@@ -69,7 +93,7 @@ The engine is hardware-software co-optimized: Highway SIMD vectorization, LLVM J
 | **Python zero-copy** | 522ns | ❌ IPC only | ❌ | ❌ | ❌ |
 | **License cost** | Free (BUSL-1.1) | $100K–500K/yr | Free (Apache 2.0) | Free (Apache 2.0) | Free (Apache 2.0) |
 
-**TL;DR:** kdb+ performance, standard SQL, zero-copy Python, open-source pricing.
+**TL;DR:** kdb+ class time-series performance, standard SQL, zero-copy Python, and a native Agent Memory layer for context retrieval, prompt cache, and AgentOps telemetry.
 
 ---
 
@@ -140,7 +164,7 @@ ninja -j$(nproc)
 ./zepto_http_server --port 8123
 ```
 
-📖 Full guide: [Quick Start](https://docs.zeptodb.com/getting-started/QUICK_START/) · [Python Reference](docs/api/PYTHON_REFERENCE.md) · [SQL Reference](docs/api/SQL_REFERENCE.md)
+📖 Full guide: [Quick Start](https://zeptodb.com/getting-started/quick_start/) · [Agent Memory](https://zeptodb.com/use-cases/agent-memory/) · [Python Reference](https://zeptodb.com/api/python_reference/) · [SQL Reference](https://zeptodb.com/api/sql_reference/)
 
 ---
 
@@ -218,6 +242,7 @@ Full SQL reference: [SQL_REFERENCE.md](docs/api/SQL_REFERENCE.md) — INSERT, UP
 |--------|------------|--------------|
 | **Finance / HFT** | Sub-ms tick processing, kdb+-class perf | ASOF JOIN, xbar, EMA, VWAP |
 | **Quant Research** | Backtest in Python, execute in C++ | Zero-copy numpy, Polars DSL |
+| **Agentic AI** | Add agents to time-series workflows without losing operational context | Agent-scoped memory, context assembly, exact/semantic cache |
 | **Crypto / DeFi** | 24/7 multi-exchange streaming | Binance feed handler, real-time agg |
 | **IoT / Manufacturing** | High-frequency sensor ingestion | DELTA/RATIO, time-bar agg, LZ4 |
 | **Autonomous Vehicles** | Sensor fusion, driving log replay | ASOF JOIN, Parquet HDB, parallel scan |
@@ -274,7 +299,7 @@ helm install zeptodb ./deploy/helm/zeptodb
 ./deploy/scripts/install_service.sh
 ```
 
-Guides: [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md) · [Kubernetes](docs/operations/KUBERNETES_OPERATIONS.md) · [Bare-metal Tuning](docs/deployment/BARE_METAL_TUNING.md)
+Guides: [Production Deployment](https://zeptodb.com/deployment/production_deployment/) · [Kubernetes](https://zeptodb.com/operations/kubernetes_operations/) · [Bare-metal Tuning](https://zeptodb.com/deployment/bare_metal_tuning/)
 
 ---
 
@@ -292,6 +317,7 @@ Supported: **kdb+** (HDB loader, q→SQL) · **ClickHouse** (DDL/query conversio
 
 ## 💬 Community
 
+- [Website](https://zeptodb.com) — docs, benchmarks, comparisons, and Agent Memory guides
 - [Discord](https://discord.gg/zeptodb) — questions, discussions, real-time help
 - [GitHub Discussions](https://github.com/ZeptoDB/ZeptoDB/discussions) — design proposals, Q&A, ideas
 - [Twitter/X](https://twitter.com/zeptodb) — release announcements, benchmarks

@@ -64,10 +64,10 @@ hide:
 
 # <span class="brand-zepto">Zepto</span><span class="brand-db">DB</span>
 
-<div class="tagline">Built for Quants. Ready for Everything.</div>
+<div class="tagline">Built for Quants. Ready for Agents.</div>
 <div class="subtitle">
 Ultra-low latency <strong>in-memory</strong> time-series database.<br>
-From trading desks to factory floors to autonomous machines — wherever μs matters.
+From trading desks to AI agents to autonomous machines — wherever μs matters.
 </div>
 
 </div>
@@ -104,6 +104,12 @@ From trading desks to factory floors to autonomous machines — wherever μs mat
 
     ClickHouse-compatible HTTP API. Grafana, DBeaver, any SQL tool — just connect.
 
+-   :material-brain:{ .lg .middle } **Agent Memory**
+
+    ---
+
+    Client-supplied embeddings, token-budget context retrieval, exact/semantic prompt cache, and AgentOps telemetry examples. See `examples/agent_memory/`.
+
 -   :material-shield-lock:{ .lg .middle } **Enterprise Security**
 
     ---
@@ -133,6 +139,11 @@ Technology proven in HFT, expanded to every domain where time-series data is mis
     <div class="icon">🤖</div>
     <h3>Physical AI & Robotics</h3>
     <p>Sensor fusion, reinforcement learning feature store, zero-copy PyTorch pipeline. 522ns to tensor.</p>
+  </div>
+  <div class="use-case-card">
+    <div class="icon">🧠</div>
+    <h3>Agentic AI</h3>
+    <p>Fast working memory, context assembly, and app-level LLM cache before provider calls.</p>
   </div>
   <div class="use-case-card">
     <div class="icon">🏭</div>

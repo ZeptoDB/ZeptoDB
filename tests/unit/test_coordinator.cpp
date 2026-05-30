@@ -27,7 +27,9 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <unistd.h>
 
 using namespace zeptodb::cluster;
@@ -252,23 +254,36 @@ TEST(PartialAgg, MergeScalarAvg_ThreeNodes) {
 // 3. TcpRpc — loopback ping and SQL query
 // ============================================================================
 
-// Use ports 19700-19799 for TCP RPC tests.
-// Under ctest -j$(nproc) each test runs in its own process; to avoid
-// cross-process bind collisions we randomise the base per-process from the
-// PID, keeping the relative offsets used by each test intact.
-static const uint16_t RPC_TEST_PORT_BASE = static_cast<uint16_t>(
-    20000 + ((static_cast<unsigned>(::getpid()) * 131u) % 30000));
+static const uint16_t RPC_TEST_PORT_BASE = zepto_test_util::pick_free_port();
 
-// Per-process port offset applied to any other hardcoded test port literal below.
-// Without this, tests in test_coordinator.cpp and test_cluster.cpp that both
-// hardcode 19900 (etc.) collide under parallel ctest. Each ctest invocation
-// launches a new process with a fresh PID + monotonic clock → near-unique
-// offset. Range chosen so base+off stays below the 16-bit port limit.
-static const uint16_t PORT_OFF = static_cast<uint16_t>(
-    ((static_cast<unsigned>(::getpid()) * 2654435761u)
-     ^ static_cast<unsigned>(
-         std::chrono::steady_clock::now().time_since_epoch().count())) % 30000);
-static inline uint16_t P(uint16_t n) { return static_cast<uint16_t>(n + PORT_OFF); }
+// Map legacy port literals to kernel-assigned ephemeral ports. GTest/CTest runs
+// each test case in its own process under high parallelism, so arithmetic port
+// offsets still collide occasionally on dense aarch64 runners. Keeping a stable
+// per-process mapping preserves repeated P(19862) lookups inside a test while
+// letting the kernel isolate concurrent test processes.
+static inline uint16_t P(uint16_t n) {
+    static std::mutex mu;
+    static std::unordered_map<uint16_t, uint16_t> ports;
+
+    std::lock_guard lock(mu);
+    auto it = ports.find(n);
+    if (it != ports.end()) return it->second;
+
+    uint16_t port = 0;
+    for (int attempts = 0; attempts < 32; ++attempts) {
+        port = zepto_test_util::pick_free_port();
+        bool used = false;
+        for (const auto& [_, existing] : ports) {
+            if (existing == port) {
+                used = true;
+                break;
+            }
+        }
+        if (port != 0 && !used) break;
+    }
+    ports.emplace(n, port);
+    return port;
+}
 
 TEST(TcpRpc, PingPong) {
     TcpRpcServer server;
@@ -1711,6 +1726,32 @@ TEST(MultiDrain, FourDrainThreads_MultiSymbol) {
     auto result = ex.execute("SELECT count(*) FROM trades");
     ASSERT_TRUE(result.ok()) << result.error;
     EXPECT_EQ(result.rows[0][0], 100);  // 4 * 25
+}
+
+TEST(MultiDrain, FourDrainThreads_SameSymbolPreservesAllRows) {
+    zeptodb::core::PipelineConfig cfg;
+    cfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    cfg.drain_threads = 4;
+    zeptodb::core::ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+
+    constexpr int kItems = 1000;
+    for (int i = 0; i < kItems; ++i) {
+        zeptodb::ingestion::TickMessage msg{};
+        msg.symbol_id = 74;
+        msg.price     = 10000000LL;
+        msg.volume    = 10;
+        msg.recv_ts   = static_cast<int64_t>(i) * 1'000'000'000LL;
+        pipeline.ingest_tick(msg);
+    }
+
+    pipeline.stop();
+    pipeline.drain_sync(1024);
+
+    zeptodb::sql::QueryExecutor ex(pipeline);
+    auto result = ex.execute("SELECT count(*) FROM trades WHERE symbol = 74");
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.rows[0][0], kItems);
 }
 
 // ============================================================================

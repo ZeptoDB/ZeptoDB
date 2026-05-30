@@ -53,6 +53,20 @@ enum class RpcType : uint32_t {
     AUTH_HANDSHAKE  = 15, // Client → Server: nonce + HMAC (40 bytes)
     AUTH_OK         = 16, // Server → Client: authentication accepted
     AUTH_REJECT     = 17, // Server → Client: authentication rejected
+    AGENT_MEMORY_PUT    = 18, // Opaque Agent Memory MemoryRecord payload
+    AGENT_MEMORY_RESULT = 19, // Opaque Agent Memory StoreResult payload
+    AGENT_CACHE_STORE   = 20, // Opaque Agent Memory CacheEntry payload
+    AGENT_CACHE_RESULT  = 21, // Opaque Agent Memory StoreResult payload
+    AGENT_MEMORY_GET    = 22, // Opaque Agent Memory point lookup request
+    AGENT_MEMORY_GET_RESULT = 23, // Opaque Agent Memory point lookup result
+    AGENT_CACHE_LOOKUP_EXACT = 24, // Opaque exact prompt cache lookup request
+    AGENT_CACHE_LOOKUP_RESULT = 25, // Opaque cache lookup result
+    AGENT_MEMORY_SEARCH = 26, // Opaque Agent Memory search request
+    AGENT_MEMORY_SEARCH_RESULT = 27, // Opaque Agent Memory search result
+    AGENT_MEMORY_REPLICA_APPEND = 28, // Opaque Agent Memory WAL replica record
+    AGENT_MEMORY_REPLICA_ACK = 29, // 1-byte ack (0x01 = appended)
+    AGENT_MEMORY_DELETE = 30, // Opaque Agent Memory delete request
+    AGENT_CACHE_DELETE = 31, // Opaque Agent Cache delete request
 };
 
 // ============================================================================

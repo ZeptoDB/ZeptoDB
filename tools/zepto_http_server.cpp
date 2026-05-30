@@ -7,6 +7,7 @@
 // - --ha active/standby --peer host:port → HA failover
 // ============================================================================
 #include "zeptodb/core/pipeline.h"
+#include "zeptodb/ai/agent_memory.h"
 #include "zeptodb/server/http_server.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/auth/auth_manager.h"
@@ -16,6 +17,7 @@
 #include "zeptodb/cluster/coordinator_ha.h"
 #include "zeptodb/cluster/coordinator_routing_adapter.h"
 #include "zeptodb/cluster/tcp_rpc.h"
+#include "zeptodb/cluster/failover_manager.h"
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/partition_migrator.h"
 #include "zeptodb/cluster/partition_router.h"
@@ -84,6 +86,21 @@ int main(int argc, char* argv[]) {
     // instead of the default PURE_IN_MEMORY.
     std::string hdb_dir;                 // --hdb-dir <path>
     std::string storage_mode = "pure";   // --storage-mode pure|tiered
+    std::string agent_memory_dir;        // --agent-memory-dir <path>
+    size_t agent_memory_flush_every = 100; // --agent-memory-flush-every N
+    size_t agent_memory_max_memories = 0; // --agent-memory-max-memories N
+    size_t agent_memory_max_cache_entries = 0; // --agent-memory-max-cache-entries N
+    std::string agent_memory_replication_mode = "routed"; // local|routed|quorum|sync
+    std::string agent_memory_ann = "off";  // --agent-memory-ann off|auto|sparse_projection|hnsw
+    size_t agent_memory_ann_min_records = 50'000;
+    size_t agent_memory_ann_max_candidates = 50'000;
+    uint64_t agent_memory_ring_epoch = 1;
+
+    bool failover_enabled = false;
+    uint16_t health_heartbeat_port = 9100;
+    uint16_t health_tcp_port = 9101;
+    uint32_t health_suspect_ms = 3000;
+    uint32_t health_dead_ms = 10000;
 
     // devlog 102: ingest scale-out phase 1. 0 = engine default (auto / 65536).
     // Precedence: CLI flag > env var > engine default. Env vars are set by the
@@ -174,6 +191,34 @@ int main(int argc, char* argv[]) {
             hdb_dir = argv[++i];
         else if (arg == "--storage-mode" && i + 1 < argc)
             storage_mode = argv[++i];
+        else if (arg == "--agent-memory-dir" && i + 1 < argc)
+            agent_memory_dir = argv[++i];
+        else if (arg == "--agent-memory-flush-every" && i + 1 < argc)
+            agent_memory_flush_every = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-max-memories" && i + 1 < argc)
+            agent_memory_max_memories = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-max-cache-entries" && i + 1 < argc)
+            agent_memory_max_cache_entries = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-replication-mode" && i + 1 < argc)
+            agent_memory_replication_mode = argv[++i];
+        else if (arg == "--agent-memory-ann" && i + 1 < argc)
+            agent_memory_ann = argv[++i];
+        else if (arg == "--agent-memory-ann-min-records" && i + 1 < argc)
+            agent_memory_ann_min_records = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-ann-max-candidates" && i + 1 < argc)
+            agent_memory_ann_max_candidates = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-ring-epoch" && i + 1 < argc)
+            agent_memory_ring_epoch = static_cast<uint64_t>(std::atoll(argv[++i]));
+        else if (arg == "--failover-enabled")
+            failover_enabled = true;
+        else if (arg == "--health-heartbeat-port" && i + 1 < argc)
+            health_heartbeat_port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (arg == "--health-tcp-port" && i + 1 < argc)
+            health_tcp_port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (arg == "--health-suspect-ms" && i + 1 < argc)
+            health_suspect_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
+        else if (arg == "--health-dead-ms" && i + 1 < argc)
+            health_dead_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
         else if (arg == "--drain-threads" && i + 1 < argc)
             drain_threads_cfg = static_cast<size_t>(std::atoll(argv[++i]));
         else if (arg == "--ring-buffer-capacity" && i + 1 < argc)
@@ -236,6 +281,34 @@ int main(int argc, char* argv[]) {
                       << "Storage:\n"
                       << "  --hdb-dir <path>         HDB base directory (implies --storage-mode tiered)\n"
                       << "  --storage-mode <mode>    pure (in-memory, default) | tiered (RDB+HDB)\n\n"
+                      << "  --agent-memory-dir <path> Persist Agent Memory sidecar files\n"
+                      << "                            (routed mode uses node-{id}/shard-0 under this path;\n"
+                      << "                             default: <hdb-dir>/agent_memory when HDB is enabled)\n\n"
+                      << "  --agent-memory-flush-every N\n"
+                      << "                            Save sidecar after N memory/cache mutations\n"
+                      << "                            (0 = stop only, default: 100)\n\n"
+                      << "  --agent-memory-max-memories N\n"
+                      << "                            Max retained memories (0 = unbounded, default: 0)\n"
+                      << "  --agent-memory-max-cache-entries N\n"
+                      << "                            Max retained cache entries (0 = unbounded, default: 0)\n\n"
+                      << "  --agent-memory-replication-mode local|routed|quorum|sync\n"
+                      << "                            Agent Memory owner WAL replica ACK policy\n"
+                      << "                            (local/routed = owner only, default: routed)\n\n"
+                      << "  --agent-memory-ann off|auto|sparse_projection|hnsw\n"
+                      << "                            Enable ANN candidate generation for memory search\n"
+                      << "                            (default: off)\n"
+                      << "  --agent-memory-ann-min-records N\n"
+                      << "                            Auto mode threshold (default: 50000)\n"
+                      << "  --agent-memory-ann-max-candidates N\n"
+                      << "                            Max ANN candidates reranked per search (default: 50000)\n\n"
+                      << "  --agent-memory-ring-epoch N\n"
+                      << "                            Initial routed Agent Memory ring epoch (default: 1)\n\n"
+                      << "Cluster failover:\n"
+                      << "  --failover-enabled       Start HealthMonitor + FailoverManager in non-HA cluster mode\n"
+                      << "  --health-heartbeat-port N UDP heartbeat port (default: 9100)\n"
+                      << "  --health-tcp-port N       TCP heartbeat probe port (default: 9101)\n"
+                      << "  --health-suspect-ms N     Suspect timeout (default: 3000)\n"
+                      << "  --health-dead-ms N        Dead timeout and failover trigger (default: 10000)\n\n"
                       << "Ingest tuning (devlog 102):\n"
                       << "  --drain-threads N        0 = auto (max(2, hw/4)); N>0 = explicit drain thread count\n"
                       << "  --ring-buffer-capacity N Ring-buffer slots, power-of-two in [4096, 16777216]; 0 = default 65536\n\n"
@@ -425,6 +498,72 @@ int main(int argc, char* argv[]) {
     // pod deployments keep executor.cluster_node_ = nullptr (original direct-
     // to-pipeline behaviour).
     zeptodb::server::HttpServer server(executor, port, zeptodb::auth::TlsConfig{}, auth);
+    if (agent_memory_dir.empty() && cfg.storage_mode != zeptodb::core::StorageMode::PURE_IN_MEMORY) {
+        agent_memory_dir = cfg.hdb_base_path + "/agent_memory";
+    }
+    if (!agent_memory_dir.empty()) {
+        std::string error;
+        if (!server.set_agent_memory_persistence(agent_memory_dir, &error,
+                                                 agent_memory_flush_every)) {
+            std::cerr << "Error: failed to load agent memory snapshot: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Agent memory persistence: " << agent_memory_dir
+                  << " (flush_every=" << agent_memory_flush_every << ")\n";
+    }
+    if (agent_memory_max_memories > 0 || agent_memory_max_cache_entries > 0) {
+        zeptodb::ai::AgentMemoryEvictionConfig eviction;
+        eviction.max_memories = agent_memory_max_memories;
+        eviction.max_cache_entries = agent_memory_max_cache_entries;
+        server.agent_memory_store().set_eviction_config(eviction);
+        std::cout << "Agent memory eviction: max_memories="
+                  << agent_memory_max_memories
+                  << ", max_cache_entries="
+                  << agent_memory_max_cache_entries
+                  << ", protect_pinned=true\n";
+    }
+    if (agent_memory_ann != "off") {
+        zeptodb::ai::AgentMemoryAnnConfig ann;
+        ann.min_records = agent_memory_ann_min_records;
+        ann.index.max_candidates = agent_memory_ann_max_candidates;
+        if (agent_memory_ann == "auto") {
+            ann.mode = zeptodb::ai::AgentMemoryAnnMode::Auto;
+        } else if (agent_memory_ann == "sparse_projection" ||
+                   agent_memory_ann == "projection") {
+            ann.mode = zeptodb::ai::AgentMemoryAnnMode::SparseProjection;
+        } else if (agent_memory_ann == "hnsw") {
+            if (!zeptodb::ai::hnsw_ann_available()) {
+                std::cerr << "Error: --agent-memory-ann hnsw requires "
+                          << "ZEPTO_ENABLE_HNSWLIB=ON\n";
+                return 1;
+            }
+            ann.mode = zeptodb::ai::AgentMemoryAnnMode::Hnsw;
+        } else {
+            std::cerr << "Error: invalid --agent-memory-ann mode: "
+                      << agent_memory_ann << "\n";
+            return 1;
+        }
+        server.agent_memory_store().set_ann_config(ann);
+        std::cout << "Agent memory ANN: " << agent_memory_ann
+                  << " (min_records=" << agent_memory_ann_min_records
+                  << ", max_candidates=" << agent_memory_ann_max_candidates
+                  << ")\n";
+    }
+    if (agent_memory_replication_mode == "local" ||
+        agent_memory_replication_mode == "routed") {
+        server.set_agent_memory_replication_mode(
+            zeptodb::server::AgentMemoryReplicationMode::Routed);
+    } else if (agent_memory_replication_mode == "quorum") {
+        server.set_agent_memory_replication_mode(
+            zeptodb::server::AgentMemoryReplicationMode::Quorum);
+    } else if (agent_memory_replication_mode == "sync") {
+        server.set_agent_memory_replication_mode(
+            zeptodb::server::AgentMemoryReplicationMode::Sync);
+    } else {
+        std::cerr << "Error: invalid --agent-memory-replication-mode: "
+                  << agent_memory_replication_mode << "\n";
+        return 1;
+    }
     server.set_ready(true);
 
     // Web UI static files
@@ -455,9 +594,13 @@ int main(int argc, char* argv[]) {
     // ── HA mode ──
     std::unique_ptr<zeptodb::cluster::CoordinatorHA> ha;
     std::unique_ptr<zeptodb::cluster::TcpRpcServer> rpc_srv;
+    std::unordered_map<zeptodb::ai::AgentMemoryNodeId,
+                       std::shared_ptr<zeptodb::cluster::TcpRpcClient>>
+        agent_memory_rpc;
 
     // ── Non-HA: plain coordinator ──
     std::unique_ptr<zeptodb::cluster::QueryCoordinator> coordinator;
+    std::atomic<uint64_t> agent_memory_ring_epoch_state{agent_memory_ring_epoch};
 
     if (ha_mode) {
         auto role = (ha_role_str == "active")
@@ -484,6 +627,38 @@ int main(int argc, char* argv[]) {
 
         // Start RPC server for peer communication (ping/query forwarding)
         rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+        rpc_srv->set_agent_memory_put_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_memory_put_rpc(data, len);
+            });
+        rpc_srv->set_agent_cache_store_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_cache_store_rpc(data, len);
+            });
+        rpc_srv->set_agent_memory_delete_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_memory_delete_rpc(data, len);
+            });
+        rpc_srv->set_agent_cache_delete_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_cache_delete_rpc(data, len);
+            });
+        rpc_srv->set_agent_memory_get_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_memory_get_rpc(data, len);
+            });
+        rpc_srv->set_agent_memory_search_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_memory_search_rpc(data, len);
+            });
+        rpc_srv->set_agent_cache_lookup_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_cache_lookup_rpc(data, len);
+            });
+        rpc_srv->set_agent_memory_replica_append_callback(
+            [&server](const uint8_t* data, size_t len) {
+                return server.handle_agent_memory_replica_append_rpc(data, len);
+            });
         rpc_srv->start(rpc_port, [&](const std::string& sql) {
             return ha->execute_sql(sql);
         });
@@ -535,6 +710,8 @@ int main(int argc, char* argv[]) {
     // ring under the same shared_mutex, exposed by QueryCoordinator.
     std::unique_ptr<zeptodb::cluster::PartitionMigrator>       rebalance_migrator;
     std::unique_ptr<zeptodb::cluster::RebalanceManager>        rebalance_mgr;
+    std::unique_ptr<zeptodb::cluster::FailoverManager>         failover_mgr;
+    std::unique_ptr<zeptodb::cluster::HealthMonitor>           health_monitor;
     std::unordered_map<zeptodb::cluster::NodeId,
                        std::shared_ptr<zeptodb::cluster::RpcClientBase>> peer_rpc;
     std::unique_ptr<zeptodb::cluster::CoordinatorRoutingAdapter> routing_adapter;
@@ -561,10 +738,12 @@ int main(int argc, char* argv[]) {
         for (auto& rn : remote_nodes) {
             // Peer RPC port = peer HTTP port + 100 (convention from
             // cluster_node.h:436 and migrator above).
-            peer_rpc.emplace(rn.id,
-                std::make_shared<zeptodb::cluster::TcpRpcClient>(
-                    rn.host, static_cast<uint16_t>(rn.port + 100),
-                    /*timeout_ms=*/2000));
+            auto rpc = std::make_shared<zeptodb::cluster::TcpRpcClient>(
+                rn.host, static_cast<uint16_t>(rn.port + 100),
+                /*timeout_ms=*/2000);
+            peer_rpc.emplace(rn.id, rpc);
+            agent_memory_rpc.emplace(static_cast<zeptodb::ai::AgentMemoryNodeId>(rn.id),
+                                     rpc);
         }
 
         // --- Peer RPC server so other pods can forward ticks TO us ---
@@ -572,6 +751,38 @@ int main(int argc, char* argv[]) {
         // symmetric one with a tick_cb for TICK_INGEST.
         if (!rpc_srv) {
             rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+            rpc_srv->set_agent_memory_put_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_memory_put_rpc(data, len);
+                });
+            rpc_srv->set_agent_cache_store_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_cache_store_rpc(data, len);
+                });
+            rpc_srv->set_agent_memory_delete_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_memory_delete_rpc(data, len);
+                });
+            rpc_srv->set_agent_cache_delete_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_cache_delete_rpc(data, len);
+                });
+            rpc_srv->set_agent_memory_get_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_memory_get_rpc(data, len);
+                });
+            rpc_srv->set_agent_memory_search_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_memory_search_rpc(data, len);
+                });
+            rpc_srv->set_agent_cache_lookup_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_cache_lookup_rpc(data, len);
+                });
+            rpc_srv->set_agent_memory_replica_append_callback(
+                [&server](const uint8_t* data, size_t len) {
+                    return server.handle_agent_memory_replica_append_rpc(data, len);
+                });
             rpc_srv->start(
                 static_cast<uint16_t>(port + 100),
                 // sql_cb: scatter-gathered SQL from another coordinator
@@ -594,8 +805,93 @@ int main(int argc, char* argv[]) {
             static_cast<zeptodb::cluster::NodeId>(node_id),
             &peer_rpc);
         executor.set_cluster_node(routing_adapter.get());
+        zeptodb::ai::AgentMemoryRouterConfig memory_routing;
+        memory_routing.self_node_id =
+            static_cast<zeptodb::ai::AgentMemoryNodeId>(node_id);
+        memory_routing.ring_epoch = agent_memory_ring_epoch_state.load();
+        memory_routing.mode = zeptodb::ai::AgentMemoryRoutingMode::Routed;
+        std::vector<zeptodb::ai::AgentMemoryNodeId> memory_nodes{
+            static_cast<zeptodb::ai::AgentMemoryNodeId>(node_id)};
+        for (auto& rn : remote_nodes) {
+            memory_nodes.push_back(
+                static_cast<zeptodb::ai::AgentMemoryNodeId>(rn.id));
+        }
+        {
+            std::string error;
+            if (!server.set_agent_memory_routing(memory_routing, memory_nodes,
+                                                 agent_memory_rpc, &error)) {
+                std::cerr << "Error: failed to enable agent memory routing: "
+                          << error << "\n";
+                return 1;
+            }
+        }
         std::cout << "Cluster routing: enabled (" << remote_nodes.size()
                   << " remote nodes)\n";
+        std::cout << "Agent memory routing: enabled (" << memory_nodes.size()
+                  << " nodes, ring_epoch="
+                  << agent_memory_ring_epoch_state.load() << ")\n";
+
+        if (failover_enabled) {
+            zeptodb::cluster::FailoverConfig failover_config;
+            failover_config.auto_re_replicate = true;
+            failover_config.async_re_replicate = true;
+            failover_mgr = std::make_unique<zeptodb::cluster::FailoverManager>(
+                coordinator->router(), *coordinator, failover_config);
+            failover_mgr->register_node(
+                node_id, "127.0.0.1", static_cast<uint16_t>(port + 100));
+            for (auto& rn : remote_nodes) {
+                failover_mgr->register_node(
+                    rn.id, rn.host, static_cast<uint16_t>(rn.port + 100));
+            }
+            failover_mgr->on_failover(
+                [&server, &coordinator, &agent_memory_ring_epoch_state](
+                    const zeptodb::cluster::FailoverEvent& event) {
+                    const uint64_t source_epoch =
+                        agent_memory_ring_epoch_state.fetch_add(1);
+                    const uint64_t new_epoch = source_epoch + 1;
+                    std::vector<zeptodb::ai::AgentMemoryNodeId> live_nodes;
+                    for (const auto node : coordinator->router().all_nodes()) {
+                        live_nodes.push_back(
+                            static_cast<zeptodb::ai::AgentMemoryNodeId>(node));
+                    }
+                    auto result = server.handle_agent_memory_owner_failover(
+                        static_cast<zeptodb::ai::AgentMemoryNodeId>(event.dead_node),
+                        source_epoch, new_epoch, live_nodes);
+                    if (result.ok) {
+                        std::cout << "Agent memory failover: dead_node="
+                                  << event.dead_node
+                                  << ", replacement="
+                                  << result.replacement_node_id
+                                  << ", adopted="
+                                  << (result.adopted ? "true" : "false")
+                                  << ", ring_epoch=" << new_epoch << "\n";
+                    } else {
+                        std::cerr << "Agent memory failover failed: dead_node="
+                                  << event.dead_node
+                                  << ", error=" << result.error << "\n";
+                    }
+                });
+
+            zeptodb::cluster::HealthConfig health_config;
+            health_config.heartbeat_port = health_heartbeat_port;
+            health_config.tcp_heartbeat_port = health_tcp_port;
+            health_config.suspect_timeout_ms = health_suspect_ms;
+            health_config.dead_timeout_ms = health_dead_ms;
+            health_monitor =
+                std::make_unique<zeptodb::cluster::HealthMonitor>(health_config);
+            failover_mgr->connect(*health_monitor);
+            std::vector<zeptodb::cluster::NodeAddress> peers;
+            peers.reserve(remote_nodes.size());
+            for (auto& rn : remote_nodes) {
+                peers.push_back({rn.host, rn.port, rn.id});
+            }
+            health_monitor->start({"127.0.0.1", port, node_id}, peers);
+            std::cout << "Failover manager: enabled (heartbeat_port="
+                      << health_heartbeat_port
+                      << ", tcp_heartbeat_port=" << health_tcp_port
+                      << ", suspect_ms=" << health_suspect_ms
+                      << ", dead_ms=" << health_dead_ms << ")\n";
+        }
     }
 
     server.start_async();
@@ -603,6 +899,7 @@ int main(int argc, char* argv[]) {
     while (g_running.load())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+    if (health_monitor) health_monitor->stop();
     if (ha) ha->stop();
     if (rpc_srv) rpc_srv->stop();
     server.stop();

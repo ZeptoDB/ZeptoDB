@@ -24,8 +24,10 @@
 #include <memory>
 #include <string>
 
-// AWS SDK 가용성
-#if __has_include(<aws/s3/S3Client.h>)
+// AWS SDK availability is controlled by CMake. Headers may be installed on a
+// host even when `ZEPTO_USE_S3=OFF`, so do not enable S3 from `__has_include`
+// alone or targets will compile AWS references without linking AWS libraries.
+#if defined(ZEPTO_S3_ENABLED) && ZEPTO_S3_ENABLED && __has_include(<aws/s3/S3Client.h>)
     #include <aws/core/Aws.h>
     #include <aws/s3/S3Client.h>
     #include <aws/s3/model/PutObjectRequest.h>

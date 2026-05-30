@@ -1,5 +1,5 @@
 # tests/k8s/test-values.yaml — Lightweight values for K8s compatibility testing
-# No hugepages, small resources, no HPA — fits on t3.xlarge nodes
+# No hugepages, small resources, no HPA — fits on x86 bench nodes
 
 replicaCount: 2
 
@@ -7,6 +7,9 @@ image:
   repository: nginx          # Use nginx as a stand-in until real image is built
   tag: "1.27-alpine"
   pullPolicy: IfNotPresent
+
+nodeSelector:
+  kubernetes.io/arch: amd64
 
 resources:
   requests:

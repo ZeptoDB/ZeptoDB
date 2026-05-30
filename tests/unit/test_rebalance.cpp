@@ -207,6 +207,30 @@ protected:
         dst_srv_.stop();
     }
 
+    void add_source_rows(uint32_t sym, int count) {
+        for (int i = 0; i < count; ++i) {
+            src_pipeline_->ingest_tick(make_tick(
+                sym, 10000000LL, 100,
+                static_cast<int64_t>(10'000 + i) * 1'000'000'000LL));
+        }
+        src_pipeline_->drain_sync(static_cast<size_t>(count) + 100);
+    }
+
+    std::vector<PartitionRouter::Move> pause_test_moves() {
+        router_.add_node(2);
+        return {
+            {500, 1, 2},
+            {501, 1, 2},
+            {502, 1, 2},
+        };
+    }
+
+    RebalanceConfig pause_test_config() const {
+        RebalanceConfig cfg;
+        cfg.max_bandwidth_mbps = 1;
+        return cfg;
+    }
+
     const uint16_t src_port_ = zepto_test_util::pick_free_port();
     const uint16_t dst_port_ = zepto_test_util::pick_free_port();
     std::unique_ptr<zeptodb::core::ZeptoPipeline> src_pipeline_;
@@ -252,8 +276,9 @@ TEST_F(RebalanceTest, RebalanceRemoveNode) {
 // ============================================================================
 
 TEST_F(RebalanceTest, RebalancePauseResume) {
-    RebalanceManager mgr(router_, migrator_);
-    EXPECT_TRUE(mgr.start_add_node(2));
+    add_source_rows(500, 4096);
+    RebalanceManager mgr(router_, migrator_, pause_test_config());
+    EXPECT_TRUE(mgr.start_move_partitions(pause_test_moves()));
 
     mgr.pause();
     std::this_thread::sleep_for(50ms);
@@ -787,8 +812,9 @@ TEST_F(RebalanceTest, WaitTimeoutReturnsFalse) {
 
 // 20. Cancel while paused
 TEST_F(RebalanceTest, CancelWhilePaused) {
-    RebalanceManager mgr(router_, migrator_);
-    EXPECT_TRUE(mgr.start_add_node(2));
+    add_source_rows(500, 4096);
+    RebalanceManager mgr(router_, migrator_, pause_test_config());
+    EXPECT_TRUE(mgr.start_move_partitions(pause_test_moves()));
     mgr.pause();
     std::this_thread::sleep_for(50ms);
     EXPECT_EQ(mgr.state(), RebalanceState::PAUSED);
@@ -809,8 +835,9 @@ TEST_F(RebalanceTest, DoubleCancel) {
 
 // 22. Double pause — second is no-op
 TEST_F(RebalanceTest, DoublePause) {
-    RebalanceManager mgr(router_, migrator_);
-    EXPECT_TRUE(mgr.start_add_node(2));
+    add_source_rows(500, 4096);
+    RebalanceManager mgr(router_, migrator_, pause_test_config());
+    EXPECT_TRUE(mgr.start_move_partitions(pause_test_moves()));
     mgr.pause();
     mgr.pause();  // no crash
     std::this_thread::sleep_for(50ms);
@@ -1375,15 +1402,9 @@ TEST_F(RebalanceTest, PartialMoveDataIntegrity) {
 
 // 39. Pause/resume during partial-move
 TEST_F(RebalanceTest, PartialMovePauseResume) {
-    router_.add_node(2);
-
-    std::vector<PartitionRouter::Move> moves;
-    moves.push_back({500, 1, 2});
-    moves.push_back({501, 1, 2});
-    moves.push_back({502, 1, 2});
-
-    RebalanceManager mgr(router_, migrator_);
-    EXPECT_TRUE(mgr.start_move_partitions(std::move(moves)));
+    add_source_rows(500, 4096);
+    RebalanceManager mgr(router_, migrator_, pause_test_config());
+    EXPECT_TRUE(mgr.start_move_partitions(pause_test_moves()));
 
     mgr.pause();
     std::this_thread::sleep_for(50ms);

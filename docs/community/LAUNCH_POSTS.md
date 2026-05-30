@@ -2,9 +2,111 @@
 
 Ready-to-post content for Reddit, Hacker News, and other platforms.
 
-> Last updated: 2026-05-13 (post-devlog-115 rebrand to multi-industry positioning).
+> Last updated: 2026-05-28 (website-first Agent Memory positioning).
 > Numbers verified against `README.md`, `docs/COMPLETED.md`, `docs/devlog/099_ingest_path_recovery.md`.
 > License: **BSL-1.1**, Change Date 2030-04-01 (then Apache-2.0). Additional Use Grant permits production use; commercial DBaaS resale is restricted until the Change Date.
+
+---
+
+## Current launch angle — Agent Memory for live time-series
+
+Use this first. The goal is to send people to the website, not make them parse the whole GitHub README.
+
+Primary links:
+
+- Website: https://zeptodb.com
+- Agent Memory: https://zeptodb.com/use-cases/agent-memory/
+- Python quickstart: https://zeptodb.com/use-cases/agent-memory-python-quickstart/
+- Why Agent Memory Needs Time-Series: https://zeptodb.com/blog/why-agent-memory-needs-time-series/
+- Benchmarks: https://zeptodb.com/benchmarks/
+- Agent Memory vs Vector Databases: https://zeptodb.com/compare/agent-memory-vs-vector-databases/
+- GitHub: https://github.com/ZeptoDB/ZeptoDB
+
+### Short X / LinkedIn post
+
+```text
+Most agent memory systems store summaries or embeddings without the live event stream that made those memories true.
+
+ZeptoDB takes a different path: microsecond time-series evidence + tenant-scoped Agent Memory + exact/semantic prompt cache + AgentOps telemetry on one replayable timeline.
+
+5.52M events/sec ingest
+272us query on 1M rows
+1.23ms filtered memory search
+522ns Python zero-copy
+
+Website: https://zeptodb.com
+Agent Memory guide: https://zeptodb.com/use-cases/agent-memory/
+```
+
+### Hacker News / Reddit title options
+
+1. `ZeptoDB: Agent memory for live time-series data`
+2. `Why agent memory needs time-series data`
+3. `I built an agent memory layer on top of a microsecond time-series engine`
+4. `Agent memory is weaker without the event stream that made it true`
+
+### HN / Reddit body
+
+```markdown
+I've been building ZeptoDB, an in-memory time-series database in C++20.
+
+The original goal was kdb+-class time-series performance with standard SQL and
+zero-copy Python. The newer direction is Agent Memory for operational agents:
+keep live evidence, retrieved memories, prompt cache hits, model calls, tool
+calls, and decisions on one replayable timeline.
+
+Why this matters:
+
+Most agent memory systems store summaries or embeddings without the live event
+stream that made those memories true. That works for chat recall, but it is
+weak for agents attached to factories, robots, trading systems, fleets, grids,
+or observability pipelines.
+
+An operational agent needs to answer:
+
+- What changed before the alert?
+- Which raw evidence was available?
+- Which memories were retrieved?
+- Was the response cached or did we call a model?
+- Which tool was called?
+- What happened afterward?
+
+Those are time-series questions, not just vector-search questions.
+
+Current numbers:
+
+- 5.52M events/sec single-node ingest
+- 272us query on 1M rows
+- 522ns query result to Python/NumPy
+- 1.23ms filtered memory search over 10K 128-dim records
+- exact and semantic prompt cache lookup
+
+What ZeptoDB does not do: it does not call LLM or embedding providers from the
+server. Applications own prompts, models, provider credentials, and embeddings.
+ZeptoDB owns storage, filtering, ranking, cache lookup, context assembly,
+telemetry, and time-series replay.
+
+Website: https://zeptodb.com
+Agent Memory guide: https://zeptodb.com/use-cases/agent-memory/
+Benchmarks: https://zeptodb.com/benchmarks/
+GitHub: https://github.com/ZeptoDB/ZeptoDB
+```
+
+### First comment / follow-up
+
+```markdown
+Two useful pages if you want the product shape without reading the whole repo:
+
+- Why Agent Memory Needs Time-Series Data:
+  https://zeptodb.com/blog/why-agent-memory-needs-time-series/
+- Agent Memory vs Vector Databases:
+  https://zeptodb.com/compare/agent-memory-vs-vector-databases/
+
+The honest boundary: Agent Memory v0 is single-node. In a clustered deployment,
+route `/api/ai/*` to a sticky pod or treat the memory layer as a per-pod cache
+until cluster-consistent memory routing lands. The time-series cluster remains
+distributed.
+```
 
 ---
 

@@ -81,6 +81,147 @@ class QueryResult:
                 f"elapsed={self.elapsed_ms:.2f}ms)")
 
 
+class AgentMemoryClient:
+    """Agent memory API wrapper exposed as ``connection.memory``."""
+
+    def __init__(self, conn: "ZeptoConnection"):
+        self._conn = conn
+
+    def put(
+        self,
+        content: str,
+        embedding: Optional[List[float]] = None,
+        memory_id: str = "",
+        namespace: str = "default",
+        tenant_id: str = "",
+        user_id: str = "",
+        session_id: str = "",
+        agent_id: str = "",
+        type: str = "memory",
+        metadata_json: str = "{}",
+        token_count: int = 0,
+        importance: float = 0.0,
+        expires_at_ns: int = 0,
+        pinned: bool = False,
+    ) -> str:
+        payload = {
+            "memory_id": memory_id,
+            "tenant_id": tenant_id,
+            "namespace": namespace,
+            "user_id": user_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "type": type,
+            "content": content,
+            "metadata_json": metadata_json,
+            "embedding": embedding or [],
+            "token_count": token_count,
+            "importance": importance,
+            "expires_at_ns": expires_at_ns,
+            "pinned": pinned,
+        }
+        return self._conn._post_json("/api/ai/memories", payload)["memory_id"]
+
+    def search(
+        self,
+        query_embedding: Optional[List[float]] = None,
+        namespace: str = "default",
+        tenant_id: str = "",
+        user_id: str = "",
+        session_id: str = "",
+        agent_id: str = "",
+        type: str = "",
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        payload = {
+            "tenant_id": tenant_id,
+            "namespace": namespace,
+            "user_id": user_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "type": type,
+            "query_embedding": query_embedding or [],
+            "limit": limit,
+        }
+        return self._conn._post_json("/api/ai/memories/search", payload).get(
+            "matches", []
+        )
+
+    def get_context(
+        self,
+        query_embedding: Optional[List[float]] = None,
+        token_budget: int = 0,
+        namespace: str = "default",
+        tenant_id: str = "",
+        user_id: str = "",
+        session_id: str = "",
+        agent_id: str = "",
+        type: str = "",
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        payload = {
+            "tenant_id": tenant_id,
+            "namespace": namespace,
+            "user_id": user_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "type": type,
+            "query_embedding": query_embedding or [],
+            "token_budget": token_budget,
+            "limit": limit,
+        }
+        return self._conn._post_json("/api/ai/context", payload)
+
+
+class AgentCacheClient:
+    """Exact and semantic cache API wrapper exposed as ``connection.cache``."""
+
+    def __init__(self, conn: "ZeptoConnection"):
+        self._conn = conn
+
+    def store(
+        self,
+        prompt: str,
+        response: str,
+        embedding: Optional[List[float]] = None,
+        cache_id: str = "",
+        namespace: str = "default",
+        tenant_id: str = "",
+        metadata_json: str = "{}",
+        token_count: int = 0,
+        expires_at_ns: int = 0,
+    ) -> str:
+        payload = {
+            "cache_id": cache_id,
+            "tenant_id": tenant_id,
+            "namespace": namespace,
+            "prompt": prompt,
+            "response": response,
+            "metadata_json": metadata_json,
+            "embedding": embedding or [],
+            "token_count": token_count,
+            "expires_at_ns": expires_at_ns,
+        }
+        return self._conn._post_json("/api/ai/cache/store", payload)["cache_id"]
+
+    def lookup(
+        self,
+        prompt: str,
+        embedding: Optional[List[float]] = None,
+        namespace: str = "default",
+        tenant_id: str = "",
+        semantic_threshold: float = 0.92,
+    ) -> Dict[str, Any]:
+        payload = {
+            "tenant_id": tenant_id,
+            "namespace": namespace,
+            "prompt": prompt,
+            "embedding": embedding or [],
+            "semantic_threshold": semantic_threshold,
+        }
+        return self._conn._post_json("/api/ai/cache/lookup", payload)
+
+
 class ZeptoConnection:
     """
     Connection to an ZeptoDB server.
@@ -121,6 +262,8 @@ class ZeptoConnection:
         self.timeout = timeout
         self.database = database
         self._base_url = f"http://{host}:{port}"
+        self.memory = AgentMemoryClient(self)
+        self.cache = AgentCacheClient(self)
 
     # ------------------------------------------------------------------
     # SQL identifier validation (devlog 089 — injection guard)
@@ -184,6 +327,28 @@ class ZeptoConnection:
             return json.loads(body), elapsed_ms
         except json.JSONDecodeError:
             return {"columns": [], "data": [], "raw": body}, elapsed_ms
+
+    def _post_json(self, path: str, payload: Dict[str, Any]) -> dict:
+        """POST JSON to a ZeptoDB API endpoint and return parsed JSON."""
+        url = self._base_url + path
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8")
+            raise RuntimeError(f"ZeptoDB HTTP {e.code}: {body}") from e
+        except urllib.error.URLError as e:
+            raise ConnectionError(
+                f"Cannot connect to {self.host}:{self.port} — {e.reason}"
+            ) from e
+        return json.loads(body)
 
     def _get(self, path: str) -> str:
         url = self._base_url + path
