@@ -1,6 +1,14 @@
 # ZeptoDB Quick Start
 
-*From zero to first query in 5 minutes.*
+*From zero to first query, or into an agent memory loop, in minutes.*
+
+---
+
+## Choose Your Path
+
+If you are evaluating ZeptoDB for AI agents, start with the [Agent Memory Python Quickstart](/use-cases/agent-memory-python-quickstart/). It shows the production loop: write scoped memories, retrieve context under a token budget, check exact and semantic prompt cache, call your model provider, and store the decision for replay.
+
+Use the SQL path below when you want to validate the live time-series engine first. These tables become the evidence layer agents can query before writing memory or deciding whether to call a model.
 
 ---
 
@@ -158,6 +166,8 @@ The built-in query editor supports:
 
 | What | Link |
 |------|------|
+| Agent Memory quickstart | [Build an agent memory loop](/use-cases/agent-memory-python-quickstart/) |
+| Agent Memory guide | [Agent Memory Use Case](/use-cases/agent-memory/) |
 | Full SQL syntax | [SQL Reference](../api/SQL_REFERENCE.md) |
 | Python API | [Python Reference](../api/PYTHON_REFERENCE.md) |
 | Arrow Flight | [Flight Reference](../api/FLIGHT_REFERENCE.md) |
