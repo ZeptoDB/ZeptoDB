@@ -2,14 +2,43 @@
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | 1317 tests passing
 >
-> Last cleaned: 2026-05-15
+> Last cleaned: 2026-05-31
 >
-> Devlog: last `141_eks_agent_memory_e2e.md` → next `142_*.md`
+> Devlog: last `146_ros2_bag_import_replay.md` → next `147_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **ROS 2 rosbag2 import/replay** (devlog 146) — `Ros2Consumer` now has
+  `Ros2BagConfig`, `Ros2BagStats`, `import_bag()`, and `replay_bag()` for
+  deterministic scalar rosbag2 ingestion. The CMake path detects
+  `rosbag2_cpp`/`rosbag2_storage` under `-DZEPTO_USE_ROS2=ON`, the smoke script
+  verifies the bag packages, and generated sqlite3 bags are imported through
+  the same table-aware ZeptoPipeline route as live scalar subscriptions.
+- ✅ **ROS 2 runtime smoke packaging** (devlog 145) — new
+  `tools/run-ros2-smoke.sh` creates/reuses the RoboStack Jazzy environment,
+  verifies ROS package availability, runs a real `std_msgs/msg/Float64` CLI
+  pub/sub smoke, builds `zepto_ros2`/`zepto_tests` with DuckDB disabled, and
+  runs `Ros2ConsumerTest.*`. `docs/operations/ROS2_SETUP.md` now documents the
+  supported local/CI smoke path and common RoboStack linker/runtime issues.
+- ✅ **ROS 2 live scalar subscriber** (devlog 144) — live
+  `std_msgs/msg/{Float64,Float32,Int64,Int32,UInt64,UInt32}` subscriptions now
+  compile when `rclcpp`/`std_msgs` are present, use a private ROS 2 context and
+  executor, map `data` into the table-aware ZeptoDB ingest path, and have a
+  RoboStack Jazzy smoke test proving `rclcpp` publish → `Ros2Consumer` →
+  ZeptoDB table partition.
+- ✅ **ROS 2 connector skeleton** (devlog 143) — new optional
+  `zepto_ros2` feed target, `Ros2Consumer` public C++ skeleton, pure config
+  validation, ROS time conversion, scalar sample → `TickMessage` mapping,
+  table-aware local/cluster routing, Prometheus formatter, and no-live-ROS
+  unit tests.
+- ✅ **ROS 2 / Physical AI roadmap** (devlog 142) — new design doc
+  `docs/design/ros2_physical_ai_roadmap.md` promotes ROS 2 from a single P9
+  plugin row into a product roadmap: live subscriber bridge, rosbag2
+  import/replay, message profiles, schema-aware typed ingest, Isaac Sim,
+  reference examples, and edge deployment. P9 now tracks implementation slices
+  instead of one broad "ROS 2 plugin" bucket.
 - ✅ **EKS Agent Memory E2E** (devlog 141) — `tests/k8s/test_k8s_agent_memory.py` now deploys real ZeptoDB bench images on the x86 and arm64 EKS bench node pools, validates memory put/search/context/cache/tombstone/stats/metrics behavior, restarts the pod, and verifies persisted Agent Memory state replays. The EKS `--k8s-only` harness now includes this stage after compat/HA checks; final run `/tmp/eks_bench_20260530_035421/` passed amd64 compat 27/27, amd64 HA 11/11, arm64 compat 27/27, arm64 HA 11/11, and Agent Memory E2E 2/2.
 - ✅ **Agent-attached time-series demos** (devlog 129) — `examples/agent_memory/agent_attached_timeseries_demo.py` now runs five vertical scenarios for finance/HFT, IoT smart factory, observability/APM, robotics fleet, and game/live-ops. Each scenario seeds a live time-series table, stores scoped `MemoryRecord` context, retrieves memory under a token budget, and builds the attached-agent prompt that combines current timeline evidence with learned context.
 - ✅ **Agent Memory Layer** (devlog 120) — additive AI memory/context subsystem on top of ZeptoDB Core. Adds in-memory `MemoryRecord` storage, parallel exact top-K filtered embedding search, token-budget context assembly, exact prompt cache, semantic cache fallback, sidecar persistence with configurable flush cadence, bounded eviction, optional sparse-projection ANN candidate indexing, `/api/ai/stats` and Prometheus metrics, HTTP `/api/ai/*` endpoints, Python `connection.memory` / `connection.cache` helpers, provider-cache and LangGraph-style examples, optional OpenAI/Anthropic/LangGraph adapters, production-shaped AgentOps telemetry demo, and `bench_agent_memory` baseline/sweep harness. Current-instance 128-dim exact scan is under the 10 ms target at 100K and 300K records and ~16.7 ms at 1M; non-TTL 1M fixture load now completes in seconds instead of rescanning on every write. Sparse projection is faster but recall-sensitive. v0 uses client-supplied `float32[]` embeddings and deliberately avoids server-side LLM or embedding-provider calls.
@@ -134,18 +163,28 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 ## P9 — Physical AI / Industry
 
+Design anchor: [`docs/design/ros2_physical_ai_roadmap.md`](design/ros2_physical_ai_roadmap.md).
+
+### ROS 2 roadmap track
+
+| # | Task | Why | Effort |
+|---|------|-----|--------|
+| 1d | **Standard message profiles** | IMU, JointState, Odometry, TF, LaserScan metadata; enough for robotics and AV demos | M |
+| 1e | **Schema-aware typed ingest** | Wide typed tables for standard messages; avoids forcing every message through scalar `TickMessage` shape | L |
+| 1f | **Isaac Sim / digital twin hook** | `/clock`-aware simulation ingest and Omniverse/Isaac warehouse replay path | M |
+| 1g | **ROS 2 reference examples** | Robot RL replay, LiDAR ASOF JOIN, fleet anomaly detection demos | S |
+| 1h | **Robot/factory edge deployment guide** | Docker Compose / k3s / systemd recipes for robot-local or lab-edge deployments | S |
+
 ### Open items
 
 | # | Task | Why | Effort |
 |---|------|-----|--------|
-| 1 | **ROS2 plugin** | `rclcpp` subscriber → `TickMessage`; bag replay; Isaac Sim hook | M |
 | 2f | **OPC-UA: browse + auto-discover CLI** | Enumerate server address space, auto-populate `nodes[]` | S |
 | 2d | **OPC-UA: structured & array variants** | Engineering units, array → multiple TickMessages | M |
 | 2g | **OPC-UA: Historical Access (HA)** | Server-side historian backfill for initial load | M |
 | 2h | **OPC-UA: Alarms & Conditions (A&C)** | Alarm events as separate tick stream | M |
 | 2e | **OPC-UA: string values** | UA String → symbol columns (blocked on string-column engine) | S |
 | 2l | **OPC-UA: server mode** | Expose ZeptoDB as OPC-UA server (P10 candidate) | L |
-| 3 | **Physical AI reference examples** | Robot RL replay, LiDAR ASOF JOIN, CMP anomaly | S |
 | 4 | **Factory 10KHz bench vs InfluxDB/TimescaleDB** | Sector-B sales proof | S |
 | 5 | **Physical AI use-case docs** | Promote to first-class `docs/usecases/` vertical | S |
 | 6a | **Spatial functions** (`haversine`, `ST_Distance`, `ST_Within`) | AGV collision, geofence, drone proximity | M |
@@ -154,7 +193,6 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | 6d | **Logistics design doc + market section** | Formalize logistics as GTM sector | S |
 | 6e | **Edge deployment guide** | k3s / Docker Compose / systemd on industrial PC | S |
 | 6f | **Logistics benchmark suite** | 2K AGV + 1M sorter + 50K RFID vs competitors | S |
-| 6g | **Digital Twin / Isaac Sim hook** | Omniverse warehouse feed (depends on ROS2 #1) | M |
 
 > ✅ Done: OPC-UA PoC (devlog 101), Sprint 1 (105-106), Sprint 2 (107-109), Sprint 3 (110). Connector is SLA-grade.
 
@@ -189,11 +227,11 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
-| **P9** | Physical AI / IoT | 17 | ROS2 plugin, OPC-UA browse CLI |
+| **P9** | Physical AI / IoT | 20 | rosbag2 import/replay, standard ROS message profiles, OPC-UA browse CLI |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 61 items + 4 manual tasks**
+**Total open: 64 items + 4 manual tasks**
 
-**Critical path: P2 (launch) → P4 (ClickHouse protocol + Arrow IPC ingest) → P5 (Telegraf output plugin)**
+**Critical path: P9 rosbag2 import/replay → P4 Arrow IPC ingest → P5 Telegraf/MQTT ecosystem → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

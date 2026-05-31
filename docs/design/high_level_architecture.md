@@ -1,6 +1,6 @@
 # ZeptoDB High-Level Architecture
 
-*Last updated: 2026-04-16 (DuckDB Embedding — columnar analytical offload)*
+*Last updated: 2026-05-30 (ROS 2 / Physical AI roadmap)*
 
 ## Overview
 
@@ -168,6 +168,7 @@ zepto-migrate timescaledb # Generate TimescaleDB hypertable + continuous aggrega
 | S3 HDB Flush | ✅ | Async upload, MinIO compatible, cloud data lake |
 | Production Ops | ✅ | Monitoring, backup, k8s |
 | Python Ecosystem | ✅ | zepto_py: from_pandas/polars/arrow, ArrowSession, StreamingSession (208 tests) |
+| ROS 2 / Physical AI | 📋 | Connector roadmap with std_msgs scalar ingest, rosbag2 replay, message profiles, Isaac Sim |
 | Distributed Query | 🚧 | VWAP decomposition, ORDER BY/LIMIT done; HAVING/DISTINCT/window pending |
 | Cluster Integrity | ✅ | Unified router, fencing token, split-brain defense |
 | Snowflake/Delta Lake | 📋 | Backlog |

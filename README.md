@@ -245,6 +245,7 @@ Full SQL reference: [SQL_REFERENCE.md](docs/api/SQL_REFERENCE.md) — INSERT, UP
 | **Agentic AI** | Add agents to time-series workflows without losing operational context | Agent-scoped memory, context assembly, exact/semantic cache |
 | **Crypto / DeFi** | 24/7 multi-exchange streaming | Binance feed handler, real-time agg |
 | **IoT / Manufacturing** | High-frequency sensor ingestion | DELTA/RATIO, time-bar agg, LZ4 |
+| **Physical AI / Robotics** | ROS 2 telemetry, rosbag2 replay, feature store | [ROS 2 roadmap](docs/design/ros2_physical_ai_roadmap.md), [ROS 2 setup](docs/operations/ROS2_SETUP.md), ASOF JOIN, Python zero-copy |
 | **Autonomous Vehicles** | Sensor fusion, driving log replay | ASOF JOIN, Parquet HDB, parallel scan |
 | **Observability** | High-cardinality metrics | SQL + Grafana, TTL + S3 tiering |
 

@@ -68,7 +68,7 @@ Limitations repeatedly encountered across all industries during testing.
 
 | Gap | Actual Need | Priority |
 |-----|----------|---------|
-| ROS2 topic ingestion | Direct LiDAR/Camera/IMU ingestion | P2 |
+| ROS 2 topic ingestion | Direct LiDAR/Camera/IMU ingestion | P2 |
 | Array/Blob column | Point clouds, image frames | P3 |
 | Cross-table ASOF JOIN | LiDAR + Camera time synchronization (currently same table only) | P1 |
 | Float column | GPS coordinates, acceleration | P1 |
@@ -196,7 +196,7 @@ Limitations repeatedly encountered across all industries during testing.
 
 | Item | Affected Industries |
 |------|----------|
-| ROS2 plugin | AV/Robotics |
+| ROS 2 connector | AV/Robotics |
 | Array/Blob column | AV/Robotics |
 | WebSocket native ingestion | Crypto |
 

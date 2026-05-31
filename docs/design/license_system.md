@@ -50,11 +50,15 @@ Gates enterprise IoT / Physical AI streaming integrations. Currently gates:
 
 - **MQTT consumer** (`MqttConsumer::start()`) — IoT broker ingestion
   (sensors, robotics, autonomous vehicles).
+- **OPC-UA consumer** (`OpcUaConsumer::start()`) — industrial PLC / SCADA
+  ingestion.
+- **ROS 2 consumer** (`Ros2Consumer::start()`) — robotics /
+  autonomous-driving middleware. Default/no-ROS builds validate and map data
+  without a live ROS graph; `ZEPTO_ROS2_AVAILABLE` builds start live
+  `std_msgs` scalar subscriptions.
 
 Planned future connectors under the same gate (no new feature bit needed):
 
-- **OPC-UA** — industrial PLC / SCADA systems.
-- **ROS2** — robotics / autonomous-driving middleware.
 - **Apache Pulsar** — alternative to Kafka.
 - **AWS Kinesis** — cloud streaming.
 

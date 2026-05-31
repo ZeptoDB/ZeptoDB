@@ -209,7 +209,7 @@ Site: https://zeptodb.com
 | **What's the license trap?** | "BSL-1.1 with a 2030-04-01 Change Date to Apache-2.0. Additional Use Grant lets you run it in production today. The restriction is on reselling it as a commercial managed DBaaS until the Change Date — same model as MariaDB, Sentry, CockroachDB before they went pure-OSS." |
 | **Benchmarks reproducible?** | "Yes — `tools/run-full-matrix.sh` runs the full bench suite on x86 + Graviton in parallel. Numbers in the post are clang-19 medians. Methodology in `docs/bench/`." |
 | **Does it work with Grafana / DataGrip / DBeaver?** | "Grafana yes (ClickHouse-compatible HTTP API). DataGrip/DBeaver via the same shim, partial. Native ClickHouse wire protocol is on the backlog." |
-| **What about Physical AI / robotics?** | "OPC-UA connector is SLA-grade (Basic256Sha256 security, reconnect with backoff, quality mapping). Sector profiles for semiconductor fab, automotive, steel, generic. ROS2 plugin is on the backlog." |
+| **What about Physical AI / robotics?** | "OPC-UA connector is SLA-grade (Basic256Sha256 security, reconnect with backoff, quality mapping). Sector profiles for semiconductor fab, automotive, steel, generic. ROS 2 connector skeleton is in-tree; live subscriber bridge is the next roadmap item." |
 | **Single point of failure?** | "Cluster HA with K8s Lease + RingConsensus. CoordinatorHA standby/active with FencingToken in RPC header to prevent split-brain. WAL quorum replication." |
 
 ### Things to have screenshot-ready (for comments, not the post)

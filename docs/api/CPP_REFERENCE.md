@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-05-28*
+*Last updated: 2026-05-31*
 
 ---
 
@@ -823,6 +823,68 @@ consumer.set_pipeline(&pipeline); // resolves table_name → table_id here
 FIX / ITCH / Binance parser classes expose `set_table_id(tid)` and
 `set_table_name(name)` setters that return the configured id to callers
 that forward the parser's `Tick` into a `TickMessage`.
+
+### ROS 2 connector
+
+`Ros2Consumer` provides the C++ surface for the ROS 2 / Physical AI bridge.
+Config validation, ROS timestamp conversion, scalar sample mapping,
+table-aware routing, stats, and Prometheus formatting work without `rclcpp`.
+When configured with `-DZEPTO_USE_ROS2=ON` and both `rclcpp` and `std_msgs`
+are found, `start()` opens live scalar subscriptions for
+`std_msgs/msg/{Float64,Float32,Int64,Int32,UInt64,UInt32}` messages using a
+single `data` field. Standard ROS message profiles such as
+`sensor_msgs/msg/JointState` are tracked separately.
+
+When `rosbag2_cpp` and `rosbag2_storage` are also available, the same consumer
+can import or replay scalar rosbag2 data without publishing anything back into
+the ROS graph. Bag imports use configured subscriptions as the default topic
+allowlist, preserve rosbag send timestamps as source time, and write through
+the same table-aware `ZeptoPipeline` ingest route as live subscriptions.
+
+```cpp
+#include "zeptodb/feeds/ros2_consumer.h"
+
+zeptodb::feeds::Ros2Config cfg;
+zeptodb::feeds::Ros2SubscriptionConfig sub;
+sub.topic = "/robot/joint_effort";
+sub.message_type = "std_msgs/msg/Float64";
+sub.table_name = "ros_joint";
+sub.fields.push_back({"data", /*symbol_id=*/1, /*value_scale=*/1000.0});
+cfg.subscriptions.push_back(sub);
+
+zeptodb::feeds::Ros2Consumer consumer(cfg);
+consumer.set_pipeline(&pipeline);
+
+zeptodb::feeds::Ros2ScalarSample sample;
+sample.topic = "/robot/joint_effort";
+sample.symbol_id = 1;
+sample.value = 42000;
+sample.source_ts_ns = 1717000000000000000LL;
+sample.recv_ts_ns = 1717000000000000100LL;
+consumer.on_scalar_sample(sample);
+```
+
+```cpp
+zeptodb::feeds::Ros2BagConfig bag;
+bag.uri = "/data/robot_run_001";
+bag.topics = {"/robot/joint_effort"}; // empty = configured subscriptions
+bag.max_messages = 0;                 // 0 = full bag
+bag.fail_on_unknown_topic = true;
+bag.replay_speed = 4.0;               // replay_bag() only
+
+zeptodb::feeds::Ros2BagStats imported = consumer.import_bag(bag);
+if (!imported.completed) {
+    throw std::runtime_error(imported.error);
+}
+
+zeptodb::feeds::Ros2BagStats replayed = consumer.replay_bag(bag);
+```
+
+`Ros2BagStats` reports `messages_read`, `messages_consumed`,
+`messages_skipped`, `decode_errors`, `rows_ingested`,
+`first_source_ts_ns`, and `last_source_ts_ns`. Without rosbag2 support compiled
+in, import/replay fails closed and returns `completed == false` with a
+diagnostic `error`.
 
 ### Migration tools
 

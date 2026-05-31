@@ -24,6 +24,7 @@ add_executable(zepto_tests
     unit/test_mqtt.cpp
     unit/test_opcua.cpp
     unit/test_opcua_integration.cpp
+    unit/test_ros2.cpp
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_http_arrow_ipc.cpp
@@ -70,6 +71,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_kafka
     zepto_mqtt
     zepto_opcua
+    zepto_ros2
     zepto_flight
     zepto_feeds
     GTest::gtest_main

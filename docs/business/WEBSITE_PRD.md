@@ -58,7 +58,7 @@ Five industry sections, each with an anchor id (`physical-ai`, `finance`, `game`
 3. Proof-point paragraph
 4. Killer-line chip
 
-Content pulled directly from `docs/business/product_positioning.md`, `docs/design/physical_ai_market.md`, and `docs/business/industry_gap_analysis.md` — no reinvented copy. "+ more verticals" footer covers Crypto / DeFi, Autonomous Vehicles / Robotics (ROS2 plugin on P9 backlog), and Logistics.
+Content pulled directly from `docs/business/product_positioning.md`, `docs/design/physical_ai_market.md`, and `docs/business/industry_gap_analysis.md` — no reinvented copy. "+ more verticals" footer covers Crypto / DeFi, Autonomous Vehicles / Robotics (ROS 2 connector in-tree; live scalar smoke verification on P9 backlog), and Logistics.
 
 ### 3.3 `/features`
 

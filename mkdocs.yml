@@ -123,6 +123,7 @@ nav:
       - Production Operations: operations/PRODUCTION_OPERATIONS.md
       - Kubernetes Operations: operations/KUBERNETES_OPERATIONS.md
       - K8s Failure Scenarios: operations/KUBERNETES_FAILURE_SCENARIOS.md
+      - ROS 2 Setup: operations/ROS2_SETUP.md
       - Rolling Upgrade: ops/rolling_upgrade.md
   - Feed Handlers:
       - Guide: feeds/FEED_HANDLER_GUIDE.md
@@ -149,6 +150,7 @@ nav:
       - Client Compatibility: design/client_compatibility.md
       - Multi-node Use Cases: design/multinode_usecases.md
       - Physical AI Market: design/physical_ai_market.md
+      - ROS 2 / Physical AI Roadmap: design/ros2_physical_ai_roadmap.md
       - Web UI PRD: design/web_ui_prd.md
   - Business:
       - Executive Summary: business/EXECUTIVE_SUMMARY.md

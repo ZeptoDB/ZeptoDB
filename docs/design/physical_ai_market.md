@@ -248,7 +248,8 @@ ZeptoDB is the only open-source DB competitive in **both finance and Physical AI
 
 ### Phase 3: Autonomous Driving / Robotics (12~24 months)
 - Link with NVIDIA Isaac ecosystem
-- Develop ROS2 plugin
+- Develop ROS 2 plugin
+- Technical roadmap: `docs/design/ros2_physical_ai_roadmap.md`
 - "Sensor Fusion DB" positioning
 
 ### Phase 4: Drone / Edge (24+ months)

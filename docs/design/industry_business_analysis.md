@@ -247,7 +247,7 @@ AND gps.timestamp BETWEEN imu.timestamp - 50000000
 
 ### Entry Strategy
 - **Target**: Head of Autonomous Systems Engineering, Data Infrastructure Lead
-- **Partners**: NVIDIA DRIVE AGX, ROS2 ecosystem
+- **Partners**: NVIDIA DRIVE AGX, ROS 2 ecosystem
 - **References**: Tier 1 auto parts suppliers (Hyundai Mobis, Bosch, Continental)
 - **Competitors**: InfluxDB, McapDB (ROS), custom Kafka + Parquet
 - **Win conditions**: ASOF/Window JOIN + real-time processing + Python zero-copy
@@ -433,7 +433,7 @@ AND prev.timestamp BETWEEN t.timestamp - 300000000000 AND t.timestamp
 ### Phase 3 (18~36 months): Physical AI
 - **Focus**: Autonomous driving + robotics
 - **Partners**: NVIDIA Isaac ecosystem
-- **Strategy**: Open source community → ROS2 plugin → enterprise support sales
+- **Strategy**: Open source community → ROS 2 connector → enterprise support sales
 - **Goal**: 5 Physical AI references, ARR $5M+
 
 ---

@@ -1,10 +1,49 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-05-30
+Last updated: 2026-05-31
 
 ---
 
 ## Latest
+
+- [x] **ROS 2 rosbag2 import/replay** (devlog 146) — adds optional
+  `rosbag2_cpp` detection under `-DZEPTO_USE_ROS2=ON` and extends
+  `Ros2Consumer` with `Ros2BagConfig`, `Ros2BagStats`, `import_bag()`, and
+  `replay_bag()`. The first bag path supports configured
+  `std_msgs/msg/{Float64,Float32,Int64,Int32,UInt64,UInt32}` scalar topics,
+  preserves rosbag send/receive timestamps, filters explicit topic allowlists,
+  skips or fails on unknown topics by policy, and writes through the same
+  table-aware `ZeptoPipeline` path as live subscriptions. Verified with the
+  RoboStack Jazzy smoke: `rosbag2_cpp/storage` detected, generated sqlite3
+  bags imported into ZeptoDB, live rclcpp pub/sub still passed, and
+  `Ros2ConsumerTest.*` passed 31/31.
+
+- [x] **ROS 2 runtime smoke packaging** (devlog 145) — adds
+  `tools/run-ros2-smoke.sh` and `docs/operations/ROS2_SETUP.md` so developers
+  and CI workers can reproduce the ROS 2 Jazzy/RoboStack install, ROS CLI
+  pub/sub smoke, focused ROS-enabled ZeptoDB build, and `Ros2ConsumerTest.*`
+  run from one command. The smoke includes `lttng-ust` for RoboStack
+  `tracetools` link dependencies and keeps the connector build small by
+  disabling embedded DuckDB.
+
+- [x] **ROS 2 live scalar subscriber** (devlog 144) — first end-to-end live
+  ROS 2 ingest path for Physical AI. With `-DZEPTO_USE_ROS2=ON` and
+  `rclcpp`/`std_msgs` available, `Ros2Consumer::start()` creates a private ROS
+  2 context, node, executor, and `std_msgs/msg/{Float64,Float32,Int64,Int32,
+  UInt64,UInt32}` subscriptions, maps each `data` field into the existing
+  scalar sample path, and writes table-scoped rows through `ZeptoPipeline`.
+  Verified on Amazon Linux 2023 with RoboStack Jazzy under
+  `/home/ec2-user/ros2_jazzy`: ROS CLI pub/sub smoke received `data: 42.5`,
+  ROS-enabled `zepto_ros2`/`zepto_tests` build passed, and
+  `Ros2ConsumerTest.*` passed 27/27 including a live `rclcpp` publish →
+  ZeptoDB table ingest test.
+
+- [x] **ROS 2 connector skeleton** (devlog 143) — first implementation slice
+  of the ROS 2 / Physical AI roadmap. Adds optional `ZEPTO_USE_ROS2` CMake
+  probing, a `zepto_ros2` static library, public `Ros2Consumer` C++ skeleton,
+  config validation, ROS time conversion, scalar sample → `TickMessage`
+  mapping, table-aware ZeptoPipeline routing, local/remote route counters,
+  Prometheus/OpenMetrics formatter, and no-live-ROS unit coverage.
 
 - [x] **EKS Agent Memory E2E** (devlog 141) — adds a real ZeptoDB Agent Memory EKS test that runs on both x86 and arm64 bench images, covers memory put/search/context, exact and semantic cache, tenant isolation, tombstones, stats/metrics, and restart persistence. The `run_eks_bench.sh --k8s-only` harness now includes the Agent Memory stage and the final EKS run passed amd64 compat 27/27, amd64 HA 11/11, arm64 compat 27/27, arm64 HA 11/11, and Agent Memory E2E 2/2.
 
