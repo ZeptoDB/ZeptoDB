@@ -1,15 +1,42 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1317 tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1395 C++ tests passing
 >
-> Last cleaned: 2026-05-31
+> Last cleaned: 2026-06-02
 >
-> Devlog: last `146_ros2_bag_import_replay.md` → next `147_*.md`
+> Devlog: last `150_eks_rebalance_bench_hardening.md` → next `151_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **EKS rebalance bench hardening** (devlog 150) — `bench_rebalance`
+  now fails fast when a rebalance trigger cannot be issued, preserves HTTP
+  status/body diagnostics, supports `--rebalance-timeout-sec`, and has a
+  baseline `smoke` scenario. The fast EKS harness injects the bench license,
+  adds hard benchmark timeouts, produces correct smoke-only x86_64/arm64
+  summaries, and force-deletes bench NodeClaims during teardown. EKS
+  verification passed SQL + Arrow smoke, Stage 5 smoke, summary `PASS/PASS`,
+  and final NodePool/node cleanup.
+- ✅ **Arrow-enabled EKS bench images** (devlog 149) —
+  `Dockerfile.bench` and `Dockerfile.bench.arm64` now build with
+  `-DZEPTO_USE_FLIGHT=ON` and include Apache Arrow runtime packages, while the
+  fast cross-arch harness has `--arrow-smoke` and `--skip-benchmark` modes.
+  EKS verification pushed `bench-x86` and `bench-arm64`, deployed both on the
+  `zepto-bench` Auto Mode cluster, and confirmed `/insert/arrow` returns
+  `{"inserted":3,...}` on both x86_64 and arm64. Closes P4
+  "Arrow-enabled EKS ingest verification image".
+- ✅ **Arrow IPC ingest endpoint** (devlog 147) — `POST /insert/arrow`
+  accepts Apache Arrow IPC RecordBatchStream payloads and maps
+  `sym|symbol`, `price`, `volume`, optional `timestamp`, and optional
+  `msg_type` columns directly into table-aware `TickMessage` batches without
+  per-row SQL. String symbols are interned, timestamp arrays are converted to
+  nanoseconds, `price_scale` / `volume_scale` handle decimal-to-int64 storage,
+  table ACLs and tenant namespace checks are enforced, and no-Arrow builds
+  return `406`. +6 HTTP Arrow tests cover success, generated timestamps,
+  empty batches, malformed IPC, missing required columns, and unknown tables.
+  Closes P4
+  "Arrow IPC ingest endpoint" (M effort).
 - ✅ **ROS 2 rosbag2 import/replay** (devlog 146) — `Ros2Consumer` now has
   `Ros2BagConfig`, `Ros2BagStats`, `import_bag()`, and `replay_bag()` for
   deterministic scalar rosbag2 ingestion. The CMake path detects
@@ -90,10 +117,9 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **ClickHouse wire protocol** | DBeaver, DataGrip, Grafana native | L |
 | **JDBC/ODBC drivers** | Tableau, Excel, Power BI | L |
-| **Arrow IPC ingest endpoint** (`POST /insert/arrow`) | First-class binary columnar ingest path. Removes per-tick JSON parse, enables a symbol-aware batched client. Targets the N≥2 cluster ceiling currently capped at ~90/s by the JSON HTTP bench. Pairs with the existing P8 "batched HTTP client" item. From Arc analysis (2026-05-13). | M |
 | **MessagePack columnar ingest endpoint** | Wire-compatible with Telegraf and InfluxDB Line Protocol clients. Single batch decode replaces per-tick JSON parse. Smaller scope than Arrow IPC, faster to ship; complementary to it. From Arc analysis (2026-05-13). | S |
 
-> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept.
+> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept. Arrow IPC ingest endpoint (devlog 147) — `POST /insert/arrow` binary columnar tick ingest with table-aware routing. Arrow-enabled EKS bench images and cross-arch `/insert/arrow` smoke are complete (devlog 149).
 
 ---
 
@@ -156,6 +182,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **Bench: symbol-aware / batched HTTP client** | Current HTTP bench is latency-bound at ~90/s under N≥2 (RPC hop per non-local INSERT). Need a driver that either batches or computes ownership client-side. | S |
+| **Live scale-out rebalance EKS topology** | `bench_rebalance` now fails fast and the fast harness validates smoke ingest/query on both archs, but full `add_remove_cycle` impact numbers still need a topology/admin path that can start and register a new node, or a scenario rewrite that benchmarks moves over existing registered nodes. | M |
 
 > ✅ Done: P8-I4 ingest-rate HPA (devlog 117), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
 
@@ -222,16 +249,16 @@ Design anchor: [`docs/design/ros2_physical_ai_roadmap.md`](design/ros2_physical_
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
 | **P3** | Agent Memory / AI Context | 7 | OpenTelemetry trace mapping → context trace/replay |
-| **P4** | Tool Integration | 4 | Arrow IPC ingest endpoint (M) → ClickHouse wire protocol (L) |
+| **P4** | Tool Integration | 3 | MessagePack columnar ingest (S) → ClickHouse wire protocol (L) |
 | **P5** | Data Pipelines | 6 | Telegraf output plugin (S) → CDC connector (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
-| **P9** | Physical AI / IoT | 20 | rosbag2 import/replay, standard ROS message profiles, OPC-UA browse CLI |
+| **P9** | Physical AI / IoT | 20 | standard ROS message profiles, OPC-UA browse CLI |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 64 items + 4 manual tasks**
+**Total open: 63 items + 4 manual tasks**
 
-**Critical path: P9 rosbag2 import/replay → P4 Arrow IPC ingest → P5 Telegraf/MQTT ecosystem → P2 launch collateral**
+**Critical path: P5 Telegraf/MQTT ecosystem → P9 ROS 2 standard message profiles → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

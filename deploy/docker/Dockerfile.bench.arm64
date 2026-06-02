@@ -10,9 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget gnupg ca-certificates lsb-release && \
     wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key > /etc/apt/trusted.gpg.d/llvm.asc && \
     echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" > /etc/apt/sources.list.d/llvm.list && \
+    wget https://packages.apache.org/artifactory/arrow/debian/apache-arrow-apt-source-latest-bookworm.deb && \
+    apt-get install -y -V ./apache-arrow-apt-source-latest-bookworm.deb && \
+    rm -f apache-arrow-apt-source-latest-bookworm.deb && \
     apt-get update && apt-get install -y --no-install-recommends \
       clang-19 llvm-19-dev cmake ninja-build git pkg-config \
-      libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev && \
+      libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
+      libarrow-dev libarrow-flight-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch 1.2.0 https://github.com/google/highway.git /tmp/hwy && \
@@ -36,16 +40,20 @@ RUN mkdir -p build && cd build && \
       -DCMAKE_CXX_FLAGS="${ARCH_FLAGS} -O3" \
       -DAPEX_USE_RDMA=OFF -DZEPTO_USE_UCX=OFF \
       -DZEPTO_USE_JIT=ON -DZEPTO_USE_S3=OFF \
-      -DZEPTO_USE_PARQUET=OFF -DZEPTO_USE_FLIGHT=OFF \
-      -DZEPTO_BUILD_PYTHON=OFF -DAPEX_USE_IO_URING=ON \
-      -DBUILD_TESTS=OFF && \
+      -DZEPTO_USE_PARQUET=OFF -DZEPTO_USE_FLIGHT=ON \
+      -DZEPTO_BUILD_PYTHON=OFF -DZEPTO_BUILD_TESTS=OFF -DAPEX_USE_IO_URING=ON && \
     ninja -j"$(nproc)" zepto_http_server zepto_data_node zepto_ingest_node bench_rebalance bench_ingest_scale && \
     strip zepto_http_server zepto_data_node zepto_ingest_node bench_rebalance bench_ingest_scale
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libssl3 libcurl4 liblz4-1 libnuma1 liburing2 ca-certificates curl \
-      libedit2 libz3-4 libxml2 \
+      wget gnupg ca-certificates lsb-release && \
+    wget https://packages.apache.org/artifactory/arrow/debian/apache-arrow-apt-source-latest-bookworm.deb && \
+    apt-get install -y -V ./apache-arrow-apt-source-latest-bookworm.deb && \
+    rm -f apache-arrow-apt-source-latest-bookworm.deb && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      libssl3 libcurl4 liblz4-1 libnuma1 liburing2 curl \
+      libedit2 libz3-4 libxml2 libarrow-dev libarrow-flight-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/zeptodb

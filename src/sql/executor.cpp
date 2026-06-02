@@ -759,6 +759,59 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
     return result;
 }
 
+zeptodb::SymbolId QueryExecutor::intern_symbol_for_ingest(const std::string& symbol) {
+    return static_cast<zeptodb::SymbolId>(pipeline_.symbol_dict().intern(symbol));
+}
+
+QueryExecutor::TickBatchIngestResult QueryExecutor::ingest_tick_batch(
+    const std::string& table_name,
+    std::vector<zeptodb::ingestion::TickMessage> ticks)
+{
+    TickBatchIngestResult result;
+
+    uint16_t table_id = 0;
+    if (!table_name.empty()) {
+        auto& reg = pipeline_.schema_registry();
+        if (!reg.exists(table_name)) {
+            result.error = "Table '" + table_name + "' does not exist";
+            return result;
+        }
+        table_id = reg.get_table_id(table_name);
+        if (table_id == 0) {
+            result.error = "Table '" + table_name + "' has no table_id";
+            return result;
+        }
+    }
+
+    for (auto& msg : ticks) {
+        msg.table_id = table_id;
+        msg.seq_num = static_cast<uint64_t>(
+            pipeline_.stats().ticks_ingested.load(std::memory_order_relaxed));
+        if (cluster_node_) {
+            if (cluster_node_->ingest_tick(msg)) {
+                ++result.inserted;
+            } else {
+                ++result.failed;
+            }
+        } else {
+            (void)pipeline_.ingest_tick(msg);
+            ++result.inserted;
+        }
+    }
+
+    pipeline_.drain_sync();
+
+    if (result.inserted > 0 && !table_name.empty()) {
+        pipeline_.schema_registry().mark_has_data(table_name);
+    }
+
+    if (result.failed > 0) {
+        result.error = "Failed to ingest " + std::to_string(result.failed) +
+                       " of " + std::to_string(ticks.size()) + " rows";
+    }
+    return result;
+}
+
 // ============================================================================
 // exec_update — UPDATE table SET col = val [, ...] WHERE ...
 // In-place modification of matching rows via as_span().

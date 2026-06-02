@@ -11,6 +11,7 @@
 #include "zeptodb/server/http_server.h"
 #include "zeptodb/sql/executor.h"
 #include "zeptodb/auth/auth_manager.h"
+#include "zeptodb/auth/license_validator.h"
 #include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/cluster/query_coordinator.h"
@@ -64,6 +65,8 @@ static bool is_port_in_use(uint16_t port) {
 struct RemoteNodeSpec { uint32_t id; std::string host; uint16_t port; };
 
 int main(int argc, char* argv[]) {
+    zeptodb::auth::license().load();
+
     uint16_t port = 8123;
     uint16_t rpc_port = 0;  // RPC port for HA peer communication
     int num_ticks = 10000;

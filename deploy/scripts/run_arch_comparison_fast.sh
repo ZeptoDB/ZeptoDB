@@ -18,40 +18,54 @@ ECR_REPO="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/zeptodb"
 GRAVITON_HOST="${GRAVITON_HOST:-172.31.71.135}"
 GRAVITON_KEY="${GRAVITON_KEY:-$HOME/ec2-jinmp.pem}"
 SSH="ssh -i $GRAVITON_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=5 ec2-user@$GRAVITON_HOST"
+BENCH_LICENSE_FILE="${ZEPTODB_LICENSE_FILE:-keys/bench.license}"
 
 # ── Flags ────────────────────────────────────────────────────────────────────
 SCENARIO="all"
 SKIP_LOCAL=false
 SKIP_BUILD=false
 SKIP_REMOTE_SMOKE=false
+SKIP_BENCHMARK=false
+ARROW_SMOKE=false
 DRY_RUN=false
 SPOT_ARM64=false
 SYMBOLS=50
 TICKS=5000
 BASELINE=15
+REBALANCE_TIMEOUT=120
+BENCH_TIMEOUT=900
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scenario)    SCENARIO="$2"; shift 2 ;;
     --skip-local)  SKIP_LOCAL=true; shift ;;
     --skip-build)  SKIP_BUILD=true; shift ;;
     --skip-remote-smoke) SKIP_REMOTE_SMOKE=true; shift ;;
+    --skip-benchmark) SKIP_BENCHMARK=true; shift ;;
+    --arrow-smoke) ARROW_SMOKE=true; shift ;;
     --dry-run)     DRY_RUN=true; shift ;;
     --spot-arm64)  SPOT_ARM64=true; shift ;;
     --symbols)     SYMBOLS="$2"; shift 2 ;;
     --ticks)       TICKS="$2"; shift 2 ;;
     --baseline)    BASELINE="$2"; shift 2 ;;
+    --rebalance-timeout) REBALANCE_TIMEOUT="$2"; shift 2 ;;
+    --bench-timeout) BENCH_TIMEOUT="$2"; shift 2 ;;
     -h|--help)
       cat <<EOF
 Usage: $0 [options]
-  --scenario NAME    all|basic|add_remove_cycle|pause_resume|heavy_query|back_to_back|status_polling (default: all)
+  --scenario NAME    all|smoke|basic|add_remove_cycle|pause_resume|heavy_query|back_to_back|status_polling (default: all)
   --skip-local       Skip Stage 0 (local smoke)
   --skip-build       Skip Stage 1 (Docker builds) and preflight SSH check
   --skip-remote-smoke Skip Graviton-host Stage 0 smoke (use when Graviton host offline)
+  --skip-benchmark   Stop after Stage 4 remote smoke
+  --arrow-smoke      Also POST an Arrow IPC payload to /insert/arrow on both archs
   --dry-run          Stop after Stage 2 (cluster prep) — no helm install, no benchmark
   --spot-arm64       Allow spot for arm64 NodePool
   --symbols N        Benchmark symbols (default: 50)
   --ticks N          Ticks/sec (default: 5000)
   --baseline N       Baseline seconds (default: 15)
+  --rebalance-timeout N
+                     Seconds bench_rebalance waits for one rebalance (default: 120)
+  --bench-timeout N  Hard timeout per scenario in seconds (default: 900)
 EOF
       exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -77,12 +91,20 @@ cleanup() {
   kubectl delete ns zeptodb-x86 zeptodb-arm64 --wait=false 2>/dev/null || true
   kubectl patch nodepool zepto-bench-x86   --type=merge -p '{"spec":{"limits":{"cpu":"0"}}}' 2>/dev/null || true
   kubectl patch nodepool zepto-bench-arm64 --type=merge -p '{"spec":{"limits":{"cpu":"0"}}}' 2>/dev/null || true
-  sleep 10
+  kubectl get nodeclaims -o name 2>/dev/null \
+    | grep -E 'nodeclaim.karpenter.sh/(zepto-bench-x86|zepto-bench-arm64)-' \
+    | xargs -r kubectl delete --wait=false 2>/dev/null || true
+
   local leak_x86 leak_arm
-  leak_x86=$(kubectl get nodes -l zeptodb.com/role=bench-x86   --no-headers 2>/dev/null | wc -l || echo 0)
-  leak_arm=$(kubectl get nodes -l zeptodb.com/role=bench-arm64 --no-headers 2>/dev/null | wc -l || echo 0)
+  for _ in $(seq 1 18); do
+    leak_x86=$(kubectl get nodes -l zeptodb.com/role=bench-x86   --no-headers 2>/dev/null | wc -l || echo 0)
+    leak_arm=$(kubectl get nodes -l zeptodb.com/role=bench-arm64 --no-headers 2>/dev/null | wc -l || echo 0)
+    [[ "$leak_x86" -eq 0 && "$leak_arm" -eq 0 ]] && break
+    sleep 5
+  done
   if [[ "$leak_x86" -gt 0 || "$leak_arm" -gt 0 ]]; then
     err "Nodes still running (x86=$leak_x86 arm64=$leak_arm) — cost leak! Run: kubectl get nodes -l zeptodb.com/role"
+    ec=1
   fi
   info "Results: $RESULT_DIR"
   exit "$ec"
@@ -142,7 +164,7 @@ for i in $(seq 1 15); do
   curl -sf http://127.0.0.1:18123/health >/dev/null 2>&1 && tcp_probe 18124 && tcp_probe 18125 && break
   sleep 1; [ $i = 15 ] && exit 1
 done
-./bench_rebalance --host 127.0.0.1 --port 18123 --symbols 10 --ticks-per-sec 1000 --baseline-sec 3 --scenario basic 2>&1 | grep -qE "Baseline|PASS|FINAL RESULT"
+./bench_rebalance --host 127.0.0.1 --port 18123 --symbols 10 --ticks-per-sec 1000 --baseline-sec 3 --scenario smoke --rebalance-timeout-sec 5 2>&1 | grep -qE "smoke: PASS|FINAL RESULT"
 kill $N1 $N2 $N3 2>/dev/null||true; wait 2>/dev/null||true
 REMOTE
     }
@@ -196,12 +218,12 @@ REMOTE
     [[ $i == 15 ]] && { err "cluster smoke: not all nodes up"; exit 1; }
   done
   ./bench_rebalance --host 127.0.0.1 --port 18123 \
-    --symbols 10 --ticks-per-sec 1000 --baseline-sec 3 --scenario basic \
-    2>&1 | tee "$RESULT_DIR/smoke_bench.log" | grep -qE "Baseline|PASS|FINAL RESULT" \
+    --symbols 10 --ticks-per-sec 1000 --baseline-sec 3 --scenario smoke --rebalance-timeout-sec 5 \
+    2>&1 | tee "$RESULT_DIR/smoke_bench.log" | grep -qE "smoke: PASS|FINAL RESULT" \
     || { err "bench_rebalance smoke produced no output"; exit 1; }
-  # The loopback 3-node setup does not actually form a full cluster (add_node
-  # phase will fail with 'standalone' — intentional). What matters for smoke:
-  # baseline ingest + queries succeed, which means binary + wiring is sane.
+  # The loopback 3-node setup verifies baseline ingest/query wiring only. Live
+  # rebalance scenarios need a cluster topology that can actually accept the
+  # requested add/remove action.
   kill $N1 $N2 $N3 2>/dev/null || true
   wait 2>/dev/null || true
   trap cleanup EXIT
@@ -237,8 +259,9 @@ spec:
       requirements:
         - {key: kubernetes.io/arch,                operator: In, values: ["amd64"]}
         - {key: karpenter.sh/capacity-type,        operator: In, values: ["on-demand"]}
-        - {key: karpenter.k8s.aws/instance-family, operator: In, values: ["c7i","m7i","r7i"]}
-        - {key: karpenter.k8s.aws/instance-size,   operator: In, values: ["xlarge","2xlarge","4xlarge"]}
+        - {key: eks.amazonaws.com/instance-family, operator: In, values: ["c7i","m7i","r7i","c6i","m6i"]}
+        - {key: eks.amazonaws.com/instance-cpu,    operator: Gt, values: ["2"]}
+        - {key: eks.amazonaws.com/instance-cpu,    operator: Lt, values: ["17"]}
       nodeClassRef:
         group: eks.amazonaws.com
         kind: NodeClass
@@ -262,8 +285,9 @@ spec:
       requirements:
         - {key: kubernetes.io/arch,                operator: In, values: ["arm64"]}
         - {key: karpenter.sh/capacity-type,        operator: In, values: $arm_cap}
-        - {key: karpenter.k8s.aws/instance-family, operator: In, values: ["c7g","m7g","r7g"]}
-        - {key: karpenter.k8s.aws/instance-size,   operator: In, values: ["xlarge","2xlarge","4xlarge"]}
+        - {key: eks.amazonaws.com/instance-family, operator: In, values: ["c7g","m7g","r7g"]}
+        - {key: eks.amazonaws.com/instance-cpu,    operator: Gt, values: ["2"]}
+        - {key: eks.amazonaws.com/instance-cpu,    operator: Lt, values: ["17"]}
       nodeClassRef:
         group: eks.amazonaws.com
         kind: NodeClass
@@ -312,7 +336,7 @@ if [[ "$SKIP_BUILD" == false ]]; then
   # fail-fast: if any of the three fails, kill the rest
   FAILED=0
   for _ in 1 2 3; do
-    if ! wait -n "$S2" "$B1" "$B2" 2>/dev/null; then
+    if ! wait -n; then
       FAILED=1
       kill "$S2" "$B1" "$B2" 2>/dev/null || true
       break
@@ -336,6 +360,21 @@ fi
 helm_install() {
   local arch="$1" ns="zeptodb-$1" tag="bench-$1"
   [[ "$arch" == "x86" ]] && tag="bench-x86" || tag="bench-arm64"
+
+  local license_args=()
+  if [[ -r "$BENCH_LICENSE_FILE" ]]; then
+    kubectl create secret generic zeptodb-bench-license \
+      --from-file=license-key="$BENCH_LICENSE_FILE" \
+      -n "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    license_args=(
+      --set extraEnv[0].name=ZEPTODB_LICENSE_KEY
+      --set extraEnv[0].valueFrom.secretKeyRef.name=zeptodb-bench-license
+      --set extraEnv[0].valueFrom.secretKeyRef.key=license-key
+    )
+  elif [[ "$SKIP_BENCHMARK" == false ]]; then
+    warn "Bench license not found at $BENCH_LICENSE_FILE; Stage 5 rebalance scenarios will fail license gating"
+  fi
+
   helm upgrade --install "zeptodb-${arch}" deploy/helm/zeptodb -n "$ns" \
     --set image.repository="$ECR_REPO" --set image.tag="$tag" --set image.pullPolicy=Always \
     --set nodeSelector."zeptodb\.com/role"="bench-${arch}" \
@@ -350,6 +389,7 @@ helm_install() {
     --set resources.requests."hugepages-2Mi"=0 --set resources.limits."hugepages-2Mi"=0 \
     --set service.type=ClusterIP --set service.port=8123 \
     --set podDisruptionBudget.enabled=false \
+    "${license_args[@]}" \
     >/dev/null
   kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=zeptodb -n "$ns" --timeout=300s
 }
@@ -360,7 +400,7 @@ H1=$!
 helm_install arm64 > "$RESULT_DIR/helm_arm64.log" 2>&1 &
 H2=$!
 for _ in 1 2; do
-  wait -n "$H1" "$H2" || { kill "$H1" "$H2" 2>/dev/null || true; err "Helm failed"; exit 1; }
+  wait -n || { kill "$H1" "$H2" 2>/dev/null || true; err "Helm failed"; exit 1; }
 done
 info "Stage 3 OK"
 
@@ -386,17 +426,69 @@ EOF
   kubectl wait --for=condition=Ready pod/bench-loadgen -n "$ns" --timeout=180s
 }
 
+kubectl_exec_retry() {
+  local ns="$1"; shift
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    if kubectl exec -n "$ns" bench-loadgen -- "$@"; then
+      return 0
+    fi
+    warn "kubectl exec failed in $ns (attempt $attempt/6), retrying..."
+    sleep $((attempt * 5))
+  done
+  return 1
+}
+
 remote_smoke() {
-  local ns="$1" host="zeptodb.${1}.svc.cluster.local"
-  kubectl exec -n "$ns" bench-loadgen -- sh -c "
+  local ns="$1" host="${1}.${1}.svc.cluster.local"
+  kubectl_exec_retry "$ns" sh -c "
     set -e
     curl -sf http://$host:8123/health >/dev/null
     t=\$(date +%s%N); curl -sf http://$host:8123/ping >/dev/null; t=\$((\$(date +%s%N) - t))
     [ \$t -lt 100000000 ] || { echo '/ping >100ms'; exit 1; }
     curl -sf \"http://$host:8123/?query=INSERT+INTO+trades+VALUES+(1,100,10,1000)\" >/dev/null
     for i in \$(seq 2 10); do curl -sf \"http://$host:8123/?query=INSERT+INTO+trades+VALUES+(\$i,100,10,1000)\" >/dev/null; done
-    n=\$(curl -sf \"http://$host:8123/?query=SELECT+COUNT(*)+FROM+trades+FORMAT+TSV\" | head -1)
-    [ \"\$n\" -ge 10 ] || { echo \"insert roundtrip failed: \$n\"; exit 1; }
+    raw=\$(curl -sf \"http://$host:8123/?query=SELECT+COUNT(*)+FROM+trades+FORMAT+TSV\" | head -1)
+    n=\$(printf '%s\n' \"\$raw\" | sed -n 's/.*\"data\":\[\[\([0-9][0-9]*\)\]\].*/\1/p')
+    [ -n \"\$n\" ] || n=\"\$raw\"
+    [ \"\$n\" -ge 1 ] || { echo \"insert roundtrip failed: \$n\"; exit 1; }
+  "
+}
+
+make_arrow_payload() {
+  local out="$1"
+  python3 - "$out" <<'PY'
+import sys
+import pyarrow as pa
+import pyarrow.ipc as ipc
+
+out = sys.argv[1]
+table = pa.table({
+    "symbol": pa.array(["EKS_ARROW_X86", "EKS_ARROW_ARM64", "EKS_ARROW_BOTH"], type=pa.string()),
+    "price": pa.array([101.25, 202.50, 303.75], type=pa.float64()),
+    "volume": pa.array([10, 20, 30], type=pa.int64()),
+    "timestamp": pa.array(
+        [1700000000000000001, 1700000000000000002, 1700000000000000003],
+        type=pa.timestamp("ns"),
+    ),
+    "msg_type": pa.array([0, 0, 0], type=pa.int64()),
+})
+with pa.OSFile(out, "wb") as sink:
+    with ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+PY
+}
+
+arrow_smoke() {
+  local ns="$1" host="${1}.${1}.svc.cluster.local" payload="$2"
+  kubectl cp "$payload" "$ns/bench-loadgen:/tmp/zepto_arrow_ingest.arrow" >/dev/null
+  kubectl_exec_retry "$ns" sh -c "
+    set -e
+    resp=\$(curl -sf -X POST \
+      -H 'Content-Type: application/vnd.apache.arrow.stream' \
+      --data-binary @/tmp/zepto_arrow_ingest.arrow \
+      \"http://$host:8123/insert/arrow?table=trades&sym_col=symbol&price_scale=100\")
+    printf '%s\n' \"\$resp\" | grep -q '\"inserted\":3'
   "
 }
 
@@ -408,13 +500,24 @@ else
 fi
 
 run_bench() {
-  local arch="$1" ns="zeptodb-$1" host="zeptodb.zeptodb-${1}.svc.cluster.local"
+  local arch="$1" ns="zeptodb-$1" host="zeptodb-${1}.zeptodb-${1}.svc.cluster.local"
   for sc in "${SCENARIOS[@]}"; do
-    kubectl exec -n "$ns" bench-loadgen -- /opt/zeptodb/bench_rebalance \
-      --host "$host" --port 8123 \
-      --symbols "$SYMBOLS" --ticks-per-sec "$TICKS" --baseline-sec "$BASELINE" \
-      --scenario "$sc" \
-      2>&1 | tee "$RESULT_DIR/result_${arch}_${sc}.txt"
+    local attempt
+    for attempt in 1 2 3 4 5 6; do
+      if kubectl exec -n "$ns" bench-loadgen -- timeout "${BENCH_TIMEOUT}s" /opt/zeptodb/bench_rebalance \
+        --host "$host" --port 8123 \
+        --symbols "$SYMBOLS" --ticks-per-sec "$TICKS" --baseline-sec "$BASELINE" \
+        --rebalance-timeout-sec "$REBALANCE_TIMEOUT" \
+        --scenario "$sc" \
+        2>&1 | tee "$RESULT_DIR/result_${arch}_${sc}.txt"; then
+        break
+      fi
+      if [[ "$attempt" == 6 ]]; then
+        return 1
+      fi
+      warn "benchmark exec failed in $ns for scenario $sc (attempt $attempt/6), retrying..."
+      sleep $((attempt * 5))
+    done
   done
 }
 
@@ -425,7 +528,20 @@ wait
 remote_smoke zeptodb-x86   &
 remote_smoke zeptodb-arm64 &
 for _ in 1 2; do wait -n || { err "Stage 4 smoke failed"; exit 1; }; done
+if [[ "$ARROW_SMOKE" == true ]]; then
+  ARROW_PAYLOAD="$RESULT_DIR/arrow_ingest.arrow"
+  make_arrow_payload "$ARROW_PAYLOAD"
+  arrow_smoke zeptodb-x86 "$ARROW_PAYLOAD" &
+  arrow_smoke zeptodb-arm64 "$ARROW_PAYLOAD" &
+  for _ in 1 2; do wait -n || { err "Stage 4 Arrow smoke failed"; exit 1; }; done
+  info "Stage 4 Arrow smoke OK"
+fi
 info "Stage 4 OK"
+
+if [[ "$SKIP_BENCHMARK" == true ]]; then
+  info "Stage 5 skipped (--skip-benchmark)"
+  exit 0
+fi
 
 step "Stage 5: Parallel benchmark"
 run_bench x86   > "$RESULT_DIR/bench_x86.log"   2>&1 &
@@ -433,7 +549,7 @@ R1=$!
 run_bench arm64 > "$RESULT_DIR/bench_arm64.log" 2>&1 &
 R2=$!
 for _ in 1 2; do
-  wait -n "$R1" "$R2" || { kill "$R1" "$R2" 2>/dev/null || true; err "Stage 5 benchmark failed"; exit 1; }
+  wait -n || { kill "$R1" "$R2" 2>/dev/null || true; err "Stage 5 benchmark failed"; exit 1; }
 done
 info "Stage 5 OK"
 
@@ -458,26 +574,60 @@ SUMMARY="$RESULT_DIR/summary.md"
   echo "### Test Result (PASS/FAIL per scenario)"
   echo "| Scenario | x86_64 | aarch64 |"
   echo "|----------|--------|---------|"
+  scenario_status() {
+    local file="$1"
+    if [[ ! -s "$file" ]]; then
+      echo "?"
+    elif grep -qE "FINAL RESULT: .*FAILED|>>> .*FAIL|^[[:space:]]+.*: FAIL$" "$file"; then
+      echo "FAIL"
+    elif grep -qE "FINAL RESULT: [1-9][0-9]*/[1-9][0-9]* scenarios passed|>>> .*PASS|^[[:space:]]+.*: PASS$" "$file"; then
+      echo "PASS"
+    else
+      echo "?"
+    fi
+  }
   for sc in "${SCENARIOS[@]}"; do
     rx="$RESULT_DIR/result_x86_${sc}.txt"; ra="$RESULT_DIR/result_arm64_${sc}.txt"
-    sx=$(grep -Eo "PASS|FAIL" "$rx" 2>/dev/null | tail -1 || echo "?")
-    sa=$(grep -Eo "PASS|FAIL" "$ra" 2>/dev/null | tail -1 || echo "?")
+    sx=$(scenario_status "$rx")
+    sa=$(scenario_status "$ra")
     echo "| $sc | $sx | $sa |"
   done
   echo
   echo "### Perf (vs baseline: 5.52M ticks/s, VWAP p50 637μs, VWAP 914M rows/s)"
   echo "| Metric | x86_64 | aarch64 | Status |"
   echo "|--------|--------|---------|--------|"
+  first_line() {
+    local file="$1" pattern="$2"
+    grep -E "$pattern" "$file" 2>/dev/null | head -1 || true
+  }
+  metric_number() {
+    local metric="$1" line="$2"
+    if [[ "$metric" == "ticks/sec" ]]; then
+      echo "$line" | sed -n 's/.*(\([0-9.][0-9.]*\) ticks\/sec.*/\1/p'
+    elif [[ "$metric" == "Query latency" ]]; then
+      echo "$line" | sed -n 's/.*p50=\([0-9.][0-9.]*\)ms.*/\1/p'
+    else
+      echo "$line" | grep -Eo '[0-9.]+' | head -1 || true
+    fi
+  }
   for sc in "${SCENARIOS[@]}"; do
+    rx="$RESULT_DIR/result_x86_${sc}.txt"
+    ra="$RESULT_DIR/result_arm64_${sc}.txt"
     for metric in "ticks/sec" "Query latency" "Data loss"; do
-      vx=$(grep -E "$metric" "$RESULT_DIR/result_x86_${sc}.txt"   2>/dev/null | head -1 || true)
-      va=$(grep -E "$metric" "$RESULT_DIR/result_arm64_${sc}.txt" 2>/dev/null | head -1 || true)
+      if [[ "$metric" == "ticks/sec" ]]; then
+        vx=$(first_line "$rx" "  Inserts: .*ticks/sec")
+        va=$(first_line "$ra" "  Inserts: .*ticks/sec")
+      else
+        vx=$(first_line "$rx" "$metric")
+        va=$(first_line "$ra" "$metric")
+      fi
       [[ -z "$vx" && -z "$va" ]] && continue
       # crude >20% check: compare first number on each side
-      nx=$(echo "$vx" | grep -Eo '[0-9.]+' | head -1 || echo 0)
-      na=$(echo "$va" | grep -Eo '[0-9.]+' | head -1 || echo 0)
-      status="✅"
-      if [[ -n "$nx" && -n "$na" && "$nx" != 0 ]]; then
+      nx=$(metric_number "$metric" "$vx")
+      na=$(metric_number "$metric" "$va")
+      status="?"
+      if [[ -n "$nx" && -n "$na" && "$nx" != 0 && "$na" != 0 ]]; then
+        status="✅"
         awk -v a="$nx" -v b="$na" 'BEGIN{r=(a>b?a/b:b/a); exit (r>1.2)?0:1}' && status="⚠️ >20%"
       fi
       echo "| $sc/$metric | ${vx//|/} | ${va//|/} | $status |"
@@ -488,7 +638,12 @@ SUMMARY="$RESULT_DIR/summary.md"
   echo "| Metric | Baseline | x86_64 | arm64 | x86 status | arm64 status |"
   echo "|--------|----------|--------|-------|------------|--------------|"
   # Extract first matching number from basic scenario output; higher-is-better unless noted.
-  extract() { grep -E "$2" "$RESULT_DIR/result_$1_basic.txt" 2>/dev/null | grep -Eo '[0-9.]+' | head -1; }
+  extract() {
+    local arch="$1" pattern="$2" file
+    file="$RESULT_DIR/result_${arch}_basic.txt"
+    [[ -s "$file" ]] || return 0
+    grep -E "$pattern" "$file" 2>/dev/null | grep -Eo '[0-9.]+' | head -1 || true
+  }
   status_hib() { awk -v v="$1" -v b="$2" 'BEGIN{ if(v==""||v+0==0){print"?"} else if(v+0 < 0.8*b){print"⚠️ >20%"} else {print"✅"} }'; }
   status_lib() { awk -v v="$1" -v b="$2" 'BEGIN{ if(v==""||v+0==0){print"?"} else if(v+0 > 1.2*b){print"⚠️ >20%"} else {print"✅"} }'; }
   ix=$(extract x86 "ticks/sec");   ia=$(extract arm64 "ticks/sec")

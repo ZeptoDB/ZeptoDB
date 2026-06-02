@@ -1,6 +1,6 @@
 # ZeptoDB Live Rebalancing Benchmark Guide
 
-Last updated: 2026-04-11
+Last updated: 2026-06-02
 
 ---
 
@@ -66,6 +66,21 @@ kubectl exec -n zeptodb bench-loadgen -- /tmp/bench_rebalance \
   --baseline-sec 30 --action add_node --node-id 4
 ```
 
+For fast cross-architecture harness validation without requiring a live
+add/remove topology, use the smoke scenario:
+
+```bash
+./deploy/scripts/run_arch_comparison_fast.sh \
+  --skip-local --skip-build --arrow-smoke \
+  --scenario smoke --baseline 3 --ticks 1000 --symbols 10 \
+  --rebalance-timeout 20 --bench-timeout 180
+```
+
+`smoke` validates baseline ingest/query wiring only. Full `basic`,
+`add_remove_cycle`, `pause_resume`, `heavy_query`, `back_to_back`, and
+`status_polling` runs require a cluster topology that can accept the requested
+rebalance admin action.
+
 ### 5. Sleep cluster when done
 
 ```bash
@@ -102,6 +117,8 @@ Pass criteria:
 | `--ticks-per-sec` | `10000` | Target ingestion rate |
 | `--query-qps` | `10` | Concurrent query rate |
 | `--baseline-sec` | `30` | Duration for baseline/post phases |
+| `--rebalance-timeout-sec` | `120` | Maximum seconds to wait for one rebalance after a successful trigger |
+| `--scenario` | `all` | Scenario: `smoke`, `basic`, `add_remove_cycle`, `pause_resume`, `heavy_query`, `back_to_back`, `status_polling`, or `all` for all rebalance scenarios |
 | `--action` | `add_node` | Rebalance action: `add_node` or `remove_node` |
 | `--node-id` | `0` (auto) | Node ID for rebalance (0 = auto-detect) |
 
@@ -112,8 +129,8 @@ Pass criteria:
 | Problem | Solution |
 |---------|----------|
 | "Could not reach cluster" | Verify pods are running: `kubectl get pods -n zeptodb` |
-| "Failed to trigger rebalance" | Check rebalance is enabled in config; check `/admin/rebalance/status` |
-| Rebalance timeout | Increase timeout; check pod logs: `kubectl logs -n zeptodb <pod>` |
+| "Failed to trigger rebalance" | Check rebalance is enabled, an Enterprise license is loaded, and the topology supports the requested node action. The benchmark prints the HTTP status/body from `/admin/rebalance/start`. |
+| Rebalance timeout | Increase `--rebalance-timeout-sec`; check pod logs: `kubectl logs -n zeptodb <pod>` |
 | High insert failure rate | Check pod resource limits; verify network: `kubectl exec bench-loadgen -- ping <pod-ip>` |
 | Binary not found | Build with: `cd build && ninja bench_rebalance` |
 

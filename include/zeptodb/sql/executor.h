@@ -83,6 +83,14 @@ struct ParallelOptions {
 // ============================================================================
 class QueryExecutor {
 public:
+    struct TickBatchIngestResult {
+        size_t inserted = 0;
+        size_t failed = 0;
+        std::string error;
+
+        [[nodiscard]] bool ok() const { return error.empty(); }
+    };
+
     /// 기본 생성자: LocalQueryScheduler (hardware_concurrency 스레드)
     explicit QueryExecutor(zeptodb::core::ZeptoPipeline& pipeline);
 
@@ -148,6 +156,18 @@ public:
     void set_cluster_node(zeptodb::cluster::ClusterNodeBase* node) {
         cluster_node_ = node;
     }
+
+    /// Intern a string symbol for external decoders that produce symbolic keys.
+    /// Mirrors INSERT's STRING handling while keeping Pipeline internals private.
+    zeptodb::SymbolId intern_symbol_for_ingest(const std::string& symbol);
+
+    /// Ingest a decoded tick batch without going through the SQL parser.
+    /// Used by binary/columnar ingress surfaces such as HTTP Arrow IPC.
+    /// `table_name == ""` keeps the legacy table_id=0 path; non-empty table
+    /// names must already exist in SchemaRegistry.
+    TickBatchIngestResult ingest_tick_batch(
+        const std::string& table_name,
+        std::vector<zeptodb::ingestion::TickMessage> ticks);
 
 private:
     zeptodb::core::ZeptoPipeline& pipeline_;
@@ -428,4 +448,3 @@ private:
 };
 
 } // namespace zeptodb::sql
-

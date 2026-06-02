@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-05-28*
+*Last updated: 2026-05-31*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -12,6 +12,7 @@ using the ClickHouse data source plugin with no modification.
 - [Endpoints](#endpoints)
 - [AI Agent Memory API](#ai-agent-memory-api)
 - [SQL Query — POST /](#sql-query--post-)
+- [Arrow IPC Ingest — POST /insert/arrow](#arrow-ipc-ingest--post-insertarrow)
 - [Response Format](#response-format)
 - [Authentication](#authentication)
 - [/stats](#stats)
@@ -159,6 +160,7 @@ print(df)
 | Method | Path | Auth required | Description |
 |--------|------|:---:|-------------|
 | `POST` | `/` | yes | Execute SQL query |
+| `POST` | `/insert/arrow` | yes | Ingest Apache Arrow IPC RecordBatchStream rows |
 | `GET` | `/` | yes | Execute SQL via `?query=` param |
 | `GET` | `/ping` | no | Health check — returns `"Ok\n"` |
 | `GET` | `/health` | no | Kubernetes liveness probe |
@@ -575,9 +577,82 @@ ORDER BY bar ASC
 
 ---
 
+## Arrow IPC Ingest — POST /insert/arrow
+
+`POST /insert/arrow` accepts an Apache Arrow IPC RecordBatchStream and ingests
+each row through ZeptoDB's table-aware tick path without building per-row SQL.
+It is intended for high-throughput DataFrame, Polars, PyArrow, and batched
+client ingestion.
+
+**Request**:
+
+| Field | Value |
+|-------|-------|
+| Method | `POST` |
+| Path | `/insert/arrow` |
+| Body | Arrow IPC stream bytes |
+| Content-Type | Optional; `application/vnd.apache.arrow.stream` recommended |
+
+**Query parameters**:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `table` / `table_name` | empty | Destination ZeptoDB table. Empty uses legacy `table_id=0`. Non-empty names must already exist. |
+| `sym_col` / `symbol_col` | `sym` | Symbol column. The default also accepts an Arrow column named `symbol`. Integer IDs and utf8 strings are supported; strings are dictionary-interned. |
+| `price_col` | `price` | Numeric price column. Values are converted to int64 after `price_scale`. |
+| `vol_col` / `volume_col` | `volume` | Numeric volume column. Values are converted to int64 after `volume_scale`. |
+| `ts_col` / `timestamp_col` | `timestamp` | Optional timestamp column. If absent, ZeptoDB assigns nanosecond timestamps at ingest time. Arrow timestamp arrays are converted to ns. |
+| `msg_type_col` | `msg_type` | Optional uint8-compatible message type column. Missing values default to `0` (trade). |
+| `price_scale` | `1.0` | Multiplier applied before int64 conversion. Use `100` to store cents from decimal prices. |
+| `volume_scale` / `vol_scale` | `1.0` | Multiplier applied before int64 conversion. |
+
+**Response**:
+
+```json
+{"inserted": 1000, "failed": 0}
+```
+
+The response also includes `X-Zepto-Format: arrow-stream` on success.
+
+**Errors**:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Malformed Arrow stream, missing required column, null in required column, unsupported type, invalid scale, or unknown table. |
+| `403` | Table ACL or tenant namespace rejection. If table ACL is active, `table=` is required. |
+| `406` | Server was built without Arrow IPC support. Rebuild with `-DZEPTO_USE_FLIGHT=ON` or install Arrow / pyarrow before reconfiguring. |
+
+**Example**:
+
+```bash
+python3 - <<'PY'
+import pyarrow as pa
+import pyarrow.ipc as ipc
+
+table = pa.table({
+    "symbol": ["AAPL", "AAPL"],
+    "price": [15000, 15010],
+    "volume": [100, 120],
+    "timestamp": [1711000000000000000, 1711000000000000001],
+})
+
+with pa.OSFile("/tmp/trades.arrow", "wb") as sink:
+    with ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+PY
+
+curl -s -X POST \
+  'http://localhost:8123/insert/arrow?table=trades&sym_col=symbol' \
+  -H 'Content-Type: application/vnd.apache.arrow.stream' \
+  --data-binary @/tmp/trades.arrow
+```
+
+---
+
 ## Response Format
 
-All responses are JSON.
+Responses are JSON unless the client explicitly requests a binary Arrow query
+response from `POST /`.
 
 ### Success
 

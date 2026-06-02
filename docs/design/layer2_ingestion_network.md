@@ -206,7 +206,32 @@ the handler setters to cascade the resolved id. No other surface changes
 are expected (the structs are not on any current wire protocol or WAL
 format).
 
-Last updated: 2026-04-18 (Stage C — devlog 085)
+Last updated: 2026-05-31 (HTTP Arrow IPC ingest — devlog 147)
+
+## HTTP Arrow IPC ingest (devlog 147)
+
+`POST /insert/arrow` adds a first-class binary columnar ingest surface for
+clients that already hold Arrow tables or record batches. It decodes an Arrow
+IPC RecordBatchStream in the server layer, maps configured columns into
+`TickMessage`, and then calls `QueryExecutor::ingest_tick_batch()` so table_id
+resolution, cluster routing, queue backpressure fallback, `drain_sync()`, and
+`SchemaRegistry::mark_has_data()` stay identical to SQL `INSERT`.
+
+Default mapping matches Python's Arrow/DataFrame fast path:
+
+| Arrow column | Default | Notes |
+|---|---|---|
+| symbol | `sym` (`symbol` alias accepted) | integer symbol IDs or utf8 strings; strings are interned through the pipeline `StringDictionary` |
+| price | `price` | numeric, converted to int64 after `price_scale` |
+| volume | `volume` | numeric, converted to int64 after `volume_scale` |
+| timestamp | `timestamp` | optional; Arrow timestamp arrays are converted to ns, missing column uses ingest-time ns stamps |
+| msg_type | `msg_type` | optional; defaults to trade (`0`) |
+
+Error policy is fail-fast per request: malformed IPC, missing required columns,
+nulls in required columns, unsupported types, unknown tables, tenant rejection,
+or table ACL denial return JSON errors and do not claim success for the failing
+batch. Builds without Arrow return `406 Not Acceptable`, matching the Arrow IPC
+query response path.
 
 ## 6. Ingest capacity tuning (devlog 102)
 

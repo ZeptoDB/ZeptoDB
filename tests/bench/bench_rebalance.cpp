@@ -33,11 +33,13 @@ struct Config {
     int ticks_per_sec = 10000;
     int query_qps = 10;
     int baseline_sec = 30;
+    int rebalance_timeout_sec = 300;
     int rebalance_node_id = 0;
     std::string action = "add_node";
     int ingest_threads = 1;
-    std::string scenario = "all";  // all, basic, add_remove_cycle, pause_resume,
-                                   // heavy_query, back_to_back, status_polling
+    std::string scenario = "all";  // all, smoke, basic, add_remove_cycle,
+                                   // pause_resume, heavy_query, back_to_back,
+                                   // status_polling
 };
 
 struct Metrics {
@@ -91,11 +93,14 @@ Config parse_args(int argc, char* argv[]) {
                       << "  --ticks-per-sec N    Target ingest rate (default: 10000)\n"
                       << "  --query-qps N        Query rate (default: 10)\n"
                       << "  --baseline-sec N     Baseline duration (default: 30)\n"
+                      << "  --rebalance-timeout-sec N\n"
+                      << "                       Max seconds to wait for one rebalance (default: 300)\n"
                       << "  --action ACTION      add_node or remove_node (default: add_node)\n"
                       << "  --node-id N          Node ID for rebalance (default: auto-detect)\n"
                       << "  --ingest-threads N   Number of ingest threads (default: 1)\n"
                       << "  --scenario NAME      Test scenario (default: all)\n"
-                      << "      all              Run all scenarios\n"
+                      << "      all              Run all rebalance scenarios\n"
+                      << "      smoke            Ingest/query baseline only; no rebalance trigger\n"
                       << "      basic            Original 6-phase test\n"
                       << "      add_remove_cycle Scale-out then scale-in round-trip\n"
                       << "      pause_resume     Pause/resume mid-rebalance under load\n"
@@ -113,6 +118,7 @@ Config parse_args(int argc, char* argv[]) {
         else if (arg == "--ticks-per-sec") cfg.ticks_per_sec = std::stoi(next());
         else if (arg == "--query-qps") cfg.query_qps = std::stoi(next());
         else if (arg == "--baseline-sec") cfg.baseline_sec = std::stoi(next());
+        else if (arg == "--rebalance-timeout-sec") cfg.rebalance_timeout_sec = std::stoi(next());
         else if (arg == "--action")    cfg.action = next();
         else if (arg == "--node-id")   cfg.rebalance_node_id = std::stoi(next());
         else if (arg == "--ingest-threads") cfg.ingest_threads = std::stoi(next());
@@ -148,6 +154,21 @@ static std::string http_post_json(const Config& cfg, const std::string& path,
     cli.set_read_timeout(30);
     auto res = cli.Post(path, body, "application/json");
     return (res && res->status == 200) ? res->body : "";
+}
+
+struct HttpResult {
+    int status = 0;
+    std::string body;
+};
+
+static HttpResult http_post_json_result(const Config& cfg, const std::string& path,
+                                        const std::string& body) {
+    httplib::Client cli(cfg.host, cfg.port);
+    cli.set_connection_timeout(5);
+    cli.set_read_timeout(30);
+    auto res = cli.Post(path, body, "application/json");
+    if (!res) return {};
+    return {res->status, res->body};
 }
 
 // ============================================================================
@@ -238,11 +259,19 @@ std::string get_rebalance_status(const Config& cfg) {
     return http_get(cfg, "/admin/rebalance/status");
 }
 
-bool trigger_rebalance(const Config& cfg, const std::string& action, int node_id) {
+bool trigger_rebalance(const Config& cfg, const std::string& action, int node_id,
+                       std::string* error = nullptr) {
     std::string body = R"({"action":")" + action + R"(","node_id":)" +
         std::to_string(node_id) + "}";
-    auto resp = http_post_json(cfg, "/admin/rebalance/start", body);
-    return resp.find("\"ok\":true") != std::string::npos;
+    auto resp = http_post_json_result(cfg, "/admin/rebalance/start", body);
+    if (resp.status == 200 && resp.body.find("\"ok\":true") != std::string::npos)
+        return true;
+    if (error) {
+        *error = "status=" + std::to_string(resp.status);
+        if (!resp.body.empty())
+            *error += " body=" + resp.body.substr(0, 240);
+    }
+    return false;
 }
 
 bool wait_rebalance_done(const Config& cfg, int timeout_sec) {
@@ -301,6 +330,8 @@ struct PhaseResult {
     uint64_t queries_ok, queries_fail;
     double p50, p99;
     double ticks_per_sec;
+    bool rebalance_triggered = true;
+    bool rebalance_completed = true;
 };
 
 PhaseResult run_phase(const Config& cfg, Metrics& m, int duration_sec) {
@@ -329,7 +360,7 @@ PhaseResult run_phase(const Config& cfg, Metrics& m, int duration_sec) {
 }
 
 PhaseResult run_rebalance_phase(const Config& cfg, Metrics& m, int node_id,
-                                 int timeout_sec = 300) {
+                                 int timeout_sec = 0) {
     m.reset();
     std::atomic<bool> running{true};
 
@@ -340,11 +371,32 @@ PhaseResult run_rebalance_phase(const Config& cfg, Metrics& m, int node_id,
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     auto t0 = Clock::now();
-    if (!trigger_rebalance(cfg, cfg.action, node_id)) {
-        std::cerr << "  ERROR: Failed to trigger rebalance\n";
+    std::string trigger_error;
+    if (!trigger_rebalance(cfg, cfg.action, node_id, &trigger_error)) {
+        std::cerr << "  ERROR: Failed to trigger rebalance";
+        if (!trigger_error.empty()) std::cerr << ": " << trigger_error;
+        std::cerr << "\n";
+        running = false;
+        ingest_t.join();
+        query_t.join();
+
+        double total_sec = std::chrono::duration<double>(Clock::now() - t0).count();
+        PhaseResult r{};
+        r.duration_sec = total_sec;
+        r.inserts_ok = m.inserts_ok.load();
+        r.inserts_fail = m.inserts_fail.load();
+        r.queries_ok = m.queries_ok.load();
+        r.queries_fail = m.queries_fail.load();
+        r.p50 = m.p50();
+        r.p99 = m.p99();
+        r.ticks_per_sec = (total_sec > 0) ? r.inserts_ok / total_sec : 0;
+        r.rebalance_triggered = false;
+        r.rebalance_completed = false;
+        return r;
     }
 
-    bool done = wait_rebalance_done(cfg, timeout_sec);
+    int effective_timeout = timeout_sec > 0 ? timeout_sec : cfg.rebalance_timeout_sec;
+    bool done = wait_rebalance_done(cfg, effective_timeout);
     auto t1 = Clock::now();
     double rebalance_sec = std::chrono::duration<double>(t1 - t0).count();
 
@@ -366,9 +418,12 @@ PhaseResult run_rebalance_phase(const Config& cfg, Metrics& m, int node_id,
     r.p50 = m.p50();
     r.p99 = m.p99();
     r.ticks_per_sec = (total_sec > 0) ? r.inserts_ok / total_sec : 0;
+    r.rebalance_triggered = true;
+    r.rebalance_completed = done;
 
     if (!done)
-        std::cerr << "  WARNING: Rebalance did not complete within timeout\n";
+        std::cerr << "  WARNING: Rebalance did not complete within "
+                  << effective_timeout << "s\n";
 
     return r;
 }
@@ -434,7 +489,7 @@ bool cancel_rebalance(const Config& cfg) {
 
 PhaseResult run_multi_ingest_rebalance_phase(const Config& cfg, Metrics& m,
                                               int node_id, int num_threads,
-                                              int timeout_sec = 300) {
+                                              int timeout_sec = 0) {
     m.reset();
     std::atomic<bool> running{true};
 
@@ -446,10 +501,32 @@ PhaseResult run_multi_ingest_rebalance_phase(const Config& cfg, Metrics& m,
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     auto t0 = Clock::now();
-    if (!trigger_rebalance(cfg, cfg.action, node_id))
-        std::cerr << "  ERROR: Failed to trigger rebalance\n";
+    std::string trigger_error;
+    if (!trigger_rebalance(cfg, cfg.action, node_id, &trigger_error)) {
+        std::cerr << "  ERROR: Failed to trigger rebalance";
+        if (!trigger_error.empty()) std::cerr << ": " << trigger_error;
+        std::cerr << "\n";
+        running = false;
+        for (auto& t : ingest_threads) t.join();
+        query_t.join();
 
-    bool done = wait_rebalance_done(cfg, timeout_sec);
+        double total_sec = std::chrono::duration<double>(Clock::now() - t0).count();
+        PhaseResult r{};
+        r.duration_sec = total_sec;
+        r.inserts_ok = m.inserts_ok.load();
+        r.inserts_fail = m.inserts_fail.load();
+        r.queries_ok = m.queries_ok.load();
+        r.queries_fail = m.queries_fail.load();
+        r.p50 = m.p50();
+        r.p99 = m.p99();
+        r.ticks_per_sec = (total_sec > 0) ? r.inserts_ok / total_sec : 0;
+        r.rebalance_triggered = false;
+        r.rebalance_completed = false;
+        return r;
+    }
+
+    int effective_timeout = timeout_sec > 0 ? timeout_sec : cfg.rebalance_timeout_sec;
+    bool done = wait_rebalance_done(cfg, effective_timeout);
     auto t1 = Clock::now();
     double rebalance_sec = std::chrono::duration<double>(t1 - t0).count();
 
@@ -470,10 +547,28 @@ PhaseResult run_multi_ingest_rebalance_phase(const Config& cfg, Metrics& m,
     r.p50 = m.p50();
     r.p99 = m.p99();
     r.ticks_per_sec = (total_sec > 0) ? r.inserts_ok / total_sec : 0;
+    r.rebalance_triggered = true;
+    r.rebalance_completed = done;
 
     if (!done)
-        std::cerr << "  WARNING: Rebalance did not complete within timeout\n";
+        std::cerr << "  WARNING: Rebalance did not complete within "
+                  << effective_timeout << "s\n";
     return r;
+}
+
+// ============================================================================
+// Scenario: smoke — baseline ingest/query only
+// ============================================================================
+
+bool scenario_smoke(const Config& cfg) {
+    Metrics metrics;
+    std::cout << "\n=== Scenario: Smoke ===\n";
+    auto baseline = run_phase(cfg, metrics, cfg.baseline_sec);
+    print_phase(("Smoke Baseline (" + std::to_string(cfg.baseline_sec) + "s)").c_str(),
+                baseline);
+    bool pass = baseline.inserts_ok > 0 && baseline.queries_ok > 0;
+    std::cout << "\n  smoke: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
 }
 
 // ============================================================================
@@ -496,6 +591,8 @@ bool scenario_basic(const Config& cfg, int node_id) {
     std::cout << "  Rebalance duration: " << std::fixed << std::setprecision(1)
               << rebalance.duration_sec << "s\n";
     print_phase("Phase 2: Rebalance Under Load", rebalance, &baseline);
+    if (!rebalance.rebalance_triggered || !rebalance.rebalance_completed)
+        all_pass = false;
 
     // Phase 3: Post-rebalance
     std::cout << "\n--- Phase 3: Post-Rebalance (" << cfg.baseline_sec << "s) ---\n";
@@ -538,6 +635,8 @@ bool scenario_basic(const Config& cfg, int node_id) {
               << concurrent.duration_sec << "s\n";
     print_phase(("Phase 6: Concurrent Ingest (" + std::to_string(ingest_threads) + " threads)").c_str(),
                 concurrent, &baseline);
+    if (!concurrent.rebalance_triggered || !concurrent.rebalance_completed)
+        all_pass = false;
 
     std::cout << "\n--- Phase 6: Data Integrity Check ---\n";
     bool phase6_integrity = verify_data_integrity(cfg, cfg.num_symbols);
@@ -564,6 +663,9 @@ bool scenario_add_remove_cycle(const Config& cfg, int node_id) {
     auto baseline = run_phase(cfg, metrics, cfg.baseline_sec);
     print_phase("Baseline", baseline);
 
+    bool add_ok = true;
+    bool rm_ok = true;
+
     // Step 1: add_node under load
     std::cout << "\n--- Step 1: add_node (node_id=" << node_id << ") ---\n";
     {
@@ -572,10 +674,11 @@ bool scenario_add_remove_cycle(const Config& cfg, int node_id) {
         auto r = run_rebalance_phase(add_cfg, metrics, node_id);
         std::cout << "  Duration: " << std::fixed << std::setprecision(1) << r.duration_sec << "s\n";
         print_phase("add_node", r, &baseline);
+        if (!r.rebalance_triggered || !r.rebalance_completed) add_ok = false;
     }
 
     std::cout << "\n--- Data Integrity After Add ---\n";
-    bool add_ok = verify_data_integrity(cfg, cfg.num_symbols);
+    add_ok = add_ok && verify_data_integrity(cfg, cfg.num_symbols);
 
     // Step 2: remove_node under load (reverse)
     std::cout << "\n--- Step 2: remove_node (node_id=" << node_id << ") ---\n";
@@ -585,10 +688,11 @@ bool scenario_add_remove_cycle(const Config& cfg, int node_id) {
         auto r = run_rebalance_phase(rm_cfg, metrics, node_id);
         std::cout << "  Duration: " << std::fixed << std::setprecision(1) << r.duration_sec << "s\n";
         print_phase("remove_node", r, &baseline);
+        if (!r.rebalance_triggered || !r.rebalance_completed) rm_ok = false;
     }
 
     std::cout << "\n--- Data Integrity After Remove ---\n";
-    bool rm_ok = verify_data_integrity(cfg, cfg.num_symbols);
+    rm_ok = rm_ok && verify_data_integrity(cfg, cfg.num_symbols);
 
     // Post round-trip steady state
     std::cout << "\n--- Post Round-Trip (" << cfg.baseline_sec << "s) ---\n";
@@ -687,6 +791,7 @@ bool scenario_heavy_query(const Config& cfg, int node_id) {
     auto rebalance = run_rebalance_phase(heavy_cfg, metrics, node_id);
     std::cout << "  Duration: " << std::fixed << std::setprecision(1) << rebalance.duration_sec << "s\n";
     print_phase("Rebalance (50 QPS)", rebalance, &baseline);
+    bool rebalance_ok = rebalance.rebalance_triggered && rebalance.rebalance_completed;
 
     // Check query failure rate
     uint64_t total_q = rebalance.queries_ok + rebalance.queries_fail;
@@ -698,7 +803,7 @@ bool scenario_heavy_query(const Config& cfg, int node_id) {
     std::cout << "\n--- Data Integrity ---\n";
     bool integrity = verify_data_integrity(cfg, cfg.num_symbols);
 
-    bool pass = integrity && fail_rate < 5.0;
+    bool pass = rebalance_ok && integrity && fail_rate < 5.0;
     std::cout << "\n  heavy_query: " << (pass ? "PASS" : "FAIL") << "\n";
     return pass;
 }
@@ -762,7 +867,15 @@ bool scenario_status_polling(const Config& cfg, int node_id) {
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     // Trigger rebalance
-    trigger_rebalance(cfg, cfg.action, node_id);
+    std::string trigger_error;
+    if (!trigger_rebalance(cfg, cfg.action, node_id, &trigger_error)) {
+        std::cerr << "  ERROR: Failed to trigger rebalance";
+        if (!trigger_error.empty()) std::cerr << ": " << trigger_error;
+        std::cerr << "\n";
+        running = false;
+        ingest_t.join();
+        return false;
+    }
 
     // Rapid-fire status polling
     int status_ok = 0, status_fail = 0;
@@ -782,7 +895,7 @@ bool scenario_status_polling(const Config& cfg, int node_id) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    wait_rebalance_done(cfg, 60);
+    bool done = wait_rebalance_done(cfg, cfg.rebalance_timeout_sec);
     running = false;
     ingest_t.join();
 
@@ -790,11 +903,12 @@ bool scenario_status_polling(const Config& cfg, int node_id) {
     std::cout << "  Max status latency: " << std::fixed << std::setprecision(1)
               << max_latency << "ms\n";
     std::cout << "  Inserts during polling: " << fmt_num(metrics.inserts_ok.load()) << "\n";
+    std::cout << "  Rebalance completed: " << (done ? "YES" : "TIMEOUT") << "\n";
 
     std::cout << "\n--- Data Integrity ---\n";
     bool integrity = verify_data_integrity(cfg, cfg.num_symbols);
 
-    bool pass = status_fail == 0 && integrity && max_latency < 1000.0;
+    bool pass = done && status_fail == 0 && integrity && max_latency < 1000.0;
     std::cout << "\n  status_polling: " << (pass ? "PASS" : "FAIL") << "\n";
     return pass;
 }
@@ -811,6 +925,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Symbols: " << cfg.num_symbols
               << ", Target ingest: " << cfg.ticks_per_sec << " ticks/sec"
               << ", Query QPS: " << cfg.query_qps
+              << ", Rebalance timeout: " << cfg.rebalance_timeout_sec << "s"
               << ", Scenario: " << cfg.scenario << "\n";
 
     // Cluster info
@@ -844,12 +959,21 @@ int main(int argc, char* argv[]) {
         std::cout << "\n>>> " << name << ": " << (ok ? "PASS" : "FAIL") << "\n";
     };
 
-    run_scenario("basic", [&]{ return scenario_basic(cfg, node_id); });
-    run_scenario("add_remove_cycle", [&]{ return scenario_add_remove_cycle(cfg, node_id); });
-    run_scenario("pause_resume", [&]{ return scenario_pause_resume(cfg, node_id); });
-    run_scenario("heavy_query", [&]{ return scenario_heavy_query(cfg, node_id); });
-    run_scenario("back_to_back", [&]{ return scenario_back_to_back(cfg, node_id); });
-    run_scenario("status_polling", [&]{ return scenario_status_polling(cfg, node_id); });
+    if (cfg.scenario == "smoke") {
+        run_scenario("smoke", [&]{ return scenario_smoke(cfg); });
+    } else {
+        run_scenario("basic", [&]{ return scenario_basic(cfg, node_id); });
+        run_scenario("add_remove_cycle", [&]{ return scenario_add_remove_cycle(cfg, node_id); });
+        run_scenario("pause_resume", [&]{ return scenario_pause_resume(cfg, node_id); });
+        run_scenario("heavy_query", [&]{ return scenario_heavy_query(cfg, node_id); });
+        run_scenario("back_to_back", [&]{ return scenario_back_to_back(cfg, node_id); });
+        run_scenario("status_polling", [&]{ return scenario_status_polling(cfg, node_id); });
+    }
+
+    if (total == 0) {
+        std::cerr << "ERROR: Unknown scenario '" << cfg.scenario << "'\n";
+        return 2;
+    }
 
     // Final summary
     std::cout << "\n" << std::string(60, '=') << "\n";

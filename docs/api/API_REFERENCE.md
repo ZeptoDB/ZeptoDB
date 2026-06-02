@@ -13,7 +13,7 @@ This is the top-level index. Each reference is in a separate file under `docs/ap
 | [docs/api/SQL_REFERENCE.md](SQL_REFERENCE.md) | Full SQL syntax — SELECT, WHERE, aggregates, window functions, financial functions, date/time functions, JOINs, set operations, CASE WHEN |
 | [docs/api/PYTHON_REFERENCE.md](PYTHON_REFERENCE.md) | `zeptodb` pybind11 binding, `zepto_py` package — connection, dataframe, arrow, streaming, agent memory/cache |
 | [docs/api/CPP_REFERENCE.md](CPP_REFERENCE.md) | `ZeptoPipeline`, `QueryExecutor`, `PartitionManager`, `TickMessage`, `AgentMemoryStore`, `CancellationToken` |
-| [docs/api/HTTP_REFERENCE.md](HTTP_REFERENCE.md) | HTTP endpoints, AI memory endpoints, JSON response format, authentication, Prometheus metrics, roles |
+| [docs/api/HTTP_REFERENCE.md](HTTP_REFERENCE.md) | HTTP endpoints, Arrow IPC query/ingest, AI memory endpoints, JSON response format, authentication, Prometheus metrics, roles |
 
 ---
 

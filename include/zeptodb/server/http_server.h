@@ -12,6 +12,10 @@
 //                    requests it via `Accept: application/vnd.apache.arrow.stream`,
 //                    `?default_format=Arrow`, or `?format=arrow`. Errors
 //                    always stay JSON regardless of Accept (devlog 119).
+//   POST /insert/arrow
+//                 — Ingest an Arrow IPC RecordBatchStream into ZeptoDB ticks.
+//                    Query params map columns (`table`, `sym_col`, `price_col`,
+//                    `vol_col`, `ts_col`) and numeric scales.
 //   GET  /        — Execute SQL via `?query=` param (always JSON)
 //   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe

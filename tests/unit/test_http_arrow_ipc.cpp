@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -32,6 +33,7 @@
 #include <arrow/api.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/reader.h>
+#include <arrow/ipc/writer.h>
 #endif
 
 using zeptodb::core::PipelineConfig;
@@ -180,6 +182,51 @@ std::shared_ptr<arrow::Table> decode_arrow(const std::string& body) {
     if (!table_res.ok()) return nullptr;
     return *table_res;
 }
+
+std::shared_ptr<arrow::Array> int64_array(const std::vector<int64_t>& values) {
+    arrow::Int64Builder builder;
+    EXPECT_TRUE(builder.AppendValues(values).ok());
+    std::shared_ptr<arrow::Array> out;
+    EXPECT_TRUE(builder.Finish(&out).ok());
+    return out;
+}
+
+std::shared_ptr<arrow::Array> string_array(const std::vector<std::string>& values) {
+    arrow::StringBuilder builder;
+    for (const auto& value : values) {
+        EXPECT_TRUE(builder.Append(value).ok());
+    }
+    std::shared_ptr<arrow::Array> out;
+    EXPECT_TRUE(builder.Finish(&out).ok());
+    return out;
+}
+
+std::string encode_arrow_stream(
+    const std::shared_ptr<arrow::Schema>& schema,
+    const std::vector<std::shared_ptr<arrow::RecordBatch>>& batches)
+{
+    auto sink_res = arrow::io::BufferOutputStream::Create();
+    EXPECT_TRUE(sink_res.ok()) << sink_res.status().ToString();
+    if (!sink_res.ok()) return {};
+    auto sink = *sink_res;
+
+    auto writer_res = arrow::ipc::MakeStreamWriter(sink, schema);
+    EXPECT_TRUE(writer_res.ok()) << writer_res.status().ToString();
+    if (!writer_res.ok()) return {};
+    auto writer = *writer_res;
+
+    for (const auto& batch : batches) {
+        EXPECT_TRUE(writer->WriteRecordBatch(*batch).ok());
+    }
+    EXPECT_TRUE(writer->Close().ok());
+
+    auto buf_res = sink->Finish();
+    EXPECT_TRUE(buf_res.ok()) << buf_res.status().ToString();
+    if (!buf_res.ok()) return {};
+    auto buf = *buf_res;
+    return std::string(reinterpret_cast<const char*>(buf->data()),
+                       static_cast<size_t>(buf->size()));
+}
 #endif // ZEPTO_FLIGHT_ENABLED
 
 } // namespace
@@ -201,6 +248,21 @@ TEST_F(HttpArrowIpcTest, ArrowDisabled_Returns406_WithJsonError) {
         EXPECT_EQ(r.content_type, kArrowMime);
     } else {
         ASSERT_EQ(r.status, 406);
+        EXPECT_NE(r.content_type.find("application/json"), std::string::npos);
+        EXPECT_NE(r.body.find("Arrow"), std::string::npos);
+    }
+}
+
+TEST_F(HttpArrowIpcTest, InsertArrow_UnavailableOrMalformedReturnsError) {
+    auto r = http_post(port_,
+                       "not an arrow stream",
+                       "",
+                       "/insert/arrow?table=trades");
+    if (zeptodb::server::arrow_ipc_available()) {
+        EXPECT_EQ(r.status, 400);
+        EXPECT_NE(r.content_type.find("application/json"), std::string::npos);
+    } else {
+        EXPECT_EQ(r.status, 406);
         EXPECT_NE(r.content_type.find("application/json"), std::string::npos);
         EXPECT_NE(r.body.find("Arrow"), std::string::npos);
     }
@@ -335,7 +397,108 @@ TEST_F(HttpArrowIpcTest, FormatArrow_QueryParam) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Bad SQL with Accept: arrow — error path stays JSON.
+// 6. HTTP Arrow IPC ingest endpoint — string symbol alias + explicit ns time.
+// ---------------------------------------------------------------------------
+TEST_F(HttpArrowIpcTest, InsertArrow_StringSymbolsAndTimestamp_IngestsRows) {
+    auto schema = arrow::schema({
+        arrow::field("symbol", arrow::utf8()),
+        arrow::field("price", arrow::int64()),
+        arrow::field("volume", arrow::int64()),
+        arrow::field("timestamp", arrow::int64()),
+    });
+    auto batch = arrow::RecordBatch::Make(schema, 2, {
+        string_array({"MSFT", "MSFT"}),
+        int64_array({41000, 41010}),
+        int64_array({10, 20}),
+        int64_array({1'711'000'000'000'001'000LL,
+                     1'711'000'000'000'001'001LL}),
+    });
+    const std::string body = encode_arrow_stream(schema, {batch});
+
+    auto r = http_post(port_,
+                       body,
+                       "",
+                       "/insert/arrow?table=trades&sym_col=symbol");
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_NE(r.content_type.find("application/json"), std::string::npos);
+    EXPECT_EQ(r.x_zepto_format, "arrow-stream");
+    EXPECT_NE(r.body.find("\"inserted\":2"), std::string::npos);
+
+    auto rs = executor_->execute(
+        "SELECT count(*) AS n FROM trades WHERE symbol = 'MSFT'");
+    ASSERT_TRUE(rs.ok()) << rs.error;
+    ASSERT_FALSE(rs.rows.empty());
+    EXPECT_EQ(rs.rows[0][0], 2);
+}
+
+// ---------------------------------------------------------------------------
+// 7. Default `sym` column and missing timestamp → ZeptoDB assigns timestamps.
+// ---------------------------------------------------------------------------
+TEST_F(HttpArrowIpcTest, InsertArrow_DefaultSymColumn_GeneratesTimestamp) {
+    auto schema = arrow::schema({
+        arrow::field("sym", arrow::int64()),
+        arrow::field("price", arrow::int64()),
+        arrow::field("volume", arrow::int64()),
+    });
+    auto batch = arrow::RecordBatch::Make(schema, 1, {
+        int64_array({42}),
+        int64_array({9001}),
+        int64_array({7}),
+    });
+    const std::string body = encode_arrow_stream(schema, {batch});
+
+    auto r = http_post(port_, body, "", "/insert/arrow?table=trades");
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_NE(r.body.find("\"inserted\":1"), std::string::npos);
+
+    auto rs = executor_->execute("SELECT count(*) AS n FROM trades");
+    ASSERT_TRUE(rs.ok()) << rs.error;
+    ASSERT_FALSE(rs.rows.empty());
+    EXPECT_EQ(rs.rows[0][0], 7);
+}
+
+// ---------------------------------------------------------------------------
+// 8. Empty stream/batch is a valid no-op with inserted=0.
+// ---------------------------------------------------------------------------
+TEST_F(HttpArrowIpcTest, InsertArrow_EmptyBatch_InsertsZero) {
+    auto schema = arrow::schema({
+        arrow::field("sym", arrow::int64()),
+        arrow::field("price", arrow::int64()),
+        arrow::field("volume", arrow::int64()),
+    });
+    auto batch = arrow::RecordBatch::Make(schema, 0, {
+        int64_array({}),
+        int64_array({}),
+        int64_array({}),
+    });
+    const std::string body = encode_arrow_stream(schema, {batch});
+
+    auto r = http_post(port_, body, "", "/insert/arrow?table=trades");
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_NE(r.body.find("\"inserted\":0"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// 9. Required-column validation: volume is required.
+// ---------------------------------------------------------------------------
+TEST_F(HttpArrowIpcTest, InsertArrow_MissingRequiredColumn_Returns400) {
+    auto schema = arrow::schema({
+        arrow::field("sym", arrow::int64()),
+        arrow::field("price", arrow::int64()),
+    });
+    auto batch = arrow::RecordBatch::Make(schema, 1, {
+        int64_array({1}),
+        int64_array({100}),
+    });
+    const std::string body = encode_arrow_stream(schema, {batch});
+
+    auto r = http_post(port_, body, "", "/insert/arrow?table=trades");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_NE(r.body.find("volume"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// 10. Bad SQL with Accept: arrow — error path stays JSON.
 // ---------------------------------------------------------------------------
 TEST_F(HttpArrowIpcTest, BadSql_WithArrowAccept_StaysJson) {
     auto r = http_post(port_, "SELEKT bogus FROM trades", kArrowMime);
@@ -346,7 +509,7 @@ TEST_F(HttpArrowIpcTest, BadSql_WithArrowAccept_StaysJson) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Defensive: SYMBOL column with `symbol_dict == nullptr` falls back to an
+// 11. Defensive: SYMBOL column with `symbol_dict == nullptr` falls back to an
 //    int64 schema. The SQL executor today always populates `symbol_dict`, so
 //    this branch is unreachable in production, but the guard exists to keep
 //    the schema and the array consistent if a future caller ever hits it.
@@ -382,6 +545,32 @@ TEST(HttpArrowIpcEncoder, SymbolWithoutDict_FallsBackToInt64Schema) {
     EXPECT_EQ(col->Value(0), 0);
     EXPECT_EQ(col->Value(1), 1);
     EXPECT_EQ(col->Value(2), 2);
+}
+
+TEST(HttpArrowIpcIngest, UnknownTable_ReturnsErrorBeforeClaimingRows) {
+    auto pipeline = make_pipeline();
+    QueryExecutor executor(*pipeline);
+
+    auto schema = arrow::schema({
+        arrow::field("sym", arrow::int64()),
+        arrow::field("price", arrow::int64()),
+        arrow::field("volume", arrow::int64()),
+    });
+    auto batch = arrow::RecordBatch::Make(schema, 1, {
+        int64_array({1}),
+        int64_array({100}),
+        int64_array({10}),
+    });
+    const std::string body = encode_arrow_stream(schema, {batch});
+
+    zeptodb::server::ArrowIpcIngestOptions opts;
+    opts.table_name = "missing";
+
+    auto result = zeptodb::server::ingest_arrow_ipc_stream(
+        executor, body, opts);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.rows, 0u);
+    EXPECT_NE(result.error.find("does not exist"), std::string::npos);
 }
 
 #else // !ZEPTO_FLIGHT_ENABLED — additional tests skipped

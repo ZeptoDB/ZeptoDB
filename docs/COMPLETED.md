@@ -1,10 +1,44 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-05-31
+Last updated: 2026-06-02
 
 ---
 
 ## Latest
+
+- [x] **EKS rebalance bench hardening** (devlog 150) — `bench_rebalance`
+  now has a non-rebalance `smoke` scenario, bounded rebalance trigger failure
+  handling with preserved HTTP status/body, and configurable
+  `--rebalance-timeout-sec`. The fast EKS x86_64/arm64 harness injects the
+  bench Enterprise license, wraps benchmarks with `--bench-timeout`, reports
+  smoke-only summaries correctly, and deletes bench NodeClaims during teardown.
+  EKS verification passed Stage 4 SQL + Arrow smoke, Stage 5
+  `bench_rebalance --scenario smoke`, Stage 6 `PASS/PASS`, and Stage 7 cleanup
+  with NodePool CPU/status CPU and bench node count all at `0`.
+
+- [x] **Arrow-enabled EKS bench images** (devlog 149) — the x86_64 and
+  arm64 EKS bench images now build with `-DZEPTO_USE_FLIGHT=ON` and Apache
+  Arrow runtime packages, so `/insert/arrow` can be verified on the
+  `zepto-bench` Auto Mode cluster instead of only checking the no-Arrow `406`
+  fallback. `run_arch_comparison_fast.sh` now has `--arrow-smoke` for posting a
+  generated Arrow IPC payload from each load generator pod and
+  `--skip-benchmark` for endpoint-only validation. EKS verification pushed
+  `bench-x86` and `bench-arm64`, deployed both, and confirmed
+  `{"inserted":3,...}` on both architectures.
+
+- [x] **Arrow IPC ingest endpoint** (devlog 147) — adds
+  `POST /insert/arrow` for Apache Arrow IPC RecordBatchStream ingestion.
+  The server decodes `sym`/`symbol`, `price`, `volume`, optional `timestamp`,
+  and optional `msg_type` columns into `TickMessage` batches and ingests them
+  through `QueryExecutor::ingest_tick_batch()` so table_id resolution, cluster
+  routing, synchronous drain, and `SchemaRegistry::mark_has_data()` match SQL
+  `INSERT`. String symbols are interned through the pipeline dictionary,
+  Arrow timestamp arrays are converted to nanoseconds, missing timestamps get
+  ingest-time ns stamps, `price_scale` / `volume_scale` support decimal inputs,
+  table ACL and tenant namespace checks are enforced in the HTTP route, and
+  no-Arrow builds return `406`. New HTTP Arrow coverage brings the focused
+  `*ArrowIpc*:*HttpArrow*` suite to 14/14 passing. Closes BACKLOG P4
+  "Arrow IPC ingest endpoint".
 
 - [x] **ROS 2 rosbag2 import/replay** (devlog 146) — adds optional
   `rosbag2_cpp` detection under `-DZEPTO_USE_ROS2=ON` and extends

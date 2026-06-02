@@ -31,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <cstdio>
+#include <cmath>
 #include <future>
 #include <chrono>
 #include <algorithm>
@@ -2987,6 +2988,123 @@ void HttpServer::setup_routes() {
            << "\",\"score\":" << hit.score
            << ",\"entry\":" << cache_entry_json(hit.entry) << "}";
         res.set_content(os.str(), "application/json");
+    });
+
+    // POST /insert/arrow — ingest Arrow IPC RecordBatchStream payloads.
+    svr_->Post("/insert/arrow", [this](const httplib::Request& req,
+                                        httplib::Response& res) {
+        if (!arrow_ipc_available()) {
+            res.status = 406;
+            res.set_content(
+                R"({"error":"Arrow IPC not available in this build"})",
+                "application/json");
+            return;
+        }
+
+        auto param = [&req](const std::string& name,
+                            const std::string& fallback = {}) {
+            return req.has_param(name) ? req.get_param_value(name) : fallback;
+        };
+
+        auto parse_double_param = [&req](const std::string& name,
+                                         double fallback,
+                                         double* out,
+                                         std::string* error) {
+            if (!req.has_param(name)) {
+                *out = fallback;
+                return true;
+            }
+            const std::string value = req.get_param_value(name);
+            char* end = nullptr;
+            const double parsed = std::strtod(value.c_str(), &end);
+            if (end == value.c_str() || *end != '\0' || !std::isfinite(parsed)) {
+                if (error) *error = name + " must be a finite number";
+                return false;
+            }
+            *out = parsed;
+            return true;
+        };
+
+        ArrowIpcIngestOptions opts;
+        opts.table_name = param("table", param("table_name"));
+        opts.symbol_column = param("sym_col", param("symbol_col", opts.symbol_column));
+        opts.price_column = param("price_col", opts.price_column);
+        opts.volume_column = param("vol_col", param("volume_col", opts.volume_column));
+        opts.timestamp_column = param("ts_col", param("timestamp_col", opts.timestamp_column));
+        opts.msg_type_column = param("msg_type_col", opts.msg_type_column);
+
+        std::string error;
+        const std::string volume_scale_param =
+            req.has_param("volume_scale") ? "volume_scale" : "vol_scale";
+        if (!parse_double_param("price_scale", 1.0, &opts.price_scale, &error) ||
+            !parse_double_param(volume_scale_param, 1.0, &opts.volume_scale, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error), "application/json");
+            return;
+        }
+
+        if (req.has_header("X-Zepto-Allowed-Tables")) {
+            if (opts.table_name.empty()) {
+                res.status = 403;
+                res.set_content(build_error_json(
+                    "Arrow insert requires table= when table ACL is restricted"),
+                    "application/json");
+                return;
+            }
+            std::string allowed = req.get_header_value("X-Zepto-Allowed-Tables");
+            std::istringstream ss(allowed);
+            std::string t;
+            bool allowed_table = false;
+            while (std::getline(ss, t, ',')) {
+                if (t == opts.table_name) {
+                    allowed_table = true;
+                    break;
+                }
+            }
+            if (!allowed_table) {
+                res.status = 403;
+                res.set_content(build_error_json(
+                    "Access denied: table '" + opts.table_name +
+                    "' not in allowed list"),
+                    "application/json");
+                return;
+            }
+        }
+
+        if (tenant_mgr_ && req.has_header("X-Zepto-Tenant-Id")) {
+            std::string tid = req.get_header_value("X-Zepto-Tenant-Id");
+            if (!tid.empty()) {
+                if (opts.table_name.empty()) {
+                    res.status = 400;
+                    res.set_content(build_error_json(
+                        "Arrow insert requires table= for tenant-scoped requests"),
+                        "application/json");
+                    return;
+                }
+                if (!tenant_mgr_->can_access_table(tid, opts.table_name)) {
+                    res.status = 403;
+                    res.set_content(build_error_json(
+                        "Tenant '" + tid + "' cannot access table '" +
+                        opts.table_name + "'"),
+                        "application/json");
+                    return;
+                }
+            }
+        }
+
+        auto ingested = ingest_arrow_ipc_stream(executor_, req.body, opts);
+        if (!ingested.ok) {
+            res.status = ingested.error.find("support not compiled") != std::string::npos
+                ? 406
+                : 400;
+            res.set_content(build_error_json(ingested.error), "application/json");
+            return;
+        }
+
+        res.set_header("X-Zepto-Format", "arrow-stream");
+        res.set_content("{\"inserted\":" + std::to_string(ingested.rows) +
+                        ",\"failed\":" + std::to_string(ingested.failed) + "}",
+                        "application/json");
     });
 
     // POST / — execute SQL query (ClickHouse compatible)

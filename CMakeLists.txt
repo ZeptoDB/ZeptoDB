@@ -325,9 +325,6 @@ if(ZEPTO_USE_PARQUET)
     endif()
 endif()
 
-# --- AWS SDK C++ S3 (optional) ---
-if(ZEPTO_USE_S3)
-
 # --- Arrow Flight (optional, requires Arrow + gRPC) ---
 set(ZEPTO_HAS_FLIGHT OFF)
 if(ZEPTO_USE_FLIGHT)
@@ -337,6 +334,11 @@ if(ZEPTO_USE_FLIGHT)
         message(STATUS "ArrowFlight: ${ArrowFlight_VERSION} (system)")
         set(ZEPTO_HAS_FLIGHT ON)
     else()
+        pkg_check_modules(ARROW_FLIGHT IMPORTED_TARGET arrow-flight QUIET)
+        if(ARROW_FLIGHT_FOUND)
+            message(STATUS "ArrowFlight (pkg-config): ${ARROW_FLIGHT_VERSION}")
+            set(ZEPTO_HAS_FLIGHT ON)
+        else()
         # Fallback: pyarrow bundled libarrow_flight
         execute_process(
             COMMAND python3 -c "import pyarrow; print(pyarrow.get_library_dirs()[0])"
@@ -363,8 +365,12 @@ if(ZEPTO_USE_FLIGHT)
             message(STATUS "  Install: pip3 install pyarrow")
             set(ZEPTO_USE_FLIGHT OFF)
         endif()
+        endif()
     endif()
 endif()
+
+# --- AWS SDK C++ S3 (optional) ---
+if(ZEPTO_USE_S3)
     find_package(AWSSDK CONFIG COMPONENTS s3 QUIET)
     if(AWSSDK_FOUND)
         message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (S3 업로드 활성화)")
@@ -690,6 +696,8 @@ target_link_libraries(zepto_arrow_ipc PUBLIC
 if(ZEPTO_HAS_FLIGHT)
     if(ArrowFlight_FOUND)
         target_link_libraries(zepto_arrow_ipc PUBLIC ArrowFlight::arrow_flight_shared)
+    elseif(ARROW_FLIGHT_FOUND)
+        target_link_libraries(zepto_arrow_ipc PUBLIC PkgConfig::ARROW_FLIGHT)
     elseif(ZEPTO_FLIGHT_VIA_PYARROW)
         if(TARGET PyArrow::arrow)
             target_link_libraries(zepto_arrow_ipc PUBLIC PyArrow::arrow)
@@ -744,6 +752,8 @@ target_link_libraries(zepto_flight PUBLIC
 if(ZEPTO_HAS_FLIGHT)
     if(ArrowFlight_FOUND)
         target_link_libraries(zepto_flight PUBLIC ArrowFlight::arrow_flight_shared)
+    elseif(ARROW_FLIGHT_FOUND)
+        target_link_libraries(zepto_flight PUBLIC PkgConfig::ARROW_FLIGHT)
     elseif(ZEPTO_FLIGHT_VIA_PYARROW)
         target_link_libraries(zepto_flight PUBLIC PyArrow::arrow_flight)
         # Also need libarrow.so for Arrow core types
