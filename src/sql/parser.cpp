@@ -8,6 +8,7 @@
 #include "zeptodb/sql/parser.h"
 #include <stdexcept>
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <climits>
 
@@ -1127,6 +1128,57 @@ std::shared_ptr<Expr> Parser::parse_primary_expr() {
         return node;  // always-false → no rows match
     }
 
+    // Function-valued predicates, e.g. WHERE haversine(lat, lon, 0, 0) < 50
+    // or WHERE ST_Within(lat, lon, center_lat, center_lon, radius_m).
+    if (check(TokenType::IDENT) && peek().type == TokenType::LPAREN) {
+        auto node = std::make_shared<Expr>();
+        node->lhs_expr = parse_arith_expr_node();
+
+        if (match(TokenType::BETWEEN)) {
+            node->kind = Expr::Kind::BETWEEN;
+            node->lo = parse_integer_literal();
+            expect(TokenType::AND, "AND");
+            node->hi = parse_integer_literal();
+            return node;
+        }
+
+        auto is_compare_token = [](TokenType t) {
+            return t == TokenType::GT || t == TokenType::LT || t == TokenType::GE ||
+                   t == TokenType::LE || t == TokenType::EQ || t == TokenType::NE;
+        };
+        node->kind = Expr::Kind::COMPARE;
+        if (is_compare_token(current().type)) {
+            node->op = parse_compare_op();
+            if (check(TokenType::NOW) || check(TokenType::EPOCH_S) || check(TokenType::EPOCH_MS)
+                || check(TokenType::DATE_TRUNC) || check(TokenType::INTERVAL)
+                || (check(TokenType::IDENT) && peek().type == TokenType::LPAREN)) {
+                node->value_expr = parse_arith_expr_node();
+            } else if (check(TokenType::NUMBER)) {
+                std::string s = current().value;
+                advance();
+                if (s.find('.') != std::string::npos) {
+                    node->value_f = std::stod(s);
+                    node->is_float = true;
+                    node->value = static_cast<int64_t>(node->value_f);
+                } else {
+                    node->value = std::stoll(s);
+                }
+            } else if (check(TokenType::STRING)) {
+                node->value_str = current().value;
+                node->is_string = true;
+                advance();
+            } else {
+                throw std::runtime_error(
+                    "Parser: expected value after function predicate, got '"
+                    + current().value + "'");
+            }
+        } else {
+            node->op = CompareOp::NE;
+            node->value = 0;
+        }
+        return node;
+    }
+
     // col [op val | BETWEEN lo AND hi | IN (...) | IS [NOT] NULL]
     auto node = std::make_shared<Expr>();
     parse_qualified_name(node->table_alias, node->column);
@@ -1463,9 +1515,14 @@ std::shared_ptr<ArithExpr> Parser::parse_arith_primary() {
         node->kind = ArithExpr::Kind::LITERAL;
         std::string s = current().value;
         advance();
-        node->literal = s.find('.') != std::string::npos
-            ? static_cast<int64_t>(std::stod(s))
-            : std::stoll(s);
+        if (s.find('.') != std::string::npos) {
+            node->literal_f = std::stod(s);
+            node->literal = static_cast<int64_t>(node->literal_f);
+            node->is_float_literal = true;
+        } else {
+            node->literal = std::stoll(s);
+            node->literal_f = static_cast<double>(node->literal);
+        }
         return node;
     }
 
@@ -1538,6 +1595,38 @@ std::shared_ptr<ArithExpr> Parser::parse_arith_primary() {
         node->kind = ArithExpr::Kind::FUNC;
         node->func_name = "interval";
         node->func_unit = lit;
+        return node;
+    }
+
+    // Spatial scalar functions use normal identifiers so they remain optional
+    // extensions of the value-expression grammar.
+    if (check(TokenType::IDENT) && peek().type == TokenType::LPAREN) {
+        std::string name = current().value;
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        advance();
+        expect(TokenType::LPAREN, "(");
+        node->kind = ArithExpr::Kind::FUNC;
+        node->func_name = name;
+        if (!check(TokenType::RPAREN)) {
+            node->func_args.push_back(parse_arith_expr_node());
+            while (match(TokenType::COMMA)) {
+                node->func_args.push_back(parse_arith_expr_node());
+            }
+        }
+        expect(TokenType::RPAREN, ")");
+        if (!node->func_args.empty()) node->func_arg = node->func_args[0];
+        if (node->func_args.size() > 1) node->func_arg2 = node->func_args[1];
+
+        const bool distance_fn = name == "haversine" || name == "st_distance";
+        if (!distance_fn && name != "st_within") {
+            throw std::runtime_error("Parser: unknown scalar function '" + name + "'");
+        }
+        const size_t expected = distance_fn ? 4u : 5u;
+        if (node->func_args.size() != expected) {
+            throw std::runtime_error("Parser: function '" + name + "' expects " +
+                                     std::to_string(expected) + " arguments");
+        }
         return node;
     }
 

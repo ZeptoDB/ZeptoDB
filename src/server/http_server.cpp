@@ -3295,12 +3295,27 @@ zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
 
     int64_t start = now_us();
     zeptodb::sql::QueryResultSet result;
+    auto is_cluster_select = [this, &sql]() {
+        if (!coordinator_) return false;
+        try {
+            zeptodb::sql::Parser parser;
+            auto ps = parser.parse_statement(sql);
+            return ps.kind == zeptodb::sql::ParsedStatement::Kind::SELECT;
+        } catch (...) {
+            return false;
+        }
+    };
+    const bool route_select_via_coordinator = is_cluster_select();
+    auto execute_query = [this, &sql, &token, route_select_via_coordinator]() {
+        if (route_select_via_coordinator) {
+            return coordinator_->execute_sql(sql);
+        }
+        return executor_.execute(sql, token.get());
+    };
 
     if (query_timeout_ms_ > 0) {
         // Run the query on a separate thread; cancel after timeout
-        auto future = std::async(std::launch::async, [this, &sql, &token]() {
-            return executor_.execute(sql, token.get());
-        });
+        auto future = std::async(std::launch::async, execute_query);
 
         auto status = future.wait_for(std::chrono::milliseconds(query_timeout_ms_));
         if (status == std::future_status::timeout) {
@@ -3311,7 +3326,7 @@ zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
             result = future.get();
         }
     } else {
-        result = executor_.execute(sql, token.get());
+        result = execute_query();
     }
 
     int64_t duration_us = now_us() - start;

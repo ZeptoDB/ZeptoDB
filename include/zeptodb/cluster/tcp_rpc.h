@@ -25,12 +25,14 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace zeptodb::cluster {
 
 using SqlQueryCallback   = std::function<zeptodb::sql::QueryResultSet(const std::string&)>;
 using TickIngestCallback = std::function<bool(const zeptodb::ingestion::TickMessage&)>;
+using TypedRowIngestCallback = std::function<bool(zeptodb::core::TypedRowMessage)>;
 using WalReplayCallback  = std::function<size_t(const std::vector<zeptodb::ingestion::TickMessage>&)>;
 using StatsCallback      = std::function<std::string()>;  // returns JSON
 using MetricsCallback    = std::function<std::string(int64_t /*since_ms*/, uint32_t /*limit*/)>;
@@ -67,6 +69,11 @@ public:
 
     /// Set stats callback — invoked for STATS_REQUEST messages.
     void set_stats_callback(StatsCallback cb) { stats_callback_ = std::move(cb); }
+
+    /// Set typed-row ingest callback — invoked for TYPED_ROW_INGEST messages.
+    void set_typed_row_ingest_callback(TypedRowIngestCallback cb) {
+        typed_row_callback_ = std::move(cb);
+    }
 
     /// Set metrics callback — invoked for METRICS_REQUEST messages.
     /// Returns JSON array of MetricsSnapshot for the given time range.
@@ -144,6 +151,7 @@ private:
     std::thread        accept_thread_;
     SqlQueryCallback   sql_callback_;
     TickIngestCallback tick_callback_;
+    TypedRowIngestCallback typed_row_callback_;
     WalReplayCallback  wal_callback_;
     StatsCallback      stats_callback_;
     MetricsCallback    metrics_callback_;
@@ -201,6 +209,9 @@ public:
 
     /// Send a TickMessage to the remote node's local pipeline.
     bool ingest_tick(const zeptodb::ingestion::TickMessage& msg) override;
+
+    /// Send a schema-aware typed row to the remote node's local pipeline.
+    bool ingest_typed_row(const zeptodb::core::TypedRowMessage& row) override;
 
     /// Ping the remote server.  true = reachable within connect_timeout_ms.
     bool ping();

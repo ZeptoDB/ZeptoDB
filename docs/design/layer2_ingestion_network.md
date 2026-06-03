@@ -233,7 +233,58 @@ or table ACL denial return JSON errors and do not claim success for the failing
 batch. Builds without Arrow return `406 Not Acceptable`, matching the Arrow IPC
 query response path.
 
-## 6. Ingest capacity tuning (devlog 102)
+## 6. Telegraf external output (devlog 160)
+
+`zepto-telegraf-output` is a standalone external output program for Telegraf's
+`outputs.execd` path. Telegraf serializes collected metrics as Influx line
+protocol and writes them to the program's stdin; the ZeptoDB writer parses each
+line, maps it into the canonical tick columns, and sends SQL `INSERT` batches
+to `POST /` on the ZeptoDB HTTP server.
+
+### Data flow
+
+```
+Telegraf inputs (OPC-UA, Modbus, SNMP, system, MQTT, ...)
+        ↓
+Telegraf serializer: data_format = "influx"
+        ↓
+outputs.execd stdin
+        ↓
+zepto-telegraf-output
+        ↓
+HTTP POST /  INSERT INTO <table> (symbol, price, volume, timestamp)
+        ↓
+QueryExecutor::exec_insert()
+        ↓
+ZeptoPipeline::ingest_tick()
+```
+
+### Mapping
+
+| ZeptoDB column | Source |
+|---|---|
+| `symbol` | Configured tag, default `symbol`; falls back to measurement name |
+| `price` | Configured numeric field, default `value`, scaled to int64 |
+| `volume` | Configured numeric field, default `volume`, or `default_volume` |
+| `timestamp` | Line-protocol timestamp normalized from `ns`/`us`/`ms`/`s` to ns |
+
+The writer validates destination table names as simple SQL identifiers and
+SQL-escapes symbol strings before generating each INSERT. Malformed line
+protocol, non-finite numbers, non-numeric price/volume fields, unsafe table
+names, and timestamp conversion overflow fail closed.
+
+### Transport choice
+
+The first P5 implementation uses SQL-over-HTTP rather than a new binary ingest
+format. This keeps the integration small, works in default builds, and reuses
+the existing SQL INSERT path for table ACL, tenant namespace enforcement,
+cluster routing, schema durability, and synchronous drain semantics. The P4
+MessagePack ingest endpoint can later replace the transport while keeping the
+same Telegraf-side external plugin shape.
+
+Operations guide: `docs/operations/TELEGRAF_OUTPUT.md`.
+
+## 7. Ingest capacity tuning (devlog 102)
 
 Two `PipelineConfig` knobs control single-pod ingest throughput. Both
 are backward-compatible (`0` = engine default, default build behaves
@@ -277,4 +328,4 @@ Helm exposure: `pipeline.drainThreads` / `pipeline.ringBufferCapacity`
 in `deploy/helm/zeptodb/values.yaml`. CLI: `--drain-threads N` and
 `--ring-buffer-capacity N` on `zepto_http_server`.
 
-Last updated: 2026-04-25 (devlog 102)
+Last updated: 2026-06-03 (Telegraf external output — devlog 160)

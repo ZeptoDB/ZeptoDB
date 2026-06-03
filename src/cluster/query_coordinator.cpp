@@ -575,6 +575,48 @@ std::optional<SymbolId> QueryCoordinator::extract_symbol_filter(
     return std::nullopt;
 }
 
+std::optional<std::string> QueryCoordinator::extract_table_name(
+    const std::string& sql) const
+{
+    try {
+        zeptodb::sql::Parser parser;
+        auto stmt = parser.parse_statement(sql);
+        switch (stmt.kind) {
+            case zeptodb::sql::ParsedStatement::Kind::SELECT:
+                if (stmt.select && !stmt.select->from_table.empty())
+                    return stmt.select->from_table;
+                break;
+            case zeptodb::sql::ParsedStatement::Kind::INSERT:
+                if (stmt.insert) return stmt.insert->table_name;
+                break;
+            case zeptodb::sql::ParsedStatement::Kind::UPDATE:
+                if (stmt.update) return stmt.update->table_name;
+                break;
+            case zeptodb::sql::ParsedStatement::Kind::DELETE:
+                if (stmt.del) return stmt.del->table_name;
+                break;
+            default:
+                break;
+        }
+    } catch (...) {
+        // Parse error — fall back to legacy symbol-only routing.
+    }
+    return std::nullopt;
+}
+
+uint16_t QueryCoordinator::resolve_routing_table_id_locked(
+    const std::optional<std::string>& table_name) const
+{
+    if (!table_name || table_name->empty()) return 0;
+    for (const auto& ep : endpoints_) {
+        if (ep->is_local && ep->pipeline != nullptr &&
+            ep->pipeline->schema_registry().exists(*table_name)) {
+            return ep->pipeline->schema_registry().get_table_id(*table_name);
+        }
+    }
+    return 0;
+}
+
 // ============================================================================
 // Public execute_sql
 // ============================================================================
@@ -584,6 +626,7 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql_for_symbol(
 {
     // Resolve the owning endpoint under the lock, then release before I/O.
     std::shared_ptr<NodeEndpoint> target;
+    const auto table_name = extract_table_name(sql);
     {
         std::shared_lock lock(mutex_);
         if (endpoints_.empty()) {
@@ -591,8 +634,11 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql_for_symbol(
             err.error = "QueryCoordinator: no nodes registered";
             return err;
         }
+        const uint16_t table_id = resolve_routing_table_id_locked(table_name);
         auto rlock = router_read_lock();
-        NodeId owner = router().route(symbol_id);
+        NodeId owner = (table_id == 0)
+            ? router().route(symbol_id)
+            : router().route(table_id, symbol_id);
         for (auto& ep : endpoints_) {
             if (ep->addr.id == owner) { target = ep; break; }
         }

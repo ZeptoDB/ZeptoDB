@@ -1,7 +1,7 @@
 # ROS 2 and Physical AI Roadmap
 
-**Status:** Roadmap with implementation in progress
-**Last updated:** 2026-05-31
+**Status:** Roadmap with implementation in progress; R5 schema-aware typed ingest complete
+**Last updated:** 2026-06-02
 **Related docs:** `physical_ai_market.md`, `layer2_ingestion_network.md`,
 `layer1_storage_memory.md`, `logging_observability.md`,
 `opcua_connector.md`, `license_system.md`
@@ -133,16 +133,19 @@ Policy:
 
 ## 5. Message Profiles
 
-The roadmap should start with high-value standard message profiles before
-supporting arbitrary custom messages.
+The first standard-profile slice supports high-value ROS 2 messages before
+custom schemas. R4 implements these profiles as configured scalar rows through
+the existing `TickMessage` ingest path, keeping the public API ROS-type-free
+and testable without `rclcpp`. R5 adds `Ros2IngestMode::TypedProfile`, which
+writes the same messages into user-declared wide typed tables.
 
-| ROS 2 message | Initial table strategy | Query value |
+| ROS 2 message | Current profile strategy | Query value |
 |---|---|---|
-| `sensor_msgs/msg/Imu` | Flatten orientation, angular velocity, linear acceleration | stabilization, anomaly detection, sensor fusion |
-| `sensor_msgs/msg/JointState` | One row per joint per sample | robot learning, torque/current drift, policy features |
-| `nav_msgs/msg/Odometry` | Flatten pose and twist; keep frame symbols | localization, fleet tracking |
-| `tf2_msgs/msg/TFMessage` | One row per transform | frame debugging, replay, transform drift |
-| `sensor_msgs/msg/LaserScan` | Metadata + summary columns first; optional range expansion | LiDAR ASOF JOIN, obstacle timeline |
+| `sensor_msgs/msg/Imu` | Flatten configured orientation, angular velocity, and linear acceleration fields | stabilization, anomaly detection, sensor fusion |
+| `sensor_msgs/msg/JointState` | Expand configured `position`, `velocity`, and `effort` arrays by joint index using `symbol_id + index` | robot learning, torque/current drift, policy features |
+| `nav_msgs/msg/Odometry` | Flatten configured pose and twist fields | localization, fleet tracking |
+| `tf2_msgs/msg/TFMessage` | Expand configured transforms by transform index using `symbol_id + index` | frame debugging, replay, transform drift |
+| `sensor_msgs/msg/LaserScan` | Metadata plus count/min/max/mean summaries over finite range and intensity values | LiDAR ASOF JOIN, obstacle timeline |
 | `sensor_msgs/msg/PointCloud2` | Metadata + payload reference first | point-cloud session catalog, later binary payload path |
 | `diagnostic_msgs/msg/DiagnosticArray` | Status rows keyed by hardware/component | robot health and fleet ops |
 
@@ -150,6 +153,19 @@ Large binary payloads are intentionally not the MVP hot path. A practical
 first cut stores metadata, summaries, and a payload reference ID. Full payload
 storage can then target Parquet/S3, Arrow IPC, or a future binary-object layer
 without forcing camera and point-cloud blobs through `TickMessage`.
+
+Supported R4 field paths:
+
+- IMU: `orientation.{x,y,z,w}`, `angular_velocity.{x,y,z}`,
+  `linear_acceleration.{x,y,z}`
+- JointState: `position`, `velocity`, `effort`
+- Odometry: `pose.position.{x,y,z}`, `pose.orientation.{x,y,z,w}`,
+  `twist.linear.{x,y,z}`, `twist.angular.{x,y,z}`
+- TFMessage: `translation.{x,y,z}`, `rotation.{x,y,z,w}`
+- LaserScan: `angle_min`, `angle_max`, `angle_increment`, `time_increment`,
+  `scan_time`, `range_min`, `range_max`, `ranges.count`, `ranges.min`,
+  `ranges.max`, `ranges.mean`, `intensities.count`, `intensities.min`,
+  `intensities.max`, `intensities.mean`
 
 ---
 
@@ -175,50 +191,124 @@ subscriptions:
 ```
 
 This is enough to prove `rclcpp subscriber -> ZeptoPipeline -> SQL/Python`
-without requiring the full generic table mapper. Rich array/profile messages
-such as `sensor_msgs/msg/JointState` remain part of the standard-message
-profile phase.
+without requiring the full generic table mapper.
 
-### 6.2 Schema-aware bridge
+### 6.2 Standard profile bridge
 
-The production path should write typed rows into user-visible tables, using the
-same table-scoped partitioning and routing already used by HTTP, Python,
-Kafka, MQTT, and OPC-UA.
+The R4 bridge adds `Ros2IngestMode::StandardProfile` for IMU, JointState,
+Odometry, TFMessage, and LaserScan. It keeps the engine contract narrow:
+standard ROS messages are converted into plain C++ sample structs, then
+flattened into `Ros2ScalarSample` rows.
+
+```yaml
+subscriptions:
+  - topic: /imu/data
+    message_type: sensor_msgs/msg/Imu
+    mode: standard_profile
+    table: ros_imu_scalar
+    fields:
+      - name: orientation.w
+        symbol_id: 100
+        value_scale: 1000
+      - name: angular_velocity.z
+        symbol_id: 101
+        value_scale: 1000
+```
+
+Array-like messages intentionally require symbol ranges. For JointState and
+TFMessage, each configured field uses `symbol_id + element_index`; users should
+reserve non-overlapping symbol ranges for each field. LaserScan intentionally
+does not expand every range beam in R4. It stores configured metadata and
+finite summaries first so obstacle timelines and ASOF JOIN demos work without
+turning every scan into a large burst of hot-path rows.
+
+### 6.3 Schema-aware bridge
+
+R5 adds a schema-aware typed path for standard Physical AI messages. The bridge
+uses `Ros2Consumer::typed_profile_schema(profile)` as the required-column
+contract, validates the configured table in `set_pipeline()`, and ingests rows
+through `ZeptoPipeline::ingest_typed_row()`. The pipeline resolves the
+`table_id` against `SchemaRegistry`, materializes every declared table column
+in the partition, and default-fills table columns that are not present in a
+row. This keeps user-added experiment columns stable without inventing a
+parallel storage contract.
+
+`TypedProfile` subscriptions require:
+
+- `table_name` set to a pre-created table whose required profile columns match
+  the expected names and types.
+- No `fields`; standard messages map to fixed typed profile columns.
+- `typed_partition_symbol_id != 0`; this is the ZeptoDB partition key and
+  cluster hash input. Robot, session, topic, frame, joint, and child-frame
+  identifiers are stored as typed `SYMBOL` columns.
+
+Common typed profile columns:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `timestamp` | `TIMESTAMP_NS` | Source timestamp from `Header.stamp`, or receive time fallback |
+| `recv_ts` | `TIMESTAMP_NS` | Bridge receive timestamp |
+| `robot_id` | `SYMBOL` | Bridge-configured robot id |
+| `session_id` | `SYMBOL` | Bridge-configured session/run id |
+| `topic` | `SYMBOL` | ROS 2 topic name |
+| `frame_id` | `SYMBOL` | Header frame id when present |
+| `quality` | `INT32` | Connector quality marker |
 
 Example table families:
 
 ```sql
 CREATE TABLE ros2_joint_state (
-  timestamp_ns INT64,
+  timestamp TIMESTAMP_NS,
+  recv_ts TIMESTAMP_NS,
   robot_id SYMBOL,
+  session_id SYMBOL,
+  topic SYMBOL,
+  frame_id SYMBOL,
+  quality INT32,
   joint_id SYMBOL,
-  position DOUBLE,
-  velocity DOUBLE,
-  effort DOUBLE
+  position FLOAT64,
+  velocity FLOAT64,
+  effort FLOAT64
 );
 
 CREATE TABLE ros2_imu (
-  timestamp_ns INT64,
+  timestamp TIMESTAMP_NS,
+  recv_ts TIMESTAMP_NS,
   robot_id SYMBOL,
+  session_id SYMBOL,
+  topic SYMBOL,
   frame_id SYMBOL,
-  orientation_x DOUBLE,
-  orientation_y DOUBLE,
-  orientation_z DOUBLE,
-  orientation_w DOUBLE,
-  angular_velocity_x DOUBLE,
-  angular_velocity_y DOUBLE,
-  angular_velocity_z DOUBLE,
-  linear_acceleration_x DOUBLE,
-  linear_acceleration_y DOUBLE,
-  linear_acceleration_z DOUBLE
+  quality INT32,
+  orientation_x FLOAT64,
+  orientation_y FLOAT64,
+  orientation_z FLOAT64,
+  orientation_w FLOAT64,
+  angular_velocity_x FLOAT64,
+  angular_velocity_y FLOAT64,
+  angular_velocity_z FLOAT64,
+  linear_acceleration_x FLOAT64,
+  linear_acceleration_y FLOAT64,
+  linear_acceleration_z FLOAT64
 );
 ```
 
-The exact DDL depends on the current SQL type surface when implementation
-starts. If the generic typed ingest path is not ready, the bridge should keep
-the scalar MVP small instead of inventing a parallel storage contract.
+Typed profile schemas also cover:
 
-### 6.3 rosbag2 import and replay
+- Odometry: `child_frame_id`, `pose_position_{x,y,z}`,
+  `pose_orientation_{x,y,z,w}`, `twist_linear_{x,y,z}`,
+  `twist_angular_{x,y,z}`.
+- TFMessage: one row per transform with `child_frame_id`,
+  `translation_{x,y,z}`, and `rotation_{x,y,z,w}`.
+- LaserScan: scan metadata, `ranges_count`, `ranges_{min,max,mean}`,
+  `intensities_count`, and `intensities_{min,max,mean}`.
+
+Live ROS subscriptions and rosbag2 import/replay use the same typed mapping
+when standard message packages are available. Cluster routing is currently
+local-only for typed rows: if a `PartitionRouter` routes a typed row to a
+remote owner, the bridge fails closed and records drop/failure stats because
+the RPC surface still accepts only `TickMessage`.
+
+### 6.4 rosbag2 import and replay
 
 rosbag2 support is a separate mode, not just a live subscriber:
 
@@ -231,7 +321,7 @@ rosbag2 support is a separate mode, not just a live subscriber:
 - **Session metadata:** Bag path, hash, ROS distro, message definitions, and
   replay config should be queryable.
 
-The first implemented slice (devlog 146) keeps the scope intentionally aligned
+The first implemented slice (devlog 146) kept the scope intentionally aligned
 with the scalar MVP:
 
 - `Ros2Consumer::import_bag()` imports configured scalar topics as fast as
@@ -248,8 +338,12 @@ with the scalar MVP:
   subscriptions; explicit unknown bag topics can be skipped or made fatal with
   `fail_on_unknown_topic`.
 
-Richer session metadata tables, bag hashing, and arbitrary message definition
-cataloging remain part of the standard-profile and schema-aware phases.
+The R4 slice (devlog 151) extends the same live and rosbag2 paths to standard
+profiles when `sensor_msgs`, `nav_msgs`, `tf2_msgs`, and `geometry_msgs` are
+available. R5 (devlog 152) adds typed profile rosbag2 import/replay for the
+same standard messages. Richer session metadata tables, bag hashing, typed-row
+cluster RPC forwarding, and arbitrary message definition cataloging remain
+follow-ups.
 
 ---
 
@@ -263,21 +357,21 @@ SELECT joint_id,
        DELTA(position) OVER (PARTITION BY robot_id, joint_id) AS velocity_est
 FROM ros2_joint_state
 WHERE robot_id = 'arm-01'
-ORDER BY timestamp_ns DESC
+ORDER BY timestamp DESC
 LIMIT 1000;
 ```
 
 ### 7.2 IMU and odometry alignment
 
 ```sql
-SELECT imu.timestamp_ns,
+SELECT imu.timestamp,
        imu.robot_id,
        imu.angular_velocity_z,
        odom.twist_linear_x
 FROM ros2_imu imu
 ASOF JOIN ros2_odometry odom
 ON imu.robot_id = odom.robot_id
-AND imu.timestamp_ns >= odom.timestamp_ns;
+AND imu.timestamp >= odom.timestamp;
 ```
 
 ### 7.3 Sensor lag diagnosis
@@ -285,9 +379,9 @@ AND imu.timestamp_ns >= odom.timestamp_ns;
 ```sql
 SELECT robot_id,
        frame_id,
-       AVG(recv_ts_ns - source_ts_ns) AS avg_lag_ns,
-       MAX(recv_ts_ns - source_ts_ns) AS max_lag_ns
-FROM ros2_topic_samples
+       AVG(recv_ts - timestamp) AS avg_lag_ns,
+       MAX(recv_ts - timestamp) AS max_lag_ns
+FROM ros2_imu
 GROUP BY robot_id, frame_id;
 ```
 
@@ -339,11 +433,12 @@ debugging without leaking sensitive robot or factory data.
 | R1 | Done | ROS 2 connector skeleton | Optional build flag, config validation, stats, no-live-ROS unit tests (devlog 143) |
 | R2 | Done | Live scalar subscriber MVP | `std_msgs` scalar subscriptions verified with RoboStack Jazzy and a live `rclcpp` publish -> ZeptoDB table ingest test (devlog 144) |
 | R3 | Done | rosbag2 import/replay | Deterministic scalar import and replay with preserved source timestamps (devlog 146) |
-| R4 | Open | Standard message profiles | IMU, JointState, Odometry, TF, LaserScan metadata profiles |
-| R5 | Open | Schema-aware typed ingest | Wide typed tables for standard messages, no parallel storage contract |
-| R6 | Open | Isaac Sim / digital twin recipe | `/clock` aware simulation ingest and replay example |
-| R7 | Open | Reference examples | Robot RL replay, LiDAR ASOF JOIN, fleet anomaly detection |
-| R8 | Open | Edge deployment guide | Docker Compose, k3s/systemd, bounded resources, metrics dashboard |
+| R4 | Done | Standard message profiles | IMU, JointState, Odometry, TF, and LaserScan profile mapping for live ROS and rosbag2 when standard packages are available (devlog 151) |
+| R5 | Done | Schema-aware typed ingest | Wide typed tables for standard messages via `TypedProfile`, live ROS and rosbag2 smoke coverage (devlog 152) |
+| R6 | Done | Isaac Sim / digital twin recipe | Example typed schemas and `/clock`-aligned replay guidance in `examples/ros2/` |
+| R7 | Done | Reference examples | Robot RL replay, LiDAR ASOF JOIN, fleet anomaly detection, logistics timelines |
+| R8 | Done | Edge deployment guide | Docker Compose, k3s/systemd, bounded resources, metrics dashboard |
+| R9 | Done | Typed-profile cluster forwarding | `TypedProfile` rows route through cluster RPC when the partition owner is remote |
 
 ---
 
@@ -362,14 +457,10 @@ debugging without leaking sensitive robot or factory data.
 
 ## 12. Open Questions
 
-1. Should the first production bridge target scalar-field extraction or typed
-   standard message profiles first?
-2. Which deployment mode is the first customer path: robot-local edge box,
+1. Which deployment mode is the first customer path: robot-local edge box,
    central lab server, or cloud replay cluster?
-3. Do we treat `frame_id`, `robot_id`, and topic names as `SYMBOL` columns
-   everywhere, or do we wait for broader variable-length string support?
-4. For scalar MVP import, rosbag2 writes directly through ZeptoDB ingest APIs.
-   A later bulk-load path may still build Arrow/Parquet batches for large
+2. For scalar/profile import, rosbag2 writes directly through ZeptoDB ingest
+   APIs. A later bulk-load path may still build Arrow/Parquet batches for large
    historical backfills.
-5. What is the minimum acceptable clock-skew reporting for multi-robot
+3. What is the minimum acceptable clock-skew reporting for multi-robot
    deployments?

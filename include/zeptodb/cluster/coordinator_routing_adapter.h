@@ -50,7 +50,11 @@ public:
             owner = router_->route(msg.table_id, msg.symbol_id);
         }
         if (owner == self_id_) {
-            return local_->ingest_tick(msg);
+            const bool ok = local_->ingest_tick(msg);
+            if (ok) {
+                local_->schema_registry().mark_has_data(msg.table_id);
+            }
+            return ok;
         }
         auto it = remote_->find(owner);
         if (it == remote_->end()) {

@@ -622,9 +622,11 @@ int main(int argc, char* argv[]) {
         zeptodb::cluster::NodeAddress self_addr{"localhost", port, node_id};
         ha->add_local_node(self_addr, pipeline);
 
-        // Register remote data nodes
+        // Register remote data nodes. --add-node uses peer HTTP ports, while
+        // QueryCoordinator talks to the peer TCP RPC server on HTTP+100.
         for (auto& rn : remote_nodes) {
-            zeptodb::cluster::NodeAddress addr{rn.host, rn.port, rn.id};
+            zeptodb::cluster::NodeAddress addr{
+                rn.host, static_cast<uint16_t>(rn.port + 100), rn.id};
             ha->add_remote_node(addr);
         }
 
@@ -683,7 +685,10 @@ int main(int argc, char* argv[]) {
         coordinator->add_local_node(self_addr, pipeline);
 
         for (auto& rn : remote_nodes) {
-            zeptodb::cluster::NodeAddress addr{rn.host, rn.port, rn.id};
+            // --add-node uses peer HTTP ports, while QueryCoordinator talks to
+            // the peer TCP RPC server on HTTP+100.
+            zeptodb::cluster::NodeAddress addr{
+                rn.host, static_cast<uint16_t>(rn.port + 100), rn.id};
             coordinator->add_remote_node(addr);
         }
 
@@ -795,7 +800,28 @@ int main(int argc, char* argv[]) {
                 },
                 // tick_cb: forwarded tick lands directly in local pipeline
                 [&](const zeptodb::ingestion::TickMessage& msg) {
-                    return pipeline.ingest_tick(msg);
+                    const bool ok = pipeline.ingest_tick(msg);
+                    if (ok) {
+                        pipeline.schema_registry().mark_has_data(msg.table_id);
+                        // Forwarded single-tick RPCs are synchronous from the
+                        // HTTP caller's perspective, so make the row visible
+                        // before reporting success.
+                        pipeline.drain_sync(101);
+                    }
+                    return ok;
+                },
+                [&](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
+                    size_t applied = 0;
+                    for (const auto& msg : batch) {
+                        if (pipeline.ingest_tick(msg)) {
+                            pipeline.schema_registry().mark_has_data(msg.table_id);
+                            ++applied;
+                        }
+                    }
+                    if (applied > 0) {
+                        pipeline.drain_sync(applied + 100);
+                    }
+                    return applied;
                 });
             std::cout << "Peer RPC server: port " << (port + 100) << "\n";
         }

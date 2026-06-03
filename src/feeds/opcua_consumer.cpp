@@ -31,6 +31,8 @@
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
 #include <open62541/client_subscriptions.h>
+#include <open62541/server.h>
+#include <open62541/server_config_default.h>
 #include <open62541/types.h>
 #endif
 
@@ -48,7 +50,10 @@ OpcUaConsumer::OpcUaConsumer(OpcUaConfig config)
     // a license or the open62541 dep.
     node_map_.reserve(config_.nodes.size());
     for (const auto& n : config_.nodes)
-        node_map_.emplace(n.node_id, NodeBinding{n.symbol_id, n.value_scale});
+        node_map_.emplace(n.node_id, NodeBinding{
+            n.symbol_id,
+            n.value_scale,
+            n.array_symbol_stride == 0 ? 1u : n.array_symbol_stride});
 }
 
 OpcUaConsumer::~OpcUaConsumer() {
@@ -109,6 +114,24 @@ bool try_with_backpressure(Fn ingest_fn, int retries, int sleep_us) {
             std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
     }
     return false;
+}
+
+uint32_t stable_symbol_code(const std::string& value) {
+    uint32_t hash = 2166136261u;
+    for (unsigned char c : value) {
+        hash ^= static_cast<uint32_t>(c);
+        hash *= 16777619u;
+    }
+    return hash == 0 ? 1u : hash;
+}
+
+std::string default_server_node_id(uint16_t ns, SymbolId symbol_id) {
+    return "ns=" + std::to_string(ns) + ";s=zeptodb.symbol." +
+           std::to_string(symbol_id);
+}
+
+std::string default_server_display_name(SymbolId symbol_id) {
+    return "symbol_" + std::to_string(symbol_id);
 }
 } // namespace
 
@@ -180,6 +203,21 @@ bool OpcUaConsumer::on_data_change(const std::string& node_id,
         return false;
     }
 
+    return dispatch_value(it->second.symbol_id, value, source_ts_ns, status,
+                          sizeof(int64_t));
+}
+
+bool OpcUaConsumer::dispatch_value(SymbolId symbol_id,
+                                   int64_t value,
+                                   uint64_t source_ts_ns,
+                                   int64_t status,
+                                   size_t bytes_consumed) {
+    if (symbol_id == 0) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.decode_errors++;
+        return false;
+    }
+
     const uint32_t sc = static_cast<uint32_t>(status);
     int64_t volume = 0;
     switch (config_.quality_handling) {
@@ -202,17 +240,124 @@ bool OpcUaConsumer::on_data_change(const std::string& node_id,
     {
         std::lock_guard<std::mutex> lk(stats_mu_);
         stats_.messages_consumed++;
-        stats_.bytes_consumed += sizeof(int64_t);  // coerced scalar width
+        stats_.bytes_consumed += bytes_consumed;
     }
 
     zeptodb::ingestion::TickMessage msg{};
-    msg.symbol_id = it->second.symbol_id;
+    msg.symbol_id = symbol_id;
     msg.price     = value;
     msg.volume    = volume;
     msg.recv_ts   = static_cast<int64_t>(source_ts_ns);
     msg.table_id  = table_id_;  // ingest_decoded will re-stamp, but set now
                                 // for callers that bypass dispatch.
     return ingest_decoded(msg);
+}
+
+bool OpcUaConsumer::on_array_change(const std::string& node_id,
+                                    const std::vector<Variant>& values,
+                                    uint64_t source_ts_ns,
+                                    int64_t status) {
+    auto it = node_map_.find(node_id);
+    if (it == node_map_.end() || values.empty()) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.decode_errors++;
+        return false;
+    }
+    const NodeBinding binding = it->second;
+    bool all_ok = true;
+    for (size_t i = 0; i < values.size(); ++i) {
+        const uint64_t offset =
+            static_cast<uint64_t>(i) * static_cast<uint64_t>(binding.array_symbol_stride);
+        if (offset > std::numeric_limits<SymbolId>::max() ||
+            binding.symbol_id > std::numeric_limits<SymbolId>::max() - offset) {
+            std::lock_guard<std::mutex> lk(stats_mu_);
+            stats_.decode_errors++;
+            all_ok = false;
+            continue;
+        }
+        int64_t coerced = 0;
+        if (!coerce_variant_to_int64(values[i], binding.value_scale, coerced)) {
+            on_unsupported_variant();
+            all_ok = false;
+            continue;
+        }
+        const SymbolId symbol =
+            static_cast<SymbolId>(static_cast<uint64_t>(binding.symbol_id) + offset);
+        if (!dispatch_value(symbol, coerced, source_ts_ns, status, sizeof(int64_t))) {
+            all_ok = false;
+        }
+    }
+    return all_ok;
+}
+
+bool OpcUaConsumer::on_string_change(const std::string& node_id,
+                                     const std::string& value,
+                                     uint64_t source_ts_ns,
+                                     int64_t status) {
+    const uint32_t code = pipeline_
+        ? pipeline_->symbol_dict().intern(value)
+        : stable_symbol_code(value);
+    return on_data_change(node_id, static_cast<int64_t>(code),
+                          source_ts_ns, status);
+}
+
+bool OpcUaConsumer::on_structured_change(
+    const std::vector<StructuredField>& fields,
+    uint64_t source_ts_ns,
+    int64_t status) {
+    if (fields.empty()) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.decode_errors++;
+        return false;
+    }
+    bool all_ok = true;
+    for (const auto& field : fields) {
+        int64_t coerced = 0;
+        if (field.symbol_id == 0 ||
+            !coerce_variant_to_int64(field.value, field.value_scale, coerced)) {
+            on_unsupported_variant();
+            all_ok = false;
+            continue;
+        }
+        if (!dispatch_value(field.symbol_id, coerced, source_ts_ns, status,
+                            sizeof(int64_t))) {
+            all_ok = false;
+        }
+    }
+    return all_ok;
+}
+
+size_t OpcUaConsumer::ingest_history(const std::vector<HistoricalSample>& samples) {
+    size_t ok_count = 0;
+    for (const auto& sample : samples) {
+        auto it = node_map_.find(sample.node_id);
+        if (it == node_map_.end()) {
+            std::lock_guard<std::mutex> lk(stats_mu_);
+            stats_.decode_errors++;
+            continue;
+        }
+        int64_t coerced = 0;
+        if (!coerce_variant_to_int64(sample.value, it->second.value_scale, coerced)) {
+            on_unsupported_variant();
+            continue;
+        }
+        if (dispatch_value(it->second.symbol_id, coerced, sample.source_ts_ns,
+                           sample.status, sizeof(int64_t))) {
+            ++ok_count;
+        }
+    }
+    return ok_count;
+}
+
+bool OpcUaConsumer::on_alarm_event(const AlarmEvent& event) {
+    if (event.symbol_id == 0) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.decode_errors++;
+        return false;
+    }
+    const int64_t severity = event.active ? event.severity : -event.severity;
+    return dispatch_value(event.symbol_id, severity, event.source_ts_ns,
+                          event.status, sizeof(int64_t));
 }
 
 // ============================================================================
@@ -291,30 +436,28 @@ UA_ByteString read_file_to_bytestring(const std::string& path) {
     return out;
 }
 
-// Coerce a UA_Variant via the already-unit-tested
-// OpcUaConsumer::coerce_variant_to_int64() so the float-clamp /
-// NaN-reject logic (devlog 105, BACKLOG P9 #2n) stays in one place.
-bool variant_to_int64(const UA_Variant& v, double scale, int64_t& out) {
-    if (!v.type || !UA_Variant_isScalar(&v) || !v.data) return false;
-    OpcUaConsumer::Variant iv{};
-    switch (v.type->typeKind) {
+bool ua_scalar_to_variant(UA_DataTypeKind kind, const void* data,
+                          OpcUaConsumer::Variant& iv) {
+    if (!data) return false;
+    iv = OpcUaConsumer::Variant{};
+    switch (kind) {
         case UA_DATATYPEKIND_INT16:
             iv.type = OpcUaConsumer::VariantType::Int16;
-            iv.i64  = *static_cast<const UA_Int16*>(v.data); break;
+            iv.i64  = *static_cast<const UA_Int16*>(data); break;
         case UA_DATATYPEKIND_INT32:
             iv.type = OpcUaConsumer::VariantType::Int32;
-            iv.i64  = *static_cast<const UA_Int32*>(v.data); break;
+            iv.i64  = *static_cast<const UA_Int32*>(data); break;
         case UA_DATATYPEKIND_INT64:
             iv.type = OpcUaConsumer::VariantType::Int64;
-            iv.i64  = *static_cast<const UA_Int64*>(v.data); break;
+            iv.i64  = *static_cast<const UA_Int64*>(data); break;
         case UA_DATATYPEKIND_UINT16:
             iv.type = OpcUaConsumer::VariantType::Int32;
-            iv.i64  = *static_cast<const UA_UInt16*>(v.data); break;
+            iv.i64  = *static_cast<const UA_UInt16*>(data); break;
         case UA_DATATYPEKIND_UINT32:
             iv.type = OpcUaConsumer::VariantType::Int64;
-            iv.i64  = *static_cast<const UA_UInt32*>(v.data); break;
+            iv.i64  = *static_cast<const UA_UInt32*>(data); break;
         case UA_DATATYPEKIND_UINT64: {
-            UA_UInt64 u = *static_cast<const UA_UInt64*>(v.data);
+            UA_UInt64 u = *static_cast<const UA_UInt64*>(data);
             iv.type = OpcUaConsumer::VariantType::Int64;
             iv.i64  = (u > static_cast<UA_UInt64>(std::numeric_limits<int64_t>::max()))
                           ? std::numeric_limits<int64_t>::max()
@@ -323,25 +466,41 @@ bool variant_to_int64(const UA_Variant& v, double scale, int64_t& out) {
         }
         case UA_DATATYPEKIND_FLOAT:
             iv.type = OpcUaConsumer::VariantType::Float;
-            iv.f64  = *static_cast<const UA_Float*>(v.data); break;
+            iv.f64  = *static_cast<const UA_Float*>(data); break;
         case UA_DATATYPEKIND_DOUBLE:
             iv.type = OpcUaConsumer::VariantType::Double;
-            iv.f64  = *static_cast<const UA_Double*>(v.data); break;
+            iv.f64  = *static_cast<const UA_Double*>(data); break;
         case UA_DATATYPEKIND_BOOLEAN:
             iv.type = OpcUaConsumer::VariantType::Boolean;
-            iv.b    = *static_cast<const UA_Boolean*>(v.data); break;
+            iv.b    = *static_cast<const UA_Boolean*>(data); break;
         default:
             return false;
     }
+    return true;
+}
+
+std::string ua_string_to_std(const UA_String& s) {
+    if (!s.data || s.length == 0) return {};
+    return std::string(reinterpret_cast<const char*>(s.data), s.length);
+}
+
+// Coerce a UA_Variant via the already-unit-tested
+// OpcUaConsumer::coerce_variant_to_int64() so the float-clamp /
+// NaN-reject logic (devlog 105, BACKLOG P9 #2n) stays in one place.
+bool variant_to_int64(const UA_Variant& v, double scale, int64_t& out) {
+    if (!v.type || !UA_Variant_isScalar(&v) || !v.data) return false;
+    OpcUaConsumer::Variant iv{};
+    if (!ua_scalar_to_variant(v.type->typeKind, v.data, iv)) return false;
     return OpcUaConsumer::coerce_variant_to_int64(iv, scale, out);
 }
 
 // Data-change handler — tiny bridge between open62541's C callback and
-// OpcUaConsumer::on_data_change().  Source-TS preferred, Server-TS fallback,
-// host wall-clock fallback.
-void handle_data_change(OpcUaConsumer* self, const ItemContext& ctx,
+// OpcUaConsumer dispatch. Source-TS preferred, Server-TS fallback, host
+// wall-clock fallback. Returning bool lets the Historical Access adapter reuse
+// the exact same decode/quality/routing path.
+bool handle_data_change(OpcUaConsumer* self, const ItemContext& ctx,
                         const UA_DataValue* value) {
-    if (!self || !value || !value->hasValue) return;
+    if (!self || !value || !value->hasValue) return false;
 
     uint64_t ts_ns;
     if (value->hasSourceTimestamp) {
@@ -356,18 +515,43 @@ void handle_data_change(OpcUaConsumer* self, const ItemContext& ctx,
                 std::chrono::system_clock::now().time_since_epoch()).count());
     }
 
+    const UA_Variant& variant = value->value;
+    if (variant.type && variant.type->typeKind == UA_DATATYPEKIND_STRING &&
+        UA_Variant_isScalar(&variant) && variant.data) {
+        return self->on_string_change(ctx.node_id,
+            ua_string_to_std(*static_cast<const UA_String*>(variant.data)),
+            ts_ns, value->hasStatus ? static_cast<int64_t>(value->status) : 0);
+    }
+    if (variant.type && !UA_Variant_isScalar(&variant) && variant.data &&
+        variant.arrayLength > 0 && variant.type->memSize > 0) {
+        std::vector<OpcUaConsumer::Variant> values;
+        values.reserve(variant.arrayLength);
+        const auto* base = static_cast<const uint8_t*>(variant.data);
+        for (size_t i = 0; i < variant.arrayLength; ++i) {
+            OpcUaConsumer::Variant iv{};
+            if (!ua_scalar_to_variant(variant.type->typeKind,
+                                      base + (i * variant.type->memSize), iv)) {
+                self->on_unsupported_variant();
+                return;
+            }
+            values.push_back(iv);
+        }
+        return self->on_array_change(ctx.node_id, values, ts_ns,
+            value->hasStatus ? static_cast<int64_t>(value->status) : 0);
+    }
+
     int64_t coerced = 0;
-    if (!variant_to_int64(value->value, ctx.value_scale, coerced)) {
+    if (!variant_to_int64(variant, ctx.value_scale, coerced)) {
         // Unsupported variant type → explicit decode_errors bump, no
         // dispatch.  Sprint-2 polish 2 (devlog 110) replaced an earlier
         // empty-node_id piggy-back that coupled two different error
         // semantics onto the same counter path.
         self->on_unsupported_variant();
-        return;
+        return false;
     }
     const int64_t status =
         value->hasStatus ? static_cast<int64_t>(value->status) : 0;
-    self->on_data_change(ctx.node_id, coerced, ts_ns, status);
+    return self->on_data_change(ctx.node_id, coerced, ts_ns, status);
 }
 
 extern "C" void ua_data_change_cb(UA_Client* /*client*/,
@@ -378,11 +562,113 @@ extern "C" void ua_data_change_cb(UA_Client* /*client*/,
                                   UA_DataValue* value) {
     auto* ctx = static_cast<ItemContext*>(monContext);
     if (!ctx) return;
-    handle_data_change(ctx->self, *ctx, value);
+    (void)handle_data_change(ctx->self, *ctx, value);
+}
+
+#ifdef UA_ENABLE_HISTORIZING
+struct HistoryReadContext {
+    OpcUaConsumer* self = nullptr;
+    ItemContext item;
+    size_t routed = 0;
+};
+
+UA_Boolean ua_history_read_cb(UA_Client* /*client*/,
+                              const UA_NodeId* /*nodeId*/,
+                              UA_Boolean /*moreDataAvailable*/,
+                              const UA_ExtensionObject* data,
+                              void* callbackContext) {
+    auto* ctx = static_cast<HistoryReadContext*>(callbackContext);
+    if (!ctx || !ctx->self || !data) return UA_FALSE;
+    if (data->encoding != UA_EXTENSIONOBJECT_DECODED ||
+        !data->content.decoded.type ||
+        data->content.decoded.type != &UA_TYPES[UA_TYPES_HISTORYDATA] ||
+        !data->content.decoded.data) {
+        ctx->self->on_unsupported_variant();
+        return UA_FALSE;
+    }
+
+    const auto* history =
+        static_cast<const UA_HistoryData*>(data->content.decoded.data);
+    for (size_t i = 0; i < history->dataValuesSize; ++i) {
+        if (handle_data_change(ctx->self, ctx->item, &history->dataValues[i])) {
+            ++ctx->routed;
+        }
+    }
+    return UA_TRUE;
+}
+#endif  // UA_ENABLE_HISTORIZING
+
+struct UaServerRuntime {
+    std::thread iter_thread;
+};
+
+static std::mutex                                                    g_server_rt_mu;
+static std::unordered_map<OpcUaServer*, std::unique_ptr<UaServerRuntime>> g_server_rt;
+
+uint16_t endpoint_port_or_default(const std::string& endpoint) {
+    const size_t pos = endpoint.rfind(':');
+    if (pos == std::string::npos || pos + 1 >= endpoint.size()) return 4840;
+    char* end = nullptr;
+    const unsigned long port = std::strtoul(endpoint.c_str() + pos + 1, &end, 10);
+    if (!end || *end != '\0' || port == 0 || port > 65535) return 4840;
+    return static_cast<uint16_t>(port);
 }
 
 } // namespace
 #endif  // ZEPTO_OPCUA_AVAILABLE
+
+size_t OpcUaConsumer::read_history(const HistoryReadOptions& options) {
+#if defined(ZEPTO_OPCUA_AVAILABLE) && defined(UA_ENABLE_HISTORIZING)
+    auto* client = static_cast<UA_Client*>(client_handle_);
+    if (!client || config_.nodes.empty()) {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.ingest_failures++;
+        return 0;
+    }
+
+    size_t routed = 0;
+    for (const auto& n : config_.nodes) {
+        UA_NodeId nid;
+        if (!parse_node_id(n.node_id, nid)) {
+            std::lock_guard<std::mutex> lk(stats_mu_);
+            stats_.decode_errors++;
+            continue;
+        }
+
+        HistoryReadContext ctx;
+        ctx.self = this;
+        ctx.item = ItemContext{this, n.node_id, n.value_scale};
+        const UA_StatusCode sc = UA_Client_HistoryRead_raw(
+            client,
+            &nid,
+            ua_history_read_cb,
+            ns_to_ua_datetime(options.start_ts_ns),
+            ns_to_ua_datetime(options.end_ts_ns),
+            UA_STRING_NULL,
+            options.return_bounds ? UA_TRUE : UA_FALSE,
+            options.values_per_node,
+            UA_TIMESTAMPSTORETURN_BOTH,
+            &ctx);
+        UA_NodeId_clear(&nid);
+
+        if (sc != UA_STATUSCODE_GOOD) {
+            ZEPTO_WARN("OpcUaConsumer: HistoryRead_raw failed for '{}': 0x{:08x}",
+                       n.node_id, static_cast<uint32_t>(sc));
+            std::lock_guard<std::mutex> lk(stats_mu_);
+            stats_.ingest_failures++;
+            continue;
+        }
+        routed += ctx.routed;
+    }
+    return routed;
+#else
+    (void)options;
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.ingest_failures++;
+    ZEPTO_WARN("OpcUaConsumer: Historical Access read requires open62541 with UA_ENABLE_HISTORIZING");
+    return 0;
+#endif
+}
 
 bool OpcUaConsumer::start() {
     // Config validation first — fail fast before touching licensing or the
@@ -750,6 +1036,18 @@ uint64_t OpcUaConsumer::ua_datetime_to_ns(int64_t ua_datetime_100ns_since_1601) 
         (ua_datetime_100ns_since_1601 - kEpochOffset100ns) * 100LL);
 }
 
+int64_t OpcUaConsumer::ns_to_ua_datetime(uint64_t unix_ns) {
+    constexpr int64_t kEpochOffset100ns = 116444736000000000LL;
+    constexpr uint64_t kMaxDelta100ns =
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max() -
+                              kEpochOffset100ns);
+    const uint64_t delta100ns = unix_ns / 100ULL;
+    if (delta100ns >= kMaxDelta100ns) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return kEpochOffset100ns + static_cast<int64_t>(delta100ns);
+}
+
 bool OpcUaConsumer::is_valid_security(OpcUaConfig::SecurityMode mode,
                                       OpcUaConfig::SecurityPolicy policy) {
     // Sign or SignAndEncrypt require a real security policy (not None).
@@ -787,6 +1085,265 @@ void OpcUaConfig::apply_profile(Profile p) {
             backpressure_retries   = 10;
             break;
     }
+}
+
+// ============================================================================
+// OpcUaServer
+// ============================================================================
+
+OpcUaServer::OpcUaServer(OpcUaServerConfig config)
+    : config_(std::move(config)) {
+    for (const auto& node : config_.nodes) {
+        if (node.symbol_id == 0) continue;
+        NodeState state;
+        state.node_id = node.node_id.empty()
+            ? default_server_node_id(config_.namespace_index, node.symbol_id)
+            : node.node_id;
+        state.display_name = node.display_name.empty()
+            ? default_server_display_name(node.symbol_id)
+            : node.display_name;
+        state.value = node.initial_value;
+        values_.emplace(node.symbol_id, std::move(state));
+    }
+}
+
+OpcUaServer::~OpcUaServer() {
+    stop();
+}
+
+void OpcUaServer::bump_start_failure() {
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.start_failures++;
+}
+
+void OpcUaServer::bump_write_failure() {
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.write_failures++;
+}
+
+bool OpcUaServer::start() {
+    if (config_.endpoint.empty() || config_.nodes.empty()) {
+        bump_start_failure();
+        return false;
+    }
+    {
+        std::unordered_set<SymbolId> symbols;
+        std::unordered_set<std::string> node_ids;
+        for (const auto& node : config_.nodes) {
+            if (node.symbol_id == 0 || !symbols.insert(node.symbol_id).second) {
+                bump_start_failure();
+                return false;
+            }
+            const std::string node_id = node.node_id.empty()
+                ? default_server_node_id(config_.namespace_index, node.symbol_id)
+                : node.node_id;
+            if (node_id.empty() || !node_ids.insert(node_id).second) {
+                bump_start_failure();
+                return false;
+            }
+        }
+    }
+
+#ifdef ZEPTO_OPCUA_AVAILABLE
+    if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::IOT_CONNECTORS)) {
+        ZEPTO_WARN("OPC-UA server mode requires Enterprise license (IOT_CONNECTORS) — not starting");
+        bump_start_failure();
+        return false;
+    }
+
+    UA_Server* server = UA_Server_new();
+    if (!server) {
+        bump_start_failure();
+        return false;
+    }
+
+    const uint16_t port = endpoint_port_or_default(config_.endpoint);
+    UA_StatusCode sc = UA_ServerConfig_setMinimal(
+        UA_Server_getConfig(server), port, nullptr);
+    if (sc != UA_STATUSCODE_GOOD) {
+        ZEPTO_ERROR("OpcUaServer: UA_ServerConfig_setMinimal failed: 0x{:08x}",
+                    static_cast<uint32_t>(sc));
+        UA_Server_delete(server);
+        bump_start_failure();
+        return false;
+    }
+
+    for (const auto& entry : values_) {
+        const SymbolId symbol_id = entry.first;
+        const NodeState& state = entry.second;
+
+        UA_NodeId nid;
+        if (!parse_node_id(state.node_id, nid)) {
+            ZEPTO_ERROR("OpcUaServer: unsupported node_id '{}'", state.node_id);
+            UA_Server_delete(server);
+            bump_start_failure();
+            return false;
+        }
+
+        UA_VariableAttributes attr = UA_VariableAttributes_default;
+        UA_Int64 initial = static_cast<UA_Int64>(state.value);
+        UA_Variant_setScalar(&attr.value, &initial, &UA_TYPES[UA_TYPES_INT64]);
+        attr.dataType = UA_TYPES[UA_TYPES_INT64].typeId;
+        attr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+        attr.displayName = UA_LOCALIZEDTEXT_ALLOC(
+            "en-US", state.display_name.c_str());
+
+        UA_QualifiedName browse_name = UA_QUALIFIEDNAME_ALLOC(
+            nid.namespaceIndex, state.display_name.c_str());
+        const UA_StatusCode add_sc = UA_Server_addVariableNode(
+            server,
+            nid,
+            UA_NS0ID(OBJECTSFOLDER),
+            UA_NS0ID(ORGANIZES),
+            browse_name,
+            UA_NS0ID(BASEDATAVARIABLETYPE),
+            attr,
+            nullptr,
+            nullptr);
+        UA_QualifiedName_clear(&browse_name);
+        UA_VariableAttributes_clear(&attr);
+        UA_NodeId_clear(&nid);
+
+        if (add_sc != UA_STATUSCODE_GOOD) {
+            ZEPTO_ERROR("OpcUaServer: add variable for symbol {} failed: 0x{:08x}",
+                        symbol_id, static_cast<uint32_t>(add_sc));
+            UA_Server_delete(server);
+            bump_start_failure();
+            return false;
+        }
+    }
+
+    sc = UA_Server_run_startup(server);
+    if (sc != UA_STATUSCODE_GOOD) {
+        ZEPTO_ERROR("OpcUaServer: run_startup failed: 0x{:08x}",
+                    static_cast<uint32_t>(sc));
+        UA_Server_delete(server);
+        bump_start_failure();
+        return false;
+    }
+
+    server_handle_ = server;
+    running_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(g_server_rt_mu);
+        auto rt = std::make_unique<UaServerRuntime>();
+        rt->iter_thread = std::thread([this, server] {
+            while (running_.load(std::memory_order_acquire)) {
+                (void)UA_Server_run_iterate(server, UA_FALSE);
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(config_.iterate_sleep_ms));
+            }
+        });
+        g_server_rt[this] = std::move(rt);
+    }
+    ZEPTO_INFO("OpcUaServer started: endpoint={}, nodes={}",
+               config_.endpoint, values_.size());
+    return true;
+#else
+    ZEPTO_WARN("OpcUaServer: OPC-UA support not compiled in "
+               "(rebuild with ZEPTO_USE_OPCUA=ON and open62541-devel installed)");
+    bump_start_failure();
+    return false;
+#endif
+}
+
+void OpcUaServer::stop() {
+    (void)server_handle_;
+    if (!running_.exchange(false)) return;
+
+#ifdef ZEPTO_OPCUA_AVAILABLE
+    std::unique_ptr<UaServerRuntime> rt;
+    {
+        std::lock_guard<std::mutex> lk(g_server_rt_mu);
+        auto it = g_server_rt.find(this);
+        if (it != g_server_rt.end()) {
+            rt = std::move(it->second);
+            g_server_rt.erase(it);
+        }
+    }
+    if (rt && rt->iter_thread.joinable()) rt->iter_thread.join();
+
+    if (server_handle_) {
+        auto* server = static_cast<UA_Server*>(server_handle_);
+        (void)UA_Server_run_shutdown(server);
+        UA_Server_delete(server);
+        server_handle_ = nullptr;
+    }
+    ZEPTO_INFO("OpcUaServer stopped: endpoint={}", config_.endpoint);
+#endif
+}
+
+bool OpcUaServer::publish_value(SymbolId symbol_id,
+                                int64_t value,
+                                uint64_t source_ts_ns,
+                                int64_t status) {
+    NodeState state;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = values_.find(symbol_id);
+        if (it == values_.end()) {
+            bump_write_failure();
+            return false;
+        }
+        it->second.value = value;
+        it->second.source_ts_ns = source_ts_ns;
+        it->second.status = status;
+        state = it->second;
+    }
+
+    if (running_.load(std::memory_order_acquire) &&
+        !write_live_value(symbol_id, state)) {
+        bump_write_failure();
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.writes++;
+    return true;
+}
+
+std::optional<int64_t> OpcUaServer::snapshot_value(SymbolId symbol_id) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = values_.find(symbol_id);
+    if (it == values_.end()) return std::nullopt;
+    return it->second.value;
+}
+
+OpcUaServerStats OpcUaServer::stats() const {
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    return stats_;
+}
+
+bool OpcUaServer::write_live_value(SymbolId /*symbol_id*/, const NodeState& state) {
+#ifdef ZEPTO_OPCUA_AVAILABLE
+    auto* server = static_cast<UA_Server*>(server_handle_);
+    if (!server) return false;
+
+    UA_NodeId nid;
+    if (!parse_node_id(state.node_id, nid)) return false;
+
+    UA_Int64 value = static_cast<UA_Int64>(state.value);
+    UA_WriteValue write;
+    UA_WriteValue_init(&write);
+    write.nodeId = nid;
+    write.attributeId = UA_ATTRIBUTEID_VALUE;
+    write.value.hasValue = UA_TRUE;
+    UA_Variant_setScalar(&write.value.value, &value, &UA_TYPES[UA_TYPES_INT64]);
+    write.value.hasStatus = UA_TRUE;
+    write.value.status = static_cast<UA_StatusCode>(state.status);
+    if (state.source_ts_ns != 0) {
+        write.value.hasSourceTimestamp = UA_TRUE;
+        write.value.sourceTimestamp =
+            OpcUaConsumer::ns_to_ua_datetime(state.source_ts_ns);
+    }
+
+    const UA_StatusCode sc = UA_Server_write(server, &write);
+    UA_NodeId_clear(&nid);
+    return sc == UA_STATUSCODE_GOOD;
+#else
+    (void)state;
+    return false;
+#endif
 }
 
 } // namespace zeptodb::feeds

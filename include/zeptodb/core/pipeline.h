@@ -93,6 +93,67 @@ struct ZEPTO_CACHE_ALIGNED PipelineStats {
 };
 
 // ============================================================================
+// TypedRowMessage: schema-aware wide-row ingest contract
+// ============================================================================
+// Used by connector paths that already decoded data into a table schema and
+// should not force every value through TickMessage::price/volume.
+struct TypedColumnValue {
+    std::string name;
+    ColumnType  type = ColumnType::INT64;
+    int64_t     i64  = 0;
+    double      f64  = 0.0;
+    uint32_t    u32  = 0;
+    uint8_t     u8   = 0;
+
+    static TypedColumnValue int64(std::string name, int64_t value) {
+        TypedColumnValue out;
+        out.name = std::move(name);
+        out.type = ColumnType::INT64;
+        out.i64 = value;
+        return out;
+    }
+
+    static TypedColumnValue timestamp(std::string name, int64_t value) {
+        TypedColumnValue out;
+        out.name = std::move(name);
+        out.type = ColumnType::TIMESTAMP_NS;
+        out.i64 = value;
+        return out;
+    }
+
+    static TypedColumnValue float64(std::string name, double value) {
+        TypedColumnValue out;
+        out.name = std::move(name);
+        out.type = ColumnType::FLOAT64;
+        out.f64 = value;
+        return out;
+    }
+
+    static TypedColumnValue symbol(std::string name, uint32_t value) {
+        TypedColumnValue out;
+        out.name = std::move(name);
+        out.type = ColumnType::SYMBOL;
+        out.u32 = value;
+        return out;
+    }
+
+    static TypedColumnValue int32(std::string name, int32_t value) {
+        TypedColumnValue out;
+        out.name = std::move(name);
+        out.type = ColumnType::INT32;
+        out.i64 = value;
+        return out;
+    }
+};
+
+struct TypedRowMessage {
+    uint16_t table_id = 0;
+    SymbolId symbol_id = 0;
+    Timestamp timestamp = 0;
+    std::vector<TypedColumnValue> columns;
+};
+
+// ============================================================================
 // PipelineConfig: 파이프라인 설정
 // ============================================================================
 struct PipelineConfig {
@@ -189,6 +250,12 @@ public:
     /// 틱 인제스트 (Thread-safe, lock-free)
     /// @return true if successfully queued
     bool ingest_tick(TickMessage msg);
+
+    /// Schema-aware typed row ingest. This stores one wide row synchronously
+    /// into the table/symbol/time partition identified by `row`, preserving
+    /// native column types instead of mapping into TickMessage.
+    /// @return false on invalid row, column type mismatch, or allocation error.
+    bool ingest_typed_row(TypedRowMessage row);
 
     /// 배치 인제스트: 동일 symbol의 여러 틱을 한번에 큐잉
     /// @return 성공적으로 큐잉된 틱 수
@@ -346,4 +413,3 @@ private:
 };
 
 } // namespace zeptodb::core
-

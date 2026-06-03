@@ -1221,6 +1221,36 @@ TEST(Parser, ArithParenthesized) {
     EXPECT_EQ(s.columns[0].arith_expr->left->arith_op, ArithOp::SUB);
 }
 
+TEST(Parser, SpatialFunctionPreservesFloatLiterals) {
+    Parser p;
+    auto s = p.parse(
+        "SELECT haversine(lat, lon, 37.7749, -122.4194) AS distance_m FROM geo_points");
+    ASSERT_EQ(s.columns.size(), 1u);
+    ASSERT_NE(s.columns[0].arith_expr, nullptr);
+    const auto& expr = *s.columns[0].arith_expr;
+    EXPECT_EQ(expr.kind, ArithExpr::Kind::FUNC);
+    EXPECT_EQ(expr.func_name, "haversine");
+    ASSERT_EQ(expr.func_args.size(), 4u);
+    EXPECT_TRUE(expr.func_args[2]->is_float_literal);
+    EXPECT_NEAR(expr.func_args[2]->literal_f, 37.7749, 0.000001);
+    EXPECT_TRUE(expr.func_args[3]->is_float_literal);
+    EXPECT_NEAR(expr.func_args[3]->literal_f, -122.4194, 0.000001);
+}
+
+TEST(Parser, SpatialPredicateAsWhereExpression) {
+    Parser p;
+    auto s = p.parse(
+        "SELECT count(*) FROM geo_points "
+        "WHERE ST_Within(lat, lon, center_lat, center_lon, radius_m)");
+    ASSERT_TRUE(s.where.has_value());
+    ASSERT_NE(s.where->expr, nullptr);
+    EXPECT_EQ(s.where->expr->kind, Expr::Kind::COMPARE);
+    ASSERT_NE(s.where->expr->lhs_expr, nullptr);
+    EXPECT_EQ(s.where->expr->lhs_expr->func_name, "st_within");
+    EXPECT_EQ(s.where->expr->op, CompareOp::NE);
+    EXPECT_EQ(s.where->expr->value, 0);
+}
+
 // ── Parser: CASE WHEN ─────────────────────────────────────────────────────
 TEST(Parser, CaseWhenBasic) {
     Parser p;
@@ -1331,6 +1361,65 @@ TEST_F(SqlExecutorTest, ArithMultiColResult) {
     ASSERT_EQ(r.rows.size(), 1u);
     EXPECT_EQ(r.rows[0][0], 1);               // symbol
     EXPECT_EQ(r.rows[0][1], 15000LL * 100);   // notional
+}
+
+TEST_F(SqlExecutorTest, SpatialDistanceAndWithinPredicates) {
+    auto created = executor->execute(
+        "CREATE TABLE geo_points (timestamp TIMESTAMP_NS, lat FLOAT64, lon FLOAT64, "
+        "center_lat FLOAT64, center_lon FLOAT64, radius_m FLOAT64)");
+    ASSERT_TRUE(created.ok()) << created.error;
+    const uint16_t table_id = pipeline->schema_registry().get_table_id("geo_points");
+    ASSERT_NE(table_id, 0);
+
+    auto ingest_geo = [&](int64_t timestamp, double lat, double lon, double radius_m) {
+        TypedRowMessage row;
+        row.table_id = table_id;
+        row.symbol_id = 10;
+        row.timestamp = timestamp;
+        row.columns.push_back(TypedColumnValue::timestamp("timestamp", timestamp));
+        row.columns.push_back(TypedColumnValue::float64("lat", lat));
+        row.columns.push_back(TypedColumnValue::float64("lon", lon));
+        row.columns.push_back(TypedColumnValue::float64("center_lat", 37.7749));
+        row.columns.push_back(TypedColumnValue::float64("center_lon", -122.4194));
+        row.columns.push_back(TypedColumnValue::float64("radius_m", radius_m));
+        ASSERT_TRUE(pipeline->ingest_typed_row(std::move(row)));
+    };
+
+    ingest_geo(1'000, 37.7749, -122.4194, 50.0); // same point
+    ingest_geo(1'001, 37.7752, -122.4194, 50.0); // about 33 m north
+    ingest_geo(1'002, 37.7760, -122.4194, 50.0); // about 122 m north
+
+    auto distances = executor->execute(
+        "SELECT timestamp, haversine(lat, lon, center_lat, center_lon) AS distance_m "
+        "FROM geo_points WHERE symbol = 10 ORDER BY timestamp ASC");
+    ASSERT_TRUE(distances.ok()) << distances.error;
+    ASSERT_EQ(distances.rows.size(), 3u);
+    EXPECT_EQ(distances.rows[0][1], 0);
+    EXPECT_GE(distances.rows[1][1], 30);
+    EXPECT_LE(distances.rows[1][1], 40);
+    EXPECT_GE(distances.rows[2][1], 115);
+    EXPECT_LE(distances.rows[2][1], 130);
+
+    auto close_rows = executor->execute(
+        "SELECT count(*) FROM geo_points WHERE symbol = 10 "
+        "AND haversine(lat, lon, center_lat, center_lon) < 50");
+    ASSERT_TRUE(close_rows.ok()) << close_rows.error;
+    ASSERT_EQ(close_rows.rows.size(), 1u);
+    EXPECT_EQ(close_rows.rows[0][0], 2);
+
+    auto within_rows = executor->execute(
+        "SELECT count(*) FROM geo_points WHERE symbol = 10 "
+        "AND ST_Within(lat, lon, center_lat, center_lon, radius_m)");
+    ASSERT_TRUE(within_rows.ok()) << within_rows.error;
+    ASSERT_EQ(within_rows.rows.size(), 1u);
+    EXPECT_EQ(within_rows.rows[0][0], 2);
+
+    auto no_negative_radius = executor->execute(
+        "SELECT count(*) FROM geo_points WHERE symbol = 10 "
+        "AND ST_Within(lat, lon, center_lat, center_lon, -1)");
+    ASSERT_TRUE(no_negative_radius.ok()) << no_negative_radius.error;
+    ASSERT_EQ(no_negative_radius.rows.size(), 1u);
+    EXPECT_EQ(no_negative_radius.rows[0][0], 0);
 }
 
 // ── Executor: CASE WHEN ──────────────────────────────────────────────────
@@ -2457,6 +2546,29 @@ TEST_F(SqlExecutorTest, CreateTable_Basic) {
     EXPECT_EQ(schema->columns.size(), 4u);
     EXPECT_EQ(schema->columns[0].name, "time");
     EXPECT_EQ(schema->columns[2].name, "price");
+}
+
+TEST_F(SqlExecutorTest, CreateTable_StableTableIdAcrossRegistries) {
+    auto r = executor->execute(
+        "CREATE TABLE robot_state (symbol INT64, price INT64)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    const uint16_t first_id = pipeline->schema_registry().get_table_id("robot_state");
+    ASSERT_NE(first_id, 0u);
+    EXPECT_EQ(first_id, SchemaRegistry::stable_table_id("robot_state"));
+
+    ASSERT_TRUE(executor->execute("DROP TABLE robot_state").ok());
+    ASSERT_TRUE(executor->execute(
+        "CREATE TABLE robot_state (symbol INT64, price INT64)").ok());
+    EXPECT_EQ(pipeline->schema_registry().get_table_id("robot_state"), first_id);
+
+    PipelineConfig cfg;
+    ZeptoPipeline other_pipeline(cfg);
+    QueryExecutor other_exec(other_pipeline);
+    ASSERT_TRUE(other_exec.execute(
+        "CREATE TABLE warmup (symbol INT64, price INT64)").ok());
+    ASSERT_TRUE(other_exec.execute(
+        "CREATE TABLE robot_state (symbol INT64, price INT64)").ok());
+    EXPECT_EQ(other_pipeline.schema_registry().get_table_id("robot_state"), first_id);
 }
 
 TEST_F(SqlExecutorTest, CreateTable_IfNotExists) {

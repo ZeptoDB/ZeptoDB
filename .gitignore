@@ -33,3 +33,4 @@ skills-lock.json
 dev_keys.txt
 tests/python/dev_keys.txt
 /Testing/
+/bench-results/

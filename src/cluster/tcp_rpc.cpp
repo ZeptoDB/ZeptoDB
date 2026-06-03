@@ -327,6 +327,40 @@ void TcpRpcServer::handle_connection(int cfd) {
             continue;  // keep-alive
         }
 
+        if (type == RpcType::TYPED_ROW_INGEST) {
+            // Fencing: reject stale-epoch writes
+            if (fencing_token_ && hdr.epoch != 0 &&
+                !fencing_token_->validate(hdr.epoch)) {
+                RpcHeader ack;
+                ack.type        = static_cast<uint32_t>(RpcType::TYPED_ROW_ACK);
+                ack.request_id  = hdr.request_id;
+                ack.payload_len = 1;
+                uint8_t status  = 0u;  // rejected
+                if (!send_all(cfd, &ack, sizeof(ack)) || !send_all(cfd, &status, 1))
+                    break;
+                continue;
+            }
+            bool ok = false;
+            if (typed_row_callback_) {
+                zeptodb::core::TypedRowMessage row{};
+                if (deserialize_typed_row(payload.data(), payload.size(), row)) {
+                    try {
+                        ok = typed_row_callback_(std::move(row));
+                    } catch (...) {
+                        ok = false;
+                    }
+                }
+            }
+            RpcHeader ack;
+            ack.type        = static_cast<uint32_t>(RpcType::TYPED_ROW_ACK);
+            ack.request_id  = hdr.request_id;
+            ack.payload_len = 1;
+            uint8_t status  = ok ? 1u : 0u;
+            if (!send_all(cfd, &ack, sizeof(ack)) || !send_all(cfd, &status, 1))
+                break;
+            continue;  // keep-alive
+        }
+
         if (type == RpcType::WAL_REPLICATE) {
             // Fencing: reject stale-epoch writes
             if (fencing_token_ && hdr.epoch != 0 &&
@@ -725,6 +759,39 @@ bool TcpRpcClient::ingest_tick(const zeptodb::ingestion::TickMessage& msg) {
     }
     release(fd, true);
     return static_cast<RpcType>(resp.type) == RpcType::TICK_ACK && status == 1u;
+}
+
+bool TcpRpcClient::ingest_typed_row(const zeptodb::core::TypedRowMessage& row) {
+    int fd = acquire();
+    if (fd < 0) return false;
+
+    auto payload = serialize_typed_row(row);
+    RpcHeader hdr;
+    hdr.type        = static_cast<uint32_t>(RpcType::TYPED_ROW_INGEST);
+    hdr.request_id  = 1;
+    hdr.payload_len = static_cast<uint32_t>(payload.size());
+    hdr.epoch       = epoch_;
+    if (!send_all(fd, &hdr, sizeof(hdr)) ||
+        (!payload.empty() && !send_all(fd, payload.data(), payload.size()))) {
+        release(fd, false);
+        return false;
+    }
+
+    RpcHeader resp{};
+    if (!recv_all(fd, &resp, sizeof(resp))) {
+        release(fd, false);
+        return false;
+    }
+
+    uint8_t status = 0;
+    if (resp.payload_len == 1) {
+        if (!recv_all(fd, &status, 1)) {
+            release(fd, false);
+            return false;
+        }
+    }
+    release(fd, true);
+    return static_cast<RpcType>(resp.type) == RpcType::TYPED_ROW_ACK && status == 1u;
 }
 
 bool TcpRpcClient::replicate_wal(

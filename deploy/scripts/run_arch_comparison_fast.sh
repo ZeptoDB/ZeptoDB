@@ -11,6 +11,8 @@
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REGION="ap-northeast-2"
 CLUSTER="zepto-bench"
 ACCOUNT="060795905711"
@@ -34,6 +36,12 @@ TICKS=5000
 BASELINE=15
 REBALANCE_TIMEOUT=120
 BENCH_TIMEOUT=900
+REPLICAS=3
+REBALANCE_ACTION="move_partitions"
+REBALANCE_NODE_ID=0
+MOVE_FROM=0
+MOVE_TO=1
+MOVE_COUNT=50
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scenario)    SCENARIO="$2"; shift 2 ;;
@@ -49,6 +57,12 @@ while [[ $# -gt 0 ]]; do
     --baseline)    BASELINE="$2"; shift 2 ;;
     --rebalance-timeout) REBALANCE_TIMEOUT="$2"; shift 2 ;;
     --bench-timeout) BENCH_TIMEOUT="$2"; shift 2 ;;
+    --replicas)    REPLICAS="$2"; shift 2 ;;
+    --rebalance-action) REBALANCE_ACTION="$2"; shift 2 ;;
+    --node-id)     REBALANCE_NODE_ID="$2"; shift 2 ;;
+    --move-from)   MOVE_FROM="$2"; shift 2 ;;
+    --move-to)     MOVE_TO="$2"; shift 2 ;;
+    --move-count)  MOVE_COUNT="$2"; shift 2 ;;
     -h|--help)
       cat <<EOF
 Usage: $0 [options]
@@ -66,6 +80,14 @@ Usage: $0 [options]
   --rebalance-timeout N
                      Seconds bench_rebalance waits for one rebalance (default: 120)
   --bench-timeout N  Hard timeout per scenario in seconds (default: 900)
+  --replicas N       Helm replica count and per-pod integrity hosts (default: 3)
+  --rebalance-action ACTION
+                     bench_rebalance action: move_partitions, add_node, remove_node
+                     (default: move_partitions for the fixed 3-pod EKS topology)
+  --node-id N        Node ID for add_node/remove_node action (default: bench auto)
+  --move-from N      Source node for move_partitions (default: 0)
+  --move-to N        Destination node for move_partitions (default: 1)
+  --move-count N     Number of move_partitions entries (default: 50)
 EOF
       exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -130,7 +152,7 @@ info "Preflight OK"
 # ═══════════════════════════════════════════════════════════════════════════
 if [[ "$SKIP_LOCAL" == false ]]; then
   step "Stage 0: Local smoke"
-  cd "$(dirname "$0")/../../build"
+  cd "$REPO_ROOT/build"
 
   # 0-remote: Graviton smoke in parallel (skipped if SSH unavailable or flagged off)
   REMOTE_PID=""
@@ -138,7 +160,7 @@ if [[ "$SKIP_LOCAL" == false ]]; then
     stage0_remote() {
       rsync -az --delete -e "ssh -i $GRAVITON_KEY -o StrictHostKeyChecking=no" \
         --exclude=build/ --exclude=.git/ --exclude=node_modules/ --exclude=web/out/ --exclude=web/.next/ \
-        "$(dirname "$0")/../../" "ec2-user@$GRAVITON_HOST:~/zeptodb/"
+        "$REPO_ROOT/" "ec2-user@$GRAVITON_HOST:~/zeptodb/"
       $SSH bash -s <<'REMOTE'
 set -euo pipefail
 sudo install -d -o "$(id -u)" -g "$(id -g)" /var/log/zeptodb 2>/dev/null || mkdir -p /var/log/zeptodb 2>/dev/null || true
@@ -225,7 +247,7 @@ REMOTE
   # rebalance scenarios need a cluster topology that can actually accept the
   # requested add/remove action.
   kill $N1 $N2 $N3 2>/dev/null || true
-  wait 2>/dev/null || true
+  wait $N1 $N2 $N3 2>/dev/null || true
   trap cleanup EXIT
   if [[ -n "$REMOTE_PID" ]]; then
     wait "$REMOTE_PID" || { err "Stage 0 remote (Graviton) failed — see $RESULT_DIR/stage0_remote.log"; exit 1; }
@@ -318,14 +340,14 @@ stage1_build_x86() {
 stage1_build_arm64() {
   rsync -az --delete -e "ssh -i $GRAVITON_KEY -o StrictHostKeyChecking=no" \
     --exclude=build/ --exclude=.git/ --exclude=node_modules/ --exclude=web/out/ --exclude=web/.next/ \
-    "$(dirname "$0")/../../" "ec2-user@$GRAVITON_HOST:~/zeptodb/"
+    "$REPO_ROOT/" "ec2-user@$GRAVITON_HOST:~/zeptodb/"
   $SSH "aws ecr get-login-password --region $REGION | sudo docker login --username AWS --password-stdin ${ECR_REPO%%/*} >/dev/null && \
         cd ~/zeptodb && sudo docker build -f deploy/docker/Dockerfile.bench.arm64 -t ${ECR_REPO}:bench-arm64 . && \
         sudo docker push ${ECR_REPO}:bench-arm64"
 }
 
 step "Stage 1+2: Parallel build + cluster prep"
-cd "$(dirname "$0")/../.."
+cd "$REPO_ROOT"
 stage2_cluster_prep &
 S2=$!
 if [[ "$SKIP_BUILD" == false ]]; then
@@ -378,7 +400,7 @@ helm_install() {
   helm upgrade --install "zeptodb-${arch}" deploy/helm/zeptodb -n "$ns" \
     --set image.repository="$ECR_REPO" --set image.tag="$tag" --set image.pullPolicy=Always \
     --set nodeSelector."zeptodb\.com/role"="bench-${arch}" \
-    --set replicaCount=3 \
+    --set replicaCount="$REPLICAS" \
     --set cluster.enabled=true \
     --set persistence.enabled=false \
     --set autoscaling.enabled=false \
@@ -499,23 +521,45 @@ else
   SCENARIOS=("$SCENARIO")
 fi
 
+scenario_result_passed() {
+  local file="$1" sc="$2"
+  [[ -s "$file" ]] || return 1
+  grep -qE ">>> ${sc}: PASS|^[[:space:]]+${sc}: PASS$|FINAL RESULT: 1/1 scenarios passed" "$file"
+}
+
 run_bench() {
   local arch="$1" ns="zeptodb-$1" host="zeptodb-${1}.zeptodb-${1}.svc.cluster.local"
+  local verify_template="zeptodb-${1}-%d.zeptodb-${1}-headless.zeptodb-${1}.svc.cluster.local"
+  local node_args=()
+  if [[ "$REBALANCE_NODE_ID" != "0" ]]; then
+    node_args+=(--node-id "$REBALANCE_NODE_ID")
+  fi
   for sc in "${SCENARIOS[@]}"; do
     local attempt
     for attempt in 1 2 3 4 5 6; do
-      if kubectl exec -n "$ns" bench-loadgen -- timeout "${BENCH_TIMEOUT}s" /opt/zeptodb/bench_rebalance \
+      local result_file="$RESULT_DIR/result_${arch}_${sc}.txt"
+      set +e
+      kubectl exec -n "$ns" bench-loadgen -- timeout "${BENCH_TIMEOUT}s" /opt/zeptodb/bench_rebalance \
         --host "$host" --port 8123 \
         --symbols "$SYMBOLS" --ticks-per-sec "$TICKS" --baseline-sec "$BASELINE" \
+        --verify-host-template "$verify_template" --verify-replicas "$REPLICAS" \
         --rebalance-timeout-sec "$REBALANCE_TIMEOUT" \
+        --action "$REBALANCE_ACTION" "${node_args[@]}" \
+        --move-from "$MOVE_FROM" --move-to "$MOVE_TO" --move-count "$MOVE_COUNT" \
         --scenario "$sc" \
-        2>&1 | tee "$RESULT_DIR/result_${arch}_${sc}.txt"; then
+        2>&1 | tee "$result_file"
+      local pipe_status=("${PIPESTATUS[@]}")
+      set -e
+      local exec_status="${pipe_status[0]}"
+      local tee_status="${pipe_status[1]}"
+      if [[ "$exec_status" -eq 0 && "$tee_status" -eq 0 ]] && scenario_result_passed "$result_file" "$sc"; then
         break
       fi
       if [[ "$attempt" == 6 ]]; then
+        err "benchmark failed in $ns for scenario $sc (kubectl=$exec_status tee=$tee_status)"
         return 1
       fi
-      warn "benchmark exec failed in $ns for scenario $sc (attempt $attempt/6), retrying..."
+      warn "benchmark failed or did not report PASS in $ns for scenario $sc (attempt $attempt/6), retrying..."
       sleep $((attempt * 5))
     done
   done
@@ -548,9 +592,13 @@ run_bench x86   > "$RESULT_DIR/bench_x86.log"   2>&1 &
 R1=$!
 run_bench arm64 > "$RESULT_DIR/bench_arm64.log" 2>&1 &
 R2=$!
-for _ in 1 2; do
-  wait -n || { kill "$R1" "$R2" 2>/dev/null || true; err "Stage 5 benchmark failed"; exit 1; }
-done
+STAGE5_FAILED=0
+wait "$R1" || STAGE5_FAILED=1
+wait "$R2" || STAGE5_FAILED=1
+if [[ "$STAGE5_FAILED" != 0 ]]; then
+  err "Stage 5 benchmark failed"
+  exit 1
+fi
 info "Stage 5 OK"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -558,6 +606,7 @@ info "Stage 5 OK"
 # ═══════════════════════════════════════════════════════════════════════════
 step "Stage 6: Comparison"
 SUMMARY="$RESULT_DIR/summary.md"
+ALL_SCENARIOS_PASS=true
 {
   echo "# Cross-Arch Benchmark Summary"
   echo "Date: $(date -Iseconds) | Scenario: $SCENARIO | Symbols: $SYMBOLS | Ticks/s: $TICKS"
@@ -580,6 +629,8 @@ SUMMARY="$RESULT_DIR/summary.md"
       echo "?"
     elif grep -qE "FINAL RESULT: .*FAILED|>>> .*FAIL|^[[:space:]]+.*: FAIL$" "$file"; then
       echo "FAIL"
+    elif grep -qE "Error from server|Internal error occurred|NotFound|command terminated with exit code|Cluster unreachable|context deadline exceeded|timed out waiting" "$file"; then
+      echo "FAIL"
     elif grep -qE "FINAL RESULT: [1-9][0-9]*/[1-9][0-9]* scenarios passed|>>> .*PASS|^[[:space:]]+.*: PASS$" "$file"; then
       echo "PASS"
     else
@@ -590,6 +641,9 @@ SUMMARY="$RESULT_DIR/summary.md"
     rx="$RESULT_DIR/result_x86_${sc}.txt"; ra="$RESULT_DIR/result_arm64_${sc}.txt"
     sx=$(scenario_status "$rx")
     sa=$(scenario_status "$ra")
+    if [[ "$sx" != "PASS" || "$sa" != "PASS" ]]; then
+      ALL_SCENARIOS_PASS=false
+    fi
     echo "| $sc | $sx | $sa |"
   done
   echo
@@ -654,6 +708,10 @@ SUMMARY="$RESULT_DIR/summary.md"
   echo "| VWAP thpt (rows/s)  | 914000000 | ${tx:-?} | ${ta:-?} | $(status_hib "${tx:-0}" 914000000) | $(status_hib "${ta:-0}" 914000000) |"
 } > "$SUMMARY"
 cat "$SUMMARY"
+if [[ "$ALL_SCENARIOS_PASS" != true ]]; then
+  err "Stage 6 comparison found a non-PASS scenario"
+  exit 1
+fi
 info "Summary: $SUMMARY"
 
 # Stage 7 runs via trap cleanup EXIT

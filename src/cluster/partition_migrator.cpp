@@ -1,5 +1,6 @@
 #include "zeptodb/cluster/partition_migrator.h"
 #include "zeptodb/common/logger.h"
+#include "zeptodb/storage/schema_registry.h"
 
 #include <future>
 
@@ -38,6 +39,7 @@ bool PartitionMigrator::migrate_symbol(SymbolId symbol, NodeId from,
     batch.reserve(result.rows.size());
     for (auto& row : result.rows) {
         zeptodb::ingestion::TickMessage msg{};
+        msg.table_id = zeptodb::storage::SchemaRegistry::stable_table_id("trades");
         msg.symbol_id = static_cast<uint32_t>(symbol);
         if (col_price >= 0)  msg.price   = row[col_price];
         if (col_volume >= 0) msg.volume  = row[col_volume];

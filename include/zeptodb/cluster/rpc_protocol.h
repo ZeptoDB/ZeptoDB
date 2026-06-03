@@ -23,11 +23,13 @@
 //     per-row:    col_count * int64 (all values packed)
 // ============================================================================
 
+#include "zeptodb/core/pipeline.h"
 #include "zeptodb/ingestion/tick_plant.h"
 #include "zeptodb/sql/executor.h"
 #include <cstring>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace zeptodb::cluster {
@@ -67,6 +69,8 @@ enum class RpcType : uint32_t {
     AGENT_MEMORY_REPLICA_ACK = 29, // 1-byte ack (0x01 = appended)
     AGENT_MEMORY_DELETE = 30, // Opaque Agent Memory delete request
     AGENT_CACHE_DELETE = 31, // Opaque Agent Cache delete request
+    TYPED_ROW_INGEST = 32, // TypedRowMessage -> remote node's local pipeline
+    TYPED_ROW_ACK    = 33, // 1-byte status response (0x01 = accepted)
 };
 
 // ============================================================================
@@ -239,6 +243,91 @@ inline bool deserialize_tick(const uint8_t* data, size_t len,
     if (len < sizeof(zeptodb::ingestion::TickMessage)) return false;
     std::memcpy(&out, data, sizeof(out));
     return true;
+}
+
+// ============================================================================
+// Serialize / Deserialize TypedRowMessage
+// Layout:
+//   uint32 table_id + uint32 symbol_id + int64 timestamp + uint32 column_count
+//   per column: string name + uint8 type + int64 i64 + int64 f64_bits
+//               + uint32 u32 + uint8 u8
+// ============================================================================
+
+inline void proto_write_f64(std::vector<uint8_t>& buf, double v) {
+    int64_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(v));
+    proto_write_i64(buf, bits);
+}
+
+inline double proto_read_f64(const uint8_t* p) {
+    const int64_t bits = proto_read_i64(p);
+    double v = 0.0;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+inline std::vector<uint8_t> serialize_typed_row(
+    const zeptodb::core::TypedRowMessage& row)
+{
+    std::vector<uint8_t> buf;
+    proto_write_u32(buf, static_cast<uint32_t>(row.table_id));
+    proto_write_u32(buf, static_cast<uint32_t>(row.symbol_id));
+    proto_write_i64(buf, row.timestamp);
+    proto_write_u32(buf, static_cast<uint32_t>(row.columns.size()));
+    for (const auto& col : row.columns) {
+        proto_write_str(buf, col.name);
+        proto_write_u8(buf, static_cast<uint8_t>(col.type));
+        proto_write_i64(buf, col.i64);
+        proto_write_f64(buf, col.f64);
+        proto_write_u32(buf, col.u32);
+        proto_write_u8(buf, col.u8);
+    }
+    return buf;
+}
+
+inline bool deserialize_typed_row(const uint8_t* data, size_t len,
+                                  zeptodb::core::TypedRowMessage& out)
+{
+    size_t off = 0;
+    auto need = [&](size_t n) { return off <= len && n <= len - off; };
+    auto read_u32 = [&]() -> uint32_t {
+        uint32_t v = proto_read_u32(data + off);
+        off += 4;
+        return v;
+    };
+    auto read_i64 = [&]() -> int64_t {
+        int64_t v = proto_read_i64(data + off);
+        off += 8;
+        return v;
+    };
+
+    if (!need(4 + 4 + 8 + 4)) return false;
+    const uint32_t table_id = read_u32();
+    const uint32_t symbol_id = read_u32();
+    out.timestamp = read_i64();
+    const uint32_t column_count = read_u32();
+    if (table_id > std::numeric_limits<uint16_t>::max()) return false;
+    out.table_id = static_cast<uint16_t>(table_id);
+    out.symbol_id = static_cast<zeptodb::SymbolId>(symbol_id);
+    out.columns.clear();
+    out.columns.reserve(column_count);
+
+    for (uint32_t i = 0; i < column_count; ++i) {
+        if (!need(4)) return false;
+        const uint32_t name_len = read_u32();
+        if (!need(name_len + 1 + 8 + 8 + 4 + 1)) return false;
+        zeptodb::core::TypedColumnValue col;
+        col.name.assign(reinterpret_cast<const char*>(data + off), name_len);
+        off += name_len;
+        col.type = static_cast<zeptodb::storage::ColumnType>(data[off++]);
+        col.i64 = read_i64();
+        col.f64 = proto_read_f64(data + off);
+        off += 8;
+        col.u32 = read_u32();
+        col.u8 = data[off++];
+        out.columns.push_back(std::move(col));
+    }
+    return off == len;
 }
 
 // ============================================================================

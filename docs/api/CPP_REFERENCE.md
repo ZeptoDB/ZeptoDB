@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-05-31*
+*Last updated: 2026-06-03*
 
 ---
 
@@ -10,6 +10,7 @@
 - [QueryExecutor (SQL)](#queryexecutor-sql)
 - [PartitionManager & Partition](#partitionmanager--partition)
 - [TickMessage](#tickmessage)
+- [Telegraf Output Helpers](#telegraf-output-helpers)
 - [AgentMemoryStore](#agentmemorystore)
 - [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
@@ -469,6 +470,50 @@ constexpr int64_t NS_PER_DAY = 86'400'000'000'000LL;
 
 ---
 
+## Telegraf Output Helpers
+
+`#include "zeptodb/feeds/telegraf_output.h"` — Namespace:
+`zeptodb::feeds`
+
+The Telegraf helpers parse Influx line protocol emitted by Telegraf
+`outputs.execd`, map metrics into ZeptoDB tick columns, and build a safe SQL
+INSERT batch. The standalone `zepto-telegraf-output` tool uses this API.
+
+```cpp
+using namespace zeptodb::feeds;
+
+auto metric = parse_telegraf_line(
+    "cpu,symbol=edge01 value=99.5,volume=1i 1711234567000000000");
+if (!metric) throw std::runtime_error("bad line protocol");
+
+TelegrafOutputConfig cfg;
+cfg.table_name = "telegraf";
+cfg.price_scale = 100.0;
+
+std::string error;
+auto row = metric_to_telegraf_sql_row(*metric, cfg, &error);
+if (!row) throw std::runtime_error(error);
+
+auto batch = build_telegraf_insert_sql({*row}, cfg);
+// INSERT INTO telegraf (symbol, price, volume, timestamp) VALUES ...
+```
+
+`TelegrafOutputConfig` fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `table_name` | `telegraf` | Destination SQL table; must be `[A-Za-z_][A-Za-z0-9_]*` |
+| `symbol_tag` | `symbol` | Tag mapped to ZeptoDB `symbol` |
+| `measurement_as_symbol` | `true` | Use measurement name when `symbol_tag` is absent |
+| `price_field` | `value` | Numeric field mapped to `price` |
+| `volume_field` | `volume` | Numeric field mapped to `volume` |
+| `default_volume` | `1` | Volume when `volume_field` is absent |
+| `price_scale` | `1.0` | Multiplier before int64 price storage |
+| `volume_scale` | `1.0` | Multiplier before int64 volume storage |
+| `timestamp_unit` | `Nanoseconds` | Unit for line-protocol timestamps |
+
+---
+
 ## AgentMemoryStore
 
 `#include "zeptodb/ai/agent_memory.h"` — Namespace: `zeptodb::ai`
@@ -807,6 +852,55 @@ msg.table_id  = tid;              // Stamp before ingest
 pipeline.ingest_tick(msg);
 ```
 
+### Schema-aware typed row ingest
+
+Connectors that already decoded data into a table schema can bypass
+`TickMessage::price`/`volume` and write typed wide rows directly:
+
+```cpp
+#include "zeptodb/core/pipeline.h"
+#include "zeptodb/sql/executor.h"
+
+zeptodb::core::ZeptoPipeline pipeline;
+zeptodb::sql::QueryExecutor exec{pipeline};
+
+auto ddl = exec.execute(
+    "CREATE TABLE ros_imu ("
+    "timestamp TIMESTAMP_NS, recv_ts TIMESTAMP_NS, "
+    "robot_id SYMBOL, frame_id SYMBOL, quality INT32, "
+    "orientation_w FLOAT64)"
+);
+if (!ddl.ok()) throw std::runtime_error(ddl.error);
+
+const uint16_t tid = pipeline.schema_registry().get_table_id("ros_imu");
+const uint32_t robot = pipeline.symbol_dict().intern("arm-01");
+const uint32_t frame = pipeline.symbol_dict().intern("base_link");
+
+zeptodb::core::TypedRowMessage row;
+row.table_id = tid;
+row.symbol_id = 808;      // table-scoped partition key
+row.timestamp = 13'000'000'500LL;
+row.columns = {
+    zeptodb::core::TypedColumnValue::timestamp("timestamp", 13'000'000'500LL),
+    zeptodb::core::TypedColumnValue::timestamp("recv_ts", 13'000'001'000LL),
+    zeptodb::core::TypedColumnValue::symbol("robot_id", robot),
+    zeptodb::core::TypedColumnValue::symbol("frame_id", frame),
+    zeptodb::core::TypedColumnValue::int32("quality", 1),
+    zeptodb::core::TypedColumnValue::float64("orientation_w", 0.5),
+};
+
+if (!pipeline.ingest_typed_row(std::move(row))) {
+    throw std::runtime_error("typed ingest failed");
+}
+```
+
+`ingest_typed_row()` requires `table_id != 0`, `symbol_id != 0`, and at least
+one column. The target table must exist in `SchemaRegistry`; row columns must
+exist in that schema with matching types. All declared table columns are
+materialized in the partition, and columns omitted from an individual row are
+default-filled. `SchemaRegistry::get(uint16_t table_id)` returns a schema copy
+by stable table id for connector code that resolves names once.
+
 ### Feed handlers
 
 `KafkaConfig::table_name` / `MqttConfig::table_name` resolve the id once
@@ -832,14 +926,32 @@ table-aware routing, stats, and Prometheus formatting work without `rclcpp`.
 When configured with `-DZEPTO_USE_ROS2=ON` and both `rclcpp` and `std_msgs`
 are found, `start()` opens live scalar subscriptions for
 `std_msgs/msg/{Float64,Float32,Int64,Int32,UInt64,UInt32}` messages using a
-single `data` field. Standard ROS message profiles such as
-`sensor_msgs/msg/JointState` are tracked separately.
+single `data` field. When `sensor_msgs`, `nav_msgs`, `tf2_msgs`, and
+`geometry_msgs` are also found, `Ros2IngestMode::StandardProfile` supports
+Physical AI standard profiles for `sensor_msgs/msg/Imu`,
+`sensor_msgs/msg/JointState`, `nav_msgs/msg/Odometry`,
+`tf2_msgs/msg/TFMessage`, and `sensor_msgs/msg/LaserScan`. The same message
+set is also supported by `Ros2IngestMode::TypedProfile` for schema-aware wide
+tables.
+
+`TypedProfile` rows participate in table-scoped cluster routing. When
+`Ros2Consumer::set_routing()` is configured and `PartitionRouter` selects a
+remote owner, the row is sent through `RpcClientBase::ingest_typed_row()` /
+`TcpRpcClient::ingest_typed_row()` instead of being dropped locally.
+
+Standard profiles flatten configured numeric field paths into the same
+`Ros2ScalarSample` / `TickMessage` path as scalar topics. IMU and Odometry
+emit one row per configured field. JointState and TF expand arrays by adding
+the element index to each field's base `symbol_id`. LaserScan emits configured
+metadata and finite numeric summaries; it does not expand raw range arrays in
+the hot path.
 
 When `rosbag2_cpp` and `rosbag2_storage` are also available, the same consumer
-can import or replay scalar rosbag2 data without publishing anything back into
-the ROS graph. Bag imports use configured subscriptions as the default topic
-allowlist, preserve rosbag send timestamps as source time, and write through
-the same table-aware `ZeptoPipeline` ingest route as live subscriptions.
+can import or replay scalar, standard-profile, and typed-profile rosbag2 data
+without publishing anything back into the ROS graph. Bag imports use configured
+subscriptions as the default topic allowlist, preserve rosbag send timestamps
+as source time, and write through the same table-aware `ZeptoPipeline` ingest
+route as live subscriptions.
 
 ```cpp
 #include "zeptodb/feeds/ros2_consumer.h"
@@ -865,6 +977,68 @@ consumer.on_scalar_sample(sample);
 ```
 
 ```cpp
+zeptodb::feeds::Ros2SubscriptionConfig imu;
+imu.topic = "/imu/data";
+imu.message_type = "sensor_msgs/msg/Imu";
+imu.mode = zeptodb::feeds::Ros2IngestMode::StandardProfile;
+imu.table_name = "ros_imu";
+imu.fields.push_back({"orientation.w", 100, 1000.0});
+imu.fields.push_back({"angular_velocity.z", 101, 1000.0});
+imu.fields.push_back({"linear_acceleration.x", 102, 1000.0});
+
+zeptodb::feeds::Ros2SubscriptionConfig scan;
+scan.topic = "/scan";
+scan.message_type = "sensor_msgs/msg/LaserScan";
+scan.mode = zeptodb::feeds::Ros2IngestMode::StandardProfile;
+scan.fields.push_back({"ranges.count", 200, 1.0});
+scan.fields.push_back({"ranges.mean", 201, 1000.0});
+scan.fields.push_back({"range_max", 202, 1000.0});
+```
+
+Typed profile subscriptions do not use `fields`. Instead, create a table whose
+required columns match `Ros2Consumer::typed_profile_schema(profile)` and set
+`typed_partition_symbol_id` to the table-scoped partition key:
+
+```cpp
+zeptodb::feeds::Ros2SubscriptionConfig imu_typed;
+imu_typed.topic = "/imu/data";
+imu_typed.message_type = "sensor_msgs/msg/Imu";
+imu_typed.mode = zeptodb::feeds::Ros2IngestMode::TypedProfile;
+imu_typed.table_name = "ros_imu_wide";
+imu_typed.typed_partition_symbol_id = 808;
+
+auto required = zeptodb::feeds::Ros2Consumer::typed_profile_schema(
+    zeptodb::feeds::Ros2StandardProfile::Imu);
+```
+
+Every typed profile includes `timestamp TIMESTAMP_NS`, `recv_ts TIMESTAMP_NS`,
+`robot_id SYMBOL`, `session_id SYMBOL`, `topic SYMBOL`, `frame_id SYMBOL`, and
+`quality INT32`. Profile-specific columns are:
+
+| Profile | Additional columns |
+|---|---|
+| IMU | `orientation_{x,y,z,w}`, `angular_velocity_{x,y,z}`, `linear_acceleration_{x,y,z}` as `FLOAT64` |
+| JointState | `joint_id SYMBOL`, `position FLOAT64`, `velocity FLOAT64`, `effort FLOAT64`; one row per joint |
+| Odometry | `child_frame_id SYMBOL`, pose position/orientation columns, twist linear/angular columns |
+| TFMessage | `child_frame_id SYMBOL`, `translation_{x,y,z}`, `rotation_{x,y,z,w}`; one row per transform |
+| LaserScan | scan metadata, `ranges_count`, `ranges_{min,max,mean}`, `intensities_count`, `intensities_{min,max,mean}` |
+
+Typed rows use the same table-scoped owner routing as scalar rows. If a
+configured `PartitionRouter` routes a typed row to a remote owner, the bridge
+forwards the `TypedRowMessage` over `TcpRpcClient::ingest_typed_row()` and the
+remote node applies it through its local `ZeptoPipeline::ingest_typed_row()`.
+
+Supported standard profile field paths:
+
+| Message type | Field paths |
+|---|---|
+| `sensor_msgs/msg/Imu` | `orientation.{x,y,z,w}`, `angular_velocity.{x,y,z}`, `linear_acceleration.{x,y,z}` |
+| `sensor_msgs/msg/JointState` | `position`, `velocity`, `effort` |
+| `nav_msgs/msg/Odometry` | `pose.position.{x,y,z}`, `pose.orientation.{x,y,z,w}`, `twist.linear.{x,y,z}`, `twist.angular.{x,y,z}` |
+| `tf2_msgs/msg/TFMessage` | `translation.{x,y,z}`, `rotation.{x,y,z,w}` |
+| `sensor_msgs/msg/LaserScan` | `angle_min`, `angle_max`, `angle_increment`, `time_increment`, `scan_time`, `range_min`, `range_max`, `ranges.count`, `ranges.min`, `ranges.max`, `ranges.mean`, `intensities.count`, `intensities.min`, `intensities.max`, `intensities.mean` |
+
+```cpp
 zeptodb::feeds::Ros2BagConfig bag;
 bag.uri = "/data/robot_run_001";
 bag.topics = {"/robot/joint_effort"}; // empty = configured subscriptions
@@ -886,6 +1060,101 @@ zeptodb::feeds::Ros2BagStats replayed = consumer.replay_bag(bag);
 in, import/replay fails closed and returns `completed == false` with a
 diagnostic `error`.
 
+### OPC-UA Consumer
+
+`OpcUaConsumer` provides the C++ surface for industrial OPC-UA ingestion. The
+default build keeps open62541 optional: pure decode/routing helpers compile and
+test without a live server, while `-DZEPTO_USE_OPCUA=ON` enables real client
+connectivity and the `zepto-opcua-browse` discovery CLI.
+
+```cpp
+#include "zeptodb/feeds/opcua_consumer.h"
+
+zeptodb::feeds::OpcUaConfig cfg;
+cfg.endpoint = "opc.tcp://plc-gateway:4840";
+cfg.nodes.push_back({"ns=2;s=Temperature", 100, 100.0});
+cfg.nodes.push_back({"ns=2;s=MotorCurrentArray", 200, 1000.0, 1});
+
+zeptodb::feeds::OpcUaConsumer consumer(cfg);
+consumer.set_pipeline(&pipeline);
+```
+
+Production-profile hooks share the same quality policy, backpressure retry,
+and local/remote routing counters as scalar `on_data_change()`:
+
+```cpp
+zeptodb::feeds::OpcUaConsumer::Variant v;
+v.type = zeptodb::feeds::OpcUaConsumer::VariantType::Double;
+v.f64 = 12.34;
+
+consumer.on_array_change("ns=2;s=MotorCurrentArray", {v}, source_ts_ns);
+consumer.on_string_change("ns=2;s=MachineState", "RUNNING", source_ts_ns);
+
+zeptodb::feeds::OpcUaConsumer::StructuredField pressure;
+pressure.field_name = "pressure";
+pressure.symbol_id = 301;
+pressure.value = v;
+pressure.value_scale = 100.0;
+pressure.engineering_unit = "bar";
+consumer.on_structured_change({pressure}, source_ts_ns);
+```
+
+Historical backfills and Alarms & Conditions use explicit replay/event hooks:
+
+```cpp
+zeptodb::feeds::OpcUaConsumer::HistoricalSample sample;
+sample.node_id = "ns=2;s=Temperature";
+sample.value = v;
+sample.source_ts_ns = source_ts_ns;
+consumer.ingest_history({sample});
+
+zeptodb::feeds::OpcUaConsumer::AlarmEvent alarm;
+alarm.symbol_id = 9001;
+alarm.severity = 750;
+alarm.active = true;
+alarm.source_ts_ns = source_ts_ns;
+consumer.on_alarm_event(alarm);
+```
+
+Live Historical Access reads use the same routing path when open62541 was built
+with historizing support:
+
+```cpp
+zeptodb::feeds::OpcUaConsumer::HistoryReadOptions history;
+history.start_ts_ns = start_ns;
+history.end_ts_ns = end_ns;
+history.values_per_node = 1000;  // 0 lets the server choose
+history.return_bounds = true;
+
+size_t routed = consumer.read_history(history);
+```
+
+For browse-based config discovery:
+
+```bash
+./build/zepto-opcua-browse \
+  --endpoint opc.tcp://plc-gateway:4840 \
+  --root ns=0;i=85 \
+  --max-depth 3 \
+  --symbol-base 1000 \
+  --config
+```
+
+`OpcUaServer` exposes configured ZeptoDB symbols as OPC-UA Int64 variable nodes
+for PLC/SCADA clients. Default builds keep the snapshot/publish contract
+available for tests but `start()` returns false until open62541 is enabled.
+
+```cpp
+zeptodb::feeds::OpcUaServerConfig scfg;
+scfg.endpoint = "opc.tcp://0.0.0.0:4840";
+scfg.nodes.push_back({"ns=1;s=temperature", 100, "temperature", 0});
+
+zeptodb::feeds::OpcUaServer server(scfg);
+server.start();
+server.publish_value(100, 2375, source_ts_ns);
+server.stop();
+```
+
 ### Migration tools
 
 All four migrator configs (`ClickHouseMigrator::Config`,
@@ -903,6 +1172,11 @@ instead of `route(msg.symbol_id)`. Two tables that both use `symbol_id = 1`
 can therefore live on different nodes. The migration dual-write path
 (`PartitionRouter::migration_target(symbol_id)`) keeps its single-symbol
 semantics for now.
+
+Typed rows use the same owner selection. `TcpRpcClient::ingest_typed_row()`
+serializes `zeptodb::core::TypedRowMessage` over `TYPED_ROW_INGEST` and the
+remote server applies it through the local pipeline's
+`ZeptoPipeline::ingest_typed_row()`.
 
 A table-aware routing accessor is available for callers that build their
 own ingest path:

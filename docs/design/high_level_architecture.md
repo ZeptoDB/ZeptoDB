@@ -1,6 +1,6 @@
 # ZeptoDB High-Level Architecture
 
-*Last updated: 2026-05-30 (ROS 2 / Physical AI roadmap)*
+*Last updated: 2026-06-02 (P9 OPC-UA HA/server mode)*
 
 ## Overview
 
@@ -162,13 +162,13 @@ zepto-migrate timescaledb # Generate TimescaleDB hypertable + continuous aggrega
 | SQL/HTTP | ✅ | Parser, ClickHouse API |
 | Financial Functions | ✅ | xbar, EMA, wj, ASOF, Window |
 | Parallel Query | ✅ | 3.48x @ 8 threads |
-| Feed Handlers | ✅ | FIX 350ns, ITCH 250ns |
+| Feed Handlers | ✅ | FIX 350ns, ITCH 250ns, OPC-UA client/server |
 | Migration Toolkit | ✅ | kdb+/ClickHouse/DuckDB/TimescaleDB |
 | Parquet HDB | ✅ | SNAPPY/ZSTD/LZ4_RAW, direct DuckDB/Polars queries |
 | S3 HDB Flush | ✅ | Async upload, MinIO compatible, cloud data lake |
 | Production Ops | ✅ | Monitoring, backup, k8s |
 | Python Ecosystem | ✅ | zepto_py: from_pandas/polars/arrow, ArrowSession, StreamingSession (208 tests) |
-| ROS 2 / Physical AI | 📋 | Connector roadmap with std_msgs scalar ingest, rosbag2 replay, message profiles, Isaac Sim |
+| ROS 2 / Physical AI | ✅ | std_msgs scalar ingest, rosbag2 replay, standard typed profiles, cluster forwarding, Isaac/logistics examples |
 | Distributed Query | 🚧 | VWAP decomposition, ORDER BY/LIMIT done; HAVING/DISTINCT/window pending |
 | Cluster Integrity | ✅ | Unified router, fencing token, split-brain defense |
 | Snowflake/Delta Lake | 📋 | Backlog |

@@ -295,7 +295,11 @@ In `zepto_http_server` cluster mode:
    `shared_mutex`.
 3. A peer `TcpRpcServer` listens on `port + 100` for
    `TICK_INGEST` RPCs from other pods; the callback writes directly to
-   the local pipeline (owner path).
+   the local pipeline (owner path), marks the target schema as containing
+   data, and drains single-tick RPCs before returning success. Batch RPCs
+   drain after the accepted batch. This keeps the HTTP caller's ACK semantics
+   aligned with local `INSERT`: once the forwarding pod reports success, a
+   table-aware `SELECT` routed to the owner can see the row.
 4. `zepto_data_node` is a leaf binary and does NOT wire the adapter —
    it accepts only coordinator-forwarded RPC, so wiring would
    double-route. Documented in-code.
@@ -303,6 +307,16 @@ In `zepto_http_server` cluster mode:
 **EKS verification (stage 3, 2026-04-30):** routing distributes writes
 per hash ring (30/49/21 at N=3 vs 100/0/0 before the fix). Full Round 1
 vs Round 2 comparison in `docs/bench/results_multinode.md`.
+
+**EKS verification (2026-06-03, devlog 158):** the fast cross-arch
+`--scenario all --arrow-smoke` run passed on both x86_64 and arm64 after
+stable name-derived table ids, coordinator-routed HTTP `SELECT`, and
+single-tick RPC drain-before-ACK were wired together. Result directory:
+`/tmp/arch_fast_20260603_175848`; basic, add/remove cycle, pause/resume,
+heavy query, back-to-back, and status polling all reported `PASS` with
+`Symbols verified: 50/50` where integrity checks apply. The EKS harness now
+requires each result file to contain an explicit scenario PASS and waits for
+the x86_64/arm64 benchmark jobs by PID before comparison.
 
 Known gap discovered during verification: DDL (`CREATE / DROP / ALTER
 TABLE`) runs on a single pod only — the pod the Service LB happened to

@@ -65,14 +65,23 @@ TEST(CoordinatorRoutingAdapter, RoutesToLocalWhenOwnerIsSelf) {
     router.add_node(1);  // only one node, so every route() returns 1
 
     auto pipeline = make_pipeline();
+    ASSERT_TRUE(pipeline->schema_registry().create(
+        "local_ticks",
+        {{"ts", zeptodb::storage::ColumnType::TIMESTAMP_NS},
+         {"symbol", zeptodb::storage::ColumnType::SYMBOL},
+         {"price", zeptodb::storage::ColumnType::INT64},
+         {"volume", zeptodb::storage::ColumnType::INT64}}));
+    const uint16_t table_id =
+        pipeline->schema_registry().get_table_id("local_ticks");
     zeptodb::cluster::CoordinatorRoutingAdapter::RpcClientMap remotes;
 
     zeptodb::cluster::CoordinatorRoutingAdapter adapter(
         &router, &router_mu, pipeline.get(), /*self_id=*/1, &remotes);
 
     const uint64_t before = pipeline->stats().ticks_ingested.load();
-    EXPECT_TRUE(adapter.ingest_tick(make_tick(42)));
+    EXPECT_TRUE(adapter.ingest_tick(make_tick(42, table_id)));
     EXPECT_EQ(pipeline->stats().ticks_ingested.load(), before + 1);
+    EXPECT_TRUE(pipeline->schema_registry().has_data("local_ticks"));
 }
 
 // ----------------------------------------------------------------------------

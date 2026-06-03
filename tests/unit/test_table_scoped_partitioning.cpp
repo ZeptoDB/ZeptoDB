@@ -537,6 +537,11 @@ TEST(TableScopedPartitioning, SchemaRegistrySaveConcurrentSafe) {
     // No save should have failed outright (tmp-collision used to corrupt).
     EXPECT_EQ(save_fails.load(), 0);
 
+    // Concurrent saves must not corrupt the file. Take one final serialized
+    // snapshot after all CREATEs so the loaded catalog represents final state,
+    // not whichever worker happened to save last during the race.
+    ASSERT_TRUE(reg.save_to(path));
+
     // Final load must parse and contain all kThreads * kPerThread tables.
     zeptodb::storage::SchemaRegistry reloaded;
     ASSERT_TRUE(reloaded.load_from(path));
