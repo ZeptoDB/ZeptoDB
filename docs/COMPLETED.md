@@ -1,10 +1,110 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-03
+Last updated: 2026-06-09
 
 ---
 
 ## Latest
+
+- [x] **P3 Agent Memory ANN maintenance, footprint, and IVF** (devlog 172) —
+  clean sparse-projection, HNSW, and IVF ANN indexes now handle embedding
+  updates, deletes, tombstones, and compacting row-id remaps incrementally
+  instead of forcing whole-index rebuilds. Agent Memory stats, cluster stats,
+  Prometheus, and `bench_agent_memory` now expose estimated ANN memory bytes,
+  ANN tombstone entries, and persisted `records.bin` / `vectors.bin` sidecar
+  byte sizes. `bench_agent_memory --compare-ann` adds `ivf_fast` and
+  `ivf_recall` profiles, and `zepto_http_server` accepts
+  `--agent-memory-ann ivf` plus IVF centroid/probe tuning flags. Narrows
+  BACKLOG P3 "Agent Memory stronger ANN family".
+
+- [x] **P3 Agent Memory real embedding fixture** (devlog 171) —
+  `bench_agent_memory` now accepts `--fixture real --embedding-file PATH` for
+  vector-only precomputed embedding files. The loader accepts comma, semicolon,
+  or whitespace-separated finite floats with optional brackets and comments,
+  validates consistent dimensions, defaults `--records` to the vector count,
+  and uses the loaded vectors for seeded memories, cache entries, and recall
+  queries. Narrows BACKLOG P3 "Agent Memory stronger ANN family".
+
+- [x] **P3 Agent Memory clustered ANN fixture** (devlog 170) —
+  `bench_agent_memory` now accepts `--fixture mixed|semantic|clustered`,
+  preserving the old `--semantic-fixture` alias while adding deterministic
+  clustered embeddings built from center-plus-noise vectors. Recall queries use
+  the same fixture distribution, and the ANN decision table now prints the
+  fixture name so sparse projection and HNSW comparisons are easier to audit.
+  Narrows BACKLOG P3 "Agent Memory stronger ANN family".
+
+- [x] **P3 Multi-node Agent Memory capacity rollback** (devlog 169) —
+  `AgentMemoryEvictionEvent` now carries rollback snapshots for automatic TTL,
+  tenant-quota, and capacity evictions. Owner-side HTTP/RPC writes restore those
+  evicted entries when primary durability fails, and restore only the failed and
+  later eviction tombstones when tombstone persistence fails after partial
+  success. A sync-replication missing-replica regression verifies that failed
+  memory/cache writes do not leave capacity-eviction side effects behind.
+  Closes BACKLOG P3 "Multi-node Agent Memory".
+
+- [x] **P3 Multi-node Agent Memory failover status** (devlog 168) —
+  `AgentMemoryOwnerFailoverResult` now reports source/replacement node ids,
+  source/new ring epochs, replay promotion, degraded state, and missing
+  replay-source status. Local `/api/ai/stats` includes the last owner-failover
+  status so operators can distinguish clean successor replay from a degraded
+  failover with no usable replay source. Narrows BACKLOG P3 "Multi-node Agent
+  Memory".
+
+- [x] **P3 Multi-node Agent Memory eviction tombstones** (devlog 167) —
+  `AgentMemoryStore` now reports automatic TTL, tenant-quota, and capacity
+  eviction tombstone keys from `put_memory()` and `store_cache()`. Owner-side
+  HTTP/RPC writes persist those keys through the existing delete WAL
+  prepare/commit path, so restart replay and replica shard adoption do not
+  resurrect entries evicted by a live owner write. Narrows BACKLOG P3
+  "Multi-node Agent Memory".
+
+- [x] **P3 Multi-node Agent Memory cluster stats** (devlog 166) — adds
+  `GET /api/ai/stats?scope=cluster`, backed by a new Agent Memory stats
+  `TcpRpc` payload. Routed deployments now return aggregate memory/cache,
+  eviction, snapshot, quota, and ANN counters across reachable Agent Memory
+  nodes plus per-node stats and `partial_failures` for missing or invalid
+  remote stats responses. Default `/api/ai/stats` remains local and
+  backward-compatible. Narrows BACKLOG P3 "Multi-node Agent Memory".
+
+- [x] **P3 Context trace/replay** (devlog 165) — adds
+  `examples/agent_memory/context_trace.py` plus AgentOps schema tables
+  `context_traces` and `context_replay_events`. The helper emits SQL rows that
+  explain why each memory entered a prompt and record surrounding time-series
+  replay snapshots for audit/debug workflows. Closes BACKLOG P3 "Context
+  trace/replay".
+
+- [x] **P3 OpenTelemetry/LLM trace ingest mapping** (devlog 164) — adds
+  `examples/agent_memory/otel_mapping.py`, a dependency-free mapper from OTLP
+  JSON-style GenAI spans into AgentOps SQL INSERT statements. It maps
+  provider/model calls, prompt/completion token counts, cache-hit attributes,
+  tool-call spans, latency, and model errors; the AgentOps schema now includes
+  `llm_errors`. Closes BACKLOG P3 "OpenTelemetry/LLM trace ingest mapping".
+
+- [x] **P3 Agent Memory tenant/namespace eviction quotas** (devlog 163) —
+  adds `AgentMemoryTenantQuota` and `AgentMemoryEvictionConfig::tenant_quotas`
+  for scoped memory/cache retention limits. Quotas match a whole tenant when
+  `namespace_id` is empty or one tenant namespace when it is set, evict only
+  matching entries before global caps run, preserve pinned-memory overflow
+  behavior, and expose configured quota count through `/api/ai/stats` and
+  `zepto_agent_memory_tenant_quotas`. Closes BACKLOG P3 "Tenant-scoped Agent
+  Memory eviction".
+
+- [x] **P3 Agent Memory snapshot failure/latency metrics** (devlog 162) —
+  adds local Agent Memory snapshot observability to the store, HTTP stats, and
+  Prometheus output. `save_to_directory()` records the last snapshot attempt
+  duration and total failed snapshot attempts; `/api/ai/stats` exposes
+  `snapshot_latency_seconds` and `snapshot_failures_total`; `/metrics` exports
+  `zepto_agent_memory_snapshot_latency_seconds` and
+  `zepto_agent_memory_snapshot_failures_total`. Closes BACKLOG P3 "Agent Memory
+  snapshot failure/latency metrics".
+
+- [x] **P3 Agent Memory agent-only EKS harness mode** (devlog 161) — adds
+  `tests/k8s/run_eks_bench.sh --agent-only` for rerunning only the Agent
+  Memory E2E stage on amd64 and arm64 after the core EKS compat/HA harness is
+  already green. The mode keeps EKS wake/node-readiness checks, image repo/tag
+  overrides, cleanup, result summaries, and `--keep` handling, while skipping
+  compat/HA and native engine benchmark stages. Closes BACKLOG P3 "EKS Agent
+  Memory agent-only harness mode".
 
 - [x] **P5 Telegraf external output plugin** (devlog 160) — adds
   `zepto-telegraf-output`, a Telegraf `outputs.execd` writer that reads

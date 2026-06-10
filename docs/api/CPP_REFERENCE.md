@@ -599,6 +599,13 @@ eviction.max_memories = 100000;
 eviction.max_cache_entries = 10000;
 eviction.protect_pinned = true;
 
+AgentMemoryTenantQuota tenant_quota;
+tenant_quota.tenant_id = "tenant_a";
+tenant_quota.namespace_id = "agent";  // empty means all namespaces for tenant_a
+tenant_quota.max_memories = 1000;
+tenant_quota.max_cache_entries = 500;
+eviction.tenant_quotas.push_back(tenant_quota);
+
 store.set_eviction_config(eviction);
 store.evict_expired();
 ```
@@ -606,7 +613,14 @@ store.evict_expired();
 Capacity eviction removes expired entries first, then evicts the lowest-retention
 memory/cache entries. Memory retention combines importance, recency, access count,
 and pinned status; pinned memories are protected by default from capacity eviction
-but explicit TTL expiry still removes them.
+but explicit TTL expiry still removes them. Tenant quotas run before global caps
+and evict only entries matching the configured tenant and optional namespace.
+`put_memory()` and `store_cache()` return `StoreResult.evictions` with
+`AgentMemoryEvictionEvent` tombstone keys for automatic TTL, tenant-quota, and
+capacity evictions caused by the write. HTTP owners persist those keys as delete
+WAL tombstones. Each eviction event also carries a memory/cache snapshot so
+owner durability code can call `restore_evicted_entries()` if persistence fails
+before the corresponding tombstone is durable.
 
 ### ANN acceleration
 
@@ -621,6 +635,8 @@ ann.mode = AgentMemoryAnnMode::Auto;
 ann.min_records = 50000;
 ann.oversample = 8;
 ann.index.max_candidates = 50000;
+ann.index.ivf_centroids = 256;
+ann.index.ivf_probe = 8;
 
 store.set_ann_config(ann);
 store.rebuild_ann_index();  // optional; explicit synchronous rebuild
@@ -632,22 +648,32 @@ the snapshot. Search schedules dirty rebuilds on the store's background ANN
 worker and falls back to exact scan until a fresh ANN candidate index is
 available. Once an ANN index is clean, append-only memory inserts are added to
 the index incrementally. Updates that preserve tenant, namespace, and embedding
-do not dirty ANN; updates that change ANN candidates, eviction, snapshot loads,
-and ANN config changes wait for the background replacement before using ANN
-again.
+do not dirty ANN. Updates that change embedding or partition, explicit deletes,
+and compacting row-id remaps are maintained incrementally while the index is
+clean; if maintenance cannot be applied, the store marks ANN dirty and uses exact
+scan until the background replacement is ready. Eviction, snapshot loads, and ANN
+config changes still wait for a fresh background index before using ANN again.
 
 `AgentMemoryAnnMode::SparseProjection` forces the ANN path below
 `min_records`. `AgentMemoryAnnMode::Hnsw` enables the optional hnswlib backend
 when the build was configured with `ZEPTO_ENABLE_HNSWLIB=ON`; HNSW uses
 normalized vectors with L2 distance, which is order-equivalent to cosine
 similarity. HNSW tuning fields are `ann.index.hnsw_m`,
-`ann.index.hnsw_ef_construction`, and `ann.index.hnsw_ef_search`. `Off`
+`ann.index.hnsw_ef_construction`, and `ann.index.hnsw_ef_search`.
+`AgentMemoryAnnMode::Ivf` enables the dependency-free inverted-file baseline;
+`ann.index.ivf_centroids` controls the per-partition list count and
+`ann.index.ivf_probe` controls how many nearest lists each query scans. `Off`
 preserves the exact filtered scan. Set
 `MemoryQuery::force_scan = true` when comparing ANN results against exact
 retrieval, and set `MemoryQuery::update_access = false` when the comparison
 should not affect access-count or recency ranking. The v0 sparse-projection index
-and optional HNSW index are experimental derived state and are rebuilt from live
-memories after snapshot load.
+and optional HNSW/IVF indexes are experimental derived state and are rebuilt from
+live memories after snapshot load.
+
+`AgentMemoryStats` reports ANN and sidecar footprint fields in addition to
+counts and rebuild/search counters: `ann_memory_bytes`,
+`ann_tombstone_entries`, `snapshot_records_bytes`,
+`snapshot_vectors_bytes`, and `snapshot_total_bytes`.
 
 ### Owner-scoped ids
 
@@ -667,7 +693,7 @@ The default remains the legacy local format: `mem_N` and `cache_N`.
 
 | Method | Purpose |
 |---|---|
-| `put_memory(MemoryRecord)` | Store or update a memory; validates token count and embedding dimension |
+| `put_memory(MemoryRecord)` | Store or update a memory; validates token count and embedding dimension; returns automatic eviction tombstone keys in `StoreResult.evictions` |
 | `get_memory(memory_id, tenant_id)` | Return one memory snapshot, optionally tenant-scoped |
 | `get_cache(tenant_id, namespace_id, prompt)` | Return one exact cache snapshot without updating access counters |
 | `memory_records_snapshot()` | Return all memory records without updating access counters |
@@ -675,10 +701,10 @@ The default remains the legacy local format: `mem_N` and `cache_N`.
 | `remove_memory(memory_id, tenant_id)` | Remove one memory by id, optionally tenant-scoped |
 | `search(MemoryQuery)` | Filter, rank, and return top-K memories |
 | `get_context(ContextRequest)` | Deduplicate and select memories under a token budget |
-| `store_cache(CacheEntry)` | Store exact/semantic cache entry |
+| `store_cache(CacheEntry)` | Store exact/semantic cache entry; returns automatic eviction tombstone keys in `StoreResult.evictions` |
 | `remove_cache(tenant_id, namespace_id, prompt)` | Remove one exact cache entry |
 | `lookup_cache(CacheLookup)` | Exact prompt cache lookup with semantic fallback |
-| `set_eviction_config(AgentMemoryEvictionConfig)` | Configure memory/cache capacity limits and pinned protection |
+| `set_eviction_config(AgentMemoryEvictionConfig)` | Configure global and tenant-scoped memory/cache capacity limits plus pinned protection |
 | `eviction_config()` | Return the current eviction policy |
 | `set_ann_config(AgentMemoryAnnConfig)` | Configure optional ANN candidate generation |
 | `ann_config()` | Return the current ANN policy |
@@ -686,6 +712,7 @@ The default remains the legacy local format: `mem_N` and `cache_N`.
 | `set_id_config(AgentMemoryIdConfig)` | Configure legacy or owner-scoped automatic id generation |
 | `id_config()` | Return the current automatic id identity |
 | `evict_expired(now_ns)` | Remove expired memory/cache entries and return the number removed |
+| `restore_evicted_entries(evictions)` | Restore automatic-eviction snapshots after failed durability; bypasses eviction enforcement for rollback |
 | `save_to_directory(path)` | Write `records.bin` and `vectors.bin` sidecar snapshot files |
 | `load_from_directory(path)` | Load a sidecar snapshot atomically into the store |
 | `stats()` | Return memory/cache counts, embedding dimension, eviction counters, and ANN counters |
@@ -762,7 +789,8 @@ loading it. The HTTP server appends local owner mutations to `wal.log` as
 prepared records plus commit markers, replays only committed prepared records
 after snapshot load, and truncates the log after a successful snapshot publish.
 Explicit memory/cache deletes are persisted as committed tombstones. Failed
-persisted writes roll back the live owner store before returning an error.
+persisted writes roll back the live owner store before returning an error,
+including write-triggered automatic evictions whose tombstones were not durable.
 
 `HttpServer::adopt_agent_memory_owner_shard(source_node_id, source_ring_epoch)`
 is the explicit failover replay primitive. It validates the failed owner's shard
@@ -781,7 +809,12 @@ shard under the new epoch, and returns `AgentMemoryOwnerFailoverResult`. Only
 the deterministic successor adopts the failed owner's shard; other live nodes
 return `ok=true` with `adopted=false`. The deterministic successor is the first
 live node id greater than `source_node_id`, wrapping to the lowest live node id.
-An empty source shard is treated as a successful no-op for the successor.
+Successful successor replay sets `adopted=true` and `replica_promoted=true`.
+When the successor has no replay source, the result still returns `ok=true` but
+sets `degraded=true`, `replay_source_missing=true`, and `degraded_reason` so
+operators can distinguish data-loss risk from a clean empty failover. The result
+also carries `source_node_id`, `replacement_node_id`, `source_ring_epoch`, and
+`new_ring_epoch`.
 
 ---
 

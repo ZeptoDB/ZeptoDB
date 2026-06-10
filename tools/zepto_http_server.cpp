@@ -94,9 +94,11 @@ int main(int argc, char* argv[]) {
     size_t agent_memory_max_memories = 0; // --agent-memory-max-memories N
     size_t agent_memory_max_cache_entries = 0; // --agent-memory-max-cache-entries N
     std::string agent_memory_replication_mode = "routed"; // local|routed|quorum|sync
-    std::string agent_memory_ann = "off";  // --agent-memory-ann off|auto|sparse_projection|hnsw
+    std::string agent_memory_ann = "off";  // --agent-memory-ann off|auto|sparse_projection|hnsw|ivf
     size_t agent_memory_ann_min_records = 50'000;
     size_t agent_memory_ann_max_candidates = 50'000;
+    size_t agent_memory_ann_ivf_centroids = 256;
+    size_t agent_memory_ann_ivf_probe = 8;
     uint64_t agent_memory_ring_epoch = 1;
 
     bool failover_enabled = false;
@@ -210,6 +212,10 @@ int main(int argc, char* argv[]) {
             agent_memory_ann_min_records = static_cast<size_t>(std::atoll(argv[++i]));
         else if (arg == "--agent-memory-ann-max-candidates" && i + 1 < argc)
             agent_memory_ann_max_candidates = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-ann-ivf-centroids" && i + 1 < argc)
+            agent_memory_ann_ivf_centroids = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-ann-ivf-probe" && i + 1 < argc)
+            agent_memory_ann_ivf_probe = static_cast<size_t>(std::atoll(argv[++i]));
         else if (arg == "--agent-memory-ring-epoch" && i + 1 < argc)
             agent_memory_ring_epoch = static_cast<uint64_t>(std::atoll(argv[++i]));
         else if (arg == "--failover-enabled")
@@ -297,13 +303,17 @@ int main(int argc, char* argv[]) {
                       << "  --agent-memory-replication-mode local|routed|quorum|sync\n"
                       << "                            Agent Memory owner WAL replica ACK policy\n"
                       << "                            (local/routed = owner only, default: routed)\n\n"
-                      << "  --agent-memory-ann off|auto|sparse_projection|hnsw\n"
+                      << "  --agent-memory-ann off|auto|sparse_projection|hnsw|ivf\n"
                       << "                            Enable ANN candidate generation for memory search\n"
                       << "                            (default: off)\n"
                       << "  --agent-memory-ann-min-records N\n"
                       << "                            Auto mode threshold (default: 50000)\n"
                       << "  --agent-memory-ann-max-candidates N\n"
                       << "                            Max ANN candidates reranked per search (default: 50000)\n\n"
+                      << "  --agent-memory-ann-ivf-centroids N\n"
+                      << "                            IVF centroid/list count per partition (default: 256)\n"
+                      << "  --agent-memory-ann-ivf-probe N\n"
+                      << "                            IVF lists probed per query (default: 8)\n\n"
                       << "  --agent-memory-ring-epoch N\n"
                       << "                            Initial routed Agent Memory ring epoch (default: 1)\n\n"
                       << "Cluster failover:\n"
@@ -529,6 +539,12 @@ int main(int argc, char* argv[]) {
         zeptodb::ai::AgentMemoryAnnConfig ann;
         ann.min_records = agent_memory_ann_min_records;
         ann.index.max_candidates = agent_memory_ann_max_candidates;
+        ann.index.ivf_centroids = agent_memory_ann_ivf_centroids == 0
+            ? 1
+            : agent_memory_ann_ivf_centroids;
+        ann.index.ivf_probe = agent_memory_ann_ivf_probe == 0
+            ? 1
+            : agent_memory_ann_ivf_probe;
         if (agent_memory_ann == "auto") {
             ann.mode = zeptodb::ai::AgentMemoryAnnMode::Auto;
         } else if (agent_memory_ann == "sparse_projection" ||
@@ -541,6 +557,8 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             ann.mode = zeptodb::ai::AgentMemoryAnnMode::Hnsw;
+        } else if (agent_memory_ann == "ivf") {
+            ann.mode = zeptodb::ai::AgentMemoryAnnMode::Ivf;
         } else {
             std::cerr << "Error: invalid --agent-memory-ann mode: "
                       << agent_memory_ann << "\n";
@@ -550,6 +568,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Agent memory ANN: " << agent_memory_ann
                   << " (min_records=" << agent_memory_ann_min_records
                   << ", max_candidates=" << agent_memory_ann_max_candidates
+                  << ", ivf_centroids=" << ann.index.ivf_centroids
+                  << ", ivf_probe=" << ann.index.ivf_probe
                   << ")\n";
     }
     if (agent_memory_replication_mode == "local" ||

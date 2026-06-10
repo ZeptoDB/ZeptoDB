@@ -455,6 +455,22 @@ void TcpRpcServer::handle_connection(int cfd) {
             continue;
         }
 
+        if (type == RpcType::AGENT_MEMORY_STATS) {
+            std::vector<uint8_t> response;
+            if (agent_memory_stats_callback_) {
+                try {
+                    response = agent_memory_stats_callback_(
+                        payload.data(), payload.size());
+                } catch (...) {
+                    response.clear();
+                }
+            }
+            if (!send_message(cfd, RpcType::AGENT_MEMORY_STATS_RESULT,
+                              hdr.request_id, response))
+                break;
+            continue;
+        }
+
         if (type == RpcType::AGENT_MEMORY_GET ||
             type == RpcType::AGENT_MEMORY_SEARCH ||
             type == RpcType::AGENT_CACHE_LOOKUP_EXACT) {

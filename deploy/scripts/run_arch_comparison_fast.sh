@@ -165,8 +165,10 @@ if [[ "$SKIP_LOCAL" == false ]]; then
 set -euo pipefail
 sudo install -d -o "$(id -u)" -g "$(id -g)" /var/log/zeptodb 2>/dev/null || mkdir -p /var/log/zeptodb 2>/dev/null || true
 cd ~/zeptodb && mkdir -p build && cd build
-if [ ! -f CMakeCache.txt ] || ! grep -q 'ZEPTO_BUILD_BENCH:BOOL=ON' CMakeCache.txt; then
-  cmake -DZEPTO_BUILD_BENCH=ON .. >/dev/null
+if [ ! -f CMakeCache.txt ] || \
+   ! grep -q 'ZEPTO_BUILD_BENCH:BOOL=ON' CMakeCache.txt || \
+   ! grep -q 'ZEPTO_USE_FLIGHT:BOOL=ON' CMakeCache.txt; then
+  cmake -DZEPTO_BUILD_BENCH=ON -DZEPTO_USE_FLIGHT=ON .. >/dev/null
 fi
 ninja -j"$(nproc)" zepto_tests zepto_http_server zepto_data_node bench_rebalance
 ./tests/zepto_tests --gtest_brief=1
@@ -197,8 +199,9 @@ REMOTE
   fi
 
   # 0a. Build
-  if ! grep -q 'ZEPTO_BUILD_BENCH:BOOL=ON' CMakeCache.txt 2>/dev/null; then
-    cmake -DZEPTO_BUILD_BENCH=ON . >/dev/null
+  if ! grep -q 'ZEPTO_BUILD_BENCH:BOOL=ON' CMakeCache.txt 2>/dev/null || \
+     ! grep -q 'ZEPTO_USE_FLIGHT:BOOL=ON' CMakeCache.txt 2>/dev/null; then
+    cmake -DZEPTO_BUILD_BENCH=ON -DZEPTO_USE_FLIGHT=ON . >/dev/null
   fi
   ninja -j"$(nproc)" zepto_tests zepto_http_server zepto_data_node bench_rebalance
 

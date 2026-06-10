@@ -134,6 +134,7 @@ public:
     }
 
     bool finished() const { return p_ == end_; }
+    size_t remaining() const { return static_cast<size_t>(end_ - p_); }
 
 private:
     bool need_(size_t n) const {
@@ -667,6 +668,136 @@ bool deserialize_store_result(const uint8_t* data,
         return false;
     }
     *result = std::move(out);
+    return true;
+}
+
+std::vector<uint8_t> serialize_agent_memory_stats(
+    const AgentMemoryStats& stats) {
+    std::vector<uint8_t> out;
+    out.reserve(160);
+    write_u64(out, static_cast<uint64_t>(stats.memory_count));
+    write_u64(out, static_cast<uint64_t>(stats.cache_count));
+    write_u64(out, static_cast<uint64_t>(stats.embedding_dim));
+    write_u64(out, stats.evicted_memory_count);
+    write_u64(out, stats.evicted_cache_count);
+    write_u8(out, stats.ann_enabled ? 1u : 0u);
+    write_u64(out, static_cast<uint64_t>(stats.ann_indexed_vectors));
+    write_u64(out, static_cast<uint64_t>(stats.ann_partitions));
+    write_u64(out, static_cast<uint64_t>(stats.ann_buckets));
+    write_u64(out, static_cast<uint64_t>(stats.ann_max_bucket_size));
+    write_u64(out, stats.ann_rebuild_count);
+    write_double(out, stats.ann_last_rebuild_ms);
+    write_u64(out, stats.ann_search_count);
+    write_u64(out, stats.ann_fallback_count);
+    write_double(out, stats.snapshot_latency_seconds);
+    write_u64(out, stats.snapshot_failures_total);
+    write_u64(out, static_cast<uint64_t>(stats.tenant_quota_count));
+    write_u64(out, static_cast<uint64_t>(stats.ann_memory_bytes));
+    write_u64(out, static_cast<uint64_t>(stats.ann_tombstone_entries));
+    write_u64(out, static_cast<uint64_t>(stats.snapshot_records_bytes));
+    write_u64(out, static_cast<uint64_t>(stats.snapshot_vectors_bytes));
+    write_u64(out, static_cast<uint64_t>(stats.snapshot_total_bytes));
+    return out;
+}
+
+bool deserialize_agent_memory_stats(const uint8_t* data,
+                                    size_t len,
+                                    AgentMemoryStats* stats,
+                                    std::string* error) {
+    if (!stats) {
+        if (error) *error = "agent memory stats output is null";
+        return false;
+    }
+    AgentMemoryStats out;
+    Reader reader(data, len);
+    uint64_t memory_count = 0;
+    uint64_t cache_count = 0;
+    uint64_t embedding_dim = 0;
+    uint64_t ann_indexed_vectors = 0;
+    uint64_t ann_partitions = 0;
+    uint64_t ann_buckets = 0;
+    uint64_t ann_max_bucket_size = 0;
+    uint64_t ann_memory_bytes = 0;
+    uint64_t ann_tombstone_entries = 0;
+    uint64_t snapshot_records_bytes = 0;
+    uint64_t snapshot_vectors_bytes = 0;
+    uint64_t snapshot_total_bytes = 0;
+    uint64_t tenant_quota_count = 0;
+    uint8_t ann_enabled = 0;
+    if (!reader.read_u64(&memory_count) ||
+        !reader.read_u64(&cache_count) ||
+        !reader.read_u64(&embedding_dim) ||
+        !reader.read_u64(&out.evicted_memory_count) ||
+        !reader.read_u64(&out.evicted_cache_count) ||
+        !reader.read_u8(&ann_enabled) ||
+        !reader.read_u64(&ann_indexed_vectors) ||
+        !reader.read_u64(&ann_partitions) ||
+        !reader.read_u64(&ann_buckets) ||
+        !reader.read_u64(&ann_max_bucket_size) ||
+        !reader.read_u64(&out.ann_rebuild_count) ||
+        !reader.read_double(&out.ann_last_rebuild_ms) ||
+        !reader.read_u64(&out.ann_search_count) ||
+        !reader.read_u64(&out.ann_fallback_count) ||
+        !reader.read_double(&out.snapshot_latency_seconds) ||
+        !reader.read_u64(&out.snapshot_failures_total) ||
+        !reader.read_u64(&tenant_quota_count)) {
+        if (error) *error = "invalid agent memory stats payload";
+        return false;
+    }
+    if (!reader.finished()) {
+        if (reader.remaining() != 5 * sizeof(uint64_t) ||
+            !reader.read_u64(&ann_memory_bytes) ||
+            !reader.read_u64(&ann_tombstone_entries) ||
+            !reader.read_u64(&snapshot_records_bytes) ||
+            !reader.read_u64(&snapshot_vectors_bytes) ||
+            !reader.read_u64(&snapshot_total_bytes)) {
+            if (error) *error = "invalid agent memory stats payload";
+            return false;
+        }
+    }
+    if (memory_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        cache_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        embedding_dim > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        ann_indexed_vectors >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        ann_partitions > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        ann_buckets > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        ann_max_bucket_size >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        ann_memory_bytes >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        ann_tombstone_entries >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        snapshot_records_bytes >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        snapshot_vectors_bytes >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        snapshot_total_bytes >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        tenant_quota_count >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        if (error) *error = "agent memory stats count is too large";
+        return false;
+    }
+    out.memory_count = static_cast<size_t>(memory_count);
+    out.cache_count = static_cast<size_t>(cache_count);
+    out.embedding_dim = static_cast<size_t>(embedding_dim);
+    out.ann_enabled = ann_enabled != 0;
+    out.ann_indexed_vectors = static_cast<size_t>(ann_indexed_vectors);
+    out.ann_partitions = static_cast<size_t>(ann_partitions);
+    out.ann_buckets = static_cast<size_t>(ann_buckets);
+    out.ann_max_bucket_size = static_cast<size_t>(ann_max_bucket_size);
+    out.ann_memory_bytes = static_cast<size_t>(ann_memory_bytes);
+    out.ann_tombstone_entries = static_cast<size_t>(ann_tombstone_entries);
+    out.snapshot_records_bytes = static_cast<size_t>(snapshot_records_bytes);
+    out.snapshot_vectors_bytes = static_cast<size_t>(snapshot_vectors_bytes);
+    out.snapshot_total_bytes = static_cast<size_t>(snapshot_total_bytes);
+    out.tenant_quota_count = static_cast<size_t>(tenant_quota_count);
+    if (!finish_or_error(reader, "trailing agent memory stats payload bytes",
+                         error)) {
+        return false;
+    }
+    *stats = out;
     return true;
 }
 

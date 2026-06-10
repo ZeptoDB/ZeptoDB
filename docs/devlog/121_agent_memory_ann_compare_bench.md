@@ -40,7 +40,7 @@ store without letting access-count updates perturb later rankings.
 
 ## Follow-ups
 
-- Use the optional HNSW backend from devlog 123 as a baseline for clustered and
-  real embedding fixtures.
-- Add clustered and real embedding fixtures; the current deterministic random
-  vectors are useful for repeatability but not representative enough alone.
+- Use the optional HNSW backend from devlog 123 as a baseline for larger
+  production embedding-dump runs.
+- Clustered fixtures were added in devlog 170, and precomputed real-vector file
+  fixtures were added in devlog 171.

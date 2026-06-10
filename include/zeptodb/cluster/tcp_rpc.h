@@ -106,6 +106,9 @@ public:
     void set_agent_cache_lookup_callback(BinaryRpcCallback cb) {
         agent_cache_lookup_callback_ = std::move(cb);
     }
+    void set_agent_memory_stats_callback(BinaryRpcCallback cb) {
+        agent_memory_stats_callback_ = std::move(cb);
+    }
     void set_agent_memory_replica_append_callback(BinaryRpcCallback cb) {
         agent_memory_replica_append_callback_ = std::move(cb);
     }
@@ -163,6 +166,7 @@ private:
     BinaryRpcCallback  agent_memory_get_callback_;
     BinaryRpcCallback  agent_memory_search_callback_;
     BinaryRpcCallback  agent_cache_lookup_callback_;
+    BinaryRpcCallback  agent_memory_stats_callback_;
     BinaryRpcCallback  agent_memory_replica_append_callback_;
     FencingToken*      fencing_token_ = nullptr;
     RpcSecurityConfig  security_;

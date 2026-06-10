@@ -112,4 +112,11 @@ bool deserialize_store_result(const uint8_t* data,
                               StoreResult* result,
                               std::string* error = nullptr);
 
+std::vector<uint8_t> serialize_agent_memory_stats(
+    const AgentMemoryStats& stats);
+bool deserialize_agent_memory_stats(const uint8_t* data,
+                                    size_t len,
+                                    AgentMemoryStats* stats,
+                                    std::string* error = nullptr);
+
 } // namespace zeptodb::ai

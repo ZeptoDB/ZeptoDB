@@ -2,10 +2,9 @@
 // ============================================================================
 // ZeptoDB: Agent Memory ANN Index
 // ============================================================================
-// Dependency-free approximate nearest-neighbor candidate index for Agent Memory.
-// v0 uses sparse random-projection buckets partitioned by tenant/namespace. It
-// returns row ids only; AgentMemoryStore still owns filtering, TTL checks,
-// access counters, and final ranking.
+// Approximate nearest-neighbor candidate indexes for Agent Memory. Backends are
+// partitioned by tenant/namespace and return row ids only; AgentMemoryStore
+// still owns filtering, TTL checks, access counters, and final ranking.
 // ============================================================================
 
 #include <cstddef>
@@ -26,6 +25,8 @@ struct AnnIndexConfig {
     size_t hnsw_m = 16;
     size_t hnsw_ef_construction = 200;
     size_t hnsw_ef_search = 64;
+    size_t ivf_centroids = 256;
+    size_t ivf_probe = 8;
 };
 
 struct AnnSearchResult {
@@ -38,11 +39,14 @@ struct AnnIndexStats {
     size_t indexed_vectors = 0;
     size_t buckets = 0;
     size_t max_bucket_size = 0;
+    size_t memory_bytes = 0;
+    size_t tombstone_entries = 0;
 };
 
 enum class AnnIndexKind {
     SparseProjection,
     Hnsw,
+    Ivf,
 };
 
 class AgentAnnIndex {
@@ -52,6 +56,11 @@ public:
     virtual bool add(const std::string& partition_key,
                      size_t row_id,
                      const std::vector<float>& embedding) = 0;
+    virtual bool remove(const std::string& partition_key,
+                        size_t row_id) = 0;
+    virtual bool update_row_id(const std::string& partition_key,
+                               size_t old_row_id,
+                               size_t new_row_id) = 0;
     virtual std::vector<AnnSearchResult> search(const std::string& partition_key,
                                                 const std::vector<float>& query,
                                                 size_t limit) const = 0;
@@ -60,6 +69,54 @@ public:
     virtual bool empty() const = 0;
     virtual size_t dimension() const = 0;
     virtual AnnIndexStats stats() const = 0;
+};
+
+// IvfAnnIndex is a dependency-free inverted-file baseline. It builds one
+// online centroid list per tenant/namespace partition and scans only the
+// nearest configured lists for a query. It is intended for benchmark comparison,
+// not as a trained production quantizer.
+class IvfAnnIndex final : public AgentAnnIndex {
+public:
+    explicit IvfAnnIndex(AnnIndexConfig config = {});
+
+    bool add(const std::string& partition_key,
+             size_t row_id,
+             const std::vector<float>& embedding) override;
+    bool remove(const std::string& partition_key,
+                size_t row_id) override;
+    bool update_row_id(const std::string& partition_key,
+                       size_t old_row_id,
+                       size_t new_row_id) override;
+    std::vector<AnnSearchResult> search(const std::string& partition_key,
+                                        const std::vector<float>& query,
+                                        size_t limit) const override;
+
+    void clear() override;
+    bool empty() const override;
+    size_t dimension() const override;
+    AnnIndexStats stats() const override;
+
+private:
+    struct Partition {
+        std::vector<size_t> row_ids;
+        std::vector<uint8_t> active;
+        std::unordered_map<size_t, size_t> row_to_entry;
+        std::vector<float> unit_vectors;
+        std::vector<float> centroids;
+        std::vector<std::vector<size_t>> lists;
+        size_t active_count = 0;
+    };
+
+    bool ensure_dimension_(size_t dim);
+    std::vector<float> normalize_(const std::vector<float>& embedding) const;
+    double dot_(const std::vector<float>& a,
+                const float* b) const;
+    size_t nearest_centroid_(const Partition& partition,
+                             const std::vector<float>& unit) const;
+
+    AnnIndexConfig config_;
+    size_t dimension_ = 0;
+    std::unordered_map<std::string, Partition> partitions_;
 };
 
 // SparseProjectionAnnIndex is optimized for fast rebuilds from the sidecar
@@ -72,6 +129,11 @@ public:
     bool add(const std::string& partition_key,
              size_t row_id,
              const std::vector<float>& embedding) override;
+    bool remove(const std::string& partition_key,
+                size_t row_id) override;
+    bool update_row_id(const std::string& partition_key,
+                       size_t old_row_id,
+                       size_t new_row_id) override;
     std::vector<AnnSearchResult> search(const std::string& partition_key,
                                         const std::vector<float>& query,
                                         size_t limit) const override;
@@ -89,8 +151,11 @@ private:
 
     struct Partition {
         std::vector<size_t> row_ids;
+        std::vector<uint8_t> active;
+        std::unordered_map<size_t, size_t> row_to_entry;
         std::vector<float> unit_vectors;
         std::vector<std::unordered_map<uint32_t, std::vector<size_t>>> tables;
+        size_t active_count = 0;
     };
 
     bool ensure_dimension_(size_t dim);

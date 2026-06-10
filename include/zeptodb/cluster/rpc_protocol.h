@@ -71,6 +71,8 @@ enum class RpcType : uint32_t {
     AGENT_CACHE_DELETE = 31, // Opaque Agent Cache delete request
     TYPED_ROW_INGEST = 32, // TypedRowMessage -> remote node's local pipeline
     TYPED_ROW_ACK    = 33, // 1-byte status response (0x01 = accepted)
+    AGENT_MEMORY_STATS = 34, // Opaque Agent Memory stats request
+    AGENT_MEMORY_STATS_RESULT = 35, // Opaque Agent Memory stats response
 };
 
 // ============================================================================

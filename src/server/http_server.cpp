@@ -395,30 +395,169 @@ static bool parse_owner_scoped_memory_id(
     return true;
 }
 
-static std::string agent_memory_stats_json(const zeptodb::ai::AgentMemoryStore& store) {
+static const char* agent_memory_ann_mode_name(
+    zeptodb::ai::AgentMemoryAnnMode mode) {
+    switch (mode) {
+        case zeptodb::ai::AgentMemoryAnnMode::Auto:
+            return "auto";
+        case zeptodb::ai::AgentMemoryAnnMode::SparseProjection:
+            return "sparse_projection";
+        case zeptodb::ai::AgentMemoryAnnMode::Hnsw:
+            return "hnsw";
+        case zeptodb::ai::AgentMemoryAnnMode::Ivf:
+            return "ivf";
+        case zeptodb::ai::AgentMemoryAnnMode::Off:
+        default:
+            return "off";
+    }
+}
+
+static void append_agent_memory_stats_object(
+    std::ostringstream& os,
+    const zeptodb::ai::AgentMemoryStats& stats) {
+    os << "{\"memory_count\":" << stats.memory_count
+       << ",\"cache_count\":" << stats.cache_count
+       << ",\"embedding_dim\":" << stats.embedding_dim
+       << ",\"evicted_memory_count\":" << stats.evicted_memory_count
+       << ",\"evicted_cache_count\":" << stats.evicted_cache_count
+       << ",\"snapshot_records_bytes\":" << stats.snapshot_records_bytes
+       << ",\"snapshot_vectors_bytes\":" << stats.snapshot_vectors_bytes
+       << ",\"snapshot_total_bytes\":" << stats.snapshot_total_bytes
+       << ",\"snapshot_latency_seconds\":" << stats.snapshot_latency_seconds
+       << ",\"snapshot_failures_total\":" << stats.snapshot_failures_total
+       << ",\"tenant_quota_count\":" << stats.tenant_quota_count
+       << ",\"ann\":{"
+       << "\"enabled\":" << (stats.ann_enabled ? "true" : "false")
+       << ",\"indexed_vectors\":" << stats.ann_indexed_vectors
+       << ",\"partitions\":" << stats.ann_partitions
+       << ",\"buckets\":" << stats.ann_buckets
+       << ",\"max_bucket_size\":" << stats.ann_max_bucket_size
+       << ",\"memory_bytes\":" << stats.ann_memory_bytes
+       << ",\"tombstone_entries\":" << stats.ann_tombstone_entries
+       << ",\"rebuild_count\":" << stats.ann_rebuild_count
+       << ",\"last_rebuild_ms\":" << stats.ann_last_rebuild_ms
+       << ",\"search_count\":" << stats.ann_search_count
+       << ",\"fallback_count\":" << stats.ann_fallback_count
+       << "}}";
+}
+
+static zeptodb::ai::AgentMemoryStats aggregate_agent_memory_stats(
+    const std::vector<zeptodb::ai::AgentMemoryStats>& stats) {
+    zeptodb::ai::AgentMemoryStats aggregate;
+    for (const auto& node : stats) {
+        aggregate.memory_count += node.memory_count;
+        aggregate.cache_count += node.cache_count;
+        aggregate.embedding_dim = std::max(aggregate.embedding_dim,
+                                           node.embedding_dim);
+        aggregate.evicted_memory_count += node.evicted_memory_count;
+        aggregate.evicted_cache_count += node.evicted_cache_count;
+        aggregate.ann_enabled = aggregate.ann_enabled || node.ann_enabled;
+        aggregate.ann_indexed_vectors += node.ann_indexed_vectors;
+        aggregate.ann_partitions += node.ann_partitions;
+        aggregate.ann_buckets += node.ann_buckets;
+        aggregate.ann_max_bucket_size =
+            std::max(aggregate.ann_max_bucket_size, node.ann_max_bucket_size);
+        aggregate.ann_memory_bytes += node.ann_memory_bytes;
+        aggregate.ann_tombstone_entries += node.ann_tombstone_entries;
+        aggregate.ann_rebuild_count += node.ann_rebuild_count;
+        aggregate.ann_last_rebuild_ms =
+            std::max(aggregate.ann_last_rebuild_ms, node.ann_last_rebuild_ms);
+        aggregate.ann_search_count += node.ann_search_count;
+        aggregate.ann_fallback_count += node.ann_fallback_count;
+        aggregate.snapshot_latency_seconds =
+            std::max(aggregate.snapshot_latency_seconds,
+                     node.snapshot_latency_seconds);
+        aggregate.snapshot_failures_total += node.snapshot_failures_total;
+        aggregate.snapshot_records_bytes += node.snapshot_records_bytes;
+        aggregate.snapshot_vectors_bytes += node.snapshot_vectors_bytes;
+        aggregate.snapshot_total_bytes += node.snapshot_total_bytes;
+        aggregate.tenant_quota_count += node.tenant_quota_count;
+    }
+    return aggregate;
+}
+
+struct AgentMemoryClusterStatsNode {
+    zeptodb::ai::AgentMemoryNodeId node_id = 0;
+    bool local = false;
+    zeptodb::ai::AgentMemoryStats stats;
+    std::string error;
+};
+
+static std::string agent_memory_cluster_stats_json(
+    const std::vector<AgentMemoryClusterStatsNode>& nodes) {
+    std::vector<zeptodb::ai::AgentMemoryStats> successful;
+    successful.reserve(nodes.size());
+    size_t partial_failures = 0;
+    for (const auto& node : nodes) {
+        if (node.error.empty()) {
+            successful.push_back(node.stats);
+        } else {
+            ++partial_failures;
+        }
+    }
+    const auto aggregate = aggregate_agent_memory_stats(successful);
+    std::ostringstream os;
+    os << "{\"scope\":\"cluster\""
+       << ",\"partial_failures\":" << partial_failures
+       << ",\"aggregate\":";
+    append_agent_memory_stats_object(os, aggregate);
+    os << ",\"nodes\":[";
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const auto& node = nodes[i];
+        if (i > 0) os << ",";
+        os << "{\"node_id\":" << node.node_id
+           << ",\"local\":" << (node.local ? "true" : "false");
+        if (node.error.empty()) {
+            os << ",\"stats\":";
+            append_agent_memory_stats_object(os, node.stats);
+        } else {
+            os << ",\"error\":" << json_quote(node.error);
+        }
+        os << "}";
+    }
+    os << "]}";
+    return os.str();
+}
+
+static void append_agent_memory_failover_status_object(
+    std::ostringstream& os,
+    const AgentMemoryOwnerFailoverResult& status) {
+    os << "{\"source_node_id\":" << status.source_node_id
+       << ",\"replacement_node_id\":" << status.replacement_node_id
+       << ",\"source_ring_epoch\":" << status.source_ring_epoch
+       << ",\"new_ring_epoch\":" << status.new_ring_epoch
+       << ",\"ok\":" << (status.ok ? "true" : "false")
+       << ",\"adopted\":" << (status.adopted ? "true" : "false")
+       << ",\"replica_promoted\":"
+       << (status.replica_promoted ? "true" : "false")
+       << ",\"degraded\":" << (status.degraded ? "true" : "false")
+       << ",\"replay_source_missing\":"
+       << (status.replay_source_missing ? "true" : "false")
+       << ",\"degraded_reason\":" << json_quote(status.degraded_reason)
+       << ",\"error\":" << json_quote(status.error)
+       << "}";
+}
+
+static std::string agent_memory_stats_json(
+    const zeptodb::ai::AgentMemoryStore& store,
+    const AgentMemoryOwnerFailoverResult& failover_status) {
     const auto stats = store.stats();
     const auto eviction = store.eviction_config();
     const auto ann = store.ann_config();
-    auto ann_mode = [](zeptodb::ai::AgentMemoryAnnMode mode) {
-        switch (mode) {
-            case zeptodb::ai::AgentMemoryAnnMode::Auto: return "auto";
-            case zeptodb::ai::AgentMemoryAnnMode::SparseProjection:
-                return "sparse_projection";
-            case zeptodb::ai::AgentMemoryAnnMode::Hnsw:
-                return "hnsw";
-            case zeptodb::ai::AgentMemoryAnnMode::Off:
-            default:
-                return "off";
-        }
-    };
     std::ostringstream os;
     os << "{\"memory_count\":" << stats.memory_count
        << ",\"cache_count\":" << stats.cache_count
        << ",\"embedding_dim\":" << stats.embedding_dim
        << ",\"evicted_memory_count\":" << stats.evicted_memory_count
        << ",\"evicted_cache_count\":" << stats.evicted_cache_count
+       << ",\"snapshot_records_bytes\":" << stats.snapshot_records_bytes
+       << ",\"snapshot_vectors_bytes\":" << stats.snapshot_vectors_bytes
+       << ",\"snapshot_total_bytes\":" << stats.snapshot_total_bytes
+       << ",\"snapshot_latency_seconds\":" << stats.snapshot_latency_seconds
+       << ",\"snapshot_failures_total\":" << stats.snapshot_failures_total
+       << ",\"tenant_quota_count\":" << stats.tenant_quota_count
        << ",\"ann\":{"
-       << "\"mode\":" << json_quote(ann_mode(ann.mode))
+       << "\"mode\":" << json_quote(agent_memory_ann_mode_name(ann.mode))
        << ",\"enabled\":" << (stats.ann_enabled ? "true" : "false")
        << ",\"min_records\":" << ann.min_records
        << ",\"oversample\":" << ann.oversample
@@ -426,6 +565,8 @@ static std::string agent_memory_stats_json(const zeptodb::ai::AgentMemoryStore& 
        << ",\"partitions\":" << stats.ann_partitions
        << ",\"buckets\":" << stats.ann_buckets
        << ",\"max_bucket_size\":" << stats.ann_max_bucket_size
+       << ",\"memory_bytes\":" << stats.ann_memory_bytes
+       << ",\"tombstone_entries\":" << stats.ann_tombstone_entries
        << ",\"rebuild_count\":" << stats.ann_rebuild_count
        << ",\"last_rebuild_ms\":" << stats.ann_last_rebuild_ms
        << ",\"search_count\":" << stats.ann_search_count
@@ -434,10 +575,13 @@ static std::string agent_memory_stats_json(const zeptodb::ai::AgentMemoryStore& 
        << ",\"eviction_config\":{"
        << "\"max_memories\":" << eviction.max_memories
        << ",\"max_cache_entries\":" << eviction.max_cache_entries
+       << ",\"tenant_quota_count\":" << stats.tenant_quota_count
        << ",\"evict_expired_on_write\":"
        << (eviction.evict_expired_on_write ? "true" : "false")
        << ",\"protect_pinned\":" << (eviction.protect_pinned ? "true" : "false")
-       << "}}";
+       << "},\"failover\":";
+    append_agent_memory_failover_status_object(os, failover_status);
+    os << "}";
     return os.str();
 }
 
@@ -999,12 +1143,88 @@ bool HttpServer::set_agent_memory_routing(
     return true;
 }
 
+void HttpServer::record_agent_memory_failover_status_(
+    const AgentMemoryOwnerFailoverResult& result) {
+    std::lock_guard<std::mutex> lock(agent_memory_failover_mu_);
+    agent_memory_last_failover_ = result;
+}
+
+AgentMemoryOwnerFailoverResult HttpServer::agent_memory_failover_status_() const {
+    std::lock_guard<std::mutex> lock(agent_memory_failover_mu_);
+    return agent_memory_last_failover_;
+}
+
+std::string HttpServer::build_agent_memory_stats_json(bool cluster_scope) const {
+    if (!cluster_scope) {
+        return agent_memory_stats_json(*agent_memory_,
+                                       agent_memory_failover_status_());
+    }
+
+    std::vector<AgentMemoryClusterStatsNode> nodes;
+    nodes.push_back({0, true, agent_memory_->stats(), {}});
+
+    std::vector<std::pair<zeptodb::ai::AgentMemoryNodeId,
+                          std::shared_ptr<zeptodb::cluster::TcpRpcClient>>>
+        remote_targets;
+    {
+        std::lock_guard<std::mutex> lock(agent_memory_routing_mu_);
+        if (agent_memory_router_ &&
+            agent_memory_router_->config().mode ==
+                zeptodb::ai::AgentMemoryRoutingMode::Routed) {
+            const auto config = agent_memory_router_->config();
+            nodes.front().node_id = config.self_node_id;
+            for (const auto node_id : agent_memory_router_->nodes()) {
+                if (node_id == config.self_node_id) continue;
+                auto it = agent_memory_remotes_.find(node_id);
+                remote_targets.push_back({
+                    node_id,
+                    it == agent_memory_remotes_.end() ? nullptr : it->second});
+            }
+        }
+    }
+
+    for (const auto& target : remote_targets) {
+        AgentMemoryClusterStatsNode node;
+        node.node_id = target.first;
+        node.local = false;
+        if (!target.second) {
+            node.error = "missing Agent Memory stats RPC client for node " +
+                std::to_string(target.first);
+            nodes.push_back(std::move(node));
+            continue;
+        }
+
+        std::string rpc_error;
+        const auto response = target.second->request_binary(
+            zeptodb::cluster::RpcType::AGENT_MEMORY_STATS,
+            zeptodb::cluster::RpcType::AGENT_MEMORY_STATS_RESULT,
+            {},
+            false,
+            &rpc_error);
+        if (response.empty() && !rpc_error.empty()) {
+            node.error = rpc_error;
+        } else if (!zeptodb::ai::deserialize_agent_memory_stats(
+                       response.data(), response.size(), &node.stats,
+                       &node.error)) {
+            if (node.error.empty()) {
+                node.error = "invalid Agent Memory stats RPC response";
+            }
+        }
+        nodes.push_back(std::move(node));
+    }
+
+    return agent_memory_cluster_stats_json(nodes);
+}
+
 AgentMemoryOwnerFailoverResult HttpServer::handle_agent_memory_owner_failover(
     zeptodb::ai::AgentMemoryNodeId source_node_id,
     uint64_t source_ring_epoch,
     uint64_t new_ring_epoch,
     const std::vector<zeptodb::ai::AgentMemoryNodeId>& live_nodes) {
     AgentMemoryOwnerFailoverResult result;
+    result.source_node_id = source_node_id;
+    result.source_ring_epoch = source_ring_epoch;
+    result.new_ring_epoch = new_ring_epoch;
 
     if (source_node_id == 0) {
         result.error = "agent memory failover source node is required";
@@ -1074,17 +1294,20 @@ AgentMemoryOwnerFailoverResult HttpServer::handle_agent_memory_owner_failover(
     if (!set_agent_memory_routing(config, survivors, std::move(remotes),
                                   &routing_error)) {
         result.error = routing_error;
+        record_agent_memory_failover_status_(result);
         return result;
     }
 
     std::string persist_error;
     if (!persist_agent_memory_snapshot_(&persist_error, true)) {
         result.error = persist_error;
+        record_agent_memory_failover_status_(result);
         return result;
     }
 
     if (config.self_node_id != result.replacement_node_id) {
         result.ok = true;
+        record_agent_memory_failover_status_(result);
         return result;
     }
 
@@ -1093,14 +1316,23 @@ AgentMemoryOwnerFailoverResult HttpServer::handle_agent_memory_owner_failover(
                                         &adopt_error)) {
         if (adopt_error == "source agent memory shard is empty") {
             result.ok = true;
+            result.degraded = true;
+            result.replay_source_missing = true;
+            result.degraded_reason = adopt_error;
+            record_agent_memory_failover_status_(result);
             return result;
         }
+        result.degraded = true;
+        result.degraded_reason = adopt_error;
         result.error = adopt_error;
+        record_agent_memory_failover_status_(result);
         return result;
     }
 
     result.ok = true;
     result.adopted = true;
+    result.replica_promoted = true;
+    record_agent_memory_failover_status_(result);
     return result;
 }
 
@@ -1717,6 +1949,102 @@ bool HttpServer::persist_agent_cache_delete_mutation_(
     return mark_agent_memory_dirty_(error);
 }
 
+bool HttpServer::persist_agent_memory_eviction_tombstones_(
+    const std::vector<zeptodb::ai::AgentMemoryEvictionEvent>& evictions,
+    std::string* error,
+    size_t* failed_index) {
+    if (failed_index) *failed_index = evictions.size();
+    for (size_t i = 0; i < evictions.size(); ++i) {
+        const auto& eviction = evictions[i];
+        if (eviction.target == zeptodb::ai::AgentMemoryEvictionTarget::Memory) {
+            if (!persist_agent_memory_delete_mutation_(
+                    eviction.memory_id, eviction.tenant_id, error)) {
+                if (failed_index) *failed_index = i;
+                return false;
+            }
+            continue;
+        }
+        if (!persist_agent_cache_delete_mutation_(
+                eviction.tenant_id, eviction.namespace_id, eviction.prompt,
+                error)) {
+            if (failed_index) *failed_index = i;
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::vector<zeptodb::ai::AgentMemoryEvictionEvent>
+evictions_from_index(
+    const std::vector<zeptodb::ai::AgentMemoryEvictionEvent>& evictions,
+    size_t index) {
+    if (index >= evictions.size()) return {};
+    return {evictions.begin() + static_cast<std::ptrdiff_t>(index),
+            evictions.end()};
+}
+
+static bool store_result_evicted_memory(
+    const zeptodb::ai::StoreResult& result,
+    const std::string& memory_id,
+    const std::string& tenant_id) {
+    return std::any_of(result.evictions.begin(), result.evictions.end(),
+        [&](const zeptodb::ai::AgentMemoryEvictionEvent& eviction) {
+            return eviction.target == zeptodb::ai::AgentMemoryEvictionTarget::Memory &&
+                   eviction.memory_id == memory_id &&
+                   (tenant_id.empty() || eviction.tenant_id == tenant_id);
+        });
+}
+
+static void remove_evicted_memory(
+    std::vector<zeptodb::ai::AgentMemoryEvictionEvent>* evictions,
+    const std::string& memory_id,
+    const std::string& tenant_id) {
+    if (!evictions) return;
+    evictions->erase(std::remove_if(evictions->begin(), evictions->end(),
+        [&](const zeptodb::ai::AgentMemoryEvictionEvent& eviction) {
+            return eviction.target == zeptodb::ai::AgentMemoryEvictionTarget::Memory &&
+                   eviction.memory_id == memory_id &&
+                   (tenant_id.empty() || eviction.tenant_id == tenant_id);
+        }), evictions->end());
+}
+
+static bool store_result_evicted_cache(
+    const zeptodb::ai::StoreResult& result,
+    const std::string& tenant_id,
+    const std::string& namespace_id,
+    const std::string& prompt) {
+    const std::string normalized_prompt =
+        zeptodb::ai::AgentMemoryStore::normalize_prompt(prompt);
+    const std::string scope = namespace_id.empty() ? "default" : namespace_id;
+    return std::any_of(result.evictions.begin(), result.evictions.end(),
+        [&](const zeptodb::ai::AgentMemoryEvictionEvent& eviction) {
+            return eviction.target == zeptodb::ai::AgentMemoryEvictionTarget::Cache &&
+                   eviction.tenant_id == tenant_id &&
+                   eviction.namespace_id == scope &&
+                   zeptodb::ai::AgentMemoryStore::normalize_prompt(
+                       eviction.prompt) == normalized_prompt;
+        });
+}
+
+static void remove_evicted_cache(
+    std::vector<zeptodb::ai::AgentMemoryEvictionEvent>* evictions,
+    const std::string& tenant_id,
+    const std::string& namespace_id,
+    const std::string& prompt) {
+    if (!evictions) return;
+    const std::string normalized_prompt =
+        zeptodb::ai::AgentMemoryStore::normalize_prompt(prompt);
+    const std::string scope = namespace_id.empty() ? "default" : namespace_id;
+    evictions->erase(std::remove_if(evictions->begin(), evictions->end(),
+        [&](const zeptodb::ai::AgentMemoryEvictionEvent& eviction) {
+            return eviction.target == zeptodb::ai::AgentMemoryEvictionTarget::Cache &&
+                   eviction.tenant_id == tenant_id &&
+                   eviction.namespace_id == scope &&
+                   zeptodb::ai::AgentMemoryStore::normalize_prompt(
+                       eviction.prompt) == normalized_prompt;
+        }), evictions->end());
+}
+
 std::vector<uint8_t> HttpServer::handle_agent_memory_put_rpc(
     const uint8_t* data,
     size_t len) {
@@ -1730,14 +2058,30 @@ std::vector<uint8_t> HttpServer::handle_agent_memory_put_rpc(
         : agent_memory_->get_memory(record.memory_id, record.tenant_id);
     const std::string tenant_id = record.tenant_id;
     auto stored = agent_memory_->put_memory(std::move(record));
-    if (stored.ok &&
+    const bool stored_evicted = stored.ok &&
+        store_result_evicted_memory(stored, stored.id, tenant_id);
+    if (stored.ok && !stored_evicted &&
         !persist_agent_memory_record_mutation_(stored.id, tenant_id, &error)) {
         if (previous.has_value()) {
             (void)agent_memory_->put_memory(*previous);
         } else {
             (void)agent_memory_->remove_memory(stored.id, tenant_id);
         }
+        (void)agent_memory_->restore_evicted_entries(stored.evictions);
         stored = {false, {}, error};
+    }
+    if (stored.ok) {
+        size_t failed_index = stored.evictions.size();
+        if (!persist_agent_memory_eviction_tombstones_(
+                stored.evictions, &error, &failed_index)) {
+            auto rollback_evictions =
+                evictions_from_index(stored.evictions, failed_index);
+            if (stored_evicted) {
+                remove_evicted_memory(&rollback_evictions, stored.id, tenant_id);
+            }
+            (void)agent_memory_->restore_evicted_entries(rollback_evictions);
+            stored = {false, {}, error};
+        }
     }
     return zeptodb::ai::serialize_store_result(stored);
 }
@@ -1756,7 +2100,9 @@ std::vector<uint8_t> HttpServer::handle_agent_cache_store_rpc(
     const auto previous = agent_memory_->get_cache(
         tenant_id, namespace_id, prompt);
     auto stored = agent_memory_->store_cache(std::move(entry));
-    if (stored.ok &&
+    const bool stored_evicted = stored.ok &&
+        store_result_evicted_cache(stored, tenant_id, namespace_id, prompt);
+    if (stored.ok && !stored_evicted &&
         !persist_agent_cache_entry_mutation_(tenant_id, namespace_id, prompt,
                                              &error)) {
         if (previous.has_value()) {
@@ -1764,7 +2110,22 @@ std::vector<uint8_t> HttpServer::handle_agent_cache_store_rpc(
         } else {
             (void)agent_memory_->remove_cache(tenant_id, namespace_id, prompt);
         }
+        (void)agent_memory_->restore_evicted_entries(stored.evictions);
         stored = {false, {}, error};
+    }
+    if (stored.ok) {
+        size_t failed_index = stored.evictions.size();
+        if (!persist_agent_memory_eviction_tombstones_(
+                stored.evictions, &error, &failed_index)) {
+            auto rollback_evictions =
+                evictions_from_index(stored.evictions, failed_index);
+            if (stored_evicted) {
+                remove_evicted_cache(&rollback_evictions, tenant_id,
+                                     namespace_id, prompt);
+            }
+            (void)agent_memory_->restore_evicted_entries(rollback_evictions);
+            stored = {false, {}, error};
+        }
     }
     return zeptodb::ai::serialize_store_result(stored);
 }
@@ -1957,6 +2318,12 @@ std::vector<uint8_t> HttpServer::handle_agent_cache_lookup_rpc(
     }
     const auto hit = agent_memory_->lookup_cache(std::move(lookup));
     return zeptodb::ai::serialize_cache_lookup_result(hit);
+}
+
+std::vector<uint8_t> HttpServer::handle_agent_memory_stats_rpc(
+    const uint8_t* /*data*/,
+    size_t /*len*/) {
+    return zeptodb::ai::serialize_agent_memory_stats(agent_memory_->stats());
 }
 
 std::vector<uint8_t> HttpServer::handle_agent_memory_replica_append_rpc(
@@ -2601,9 +2968,19 @@ void HttpServer::setup_routes() {
 
     // GET /api/ai/stats — Agent Memory counts, counters, and retention config.
     // Does not expose memory content, prompts, responses, or metadata.
-    svr_->Get("/api/ai/stats", [this](const httplib::Request& /*req*/,
+    svr_->Get("/api/ai/stats", [this](const httplib::Request& req,
                                        httplib::Response& res) {
-        res.set_content(agent_memory_stats_json(*agent_memory_), "application/json");
+        const std::string scope = req.has_param("scope")
+            ? req.get_param_value("scope")
+            : "local";
+        if (scope != "local" && scope != "cluster") {
+            res.status = 400;
+            res.set_content(build_error_json("scope must be local or cluster"),
+                            "application/json");
+            return;
+        }
+        res.set_content(build_agent_memory_stats_json(scope == "cluster"),
+                        "application/json");
     });
 
     // GET /api/ai/memories/:id — point lookup, routed by owner-scoped id when enabled.
@@ -2772,16 +3149,35 @@ void HttpServer::setup_routes() {
             res.set_content(build_error_json(stored.error), "application/json");
             return;
         }
-        if (local_write &&
+        const bool stored_evicted = local_write &&
+            store_result_evicted_memory(stored, stored.id, tenant_id);
+        if (local_write && !stored_evicted &&
             !persist_agent_memory_record_mutation_(stored.id, tenant_id, &error)) {
             if (previous.has_value()) {
                 (void)agent_memory_->put_memory(*previous);
             } else {
                 (void)agent_memory_->remove_memory(stored.id, tenant_id);
             }
+            (void)agent_memory_->restore_evicted_entries(stored.evictions);
             res.status = 500;
             res.set_content(build_error_json(error), "application/json");
             return;
+        }
+        if (local_write) {
+            size_t failed_index = stored.evictions.size();
+            if (!persist_agent_memory_eviction_tombstones_(
+                    stored.evictions, &error, &failed_index)) {
+                auto rollback_evictions =
+                    evictions_from_index(stored.evictions, failed_index);
+                if (stored_evicted) {
+                    remove_evicted_memory(&rollback_evictions, stored.id,
+                                          tenant_id);
+                }
+                (void)agent_memory_->restore_evicted_entries(rollback_evictions);
+                res.status = 500;
+                res.set_content(build_error_json(error), "application/json");
+                return;
+            }
         }
         res.set_content(R"({"ok":true,"memory_id":")" + json_escape(stored.id) + R"("})",
                         "application/json");
@@ -2894,7 +3290,9 @@ void HttpServer::setup_routes() {
             res.set_content(build_error_json(stored.error), "application/json");
             return;
         }
-        if (local_write &&
+        const bool stored_evicted = local_write &&
+            store_result_evicted_cache(stored, tenant_id, namespace_id, prompt);
+        if (local_write && !stored_evicted &&
             !persist_agent_cache_entry_mutation_(tenant_id, namespace_id, prompt,
                                                  &error)) {
             if (previous.has_value()) {
@@ -2902,9 +3300,26 @@ void HttpServer::setup_routes() {
             } else {
                 (void)agent_memory_->remove_cache(tenant_id, namespace_id, prompt);
             }
+            (void)agent_memory_->restore_evicted_entries(stored.evictions);
             res.status = 500;
             res.set_content(build_error_json(error), "application/json");
             return;
+        }
+        if (local_write) {
+            size_t failed_index = stored.evictions.size();
+            if (!persist_agent_memory_eviction_tombstones_(
+                    stored.evictions, &error, &failed_index)) {
+                auto rollback_evictions =
+                    evictions_from_index(stored.evictions, failed_index);
+                if (stored_evicted) {
+                    remove_evicted_cache(&rollback_evictions, tenant_id,
+                                         namespace_id, prompt);
+                }
+                (void)agent_memory_->restore_evicted_entries(rollback_evictions);
+                res.status = 500;
+                res.set_content(build_error_json(error), "application/json");
+                return;
+            }
         }
         res.set_content(R"({"ok":true,"cache_id":")" + json_escape(stored.id) + R"("})",
                         "application/json");
@@ -5165,10 +5580,50 @@ std::string HttpServer::build_prometheus_metrics() const {
         os << "# TYPE zepto_agent_cache_max_entries gauge\n";
         os << "zepto_agent_cache_max_entries " << eviction.max_cache_entries << "\n";
 
+        os << "\n# HELP zepto_agent_memory_tenant_quotas Configured Agent Memory tenant quota count\n";
+        os << "# TYPE zepto_agent_memory_tenant_quotas gauge\n";
+        os << "zepto_agent_memory_tenant_quotas "
+           << eviction.tenant_quotas.size() << "\n";
+
+        os << "\n# HELP zepto_agent_memory_snapshot_latency_seconds Last Agent Memory snapshot attempt duration in seconds\n";
+        os << "# TYPE zepto_agent_memory_snapshot_latency_seconds gauge\n";
+        os << "zepto_agent_memory_snapshot_latency_seconds "
+           << memory_stats.snapshot_latency_seconds << "\n\n";
+
+        os << "# HELP zepto_agent_memory_snapshot_failures_total Total failed Agent Memory snapshot attempts\n";
+        os << "# TYPE zepto_agent_memory_snapshot_failures_total counter\n";
+        os << "zepto_agent_memory_snapshot_failures_total "
+           << memory_stats.snapshot_failures_total << "\n";
+
+        os << "\n# HELP zepto_agent_memory_snapshot_records_bytes Last Agent Memory records sidecar size in bytes\n";
+        os << "# TYPE zepto_agent_memory_snapshot_records_bytes gauge\n";
+        os << "zepto_agent_memory_snapshot_records_bytes "
+           << memory_stats.snapshot_records_bytes << "\n\n";
+
+        os << "# HELP zepto_agent_memory_snapshot_vectors_bytes Last Agent Memory vectors sidecar size in bytes\n";
+        os << "# TYPE zepto_agent_memory_snapshot_vectors_bytes gauge\n";
+        os << "zepto_agent_memory_snapshot_vectors_bytes "
+           << memory_stats.snapshot_vectors_bytes << "\n\n";
+
+        os << "# HELP zepto_agent_memory_snapshot_total_bytes Last Agent Memory sidecar total size in bytes\n";
+        os << "# TYPE zepto_agent_memory_snapshot_total_bytes gauge\n";
+        os << "zepto_agent_memory_snapshot_total_bytes "
+           << memory_stats.snapshot_total_bytes << "\n";
+
         os << "\n# HELP zepto_agent_memory_ann_indexed_vectors Agent Memory vectors indexed by ANN\n";
         os << "# TYPE zepto_agent_memory_ann_indexed_vectors gauge\n";
         os << "zepto_agent_memory_ann_indexed_vectors "
            << memory_stats.ann_indexed_vectors << "\n\n";
+
+        os << "# HELP zepto_agent_memory_ann_memory_bytes Estimated Agent Memory ANN index bytes\n";
+        os << "# TYPE zepto_agent_memory_ann_memory_bytes gauge\n";
+        os << "zepto_agent_memory_ann_memory_bytes "
+           << memory_stats.ann_memory_bytes << "\n\n";
+
+        os << "# HELP zepto_agent_memory_ann_tombstone_entries Agent Memory ANN inactive tombstone entries\n";
+        os << "# TYPE zepto_agent_memory_ann_tombstone_entries gauge\n";
+        os << "zepto_agent_memory_ann_tombstone_entries "
+           << memory_stats.ann_tombstone_entries << "\n\n";
 
         os << "# HELP zepto_agent_memory_ann_rebuilds_total Agent Memory ANN index rebuild count\n";
         os << "# TYPE zepto_agent_memory_ann_rebuilds_total counter\n";

@@ -69,12 +69,70 @@ public:
             partition.index->resizeIndex(next_capacity);
         }
 
+        if (partition.row_to_entry.find(row_id) != partition.row_to_entry.end()) {
+            return false;
+        }
+
         const size_t entry_index = partition.row_ids.size();
         partition.row_ids.push_back(row_id);
+        partition.active.push_back(1);
+        partition.row_to_entry[row_id] = entry_index;
         partition.unit_vectors.insert(partition.unit_vectors.end(),
                                       unit.begin(), unit.end());
         partition.index->addPoint(unit.data(), entry_index);
         partition.index->setEf(std::max<size_t>(config_.hnsw_ef_search, 1));
+        ++partition.active_count;
+        return true;
+    }
+
+    bool remove(const std::string& partition_key,
+                size_t row_id) override {
+        const auto partition_it = partitions_.find(partition_key);
+        if (partition_it == partitions_.end()) return false;
+        auto& partition = partition_it->second;
+        const auto entry_it = partition.row_to_entry.find(row_id);
+        if (entry_it == partition.row_to_entry.end()) return false;
+        const size_t entry_index = entry_it->second;
+        if (entry_index >= partition.active.size() ||
+            partition.active[entry_index] == 0) {
+            return false;
+        }
+        try {
+            if (partition.index) {
+                partition.index->markDelete(entry_index);
+            }
+        } catch (const std::runtime_error&) {
+            return false;
+        }
+        partition.active[entry_index] = 0;
+        partition.row_to_entry.erase(entry_it);
+        if (partition.active_count > 0) --partition.active_count;
+        if (partition.active_count == 0) {
+            partitions_.erase(partition_it);
+        }
+        return true;
+    }
+
+    bool update_row_id(const std::string& partition_key,
+                       size_t old_row_id,
+                       size_t new_row_id) override {
+        if (old_row_id == new_row_id) return true;
+        const auto partition_it = partitions_.find(partition_key);
+        if (partition_it == partitions_.end()) return false;
+        auto& partition = partition_it->second;
+        const auto entry_it = partition.row_to_entry.find(old_row_id);
+        if (entry_it == partition.row_to_entry.end()) return false;
+        if (partition.row_to_entry.find(new_row_id) != partition.row_to_entry.end()) {
+            return false;
+        }
+        const size_t entry_index = entry_it->second;
+        if (entry_index >= partition.active.size() ||
+            partition.active[entry_index] == 0) {
+            return false;
+        }
+        partition.row_ids[entry_index] = new_row_id;
+        partition.row_to_entry.erase(entry_it);
+        partition.row_to_entry[new_row_id] = entry_index;
         return true;
     }
 
@@ -109,6 +167,10 @@ public:
             matches.pop();
             const size_t entry_index = static_cast<size_t>(label);
             if (entry_index >= partition.row_ids.size()) continue;
+            if (entry_index >= partition.active.size() ||
+                partition.active[entry_index] == 0) {
+                continue;
+            }
             const float* stored =
                 partition.unit_vectors.data() + entry_index * dimension_;
             out.push_back({partition.row_ids[entry_index],
@@ -139,9 +201,20 @@ public:
         AnnIndexStats stats;
         stats.partitions = partitions_.size();
         for (const auto& [_, partition] : partitions_) {
-            stats.indexed_vectors += partition.row_ids.size();
+            stats.indexed_vectors += partition.active_count;
+            stats.tombstone_entries +=
+                partition.row_ids.size() > partition.active_count
+                    ? partition.row_ids.size() - partition.active_count
+                    : 0;
             stats.max_bucket_size =
-                std::max(stats.max_bucket_size, config_.hnsw_m);
+                std::max(stats.max_bucket_size, partition.active_count);
+            stats.memory_bytes += partition.row_ids.capacity() * sizeof(size_t);
+            stats.memory_bytes += partition.active.capacity() * sizeof(uint8_t);
+            stats.memory_bytes +=
+                partition.unit_vectors.capacity() * sizeof(float);
+            stats.memory_bytes +=
+                partition.row_to_entry.size() *
+                (sizeof(size_t) * 2 + sizeof(void*) * 2);
         }
         return stats;
     }
@@ -151,7 +224,10 @@ private:
         std::unique_ptr<hnswlib::L2Space> space;
         mutable std::unique_ptr<hnswlib::HierarchicalNSW<float>> index;
         std::vector<size_t> row_ids;
+        std::vector<uint8_t> active;
+        std::unordered_map<size_t, size_t> row_to_entry;
         std::vector<float> unit_vectors;
+        size_t active_count = 0;
     };
 
     bool ensure_dimension_(size_t dim) {
@@ -214,8 +290,13 @@ bool SparseProjectionAnnIndex::add(const std::string& partition_key,
     if (partition.tables.empty()) {
         partition.tables.resize(config_.tables);
     }
+    if (partition.row_to_entry.find(row_id) != partition.row_to_entry.end()) {
+        return false;
+    }
     const size_t entry_index = partition.row_ids.size();
     partition.row_ids.push_back(row_id);
+    partition.active.push_back(1);
+    partition.row_to_entry[row_id] = entry_index;
     partition.unit_vectors.insert(partition.unit_vectors.end(), unit.begin(), unit.end());
 
     const float* stored = partition.unit_vectors.data() + entry_index * dimension_;
@@ -223,6 +304,51 @@ bool SparseProjectionAnnIndex::add(const std::string& partition_key,
         const uint32_t sig = signature_(stored, table);
         partition.tables[table][sig].push_back(entry_index);
     }
+    ++partition.active_count;
+    return true;
+}
+
+bool SparseProjectionAnnIndex::remove(const std::string& partition_key,
+                                      size_t row_id) {
+    const auto partition_it = partitions_.find(partition_key);
+    if (partition_it == partitions_.end()) return false;
+    auto& partition = partition_it->second;
+    const auto entry_it = partition.row_to_entry.find(row_id);
+    if (entry_it == partition.row_to_entry.end()) return false;
+    const size_t entry_index = entry_it->second;
+    if (entry_index >= partition.active.size() ||
+        partition.active[entry_index] == 0) {
+        return false;
+    }
+    partition.active[entry_index] = 0;
+    partition.row_to_entry.erase(entry_it);
+    if (partition.active_count > 0) --partition.active_count;
+    if (partition.active_count == 0) {
+        partitions_.erase(partition_it);
+    }
+    return true;
+}
+
+bool SparseProjectionAnnIndex::update_row_id(const std::string& partition_key,
+                                             size_t old_row_id,
+                                             size_t new_row_id) {
+    if (old_row_id == new_row_id) return true;
+    const auto partition_it = partitions_.find(partition_key);
+    if (partition_it == partitions_.end()) return false;
+    auto& partition = partition_it->second;
+    const auto entry_it = partition.row_to_entry.find(old_row_id);
+    if (entry_it == partition.row_to_entry.end()) return false;
+    if (partition.row_to_entry.find(new_row_id) != partition.row_to_entry.end()) {
+        return false;
+    }
+    const size_t entry_index = entry_it->second;
+    if (entry_index >= partition.active.size() ||
+        partition.active[entry_index] == 0) {
+        return false;
+    }
+    partition.row_ids[entry_index] = new_row_id;
+    partition.row_to_entry.erase(entry_it);
+    partition.row_to_entry[new_row_id] = entry_index;
     return true;
 }
 
@@ -250,6 +376,10 @@ std::vector<AnnSearchResult> SparseProjectionAnnIndex::search(
             const auto bucket = partition.tables[table].find(sig);
             if (bucket == partition.tables[table].end()) continue;
             for (const size_t entry_index : bucket->second) {
+                if (entry_index >= partition.active.size() ||
+                    partition.active[entry_index] == 0) {
+                    continue;
+                }
                 if (seen[entry_index] != 0) continue;
                 seen[entry_index] = 1;
                 candidates.push_back(entry_index);
@@ -313,11 +443,33 @@ AnnIndexStats SparseProjectionAnnIndex::stats() const {
     AnnIndexStats stats;
     stats.partitions = partitions_.size();
     for (const auto& [_, partition] : partitions_) {
-        stats.indexed_vectors += partition.row_ids.size();
+        stats.indexed_vectors += partition.active_count;
+        stats.tombstone_entries +=
+            partition.row_ids.size() > partition.active_count
+                ? partition.row_ids.size() - partition.active_count
+                : 0;
+        stats.memory_bytes += partition.row_ids.capacity() * sizeof(size_t);
+        stats.memory_bytes += partition.active.capacity() * sizeof(uint8_t);
+        stats.memory_bytes += partition.unit_vectors.capacity() * sizeof(float);
+        stats.memory_bytes +=
+            partition.row_to_entry.size() *
+            (sizeof(size_t) * 2 + sizeof(void*) * 2);
         for (const auto& table : partition.tables) {
             stats.buckets += table.size();
+            stats.memory_bytes +=
+                table.size() * (sizeof(uint32_t) + sizeof(std::vector<size_t>) +
+                                sizeof(void*) * 2);
             for (const auto& [__, rows] : table) {
-                stats.max_bucket_size = std::max(stats.max_bucket_size, rows.size());
+                stats.memory_bytes += rows.capacity() * sizeof(size_t);
+                size_t active_rows = 0;
+                for (const size_t entry_index : rows) {
+                    if (entry_index < partition.active.size() &&
+                        partition.active[entry_index] != 0) {
+                        ++active_rows;
+                    }
+                }
+                stats.max_bucket_size =
+                    std::max(stats.max_bucket_size, active_rows);
             }
         }
     }
@@ -428,6 +580,258 @@ uint64_t SparseProjectionAnnIndex::mix_(uint64_t value) {
     return value ^ (value >> 31U);
 }
 
+IvfAnnIndex::IvfAnnIndex(AnnIndexConfig config)
+    : config_(config) {
+    config_.ivf_centroids = std::clamp<size_t>(config_.ivf_centroids, 1, 65'536);
+    config_.ivf_probe = std::max<size_t>(1, config_.ivf_probe);
+    config_.max_candidates = std::max<size_t>(1, config_.max_candidates);
+}
+
+bool IvfAnnIndex::add(const std::string& partition_key,
+                      size_t row_id,
+                      const std::vector<float>& embedding) {
+    if (embedding.empty() || !ensure_dimension_(embedding.size())) return false;
+    auto unit = normalize_(embedding);
+    if (unit.empty()) return false;
+
+    auto& partition = partitions_[partition_key];
+    if (partition.row_to_entry.find(row_id) != partition.row_to_entry.end()) {
+        return false;
+    }
+
+    size_t list = 0;
+    if (partition.lists.size() < config_.ivf_centroids) {
+        list = partition.lists.size();
+        partition.centroids.insert(partition.centroids.end(),
+                                   unit.begin(), unit.end());
+        partition.lists.emplace_back();
+    } else {
+        list = nearest_centroid_(partition, unit);
+    }
+
+    const size_t entry_index = partition.row_ids.size();
+    partition.row_ids.push_back(row_id);
+    partition.active.push_back(1);
+    partition.row_to_entry[row_id] = entry_index;
+    partition.unit_vectors.insert(partition.unit_vectors.end(),
+                                  unit.begin(), unit.end());
+    partition.lists[list].push_back(entry_index);
+    ++partition.active_count;
+    return true;
+}
+
+bool IvfAnnIndex::remove(const std::string& partition_key,
+                         size_t row_id) {
+    const auto partition_it = partitions_.find(partition_key);
+    if (partition_it == partitions_.end()) return false;
+    auto& partition = partition_it->second;
+    const auto entry_it = partition.row_to_entry.find(row_id);
+    if (entry_it == partition.row_to_entry.end()) return false;
+    const size_t entry_index = entry_it->second;
+    if (entry_index >= partition.active.size() ||
+        partition.active[entry_index] == 0) {
+        return false;
+    }
+    partition.active[entry_index] = 0;
+    partition.row_to_entry.erase(entry_it);
+    if (partition.active_count > 0) --partition.active_count;
+    if (partition.active_count == 0) {
+        partitions_.erase(partition_it);
+    }
+    return true;
+}
+
+bool IvfAnnIndex::update_row_id(const std::string& partition_key,
+                                size_t old_row_id,
+                                size_t new_row_id) {
+    if (old_row_id == new_row_id) return true;
+    const auto partition_it = partitions_.find(partition_key);
+    if (partition_it == partitions_.end()) return false;
+    auto& partition = partition_it->second;
+    const auto entry_it = partition.row_to_entry.find(old_row_id);
+    if (entry_it == partition.row_to_entry.end()) return false;
+    if (partition.row_to_entry.find(new_row_id) != partition.row_to_entry.end()) {
+        return false;
+    }
+    const size_t entry_index = entry_it->second;
+    if (entry_index >= partition.active.size() ||
+        partition.active[entry_index] == 0) {
+        return false;
+    }
+    partition.row_ids[entry_index] = new_row_id;
+    partition.row_to_entry.erase(entry_it);
+    partition.row_to_entry[new_row_id] = entry_index;
+    return true;
+}
+
+std::vector<AnnSearchResult> IvfAnnIndex::search(
+    const std::string& partition_key,
+    const std::vector<float>& query,
+    size_t limit) const {
+    if (limit == 0 || query.empty() || query.size() != dimension_) return {};
+    const auto partition_it = partitions_.find(partition_key);
+    if (partition_it == partitions_.end()) return {};
+    const auto query_unit = normalize_(query);
+    if (query_unit.empty()) return {};
+
+    const auto& partition = partition_it->second;
+    if (partition.active_count == 0 || partition.lists.empty()) return {};
+
+    std::vector<ScoredEntry> centroid_scores;
+    centroid_scores.reserve(partition.lists.size());
+    for (size_t list = 0; list < partition.lists.size(); ++list) {
+        const float* centroid = partition.centroids.data() + list * dimension_;
+        centroid_scores.push_back({list, dot_(query_unit, centroid)});
+    }
+    const size_t probes = std::min(config_.ivf_probe, centroid_scores.size());
+    std::partial_sort(centroid_scores.begin(),
+                      centroid_scores.begin() + static_cast<std::ptrdiff_t>(probes),
+                      centroid_scores.end(),
+                      [](const auto& a, const auto& b) {
+                          if (a.similarity != b.similarity) {
+                              return a.similarity > b.similarity;
+                          }
+                          return a.entry_index < b.entry_index;
+                      });
+
+    auto worse = [](const ScoredEntry& a, const ScoredEntry& b) {
+        return worse_score(a, b);
+    };
+    std::vector<ScoredEntry> heap;
+    heap.reserve(std::min(limit, partition.active_count));
+    size_t candidates = 0;
+    for (size_t i = 0; i < probes && candidates < config_.max_candidates; ++i) {
+        const auto& list = partition.lists[centroid_scores[i].entry_index];
+        for (const size_t entry_index : list) {
+            if (entry_index >= partition.active.size() ||
+                partition.active[entry_index] == 0) {
+                continue;
+            }
+            const float* stored =
+                partition.unit_vectors.data() + entry_index * dimension_;
+            const double sim = dot_(query_unit, stored);
+            ScoredEntry scored{entry_index, sim};
+            if (heap.size() < limit) {
+                heap.push_back(scored);
+                std::push_heap(heap.begin(), heap.end(), worse);
+            } else if (sim > heap.front().similarity ||
+                       (sim == heap.front().similarity &&
+                        entry_index < heap.front().entry_index)) {
+                std::pop_heap(heap.begin(), heap.end(), worse);
+                heap.back() = scored;
+                std::push_heap(heap.begin(), heap.end(), worse);
+            }
+            ++candidates;
+            if (candidates >= config_.max_candidates) break;
+        }
+    }
+
+    std::sort(heap.begin(), heap.end(), [](const auto& a, const auto& b) {
+        if (a.similarity != b.similarity) return a.similarity > b.similarity;
+        return a.entry_index < b.entry_index;
+    });
+
+    std::vector<AnnSearchResult> out;
+    out.reserve(heap.size());
+    for (const auto& scored : heap) {
+        out.push_back({partition.row_ids[scored.entry_index],
+                       scored.similarity});
+    }
+    return out;
+}
+
+void IvfAnnIndex::clear() {
+    dimension_ = 0;
+    partitions_.clear();
+}
+
+bool IvfAnnIndex::empty() const {
+    return partitions_.empty();
+}
+
+size_t IvfAnnIndex::dimension() const {
+    return dimension_;
+}
+
+AnnIndexStats IvfAnnIndex::stats() const {
+    AnnIndexStats stats;
+    stats.partitions = partitions_.size();
+    for (const auto& [_, partition] : partitions_) {
+        stats.indexed_vectors += partition.active_count;
+        stats.tombstone_entries +=
+            partition.row_ids.size() > partition.active_count
+                ? partition.row_ids.size() - partition.active_count
+                : 0;
+        stats.buckets += partition.lists.size();
+        stats.memory_bytes += partition.row_ids.capacity() * sizeof(size_t);
+        stats.memory_bytes += partition.active.capacity() * sizeof(uint8_t);
+        stats.memory_bytes += partition.unit_vectors.capacity() * sizeof(float);
+        stats.memory_bytes += partition.centroids.capacity() * sizeof(float);
+        stats.memory_bytes +=
+            partition.row_to_entry.size() *
+            (sizeof(size_t) * 2 + sizeof(void*) * 2);
+        for (const auto& list : partition.lists) {
+            size_t active_rows = 0;
+            for (const size_t entry_index : list) {
+                if (entry_index < partition.active.size() &&
+                    partition.active[entry_index] != 0) {
+                    ++active_rows;
+                }
+            }
+            stats.max_bucket_size = std::max(stats.max_bucket_size, active_rows);
+            stats.memory_bytes += list.capacity() * sizeof(size_t);
+        }
+    }
+    return stats;
+}
+
+bool IvfAnnIndex::ensure_dimension_(size_t dim) {
+    if (dim == 0) return false;
+    if (dimension_ != 0) return dimension_ == dim;
+    dimension_ = dim;
+    return true;
+}
+
+std::vector<float> IvfAnnIndex::normalize_(
+    const std::vector<float>& embedding) const {
+    double norm_sq = 0.0;
+    for (const float value : embedding) {
+        norm_sq += static_cast<double>(value) * static_cast<double>(value);
+    }
+    if (norm_sq <= 0.0 || !std::isfinite(norm_sq)) return {};
+    const double inv_norm = 1.0 / std::sqrt(norm_sq);
+    std::vector<float> out(embedding.size());
+    for (size_t i = 0; i < embedding.size(); ++i) {
+        out[i] = static_cast<float>(static_cast<double>(embedding[i]) * inv_norm);
+    }
+    return out;
+}
+
+double IvfAnnIndex::dot_(const std::vector<float>& a,
+                         const float* b) const {
+    double out = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        out += static_cast<double>(a[i]) * static_cast<double>(b[i]);
+    }
+    return out;
+}
+
+size_t IvfAnnIndex::nearest_centroid_(
+    const Partition& partition,
+    const std::vector<float>& unit) const {
+    size_t best = 0;
+    double best_score = -std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < partition.lists.size(); ++i) {
+        const float* centroid = partition.centroids.data() + i * dimension_;
+        const double score = dot_(unit, centroid);
+        if (score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+    return best;
+}
+
 std::unique_ptr<AgentAnnIndex> make_ann_index(AnnIndexKind kind,
                                               AnnIndexConfig config) {
     if (kind == AnnIndexKind::Hnsw) {
@@ -436,6 +840,9 @@ std::unique_ptr<AgentAnnIndex> make_ann_index(AnnIndexKind kind,
 #else
         return nullptr;
 #endif
+    }
+    if (kind == AnnIndexKind::Ivf) {
+        return std::make_unique<IvfAnnIndex>(config);
     }
     return std::make_unique<SparseProjectionAnnIndex>(config);
 }

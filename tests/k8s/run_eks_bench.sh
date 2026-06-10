@@ -15,6 +15,7 @@
 #   ./tests/k8s/run_eks_bench.sh --k8s-only   # skip engine bench
 #   ./tests/k8s/run_eks_bench.sh --engine-only # skip K8s tests
 #   ./tests/k8s/run_eks_bench.sh --skip-agent-e2e
+#   ./tests/k8s/run_eks_bench.sh --agent-only # rerun only Agent Memory E2E
 #
 # Cost: ~$4.60/hr. Full run ~20min ≈ $1.50
 set -euo pipefail
@@ -26,6 +27,7 @@ KEEP=false
 SKIP_WAKE=false
 K8S_ONLY=false
 ENGINE_ONLY=false
+AGENT_ONLY=false
 SKIP_AGENT_E2E=false
 RESULT_DIR="/tmp/eks_bench_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RESULT_DIR"
@@ -44,17 +46,27 @@ while [[ $# -gt 0 ]]; do
     --skip-wake)   SKIP_WAKE=true; shift ;;
     --k8s-only)    K8S_ONLY=true; shift ;;
     --engine-only) ENGINE_ONLY=true; shift ;;
+    --agent-only)  AGENT_ONLY=true; K8S_ONLY=true; shift ;;
     --skip-agent-e2e) SKIP_AGENT_E2E=true; shift ;;
     --agent-image-repo) AGENT_IMAGE_REPO="$2"; shift 2 ;;
     --agent-x86-tag) AGENT_X86_TAG="$2"; shift 2 ;;
     --agent-arm64-tag) AGENT_ARM64_TAG="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: $0 [--keep] [--skip-wake] [--k8s-only] [--engine-only] [--skip-agent-e2e]"
+      echo "Usage: $0 [--keep] [--skip-wake] [--k8s-only] [--engine-only] [--agent-only] [--skip-agent-e2e]"
       echo "       [--agent-image-repo REPO] [--agent-x86-tag TAG] [--agent-arm64-tag TAG]"
       exit 0 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
+
+if $AGENT_ONLY && $ENGINE_ONLY; then
+  fail "--agent-only and --engine-only cannot be combined"
+  exit 1
+fi
+if $AGENT_ONLY && $SKIP_AGENT_E2E; then
+  fail "--agent-only cannot be combined with --skip-agent-e2e"
+  exit 1
+fi
 
 # ── Cleanup function ──────────────────────────────────────
 force_clean_namespaces() {
@@ -217,7 +229,7 @@ fi
 # 3. K8s tests — amd64 chain ‖ arm64 chain (devlog 094 #9)
 # Separate namespaces → no cluster-level state contention, safe to parallelize.
 # ═══════════════════════════════════════════════════════════
-if ! $ENGINE_ONLY; then
+if ! $ENGINE_ONLY && ! $AGENT_ONLY; then
   cd "$PROJECT_ROOT"
 
   # ── Clean any leftover releases ──
@@ -295,6 +307,7 @@ fi
 # ═══════════════════════════════════════════════════════════
 if ! $ENGINE_ONLY && ! $SKIP_AGENT_E2E; then
   step "4. Agent Memory E2E (real ZeptoDB images, amd64 + arm64)"
+  cd "$PROJECT_ROOT"
   AGENT_E2E="$PROJECT_ROOT/tests/k8s/test_k8s_agent_memory.py"
   if [ -x "$AGENT_E2E" ] || [ -f "$AGENT_E2E" ]; then
     python3.13 -u "$AGENT_E2E" \
@@ -338,14 +351,18 @@ echo "╚═══════════════════════�
 if ! $ENGINE_ONLY; then
   echo ""
   echo "── K8s Test Results ──"
-  for F in amd64_compat amd64_ha_perf; do
-    SUMMARY=$(grep -E "Results:|HA Test Results:" "$RESULT_DIR/${F}.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | tail -1)
-    printf "  %-20s %s\n" "$F:" "$SUMMARY"
-  done
-  ARM_C=$(grep "Results:" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | head -1)
-  ARM_H=$(grep "HA Test Results:" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | head -1)
-  printf "  %-20s %s\n" "arm64 compat:" "$ARM_C"
-  printf "  %-20s %s\n" "arm64 HA+perf:" "$ARM_H"
+  if ! $AGENT_ONLY; then
+    for F in amd64_compat amd64_ha_perf; do
+      SUMMARY=$(grep -E "Results:|HA Test Results:" "$RESULT_DIR/${F}.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | tail -1)
+      printf "  %-20s %s\n" "$F:" "$SUMMARY"
+    done
+    ARM_C=$(grep "Results:" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | head -1)
+    ARM_H=$(grep "HA Test Results:" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | head -1)
+    printf "  %-20s %s\n" "arm64 compat:" "$ARM_C"
+    printf "  %-20s %s\n" "arm64 HA+perf:" "$ARM_H"
+  else
+    printf "  %-20s %s\n" "mode:" "agent-only"
+  fi
   if ! $SKIP_AGENT_E2E; then
     AGENT_SUMMARY=$(grep "Agent Memory E2E Results:" "$RESULT_DIR/agent_memory_e2e.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g' | tail -1)
     printf "  %-20s %s\n" "agent memory:" "$AGENT_SUMMARY"
@@ -353,12 +370,14 @@ if ! $ENGINE_ONLY; then
     printf "  %-20s %s\n" "agent memory:" "skipped"
   fi
 
-  echo ""
-  echo "── K8s Performance: amd64 ──"
-  grep -E "^\s+(drain_|pod_|scale_|rolling_|pod_to_|http_|service_)" "$RESULT_DIR/amd64_ha_perf.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g'
-  echo ""
-  echo "── K8s Performance: arm64 ──"
-  grep -E "^\s+(drain_|pod_|scale_|rolling_|pod_to_|http_|service_)" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g'
+  if ! $AGENT_ONLY; then
+    echo ""
+    echo "── K8s Performance: amd64 ──"
+    grep -E "^\s+(drain_|pod_|scale_|rolling_|pod_to_|http_|service_)" "$RESULT_DIR/amd64_ha_perf.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g'
+    echo ""
+    echo "── K8s Performance: arm64 ──"
+    grep -E "^\s+(drain_|pod_|scale_|rolling_|pod_to_|http_|service_)" "$RESULT_DIR/arm64_all.log" 2>/dev/null | sed 's/\x1B\[[0-9;]*m//g'
+  fi
 fi
 
 if ! $K8S_ONLY && [ -f "$RESULT_DIR/arch_bench.log" ]; then

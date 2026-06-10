@@ -110,8 +110,10 @@ sends the same prepared record and commit marker to configured Agent Memory
 replicas. Replicas append it under the source owner path
 (`node-{source_node_id}/shard-0/wal.log`) without applying it to their live
 store, so it is available for later explicit shard adoption. Explicit HTTP/RPC
-memory and cache deletes are recorded as committed tombstones. Automatic
-TTL/capacity eviction tombstones are still future work.
+memory and cache deletes are recorded as committed tombstones. Owner-side
+HTTP/RPC writes also persist tombstones for automatic TTL, tenant-quota, and
+capacity evictions caused by that write, so restart replay and replica shard
+adoption do not resurrect entries the live owner already evicted.
 
 `zepto_http_server --agent-memory-dir <path>` enables persistence explicitly. If
 HDB is enabled via `--hdb-dir` or `--storage-mode tiered`, the default sidecar
@@ -156,26 +158,40 @@ the index dirty. Search does not build a dirty ANN index inline. It requests the
 store's background ANN worker and falls back to the exact scan while the
 replacement builds. Rebuilds take a memory-vector snapshot under the store
 mutex, build the next ANN structure outside that mutex, and swap it in only if
-no newer mutation superseded the snapshot. A clean ANN index also accepts
-append-only memory inserts incrementally, avoiding a full rebuild for the common
-bulk-load then append path. Updates that preserve tenant, namespace, and
-embedding do not dirty ANN at all; updates that change ANN candidates,
-TTL/capacity eviction, snapshot loads, and config changes wait for a fresh
-background index before using ANN candidates again. CLI defaults keep ANN off;
-`--agent-memory-ann auto` uses the
-sparse-projection backend after `--agent-memory-ann-min-records` is reached,
-while `--agent-memory-ann sparse_projection` forces sparse projection for
-benchmarking. Builds configured with `ZEPTO_ENABLE_HNSWLIB=ON` also accept
+no newer mutation superseded the snapshot. A clean ANN index also accepts memory
+inserts, embedding updates, deletes, and compacting row-id remaps incrementally,
+avoiding a full rebuild for common live maintenance paths. Updates that preserve
+tenant, namespace, and embedding do not dirty ANN at all. If incremental
+maintenance cannot be applied, the store marks ANN dirty and falls back to exact
+scan until the background worker publishes a fresh replacement. TTL/capacity
+eviction, snapshot loads, and config changes still wait for a fresh background
+index before using ANN candidates again. CLI defaults keep ANN off;
+`--agent-memory-ann auto` uses the sparse-projection backend after
+`--agent-memory-ann-min-records` is reached, while
+`--agent-memory-ann sparse_projection` forces sparse projection for benchmarking.
+Builds configured with `ZEPTO_ENABLE_HNSWLIB=ON` also accept
 `--agent-memory-ann hnsw`, backed by hnswlib over normalized vectors with L2
-distance, which is order-equivalent to cosine similarity.
+distance, which is order-equivalent to cosine similarity. `--agent-memory-ann
+ivf` enables a dependency-free inverted-file baseline with
+`--agent-memory-ann-ivf-centroids` and `--agent-memory-ann-ivf-probe` tuning.
 
 Current benchmark results show sparse projection can be very fast for candidate
 generation, but recall is workload-sensitive. HNSW has much better semantic-only
 recall at low search latency, but first-build graph construction is far slower
 and mixed ranking recall can still be low because final ranking includes
-importance, recency, pinned status, and access count. Recall-sensitive
-deployments should keep exact scan as the default until HNSW has clustered/real
-embedding fixture coverage plus update/delete and persistence strategies.
+importance, recency, pinned status, and access count. IVF is available as a
+dependency-free baseline between sparse projection and HNSW; it is useful for
+comparison and constrained builds, not yet the default production policy.
+Recall-sensitive deployments should keep exact scan as the default until larger
+production embedding-dump evaluation selects a policy. The `bench_agent_memory`
+harness supports `--fixture mixed|semantic|clustered|real`; `clustered` uses
+deterministic center-plus-noise embeddings and fixture-matched query vectors,
+while `real` loads precomputed vector-only embedding files with
+`--embedding-file PATH`. The real fixture accepts comma, semicolon, or
+whitespace-separated finite floats with optional brackets and comments, then
+uses the loaded vectors for memories, cache entries, and recall queries. The
+compare table includes sparse, IVF, and HNSW profiles plus ANN memory bytes and
+snapshot sidecar bytes so recall/latency decisions can include footprint.
 
 ## Eviction
 
@@ -226,8 +242,9 @@ and `connection.cache`.
 ## Observability
 
 `GET /api/ai/stats` exposes aggregate counts, eviction counters, embedding
-dimension, and eviction config only. It deliberately omits memory content,
-prompts, responses, and metadata.
+dimension, snapshot health, ANN status, eviction config, and the last local
+owner-failover status. It deliberately omits memory content, prompts,
+responses, and metadata.
 
 `GET /metrics` exports Prometheus-compatible Agent Memory gauges and counters:
 
@@ -238,12 +255,43 @@ prompts, responses, and metadata.
 - `zepto_agent_cache_evictions_total`
 - `zepto_agent_memory_max_records`
 - `zepto_agent_cache_max_entries`
+- `zepto_agent_memory_snapshot_latency_seconds`
+- `zepto_agent_memory_snapshot_failures_total`
+- `zepto_agent_memory_snapshot_records_bytes`
+- `zepto_agent_memory_snapshot_vectors_bytes`
+- `zepto_agent_memory_snapshot_total_bytes`
+- `zepto_agent_memory_ann_memory_bytes`
+- `zepto_agent_memory_ann_tombstone_entries`
 
 AgentOps telemetry is modeled as ordinary ZeptoDB time-series tables beside the
 Agent Memory subsystem. The example schema in `examples/agent_memory/` defines
-`agent_runs`, `retrieval_events`, `cache_events`, `llm_calls`, and `tool_calls`.
-Those tables track operational facts about agent turns, while Agent Memory keeps
-the durable context objects selected for future prompts.
+`agent_runs`, `retrieval_events`, `cache_events`, `context_traces`,
+`context_replay_events`, `llm_calls`, `llm_errors`, and `tool_calls`. Those
+tables track operational facts about agent turns, while Agent Memory keeps the
+durable context objects selected for future prompts.
+
+Context trace/replay helpers are available in
+`examples/agent_memory/context_trace.py`. They record one row per selected
+memory with rank, score, similarity, token count, and a compact reason string,
+plus replay rows for the time-series queries observed around the decision.
+
+OpenTelemetry/GenAI span mapping is available in
+`examples/agent_memory/otel_mapping.py`. It maps OTLP JSON spans into AgentOps
+INSERT statements for LLM provider/model calls, prompt/completion token counts,
+cache hits, tool calls, latency, and model errors. This keeps collection
+pluggable while preserving a stable ZeptoDB table shape for agent observability.
+
+The EKS bench harness supports a focused Agent Memory validation mode:
+
+```bash
+tests/k8s/run_eks_bench.sh --agent-only --skip-wake --keep
+```
+
+`--agent-only` preserves the normal EKS wake/node-readiness checks unless
+`--skip-wake` is supplied, runs `tests/k8s/test_k8s_agent_memory.py` against the
+configured amd64 and arm64 bench images, and skips the general compat/HA and
+native engine benchmark stages. This is the preferred iteration path after the
+core EKS harness is already green.
 
 ## Security And Isolation
 
@@ -261,14 +309,13 @@ as `source`, `type`, or `trusted` for future ranking and prompt-injection defens
 - No server-side LLM calls or automatic summarization.
 - No SQL vector type.
 - Persistence is sidecar snapshot plus owner-local and optional replica WAL for
-  memory/cache upserts and explicit delete tombstones; it is not yet encrypted
-  or automatic TTL/capacity-eviction WAL complete.
-- ANN remains experimental. Sparse projection and optional hnswlib HNSW are
-  candidate-generation backends only; persisted ANN sidecars, incremental graph
-  update/delete support beyond append-only inserts, IVF, and robust production
-  default policies are not yet implemented.
-- Failover replay requires explicit source-shard adoption by orchestration;
-  automatic owner reassignment is not yet wired.
+  memory/cache upserts, explicit delete tombstones, and write-triggered
+  automatic TTL/tenant-quota/capacity eviction tombstones; it is not yet
+  encrypted or background eviction WAL complete.
+- ANN remains experimental. Sparse projection, optional hnswlib HNSW, and IVF
+  are candidate-generation backends only; persisted ANN index sidecars and a
+  robust production default policy are not yet implemented.
+- Full shard migration dual-write/catch-up is not yet implemented.
 
 ## Multi-Node Behavior Today
 
@@ -292,7 +339,8 @@ original HTTP caller. As a result:
 - A remote owner returns ACK only after applying the mutation to its local
   `AgentMemoryStore` and appending a committed owner-local WAL transaction when
   persistence is enabled. If persistence or quorum/sync replication fails before
-  commit, the owner rolls back the live memory/cache mutation.
+  commit, the owner rolls back the live memory/cache mutation and restores any
+  write-triggered eviction side effects whose tombstones are not durable.
 - With replication mode `quorum`, the owner prepares locally, waits for enough
   replica prepare/commit acknowledgement to reach a majority with the local
   commit, then ACKs. With `sync`, it waits for every configured replica before
@@ -315,7 +363,10 @@ original HTTP caller. As a result:
   `--agent-memory-dir` without overwriting each other's snapshot files.
 - Eviction and TTL cleanup are local, so global capacity and pinned-memory
   guarantees do not hold cluster-wide.
-- `/api/ai/stats` and Prometheus gauges are per-pod values, not cluster totals.
+- `/api/ai/stats?scope=local` and Prometheus gauges are per-pod values.
+  `/api/ai/stats?scope=cluster` scatters over configured routed Agent Memory
+  nodes and returns aggregate plus per-node counters, with `partial_failures`
+  for missing clients or invalid remote stats responses.
 - With `zepto_http_server --failover-enabled` in non-HA cluster mode,
   `FailoverManager::on_failover` advances the Agent Memory ring epoch and calls
   deterministic successor adoption for the failed owner shard.
@@ -325,8 +376,10 @@ exact cache reads/deletes, search, context, and owner-local restart
 snapshots/WAL replay can use routed HTTP. Failed-owner replay is available
 through explicit shard adoption or the non-HA `--failover-enabled` process
 wiring. Quorum/sync replica WAL durability is available for memory/cache upserts
-and explicit delete tombstones. Replica promotion, degraded-state reporting,
-eviction, and stats are still not cluster-consistent.
+and explicit or write-triggered automatic eviction tombstones. Cluster-scoped
+stats are available through routed RPC scatter. Successor replay promotion and
+local degraded-state reporting are available; global eviction/quota
+reconciliation is still not cluster-consistent.
 
 ## Multi-Node Design
 
@@ -449,9 +502,13 @@ PREPARE_DELETE_CACHE, COMMIT
 
 Prepared records without `COMMIT` are intentionally ignored during replay.
 Replica records are idempotent for upserts because memory/cache ids are stable.
-Explicit deletes are stored as committed tombstones. Automatic expire/capacity
-batch tombstones, abort markers, and monotonic per-shard sequence numbers remain
-future work before this becomes a complete replicated mutation log.
+Explicit deletes and write-triggered automatic TTL/tenant-quota/capacity
+evictions are stored as committed tombstones. If a write-triggered tombstone
+fails after some earlier tombstones are durable, the owner restores only the
+failed and later evicted entries before returning an error. Standalone
+background eviction batches, abort markers, and monotonic per-shard sequence
+numbers remain future work before this becomes a complete replicated mutation
+log.
 
 ### Rebalancing And Failover
 
@@ -488,23 +545,44 @@ Memory ring.
 6. Stop dual-write after all nodes observe the new epoch.
 
 On node failure, the minimal recovery path is deterministic successor adoption
-from the failed owner's persisted shard. Replica promotion, degraded-state
-reporting when no replay source exists, and full migration dual-write catch-up
-remain future work.
+from the failed owner's persisted shard. Successful successor replay reports
+`replica_promoted=true` in `AgentMemoryOwnerFailoverResult`; when the successor
+has no replay source, the failover still completes but reports
+`degraded=true`, `replay_source_missing=true`, and a `degraded_reason`. The same
+last-failover state is exposed in local `/api/ai/stats`. Full migration
+dual-write catch-up remains future work.
 
 ### Global Eviction
 
-Capacity limits should become two-level:
+Capacity limits are two-level:
 
 - Local hard limits protect each process from OOM.
 - Optional tenant/namespace quotas protect shared clusters from noisy tenants.
 
-Eviction remains local within a shard, but the quota controller periodically
-computes tenant usage across shards and sends per-shard target reductions. Pinned
-memory protection remains shard-local; explicit TTL expiry still removes pinned
-records.
+`AgentMemoryEvictionConfig::tenant_quotas` applies local scoped quotas before
+global caps. A quota with `tenant_id` and an empty `namespace_id` limits all
+entries for that tenant; a quota with both fields set limits only that tenant
+namespace. Memory and cache limits are independent. Pinned memory protection
+remains shard-local and can allow quota overflow, while explicit TTL expiry
+still removes pinned records.
+
+Cluster-wide quota reconciliation remains future work: a controller can compute
+tenant usage across shards and send per-shard target reductions.
 
 ### Observability
+
+Local Agent Memory stats expose snapshot publish health through
+`/api/ai/stats?scope=local` and Prometheus. `save_to_directory()` records the
+last snapshot attempt duration as `snapshot_latency_seconds` /
+`zepto_agent_memory_snapshot_latency_seconds` and failed snapshot attempts as
+`snapshot_failures_total` /
+`zepto_agent_memory_snapshot_failures_total`.
+
+`GET /api/ai/stats?scope=cluster` defaults to the same local stats when routing
+is not configured. In routed mode, the HTTP server requests
+`AGENT_MEMORY_STATS` from each configured remote node, returns aggregate
+memory/cache, eviction, snapshot, quota, and ANN counters for successful
+responses, and preserves per-node errors under `partial_failures`.
 
 Add cluster-aware metrics:
 
@@ -514,12 +592,6 @@ Add cluster-aware metrics:
 - `zepto_agent_memory_wal_replay_lag`
 - `zepto_agent_memory_remote_write_errors_total`
 - `zepto_agent_memory_fanout_partial_failures_total`
-- `zepto_agent_memory_snapshot_latency_seconds`
-- `zepto_agent_memory_snapshot_failures_total`
-
-`GET /api/ai/stats` should accept `?scope=local|cluster`, defaulting to `local`
-for backward compatibility. Cluster scope scatters stats to all nodes and returns
-per-node plus aggregate counts.
 
 ### Rollout Plan
 
@@ -543,9 +615,16 @@ per-node plus aggregate counts.
    tombstones.
 9. Done in devlog 138: deterministic owner failover hook with routed epoch
    advance and successor-only shard adoption.
-10. Add shard migration, dual-write catch-up, replica promotion, and
-    degraded-state reporting.
-11. Add tenant/namespace quotas and cluster stats.
+10. Done in devlog 163: local tenant/namespace memory and cache quotas.
+11. Done in devlog 166: cluster-scoped HTTP stats with per-node partial
+    failure reporting.
+12. Done in devlog 167: write-triggered automatic TTL, tenant-quota, and
+    capacity eviction tombstones.
+13. Done in devlog 168: successor replay promotion and degraded-state reporting
+    when no replay source exists.
+14. Done in devlog 169: rollback for write-triggered capacity-eviction side
+    effects when primary durability or tombstone persistence fails.
+15. Add shard migration and dual-write catch-up.
 
 ### Test Plan
 
@@ -561,21 +640,19 @@ per-node plus aggregate counts.
   base directory and wrong-owner manifest rejection.
 - Shard migration dual-write catch-up with in-flight writes.
 - Done in devlog 138: deterministic owner failover adoption after node removal.
-- Failover replay from replica WAL and degraded-state reporting when replay is
-  impossible.
+- Done in devlog 166: cluster stats aggregate reachable nodes and report missing
+  remote stats clients as partial failures.
+- Done in devlog 168: failover replay promotion status and degraded-state
+  reporting when replay is impossible.
+- Done in devlog 169: failed sync-replication durability restores
+  write-triggered memory/cache capacity evictions and replays without the
+  failed write or non-durable tombstone.
 - Partial fan-out failure in `strict` and `best_effort` modes.
 
 ## Next Steps
 
-- Agent-attached time-series examples for finance, IoT, observability, robotics,
-  and game/live-ops workflows.
-- OpenTelemetry/LLM trace ingestion mapping for agent telemetry and context
-  replay.
-- Snapshot latency and failure metrics.
-- Extend HNSW/IVF evaluation with clustered and real embedding fixtures, update
-  cost, memory overhead, tenant-filter behavior, and persisted index footprint.
-- Tenant/namespace-specific eviction policy if workloads need per-tenant caps.
-- Multi-node semantic-cache fan-out and replicated shard persistence as
-  described above.
-- Context trace/replay explaining why each memory was selected.
+- Extend sparse/HNSW/IVF evaluation with larger production embedding dumps and
+  tenant-filter-heavy workloads before choosing a default ANN policy.
+- Revisit persisted ANN index sidecars only if rebuild time becomes the
+  operational bottleneck after production-dump testing.
 - Optional enterprise embedding provider integration.
