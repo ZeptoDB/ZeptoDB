@@ -16,6 +16,9 @@
 //                 — Ingest an Arrow IPC RecordBatchStream into ZeptoDB ticks.
 //                    Query params map columns (`table`, `sym_col`, `price_col`,
 //                    `vol_col`, `ts_col`) and numeric scales.
+//   POST /insert/msgpack
+//                 — Ingest a MessagePack map of column arrays into ZeptoDB
+//                    ticks with the same mapping/scaling query params.
 //   GET  /        — Execute SQL via `?query=` param (always JSON)
 //   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe

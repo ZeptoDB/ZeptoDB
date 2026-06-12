@@ -822,6 +822,7 @@ endif()
 
 add_library(zepto_server STATIC
     src/server/http_server.cpp
+    src/server/msgpack_ingest.cpp
 )
 target_include_directories(zepto_server PUBLIC
     ${CMAKE_SOURCE_DIR}/include

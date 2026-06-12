@@ -249,9 +249,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **ClickHouse wire protocol** | DBeaver, DataGrip, Grafana native | L |
 | **JDBC/ODBC drivers** | Tableau, Excel, Power BI | L |
-| **MessagePack columnar ingest endpoint** | Wire-compatible with Telegraf and InfluxDB Line Protocol clients. Single batch decode replaces per-tick JSON parse. Smaller scope than Arrow IPC, faster to ship; complementary to it. From Arc analysis (2026-05-13). | S |
 
-> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept. Arrow IPC ingest endpoint (devlog 147) — `POST /insert/arrow` binary columnar tick ingest with table-aware routing. Arrow-enabled EKS bench images and cross-arch `/insert/arrow` smoke are complete (devlog 149).
+> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept. Arrow IPC ingest endpoint (devlog 147) — `POST /insert/arrow` binary columnar tick ingest with table-aware routing. Arrow-enabled EKS bench images and cross-arch `/insert/arrow` smoke are complete (devlog 149). MessagePack columnar ingest (devlog 174) — `POST /insert/msgpack` accepts a dependency-light map-of-column-arrays payload with the same table-aware batch ingest path.
 
 ---
 
@@ -364,7 +363,7 @@ No open P9 backlog items remain.
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
 | **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
-| **P4** | Tool Integration | 3 | MessagePack columnar ingest (S) → ClickHouse wire protocol (L) |
+| **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
 | **P5** | Data Pipelines | 4 | AWS Kinesis consumer (S) → Apache Pulsar consumer (S) → CDC connector (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |

@@ -206,7 +206,7 @@ the handler setters to cascade the resolved id. No other surface changes
 are expected (the structs are not on any current wire protocol or WAL
 format).
 
-Last updated: 2026-05-31 (HTTP Arrow IPC ingest — devlog 147)
+Last updated: 2026-06-11 (HTTP MessagePack columnar ingest — devlog 174)
 
 ## HTTP Arrow IPC ingest (devlog 147)
 
@@ -232,6 +232,35 @@ nulls in required columns, unsupported types, unknown tables, tenant rejection,
 or table ACL denial return JSON errors and do not claim success for the failing
 batch. Builds without Arrow return `406 Not Acceptable`, matching the Arrow IPC
 query response path.
+
+## HTTP MessagePack columnar ingest (devlog 174)
+
+`POST /insert/msgpack` adds a second binary columnar ingest surface for clients
+that can batch rows but should not take an Arrow runtime dependency. The server
+decodes a MessagePack top-level map of column arrays, maps configured columns
+into `TickMessage`, and calls `QueryExecutor::ingest_tick_batch()`. This keeps
+table-id resolution, cluster routing, queue backpressure fallback,
+`drain_sync()`, and `SchemaRegistry::mark_has_data()` identical to SQL `INSERT`
+and Arrow IPC ingest.
+
+Default mapping mirrors Arrow IPC ingest:
+
+| MessagePack key | Default | Notes |
+|---|---|---|
+| symbol | `sym` (`symbol` alias accepted) | integer symbol IDs or strings; strings are interned through the pipeline `StringDictionary` |
+| price | `price` | numeric, converted to int64 after `price_scale` |
+| volume | `volume` | numeric, converted to int64 after `volume_scale` |
+| timestamp | `timestamp` | optional ns timestamps; missing column uses ingest-time ns stamps |
+| msg_type | `msg_type` | optional; defaults to trade (`0`) |
+
+The decoder intentionally supports the MessagePack subset needed for columnar
+ingest without adding a new dependency: maps with string keys, arrays, strings,
+integers, floats, `nil`, and booleans. Required columns reject nulls and
+non-numeric values; optional `timestamp` and `msg_type` allow `nil` entries.
+The request is fail-fast: malformed payloads, missing columns, length mismatch,
+unsupported types, overflow, invalid scales, unknown tables, tenant rejection,
+or table ACL denial return JSON errors and do not claim success for the failing
+batch.
 
 ## 6. Telegraf external output (devlog 160)
 
@@ -275,12 +304,12 @@ names, and timestamp conversion overflow fail closed.
 
 ### Transport choice
 
-The first P5 implementation uses SQL-over-HTTP rather than a new binary ingest
-format. This keeps the integration small, works in default builds, and reuses
-the existing SQL INSERT path for table ACL, tenant namespace enforcement,
+The first P5 implementation uses SQL-over-HTTP rather than the newer binary
+ingest format. This keeps the integration small, works in default builds, and
+reuses the existing SQL INSERT path for table ACL, tenant namespace enforcement,
 cluster routing, schema durability, and synchronous drain semantics. The P4
-MessagePack ingest endpoint can later replace the transport while keeping the
-same Telegraf-side external plugin shape.
+MessagePack ingest endpoint is now available as the intended follow-on
+transport while keeping the same Telegraf-side external plugin shape.
 
 Operations guide: `docs/operations/TELEGRAF_OUTPUT.md`.
 

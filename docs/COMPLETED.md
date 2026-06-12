@@ -1,10 +1,19 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-09
+Last updated: 2026-06-11
 
 ---
 
 ## Latest
+
+- [x] **P4 MessagePack columnar ingest endpoint** (devlog 174) —
+  `POST /insert/msgpack` now accepts a dependency-light MessagePack map of
+  column arrays, supports configurable symbol/price/volume/timestamp/msg_type
+  columns and numeric scales, enforces table ACL and tenant namespace checks,
+  and routes rows through `QueryExecutor::ingest_tick_batch()` so table-aware
+  ingest, cluster routing, synchronous drain, and schema `has_data` marking
+  match Arrow IPC ingest. Closes BACKLOG P4 "MessagePack columnar ingest
+  endpoint".
 
 - [x] **P3 Agent Memory ANN maintenance, footprint, and IVF** (devlog 172) —
   clean sparse-projection, HNSW, and IVF ANN indexes now handle embedding

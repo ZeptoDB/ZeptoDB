@@ -28,6 +28,7 @@ add_executable(zepto_tests
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_http_arrow_ipc.cpp
+    unit/test_http_msgpack_ingest.cpp
     unit/test_agent_memory.cpp
     unit/test_flat_hash_map.cpp
     unit/test_rebalance.cpp

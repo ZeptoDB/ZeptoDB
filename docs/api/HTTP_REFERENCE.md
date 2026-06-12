@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-05-31*
+*Last updated: 2026-06-11*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -13,6 +13,7 @@ using the ClickHouse data source plugin with no modification.
 - [AI Agent Memory API](#ai-agent-memory-api)
 - [SQL Query — POST /](#sql-query--post-)
 - [Arrow IPC Ingest — POST /insert/arrow](#arrow-ipc-ingest--post-insertarrow)
+- [MessagePack Columnar Ingest — POST /insert/msgpack](#messagepack-columnar-ingest--post-insertmsgpack)
 - [Response Format](#response-format)
 - [Authentication](#authentication)
 - [/stats](#stats)
@@ -163,6 +164,7 @@ print(df)
 |--------|------|:---:|-------------|
 | `POST` | `/` | yes | Execute SQL query |
 | `POST` | `/insert/arrow` | yes | Ingest Apache Arrow IPC RecordBatchStream rows |
+| `POST` | `/insert/msgpack` | yes | Ingest MessagePack map-of-column-arrays rows |
 | `GET` | `/` | yes | Execute SQL via `?query=` param |
 | `GET` | `/ping` | no | Health check — returns `"Ok\n"` |
 | `GET` | `/health` | no | Kubernetes liveness probe |
@@ -761,6 +763,99 @@ curl -s -X POST \
   'http://localhost:8123/insert/arrow?table=trades&sym_col=symbol' \
   -H 'Content-Type: application/vnd.apache.arrow.stream' \
   --data-binary @/tmp/trades.arrow
+```
+
+---
+
+## MessagePack Columnar Ingest — POST /insert/msgpack
+
+`POST /insert/msgpack` accepts a MessagePack top-level map whose values are
+column arrays. It is a dependency-light binary ingest path for Telegraf-style
+and embedded clients that can batch rows but do not need the full Arrow runtime.
+
+**Request**:
+
+| Field | Value |
+|-------|-------|
+| Method | `POST` |
+| Path | `/insert/msgpack` |
+| Body | MessagePack map of column arrays |
+| Content-Type | Optional; `application/msgpack` recommended |
+
+The default payload shape is:
+
+```text
+{
+  "sym": ["AAPL", "AAPL"],
+  "price": [15000, 15010],
+  "volume": [100, 120],
+  "timestamp": [1711000000000000000, 1711000000000000001],
+  "msg_type": [0, 0]
+}
+```
+
+`timestamp` and `msg_type` are optional. If `timestamp` is absent, ZeptoDB
+assigns ingest-time nanosecond timestamps. If `msg_type` is absent, rows default
+to trade (`0`).
+
+**Query parameters**:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `table` / `table_name` | empty | Destination ZeptoDB table. Empty uses legacy `table_id=0`. Non-empty names must already exist. |
+| `sym_col` / `symbol_col` | `sym` | Symbol column. The default also accepts a payload key named `symbol`. Integer IDs and strings are supported; strings are dictionary-interned. |
+| `price_col` | `price` | Numeric price column. Values are converted to int64 after `price_scale`. |
+| `vol_col` / `volume_col` | `volume` | Numeric volume column. Values are converted to int64 after `volume_scale`. |
+| `ts_col` / `timestamp_col` | `timestamp` | Optional timestamp column in nanoseconds. |
+| `msg_type_col` | `msg_type` | Optional uint8-compatible message type column. Missing values default to `0` (trade). |
+| `price_scale` | `1.0` | Multiplier applied before int64 conversion. Use `100` to store cents from decimal prices. |
+| `volume_scale` / `vol_scale` | `1.0` | Multiplier applied before int64 conversion. |
+
+**Supported MessagePack values**:
+
+- Top-level: map with string keys.
+- Columns: arrays of strings or numeric values.
+- Strings: `fixstr`, `str8`, `str16`, `str32`.
+- Integers: positive fixint, negative fixint, `uint8/16/32/64`, `int8/16/32/64`.
+- Floats: `float32`, `float64`.
+- `nil` is accepted only for optional `timestamp` / `msg_type` entries.
+
+**Response**:
+
+```json
+{"inserted": 1000, "failed": 0}
+```
+
+The response also includes `X-Zepto-Format: msgpack-columnar` on success.
+
+**Errors**:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Malformed MessagePack, missing required column, column length mismatch, unsupported type, invalid scale, integer overflow, unknown table, or tenant-scoped request without `table=`. |
+| `403` | Table ACL or tenant namespace rejection. If table ACL is active, `table=` is required. |
+
+**Example**:
+
+```bash
+python3 - <<'PY'
+import msgpack
+
+payload = {
+    "symbol": ["AAPL", "AAPL"],
+    "price": [15000, 15010],
+    "volume": [100, 120],
+    "timestamp": [1711000000000000000, 1711000000000000001],
+}
+
+with open("/tmp/trades.msgpack", "wb") as f:
+    f.write(msgpack.packb(payload, use_bin_type=True))
+PY
+
+curl -s -X POST \
+  'http://localhost:8123/insert/msgpack?table=trades&sym_col=symbol' \
+  -H 'Content-Type: application/msgpack' \
+  --data-binary @/tmp/trades.msgpack
 ```
 
 ---

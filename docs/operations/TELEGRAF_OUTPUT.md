@@ -142,8 +142,8 @@ integer.
 - Default `--batch-size 1` favors delivery latency and avoids metrics waiting
   indefinitely in a long-running `outputs.execd` process. Increase it for high
   volume inputs once you are comfortable with the flush behavior.
-- The current writer uses SQL `INSERT` over HTTP. The P4 MessagePack ingest
-  endpoint can later replace this transport without changing the Telegraf-side
-  config shape.
+- The current writer uses SQL `INSERT` over HTTP. `POST /insert/msgpack` is
+  available as the binary follow-on transport without changing the
+  Telegraf-side config shape.
 - Table names are accepted only as simple SQL identifiers
   `[A-Za-z_][A-Za-z0-9_]*` to avoid SQL injection through plugin config.
