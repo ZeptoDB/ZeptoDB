@@ -260,7 +260,6 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **Kafka Connect Sink** | Enterprise pipeline standard | M |
 | **CDC connector (Debezium)** | PostgreSQL/MySQL → real-time sync | M |
-| **AWS Kinesis consumer** | AWS-native streaming | S |
 | **Apache Pulsar consumer** | Kafka alternative | S |
 
 > ✅ Done: MQTT consumer (devlog 081) — QoS 0/1/2, topic wildcards,
@@ -269,6 +268,9 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 > `coldTier.*`, `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars,
 > operator recipe doc. Telegraf external output plugin (devlog 160) —
 > `outputs.execd` line-protocol stdin → ZeptoDB HTTP SQL INSERT writer.
+> AWS Kinesis consumer (devlog 175) — shard polling surface with shared
+> JSON/BINARY/JSON_HUMAN decoders, table-aware routing, metrics, and no-SDK
+> fallback.
 
 ---
 
@@ -364,7 +366,7 @@ No open P9 backlog items remain.
 | **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
 | **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
-| **P5** | Data Pipelines | 4 | AWS Kinesis consumer (S) → Apache Pulsar consumer (S) → CDC connector (M) |
+| **P5** | Data Pipelines | 3 | Apache Pulsar consumer (S) → CDC connector (M) → Kafka Connect Sink (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |

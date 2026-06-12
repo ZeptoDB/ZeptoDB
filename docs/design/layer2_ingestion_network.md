@@ -146,7 +146,28 @@ server.add_metrics_provider([&consumer]() {
 
 `KafkaConsumer` uses the standard Kafka consumer API (group ID, `subscribe()`, `consume()`). Any Kafka-API-compatible broker (Redpanda, WarpStream, MSK) works without code changes.
 
-Last updated: 2026-03-23 (Kafka Prometheus metrics exposure added)
+## AWS Kinesis consumer (devlog 175)
+
+`KinesisConsumer` adds an AWS-native streaming ingress path in the same feed
+layer pattern as Kafka and MQTT. It polls one configured Kinesis stream shard,
+decodes each record using the shared `MessageFormat` contract
+(`JSON`, `BINARY`, or `JSON_HUMAN`), then dispatches the resulting
+`TickMessage` through the same table-aware single-node or cluster routing path.
+
+Default/no-SDK builds compile the full decode, routing, table-aware ingest, and
+metrics surface but return `false` from `start()`. Live AWS polling is enabled
+with `-DZEPTO_USE_KINESIS=ON` when AWS SDK C++ Kinesis is available. The live
+path requests a shard iterator, calls `GetRecords`, advances to
+`NextShardIterator`, and sleeps `poll_interval_ms` only on empty polls or AWS
+errors. `KinesisConfig::max_records_per_poll` is validated in the Kinesis API
+range `[1, 10000]`.
+
+Kinesis is gated by `Feature::IOT_CONNECTORS`, matching MQTT, OPC-UA, and ROS 2
+because it is a cloud/IoT streaming connector rather than a Kafka-compatible
+enterprise bus. Metrics are exposed through `KinesisConsumer::format_prometheus`
+and can be appended to `/metrics` with `HttpServer::add_metrics_provider()`.
+
+Last updated: 2026-06-12 (AWS Kinesis consumer — devlog 175)
 
 ## Table-aware ingest (Stage B — devlog 084)
 

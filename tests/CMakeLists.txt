@@ -21,6 +21,7 @@ add_executable(zepto_tests
     unit/test_scheduler.cpp
     unit/test_features.cpp
     unit/test_kafka.cpp
+    unit/test_kinesis.cpp
     unit/test_mqtt.cpp
     unit/test_opcua.cpp
     unit/test_opcua_integration.cpp
@@ -71,6 +72,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_scheduler
     zepto_server
     zepto_kafka
+    zepto_kinesis
     zepto_mqtt
     zepto_opcua
     zepto_ros2

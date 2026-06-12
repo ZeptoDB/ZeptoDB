@@ -61,6 +61,7 @@ option(ZEPTO_USE_TCMALLOC   "Link tcmalloc_minimal for HFT allocation performanc
 option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
 option(ZEPTO_USE_MQTT       "Enable MQTT consumer (requires paho-mqttpp3)" OFF)
+option(ZEPTO_USE_KINESIS    "Enable AWS Kinesis consumer (requires AWS SDK C++ kinesis)" OFF)
 option(ZEPTO_USE_OPCUA      "Enable OPC-UA consumer (requires open62541)" OFF)
 option(ZEPTO_USE_ROS2       "Enable ROS 2 scalar subscriber and rosbag2 import/replay (requires ROS 2 packages)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
@@ -484,11 +485,37 @@ if(ZEPTO_USE_S3)
     find_package(AWSSDK CONFIG COMPONENTS s3 QUIET)
     if(AWSSDK_FOUND)
         message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (S3 업로드 활성화)")
+        set(ZEPTO_S3_AWSSDK_LIBS ${AWSSDK_LINK_LIBRARIES})
     else()
         message(STATUS "AWS SDK C++: 없음 — S3 업로드 비활성화")
         message(STATUS "  설치: sudo dnf install -y aws-sdk-cpp-s3")
         set(ZEPTO_USE_S3 OFF)
     endif()
+endif()
+
+# --- AWS SDK C++ Kinesis (optional) ---
+if(ZEPTO_USE_KINESIS)
+    find_file(ZEPTO_AWS_KINESIS_CONFIG
+        NAMES aws-cpp-sdk-kinesisConfig.cmake aws-cpp-sdk-kinesis-config.cmake
+        PATH_SUFFIXES
+            lib/cmake/aws-cpp-sdk-kinesis
+            lib64/cmake/aws-cpp-sdk-kinesis
+    )
+    if(ZEPTO_AWS_KINESIS_CONFIG)
+        find_package(AWSSDK CONFIG COMPONENTS kinesis QUIET)
+    endif()
+    if(AWSSDK_FOUND AND ZEPTO_AWS_KINESIS_CONFIG)
+        message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (Kinesis consumer enabled)")
+        set(ZEPTO_HAS_KINESIS ON)
+        set(ZEPTO_KINESIS_AWSSDK_LIBS ${AWSSDK_LINK_LIBRARIES})
+    else()
+        message(STATUS "AWS SDK C++: not found — Kinesis consumer disabled")
+        message(STATUS "  Install: sudo dnf install -y aws-sdk-cpp-kinesis")
+        set(ZEPTO_USE_KINESIS OFF)
+        set(ZEPTO_HAS_KINESIS OFF)
+    endif()
+else()
+    set(ZEPTO_HAS_KINESIS OFF)
 endif()
 
 # --- OpenSSL (TLS + crypto for auth) ---
@@ -627,7 +654,7 @@ if(ZEPTO_USE_PARQUET)
     target_compile_definitions(zepto_storage PUBLIC ZEPTO_PARQUET_ENABLED=1)
 endif()
 if(ZEPTO_USE_S3)
-    target_link_libraries(zepto_storage PUBLIC ${AWSSDK_LINK_LIBRARIES})
+    target_link_libraries(zepto_storage PUBLIC ${ZEPTO_S3_AWSSDK_LIBS})
     target_compile_definitions(zepto_storage PUBLIC ZEPTO_S3_ENABLED=1)
 endif()
 
@@ -986,6 +1013,26 @@ if(ZEPTO_HAS_MQTT)
     message(STATUS "zepto_mqtt: MQTT broker connectivity enabled")
 else()
     message(STATUS "zepto_mqtt: decode/routing only (no paho-mqttpp3)")
+endif()
+
+# --- AWS Kinesis Consumer (depends on zepto_core + zepto_cluster + zepto_kafka for shared decoders) ---
+add_library(zepto_kinesis STATIC
+    src/feeds/kinesis_consumer.cpp
+)
+target_include_directories(zepto_kinesis PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_kinesis PUBLIC
+    zepto_core
+    zepto_cluster
+    zepto_kafka
+)
+if(ZEPTO_HAS_KINESIS)
+    target_compile_definitions(zepto_kinesis PUBLIC ZEPTO_KINESIS_AVAILABLE=1)
+    target_link_libraries(zepto_kinesis PUBLIC ${ZEPTO_KINESIS_AWSSDK_LIBS})
+    message(STATUS "zepto_kinesis: AWS polling enabled")
+else()
+    message(STATUS "zepto_kinesis: decode/routing only (no AWS SDK Kinesis)")
 endif()
 
 # --- Telegraf external output (outputs.execd line protocol writer) ---
@@ -1515,6 +1562,7 @@ message(STATUS "  LZ4:           ${ZEPTO_USE_LZ4}")
 message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
 message(STATUS "  Arrow Flight:  ${ZEPTO_HAS_FLIGHT}")
+message(STATUS "  Kinesis:       ${ZEPTO_HAS_KINESIS}")
 message(STATUS "  OPC-UA:        ${ZEPTO_HAS_OPCUA}")
 message(STATUS "  OPC-UA HA:     ${ZEPTO_OPCUA_HAS_HISTORIZING}")
 message(STATUS "  DuckDB:        ${ZEPTO_ENABLE_DUCKDB}")

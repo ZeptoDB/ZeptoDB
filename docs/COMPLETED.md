@@ -1,10 +1,19 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-11
+Last updated: 2026-06-12
 
 ---
 
 ## Latest
+
+- [x] **P5 AWS Kinesis consumer** (devlog 175) —
+  `KinesisConsumer` now mirrors the Kafka/MQTT feed pattern for AWS-native
+  streams: shared JSON/BINARY/JSON_HUMAN decoders, table-aware
+  `TickMessage` stamping, single-node and cluster routing, backpressure
+  retries, Prometheus metric formatting, and optional AWS SDK Kinesis polling
+  behind `-DZEPTO_USE_KINESIS=ON`. Default builds keep decode/routing tests
+  available and return false from `start()` when the SDK is absent. Closes
+  BACKLOG P5 "AWS Kinesis consumer".
 
 - [x] **P4 MessagePack columnar ingest endpoint** (devlog 174) —
   `POST /insert/msgpack` now accepts a dependency-light MessagePack map of

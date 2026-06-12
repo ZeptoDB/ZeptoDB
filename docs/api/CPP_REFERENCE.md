@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-06-03*
+*Last updated: 2026-06-12*
 
 ---
 
@@ -936,8 +936,9 @@ by stable table id for connector code that resolves names once.
 
 ### Feed handlers
 
-`KafkaConfig::table_name` / `MqttConfig::table_name` resolve the id once
-inside `set_pipeline()` and stamp it on every decoded tick automatically:
+`KafkaConfig::table_name` / `MqttConfig::table_name` /
+`KinesisConfig::table_name` resolve the id once inside `set_pipeline()` and
+stamp it on every decoded tick automatically:
 
 ```cpp
 zeptodb::feeds::KafkaConfig cfg;
@@ -945,6 +946,30 @@ cfg.topic      = "market_data";
 cfg.table_name = "trades";        // empty = legacy path (table_id = 0)
 zeptodb::feeds::KafkaConsumer consumer(cfg);
 consumer.set_pipeline(&pipeline); // resolves table_name → table_id here
+```
+
+Kinesis uses the same decode formats as Kafka and MQTT. Default builds keep the
+pure decode/routing path testable; live AWS polling requires
+`-DZEPTO_USE_KINESIS=ON` and AWS SDK C++ Kinesis:
+
+```cpp
+#include "zeptodb/feeds/kinesis_consumer.h"
+#include <cstring>
+
+zeptodb::feeds::KinesisConfig kcfg;
+kcfg.region = "us-east-1";
+kcfg.stream_name = "market-data";
+kcfg.shard_id = "shardId-000000000000";
+kcfg.table_name = "trades";
+kcfg.format = zeptodb::feeds::MessageFormat::JSON_HUMAN;
+kcfg.symbol_map = {{"AAPL", 1}};
+
+zeptodb::feeds::KinesisConsumer kinesis(kcfg);
+kinesis.set_pipeline(&pipeline);
+
+// Testable without AWS:
+const char* payload = R"({"symbol":"AAPL","price":150.25,"volume":100})";
+kinesis.on_record(payload, std::strlen(payload));
 ```
 
 FIX / ITCH / Binance parser classes expose `set_table_id(tid)` and

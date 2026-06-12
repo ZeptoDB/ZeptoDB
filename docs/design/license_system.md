@@ -9,7 +9,7 @@ ZeptoDB ships as a single binary. Edition-based feature gating is controlled at 
 | Edition | Key Required | Max Nodes | Features |
 |---------|:---:|:---:|---|
 | Community | No | 1 | Core engine, SQL, HTTP API, Python DSL |
-| Enterprise | Yes | Unlimited | + SSO, Audit Export, Advanced RBAC, Kafka, Migration, Cluster, Geo-Replication, Rolling Upgrade, IoT Connectors (MQTT) |
+| Enterprise | Yes | Unlimited | + SSO, Audit Export, Advanced RBAC, Kafka, Migration, Cluster, Geo-Replication, Rolling Upgrade, IoT Connectors (MQTT / OPC-UA / ROS 2 / Kinesis) |
 
 > **Backward compatibility:** Old license keys with `"edition": "pro"` are automatically treated as Enterprise. No action required from existing Pro licensees.
 
@@ -56,11 +56,14 @@ Gates enterprise IoT / Physical AI streaming integrations. Currently gates:
   autonomous-driving middleware. Default/no-ROS builds validate and map data
   without a live ROS graph; `ZEPTO_ROS2_AVAILABLE` builds start live
   `std_msgs` scalar subscriptions.
+- **AWS Kinesis consumer** (`KinesisConsumer::start()`) — AWS-native cloud
+  stream ingestion. Default/no-SDK builds validate, decode, route, and expose
+  metrics without live AWS credentials; `ZEPTO_KINESIS_AVAILABLE` builds poll
+  one configured stream shard.
 
 Planned future connectors under the same gate (no new feature bit needed):
 
 - **Apache Pulsar** — alternative to Kafka.
-- **AWS Kinesis** — cloud streaming.
 
 Present in: Enterprise. Trial keys enable all features (bits 0..8 → `features=511`).
 
