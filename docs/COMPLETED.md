@@ -1,10 +1,18 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-12
+Last updated: 2026-06-13
 
 ---
 
 ## Latest
+
+- [x] **Dev branch and main release pipeline** (devlog 176) —
+  development now targets `dev`, while `main` is treated as the release branch.
+  A new `Version Main Release` workflow synchronizes CMake, Python, and web
+  package versions, creates a `vX.Y.Z` tag, and dispatches the existing release
+  publisher for binaries, Docker, GitHub Releases, PyPI, and Homebrew. Graviton
+  and PR documentation checks now include `dev`, and the local pre-push hook
+  blocks direct local pushes to `main` unless explicitly overridden.
 
 - [x] **P5 AWS Kinesis consumer** (devlog 175) —
   `KinesisConsumer` now mirrors the Kafka/MQTT feed pattern for AWS-native

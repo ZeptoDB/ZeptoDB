@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e
 
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [[ "$remote_ref" == "refs/heads/main" && "${ZEPTO_ALLOW_MAIN_PUSH:-}" != "1" ]]; then
+    echo "=== Direct pushes to main are blocked. Push to dev, then promote dev to main through the release path. ==="
+    echo "Set ZEPTO_ALLOW_MAIN_PUSH=1 only for an explicit release-admin override."
+    exit 1
+  fi
+done
+
 REMOTE_HOST="ec2-user@172.31.71.135"
 SSH_KEY="$HOME/ec2-jinmp.pem"
 REMOTE_DIR="~/zeptodb"

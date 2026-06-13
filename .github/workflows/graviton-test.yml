@@ -2,10 +2,10 @@ name: Graviton ARM64 Build & Test
 
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
     paths-ignore: ['docs/**', 'web/**', '*.md']
   pull_request:
-    branches: [main]
+    branches: [dev, main]
     paths-ignore: ['docs/**', 'web/**', '*.md']
   workflow_dispatch:
 
