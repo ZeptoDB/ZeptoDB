@@ -28,6 +28,8 @@ when code reached `main`.
   `ZEPTO_ALLOW_MAIN_PUSH=1` is set.
 - Documented the branch flow, version policy, and required GitHub repository
   settings in `docs/deployment/RELEASE_PROCESS.md`.
+- Added `docs/deployment/BRANCH_RELEASE_POLICY.md` as the initial v0.1 policy
+  for `dev`, `main`, protected release tags, and the release bot.
 
 ## Verification
 

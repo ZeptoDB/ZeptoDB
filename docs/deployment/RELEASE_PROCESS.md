@@ -1,5 +1,9 @@
 # Release Process
 
+See [Branch and Release Policy](BRANCH_RELEASE_POLICY.md) for the governing
+branch, promotion, and ruleset policy. This document describes the release
+mechanics that implement that policy.
+
 ZeptoDB uses `dev` as the integration branch and `main` as the release branch.
 All normal development pushes should target `dev`. Promoting code to `main`
 starts the release automation.
