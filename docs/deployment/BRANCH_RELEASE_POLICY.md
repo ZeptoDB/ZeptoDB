@@ -37,8 +37,8 @@ ensuring that every update to `main` intentionally creates a versioned release.
    and existing `vMAJOR.MINOR.PATCH` tags.
 5. The workflow synchronizes `CMakeLists.txt`, `zepto_py/__init__.py`, and
    `web/package.json`.
-6. The workflow creates `vX.Y.Z` and dispatches the tag-based `Release`
-   workflow.
+6. The workflow creates and pushes `vX.Y.Z`, which triggers the tag-based
+   `Release` workflow.
 7. `v*` tags are protected from unauthorized creation, deletion, and
    non-fast-forward updates.
 
@@ -82,7 +82,6 @@ to:
 
 - Push the generated version commit to `main`.
 - Create `v*` release tags.
-- Dispatch `release.yml`.
 - Bypass the `main` and `v*` rulesets only for release automation.
 
 The first-pass ruleset uses repository-admin bypass. After a dedicated release
@@ -103,7 +102,7 @@ For a release:
 2. Open a promotion pull request from `dev` to `main`.
 3. Review and merge after required checks and review are complete.
 4. Confirm `Version Main Release` creates the version commit and `v*` tag.
-5. Confirm the tag-based `Release` workflow publishes artifacts.
+5. Confirm the tag-triggered `Release` workflow publishes artifacts.
 
 ## Current Follow-ups
 

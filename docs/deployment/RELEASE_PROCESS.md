@@ -35,7 +35,7 @@ The workflow:
 5. Commits the synchronized version files to `main` with
    `chore(release): vX.Y.Z`.
 6. Creates tag `vX.Y.Z`.
-7. Dispatches the `Release` workflow against that tag.
+7. Pushes the tag, which triggers the `Release` workflow.
 
 This keeps binary artifact names, Docker tags, GitHub releases, and the Python
 package version aligned.

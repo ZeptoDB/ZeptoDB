@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: version-main-release
@@ -86,9 +85,3 @@ jobs:
         run: |
           git push origin HEAD:main
           git push origin "v${{ steps.version.outputs.version }}"
-
-      - name: Dispatch release workflow
-        if: steps.head_tag.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
-        run: gh workflow run release.yml --ref "v${{ steps.version.outputs.version }}"
