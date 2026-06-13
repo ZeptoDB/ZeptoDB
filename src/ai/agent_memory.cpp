@@ -69,6 +69,26 @@ bool has_expiry(int64_t expires_at_ns) {
     return expires_at_ns > 0;
 }
 
+AgentMemoryEvictionEvent memory_eviction_event(const MemoryRecord& record) {
+    AgentMemoryEvictionEvent event;
+    event.target = AgentMemoryEvictionTarget::Memory;
+    event.memory_id = record.memory_id;
+    event.tenant_id = record.tenant_id;
+    event.namespace_id = record.namespace_id;
+    event.memory = record;
+    return event;
+}
+
+AgentMemoryEvictionEvent cache_eviction_event(const CacheEntry& entry) {
+    AgentMemoryEvictionEvent event;
+    event.target = AgentMemoryEvictionTarget::Cache;
+    event.tenant_id = entry.tenant_id;
+    event.namespace_id = entry.namespace_id;
+    event.prompt = entry.prompt;
+    event.cache = entry;
+    return event;
+}
+
 } // namespace
 
 AgentMemoryStore::AgentMemoryStore()
@@ -188,6 +208,7 @@ int64_t AgentMemoryStore::estimate_tokens(const std::string& content) {
 
 StoreResult AgentMemoryStore::put_memory(MemoryRecord record) {
     std::lock_guard<std::mutex> lock(mu_);
+    std::vector<AgentMemoryEvictionEvent> evictions;
     std::string error;
     const size_t old_embedding_dim = embedding_dim_;
     if (!validate_embedding_(record.embedding, &error)) {
@@ -219,6 +240,8 @@ StoreResult AgentMemoryStore::put_memory(MemoryRecord record) {
     bool updated_memory = false;
     size_t updated_row = 0;
     bool update_preserves_ann_candidates = false;
+    bool old_update_had_embedding = false;
+    std::string old_update_partition_key;
     const auto it = memory_index_.find(record.memory_id);
     if (it != memory_index_.end()) {
         updated_memory = true;
@@ -231,6 +254,9 @@ StoreResult AgentMemoryStore::put_memory(MemoryRecord record) {
             existing.tenant_id == record.tenant_id &&
             existing.namespace_id == record.namespace_id &&
             existing.embedding == record.embedding;
+        old_update_had_embedding = !existing.embedding.empty();
+        old_update_partition_key =
+            ann_partition_key_(existing.tenant_id, existing.namespace_id);
         const bool had_expiry = has_expiry(existing.expires_at_ns);
         const bool has_new_expiry = has_expiry(record.expires_at_ns);
         existing = std::move(record);
@@ -253,9 +279,9 @@ StoreResult AgentMemoryStore::put_memory(MemoryRecord record) {
     }
     const int64_t now = now_ns();
     if (eviction_config_.evict_expired_on_write) {
-        evict_expired_locked_(now);
+        evict_expired_locked_(now, &evictions);
     }
-    enforce_eviction_locked_(now);
+    enforce_eviction_locked_(now, &evictions);
     const auto appended_it = memory_index_.find(id);
     const bool append_still_valid =
         appended_memory &&
@@ -273,11 +299,18 @@ StoreResult AgentMemoryStore::put_memory(MemoryRecord record) {
         }
     } else if (update_still_valid && update_preserves_ann_candidates) {
         // Metadata/ranking-only updates do not affect ANN candidate generation.
-        return {true, id, {}};
+        return {true, id, {}, std::move(evictions)};
+    } else if (ann_was_clean && !ann_dirty_ && update_still_valid) {
+        if (!try_replace_ann_entry_locked_(old_update_partition_key,
+                                           old_update_had_embedding,
+                                           updated_row,
+                                           memories_[updated_row])) {
+            mark_ann_dirty_locked_();
+        }
     } else {
         mark_ann_dirty_locked_();
     }
-    return {true, id, {}};
+    return {true, id, {}, std::move(evictions)};
 }
 
 std::optional<MemoryRecord> AgentMemoryStore::get_memory(
@@ -326,10 +359,7 @@ bool AgentMemoryStore::remove_memory(const std::string& memory_id,
     if (has_expiry(memories_[row].expires_at_ns) && expiring_memory_count_ > 0) {
         --expiring_memory_count_;
     }
-    memories_.erase(memories_.begin() + static_cast<std::ptrdiff_t>(row));
-    rebuild_memory_index_locked_();
-    rebuild_unit_embeddings_locked_();
-    mark_ann_dirty_locked_();
+    remove_memory_row_locked_(row);
     return true;
 }
 
@@ -391,6 +421,7 @@ ContextResult AgentMemoryStore::get_context(ContextRequest request) {
 
 StoreResult AgentMemoryStore::store_cache(CacheEntry entry) {
     std::lock_guard<std::mutex> lock(mu_);
+    std::vector<AgentMemoryEvictionEvent> evictions;
     std::string error;
     if (!validate_embedding_(entry.embedding, &error)) {
         return {false, {}, error};
@@ -431,10 +462,10 @@ StoreResult AgentMemoryStore::store_cache(CacheEntry entry) {
     }
     const int64_t now = now_ns();
     if (eviction_config_.evict_expired_on_write) {
-        evict_expired_locked_(now);
+        evict_expired_locked_(now, &evictions);
     }
-    enforce_eviction_locked_(now);
-    return {true, id, {}};
+    enforce_eviction_locked_(now, &evictions);
+    return {true, id, {}, std::move(evictions)};
 }
 
 bool AgentMemoryStore::remove_cache(const std::string& tenant_id,
@@ -504,6 +535,12 @@ CacheLookupResult AgentMemoryStore::lookup_cache(CacheLookup lookup) {
 
 void AgentMemoryStore::set_eviction_config(AgentMemoryEvictionConfig config) {
     std::lock_guard<std::mutex> lock(mu_);
+    config.tenant_quotas.erase(std::remove_if(
+        config.tenant_quotas.begin(), config.tenant_quotas.end(),
+        [](const AgentMemoryTenantQuota& quota) {
+            return quota.tenant_id.empty() ||
+                (quota.max_memories == 0 && quota.max_cache_entries == 0);
+        }), config.tenant_quotas.end());
     eviction_config_ = config;
     const int64_t now = now_ns();
     if (eviction_config_.evict_expired_on_write) {
@@ -521,9 +558,7 @@ void AgentMemoryStore::set_ann_config(AgentMemoryAnnConfig config) {
     std::lock_guard<std::mutex> lock(mu_);
     config.oversample = std::max<size_t>(config.oversample, 1);
     ann_config_ = config;
-    const AnnIndexKind kind = ann_config_.mode == AgentMemoryAnnMode::Hnsw
-        ? AnnIndexKind::Hnsw
-        : AnnIndexKind::SparseProjection;
+    const AnnIndexKind kind = ann_index_kind_locked_();
     ann_index_ = make_ann_index(kind, ann_config_.index);
     mark_ann_dirty_locked_();
 }
@@ -573,14 +608,105 @@ size_t AgentMemoryStore::evict_expired(int64_t now_ns_arg) {
     return evict_expired_locked_(now);
 }
 
+size_t AgentMemoryStore::restore_evicted_entries(
+    const std::vector<AgentMemoryEvictionEvent>& evictions) {
+    std::lock_guard<std::mutex> lock(mu_);
+    size_t restored = 0;
+    bool restored_memory = false;
+    bool restored_cache = false;
+    for (auto it = evictions.rbegin(); it != evictions.rend(); ++it) {
+        if (it->target == AgentMemoryEvictionTarget::Memory) {
+            MemoryRecord record = it->memory;
+            if (record.memory_id.empty()) {
+                record.memory_id = it->memory_id;
+            }
+            if (record.memory_id.empty()) continue;
+            if (memory_index_.find(record.memory_id) != memory_index_.end()) {
+                continue;
+            }
+            if (record.namespace_id.empty()) record.namespace_id = "default";
+            const size_t old_embedding_dim = embedding_dim_;
+            std::string error;
+            if (!validate_embedding_(record.embedding, &error)) continue;
+            if (old_embedding_dim == 0 && embedding_dim_ != 0 &&
+                !memories_.empty()) {
+                memory_unit_embeddings_.assign(memories_.size() * embedding_dim_,
+                                               0.0f);
+                memory_has_embedding_.assign(memories_.size(), 0);
+            }
+            memory_index_[record.memory_id] = memories_.size();
+            memories_.push_back(std::move(record));
+            append_unit_embedding_locked_(memories_.back().embedding);
+            if (has_expiry(memories_.back().expires_at_ns)) {
+                ++expiring_memory_count_;
+            }
+            if (evicted_memory_count_ > 0) --evicted_memory_count_;
+            restored_memory = true;
+            ++restored;
+            continue;
+        }
+
+        CacheEntry entry = it->cache;
+        if (entry.prompt.empty()) entry.prompt = it->prompt;
+        if (entry.tenant_id.empty()) entry.tenant_id = it->tenant_id;
+        if (entry.namespace_id.empty()) {
+            entry.namespace_id = it->namespace_id.empty()
+                ? "default"
+                : it->namespace_id;
+        }
+        if (entry.prompt.empty()) continue;
+        const std::string exact_key = entry.tenant_id + "\n"
+            + entry.namespace_id + "\n" + normalize_prompt(entry.prompt);
+        if (cache_exact_index_.find(exact_key) != cache_exact_index_.end()) {
+            continue;
+        }
+        const size_t old_embedding_dim = embedding_dim_;
+        std::string error;
+        if (!validate_embedding_(entry.embedding, &error)) continue;
+        if (old_embedding_dim == 0 && embedding_dim_ != 0 &&
+            !memories_.empty()) {
+            memory_unit_embeddings_.assign(memories_.size() * embedding_dim_,
+                                           0.0f);
+            memory_has_embedding_.assign(memories_.size(), 0);
+        }
+        cache_exact_index_[exact_key] = cache_entries_.size();
+        cache_entries_.push_back(std::move(entry));
+        if (has_expiry(cache_entries_.back().expires_at_ns)) {
+            ++expiring_cache_count_;
+        }
+        if (evicted_cache_count_ > 0) --evicted_cache_count_;
+        restored_cache = true;
+        ++restored;
+    }
+    if (restored_memory) mark_ann_dirty_locked_();
+    if (restored_cache) rebuild_cache_index_locked_();
+    return restored;
+}
+
 StoreResult AgentMemoryStore::save_to_directory(const std::string& directory) const {
     namespace fs = std::filesystem;
-    if (directory.empty()) return {false, {}, "snapshot directory is required"};
+    const auto snapshot_start = std::chrono::steady_clock::now();
 
     std::lock_guard<std::mutex> lock(mu_);
+    auto finish = [&](StoreResult result) {
+        snapshot_latency_seconds_ =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          snapshot_start).count();
+        if (!result.ok) {
+            ++snapshot_failures_total_;
+        }
+        return result;
+    };
+
+    if (directory.empty()) {
+        return finish({false, {}, "snapshot directory is required"});
+    }
+
     std::error_code ec;
     fs::create_directories(directory, ec);
-    if (ec) return {false, {}, "failed to create snapshot directory: " + ec.message()};
+    if (ec) {
+        return finish({false, {}, "failed to create snapshot directory: " + ec.message()});
+    }
 
     const fs::path dir(directory);
     const fs::path records_tmp = dir / "records.bin.tmp";
@@ -591,7 +717,7 @@ StoreResult AgentMemoryStore::save_to_directory(const std::string& directory) co
     std::ofstream records(records_tmp, std::ios::binary | std::ios::trunc);
     std::ofstream vectors(vectors_tmp, std::ios::binary | std::ios::trunc);
     if (!records.is_open() || !vectors.is_open()) {
-        return {false, {}, "failed to open snapshot files for writing"};
+        return finish({false, {}, "failed to open snapshot files for writing"});
     }
 
     if (!write_magic(records, kRecordsMagic) ||
@@ -603,7 +729,7 @@ StoreResult AgentMemoryStore::save_to_directory(const std::string& directory) co
         !write_pod(records, static_cast<uint64_t>(cache_entries_.size())) ||
         !write_magic(vectors, kVectorsMagic) ||
         !write_pod(vectors, kSnapshotVersion)) {
-        return {false, {}, "failed to write snapshot header"};
+        return finish({false, {}, "failed to write snapshot header"});
     }
 
     uint64_t vector_offset = 0;
@@ -642,7 +768,7 @@ StoreResult AgentMemoryStore::save_to_directory(const std::string& directory) co
             !write_pod(records, r.access_count) ||
             !write_pod(records, offset) ||
             !write_pod(records, count)) {
-            return {false, {}, "failed to write memory snapshot"};
+            return finish({false, {}, "failed to write memory snapshot"});
         }
     }
 
@@ -663,24 +789,38 @@ StoreResult AgentMemoryStore::save_to_directory(const std::string& directory) co
             !write_pod(records, c.access_count) ||
             !write_pod(records, offset) ||
             !write_pod(records, count)) {
-            return {false, {}, "failed to write cache snapshot"};
+            return finish({false, {}, "failed to write cache snapshot"});
         }
     }
 
     records.close();
     vectors.close();
-    if (!records || !vectors) return {false, {}, "failed to flush snapshot files"};
+    if (!records || !vectors) {
+        return finish({false, {}, "failed to flush snapshot files"});
+    }
 
     fs::remove(records_path, ec);
     ec.clear();
     fs::rename(records_tmp, records_path, ec);
-    if (ec) return {false, {}, "failed to publish records snapshot: " + ec.message()};
+    if (ec) {
+        return finish({false, {}, "failed to publish records snapshot: " + ec.message()});
+    }
     fs::remove(vectors_path, ec);
     ec.clear();
     fs::rename(vectors_tmp, vectors_path, ec);
-    if (ec) return {false, {}, "failed to publish vectors snapshot: " + ec.message()};
+    if (ec) {
+        return finish({false, {}, "failed to publish vectors snapshot: " + ec.message()});
+    }
 
-    return {true, directory, {}};
+    std::error_code size_ec;
+    const auto records_bytes = fs::file_size(records_path, size_ec);
+    snapshot_records_bytes_ = size_ec ? 0 : static_cast<size_t>(records_bytes);
+    size_ec.clear();
+    const auto vectors_bytes = fs::file_size(vectors_path, size_ec);
+    snapshot_vectors_bytes_ = size_ec ? 0 : static_cast<size_t>(vectors_bytes);
+    snapshot_total_bytes_ = snapshot_records_bytes_ + snapshot_vectors_bytes_;
+
+    return finish({true, directory, {}});
 }
 
 StoreResult AgentMemoryStore::load_from_directory(const std::string& directory) {
@@ -691,6 +831,10 @@ StoreResult AgentMemoryStore::load_from_directory(const std::string& directory) 
     const fs::path records_path = dir / "records.bin";
     const fs::path vectors_path = dir / "vectors.bin";
     if (!fs::exists(records_path) && !fs::exists(vectors_path)) {
+        std::lock_guard<std::mutex> lock(mu_);
+        snapshot_records_bytes_ = 0;
+        snapshot_vectors_bytes_ = 0;
+        snapshot_total_bytes_ = 0;
         return {true, directory, {}};
     }
     if (!fs::exists(records_path) || !fs::exists(vectors_path)) {
@@ -844,6 +988,14 @@ StoreResult AgentMemoryStore::load_from_directory(const std::string& directory) 
     rebuild_expiry_counts_locked_();
     rebuild_unit_embeddings_locked_();
     mark_ann_dirty_locked_();
+    std::error_code size_ec;
+    const auto records_bytes = fs::file_size(records_path, size_ec);
+    snapshot_records_bytes_ = size_ec ? 0 : static_cast<size_t>(records_bytes);
+    size_ec.clear();
+    const auto vectors_file_bytes = fs::file_size(vectors_path, size_ec);
+    snapshot_vectors_bytes_ =
+        size_ec ? 0 : static_cast<size_t>(vectors_file_bytes);
+    snapshot_total_bytes_ = snapshot_records_bytes_ + snapshot_vectors_bytes_;
     return {true, directory, {}};
 }
 
@@ -860,12 +1012,20 @@ AgentMemoryStats AgentMemoryStore::stats() const {
     stats.ann_last_rebuild_ms = ann_last_rebuild_ms_;
     stats.ann_search_count = ann_search_count_;
     stats.ann_fallback_count = ann_fallback_count_;
+    stats.snapshot_records_bytes = snapshot_records_bytes_;
+    stats.snapshot_vectors_bytes = snapshot_vectors_bytes_;
+    stats.snapshot_total_bytes = snapshot_total_bytes_;
+    stats.snapshot_latency_seconds = snapshot_latency_seconds_;
+    stats.snapshot_failures_total = snapshot_failures_total_;
+    stats.tenant_quota_count = eviction_config_.tenant_quotas.size();
     if (ann_index_) {
         const auto ann = ann_index_->stats();
         stats.ann_indexed_vectors = ann.indexed_vectors;
         stats.ann_partitions = ann.partitions;
         stats.ann_buckets = ann.buckets;
         stats.ann_max_bucket_size = ann.max_bucket_size;
+        stats.ann_memory_bytes = ann.memory_bytes;
+        stats.ann_tombstone_entries = ann.tombstone_entries;
     }
     return stats;
 }
@@ -892,6 +1052,11 @@ void AgentMemoryStore::clear() {
     ann_last_rebuild_ms_ = 0.0;
     ann_search_count_ = 0;
     ann_fallback_count_ = 0;
+    snapshot_latency_seconds_ = 0.0;
+    snapshot_failures_total_ = 0;
+    snapshot_records_bytes_ = 0;
+    snapshot_vectors_bytes_ = 0;
+    snapshot_total_bytes_ = 0;
     memory_unit_embeddings_.clear();
     memory_has_embedding_.clear();
     memories_.clear();
@@ -1177,9 +1342,13 @@ bool AgentMemoryStore::should_use_ann_locked_(const MemoryQuery& query) const {
 }
 
 AnnIndexKind AgentMemoryStore::ann_index_kind_locked_() const {
-    return ann_config_.mode == AgentMemoryAnnMode::Hnsw
-        ? AnnIndexKind::Hnsw
-        : AnnIndexKind::SparseProjection;
+    if (ann_config_.mode == AgentMemoryAnnMode::Hnsw) {
+        return AnnIndexKind::Hnsw;
+    }
+    if (ann_config_.mode == AgentMemoryAnnMode::Ivf) {
+        return AnnIndexKind::Ivf;
+    }
+    return AnnIndexKind::SparseProjection;
 }
 
 std::optional<AgentMemoryStore::AnnBuildSnapshot>
@@ -1245,6 +1414,102 @@ bool AgentMemoryStore::try_add_ann_entry_locked_(
         record.embedding);
 }
 
+bool AgentMemoryStore::try_remove_ann_entry_locked_(
+    size_t row_id,
+    const MemoryRecord& record) {
+    if (!ann_index_ || ann_dirty_) return false;
+    if (row_id >= memories_.size()) return false;
+    if (record.embedding.empty()) return true;
+    return ann_index_->remove(
+        ann_partition_key_(record.tenant_id, record.namespace_id),
+        row_id);
+}
+
+bool AgentMemoryStore::try_replace_ann_entry_locked_(
+    const std::string& old_partition_key,
+    bool old_had_embedding,
+    size_t row_id,
+    const MemoryRecord& record) {
+    if (!ann_index_ || ann_dirty_) return false;
+    if (row_id >= memories_.size()) return false;
+    if (old_had_embedding && !ann_index_->remove(old_partition_key, row_id)) {
+        return false;
+    }
+    if (record.embedding.empty()) return true;
+    return ann_index_->add(
+        ann_partition_key_(record.tenant_id, record.namespace_id),
+        row_id,
+        record.embedding);
+}
+
+bool AgentMemoryStore::try_update_ann_row_id_locked_(
+    const std::string& partition_key,
+    bool has_embedding,
+    size_t old_row_id,
+    size_t new_row_id) {
+    if (!ann_index_ || ann_dirty_) return false;
+    if (!has_embedding || old_row_id == new_row_id) return true;
+    return ann_index_->update_row_id(partition_key, old_row_id, new_row_id);
+}
+
+void AgentMemoryStore::remove_memory_row_locked_(size_t row) {
+    if (row >= memories_.size()) return;
+    const size_t last = memories_.size() - 1;
+    const bool can_maintain_ann =
+        ann_config_.mode != AgentMemoryAnnMode::Off && ann_index_ && !ann_dirty_;
+    bool ann_maintained = true;
+    const std::string removed_id = memories_[row].memory_id;
+
+    if (can_maintain_ann) {
+        ann_maintained = try_remove_ann_entry_locked_(row, memories_[row]);
+    }
+
+    const bool units_valid =
+        memory_has_embedding_.size() == memories_.size() &&
+        (embedding_dim_ == 0 ||
+         memory_unit_embeddings_.size() == memories_.size() * embedding_dim_);
+
+    if (row != last) {
+        const std::string moved_partition_key =
+            ann_partition_key_(memories_[last].tenant_id,
+                               memories_[last].namespace_id);
+        const bool moved_has_embedding = !memories_[last].embedding.empty();
+        memories_[row] = std::move(memories_[last]);
+        memory_index_[memories_[row].memory_id] = row;
+        if (can_maintain_ann && ann_maintained) {
+            ann_maintained = try_update_ann_row_id_locked_(moved_partition_key,
+                                                           moved_has_embedding,
+                                                           last,
+                                                           row);
+        }
+        if (units_valid && embedding_dim_ != 0) {
+            auto dst = memory_unit_embeddings_.begin() +
+                static_cast<std::ptrdiff_t>(row * embedding_dim_);
+            auto src = memory_unit_embeddings_.begin() +
+                static_cast<std::ptrdiff_t>(last * embedding_dim_);
+            std::copy(src, src + static_cast<std::ptrdiff_t>(embedding_dim_), dst);
+        }
+        if (units_valid) {
+            memory_has_embedding_[row] = memory_has_embedding_[last];
+        }
+    }
+
+    memories_.pop_back();
+    memory_index_.erase(removed_id);
+    if (units_valid) {
+        if (!memory_has_embedding_.empty()) memory_has_embedding_.pop_back();
+        if (embedding_dim_ != 0) {
+            memory_unit_embeddings_.resize(memories_.size() * embedding_dim_);
+        }
+    } else {
+        rebuild_unit_embeddings_locked_();
+    }
+
+    if (can_maintain_ann && !ann_maintained) {
+        mark_ann_dirty_locked_();
+    }
+}
+
 void AgentMemoryStore::mark_ann_dirty_locked_() {
     ann_dirty_ = true;
     ++ann_generation_;
@@ -1293,20 +1558,24 @@ double AgentMemoryStore::cache_retention_score_(const CacheEntry& entry,
     return score;
 }
 
-size_t AgentMemoryStore::evict_expired_locked_(int64_t now) {
+size_t AgentMemoryStore::evict_expired_locked_(
+    int64_t now,
+    std::vector<AgentMemoryEvictionEvent>* evictions) {
     size_t memory_removed = 0;
     if (expiring_memory_count_ > 0) {
-        const size_t memory_before = memories_.size();
-        memories_.erase(std::remove_if(memories_.begin(), memories_.end(),
-            [&](const MemoryRecord& record) {
-                return expired_(record.expires_at_ns, now);
-            }), memories_.end());
-        memory_removed = memory_before - memories_.size();
-    }
-    if (memory_removed > 0) {
+        size_t row = 0;
+        while (row < memories_.size()) {
+            if (!expired_(memories_[row].expires_at_ns, now)) {
+                ++row;
+                continue;
+            }
+            if (evictions) {
+                evictions->push_back(memory_eviction_event(memories_[row]));
+            }
+            remove_memory_row_locked_(row);
+            ++memory_removed;
+        }
         evicted_memory_count_ += memory_removed;
-        rebuild_memory_index_locked_();
-        rebuild_unit_embeddings_locked_();
     }
 
     size_t cache_removed = 0;
@@ -1314,7 +1583,11 @@ size_t AgentMemoryStore::evict_expired_locked_(int64_t now) {
         const size_t cache_before = cache_entries_.size();
         cache_entries_.erase(std::remove_if(cache_entries_.begin(), cache_entries_.end(),
             [&](const CacheEntry& entry) {
-                return expired_(entry.expires_at_ns, now);
+                if (!expired_(entry.expires_at_ns, now)) return false;
+                if (evictions) {
+                    evictions->push_back(cache_eviction_event(entry));
+                }
+                return true;
             }), cache_entries_.end());
         cache_removed = cache_before - cache_entries_.size();
     }
@@ -1328,18 +1601,122 @@ size_t AgentMemoryStore::evict_expired_locked_(int64_t now) {
     return memory_removed + cache_removed;
 }
 
-void AgentMemoryStore::enforce_eviction_locked_(int64_t now) {
+void AgentMemoryStore::enforce_eviction_locked_(
+    int64_t now,
+    std::vector<AgentMemoryEvictionEvent>* evictions) {
+    for (const auto& quota : eviction_config_.tenant_quotas) {
+        while (quota.max_memories > 0 &&
+               memory_count_for_quota_locked_(quota) > quota.max_memories) {
+            if (!evict_one_memory_for_quota_locked_(quota, now, evictions)) break;
+        }
+        while (quota.max_cache_entries > 0 &&
+               cache_count_for_quota_locked_(quota) > quota.max_cache_entries) {
+            if (!evict_one_cache_for_quota_locked_(quota, now, evictions)) break;
+        }
+    }
+
     while (eviction_config_.max_memories > 0 &&
            memories_.size() > eviction_config_.max_memories) {
-        if (!evict_one_memory_for_capacity_locked_(now)) break;
+        if (!evict_one_memory_for_capacity_locked_(now, evictions)) break;
     }
     while (eviction_config_.max_cache_entries > 0 &&
            cache_entries_.size() > eviction_config_.max_cache_entries) {
-        if (!evict_one_cache_for_capacity_locked_(now)) break;
+        if (!evict_one_cache_for_capacity_locked_(now, evictions)) break;
     }
 }
 
-bool AgentMemoryStore::evict_one_memory_for_capacity_locked_(int64_t now) {
+bool AgentMemoryStore::memory_matches_quota_(
+    const MemoryRecord& record,
+    const AgentMemoryTenantQuota& quota) const {
+    if (record.tenant_id != quota.tenant_id) return false;
+    return quota.namespace_id.empty() || record.namespace_id == quota.namespace_id;
+}
+
+bool AgentMemoryStore::cache_matches_quota_(
+    const CacheEntry& entry,
+    const AgentMemoryTenantQuota& quota) const {
+    if (entry.tenant_id != quota.tenant_id) return false;
+    return quota.namespace_id.empty() || entry.namespace_id == quota.namespace_id;
+}
+
+size_t AgentMemoryStore::memory_count_for_quota_locked_(
+    const AgentMemoryTenantQuota& quota) const {
+    return static_cast<size_t>(std::count_if(
+        memories_.begin(), memories_.end(),
+        [&](const MemoryRecord& record) {
+            return memory_matches_quota_(record, quota);
+        }));
+}
+
+size_t AgentMemoryStore::cache_count_for_quota_locked_(
+    const AgentMemoryTenantQuota& quota) const {
+    return static_cast<size_t>(std::count_if(
+        cache_entries_.begin(), cache_entries_.end(),
+        [&](const CacheEntry& entry) {
+            return cache_matches_quota_(entry, quota);
+        }));
+}
+
+bool AgentMemoryStore::evict_one_memory_for_quota_locked_(
+    const AgentMemoryTenantQuota& quota,
+    int64_t now,
+    std::vector<AgentMemoryEvictionEvent>* evictions) {
+    auto candidate = memories_.end();
+    double candidate_score = std::numeric_limits<double>::infinity();
+    for (auto it = memories_.begin(); it != memories_.end(); ++it) {
+        if (!memory_matches_quota_(*it, quota)) continue;
+        if (eviction_config_.protect_pinned && it->pinned) continue;
+        const double score = memory_retention_score_(*it, now);
+        if (candidate == memories_.end() || score < candidate_score ||
+            (score == candidate_score && it->created_at_ns < candidate->created_at_ns)) {
+            candidate = it;
+            candidate_score = score;
+        }
+    }
+    if (candidate == memories_.end()) return false;
+    if (evictions) {
+        evictions->push_back(memory_eviction_event(*candidate));
+    }
+    if (has_expiry(candidate->expires_at_ns) && expiring_memory_count_ > 0) {
+        --expiring_memory_count_;
+    }
+    remove_memory_row_locked_(
+        static_cast<size_t>(std::distance(memories_.begin(), candidate)));
+    ++evicted_memory_count_;
+    return true;
+}
+
+bool AgentMemoryStore::evict_one_cache_for_quota_locked_(
+    const AgentMemoryTenantQuota& quota,
+    int64_t now,
+    std::vector<AgentMemoryEvictionEvent>* evictions) {
+    auto candidate = cache_entries_.end();
+    double candidate_score = std::numeric_limits<double>::infinity();
+    for (auto it = cache_entries_.begin(); it != cache_entries_.end(); ++it) {
+        if (!cache_matches_quota_(*it, quota)) continue;
+        const double score = cache_retention_score_(*it, now);
+        if (candidate == cache_entries_.end() || score < candidate_score ||
+            (score == candidate_score && it->created_at_ns < candidate->created_at_ns)) {
+            candidate = it;
+            candidate_score = score;
+        }
+    }
+    if (candidate == cache_entries_.end()) return false;
+    if (evictions) {
+        evictions->push_back(cache_eviction_event(*candidate));
+    }
+    if (has_expiry(candidate->expires_at_ns) && expiring_cache_count_ > 0) {
+        --expiring_cache_count_;
+    }
+    cache_entries_.erase(candidate);
+    ++evicted_cache_count_;
+    rebuild_cache_index_locked_();
+    return true;
+}
+
+bool AgentMemoryStore::evict_one_memory_for_capacity_locked_(
+    int64_t now,
+    std::vector<AgentMemoryEvictionEvent>* evictions) {
     if (memories_.empty()) return false;
     auto candidate = memories_.end();
     double candidate_score = std::numeric_limits<double>::infinity();
@@ -1353,17 +1730,21 @@ bool AgentMemoryStore::evict_one_memory_for_capacity_locked_(int64_t now) {
         }
     }
     if (candidate == memories_.end()) return false;
+    if (evictions) {
+        evictions->push_back(memory_eviction_event(*candidate));
+    }
     if (has_expiry(candidate->expires_at_ns) && expiring_memory_count_ > 0) {
         --expiring_memory_count_;
     }
-    memories_.erase(candidate);
+    remove_memory_row_locked_(
+        static_cast<size_t>(std::distance(memories_.begin(), candidate)));
     ++evicted_memory_count_;
-    rebuild_memory_index_locked_();
-    rebuild_unit_embeddings_locked_();
     return true;
 }
 
-bool AgentMemoryStore::evict_one_cache_for_capacity_locked_(int64_t now) {
+bool AgentMemoryStore::evict_one_cache_for_capacity_locked_(
+    int64_t now,
+    std::vector<AgentMemoryEvictionEvent>* evictions) {
     if (cache_entries_.empty()) return false;
     auto candidate = cache_entries_.end();
     double candidate_score = std::numeric_limits<double>::infinity();
@@ -1374,6 +1755,9 @@ bool AgentMemoryStore::evict_one_cache_for_capacity_locked_(int64_t now) {
             candidate = it;
             candidate_score = score;
         }
+    }
+    if (evictions) {
+        evictions->push_back(cache_eviction_event(*candidate));
     }
     if (has_expiry(candidate->expires_at_ns) && expiring_cache_count_ > 0) {
         --expiring_cache_count_;

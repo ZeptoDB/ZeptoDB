@@ -29,7 +29,7 @@ import { sql } from "@codemirror/lang-sql";
 import { autocompletion } from "@codemirror/autocomplete";
 import { EditorView, Decoration, type DecorationSet } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
-import { querySQL, fetchQueries, killQuery } from "@/lib/api";
+import { querySQL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { zeptoCompletions } from "@/lib/zeptoCompletions";
 import PaginatedTable from "@/components/PaginatedTable";
@@ -228,7 +228,7 @@ export default function QueryPage() {
 
   // UI state
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState<string[]>([]);
+  const [history, setHistory] = useState<string[]>(() => loadHistory());
   const [showHistory, setShowHistory] = useState(false);
   const [snackMsg, setSnackMsg] = useState<string | null>(null);
   const [exportAnchor, setExportAnchor] = useState<null | HTMLElement>(null);
@@ -245,8 +245,6 @@ export default function QueryPage() {
   const abortRef = useRef<AbortController | null>(null);
 
   const handleResize = useCallback((dy: number) => { setEditorHeight((h) => Math.max(80, Math.min(600, h + dy))); }, []);
-
-  useEffect(() => { setHistory(loadHistory()); }, []);
 
   // Schema fetch
   const fetchSchema = useCallback(() => {

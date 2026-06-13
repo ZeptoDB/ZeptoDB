@@ -36,7 +36,12 @@ struct Config {
     int rebalance_timeout_sec = 300;
     int rebalance_node_id = 0;
     std::string action = "add_node";
+    int move_from = 0;
+    int move_to = 1;
+    int move_count = 0;
     int ingest_threads = 1;
+    std::string verify_host_template;
+    int verify_replicas = 0;
     std::string scenario = "all";  // all, smoke, basic, add_remove_cycle,
                                    // pause_resume, heavy_query, back_to_back,
                                    // status_polling
@@ -95,9 +100,15 @@ Config parse_args(int argc, char* argv[]) {
                       << "  --baseline-sec N     Baseline duration (default: 30)\n"
                       << "  --rebalance-timeout-sec N\n"
                       << "                       Max seconds to wait for one rebalance (default: 300)\n"
-                      << "  --action ACTION      add_node or remove_node (default: add_node)\n"
+                      << "  --action ACTION      add_node, remove_node, or move_partitions (default: add_node)\n"
                       << "  --node-id N          Node ID for rebalance (default: auto-detect)\n"
+                      << "  --move-from N        Source node for move_partitions (default: 0)\n"
+                      << "  --move-to N          Destination node for move_partitions (default: 1)\n"
+                      << "  --move-count N       Number of move_partitions entries (default: symbols)\n"
                       << "  --ingest-threads N   Number of ingest threads (default: 1)\n"
+                      << "  --verify-host-template TEMPLATE\n"
+                      << "                       Optional host template with %d for per-pod integrity queries\n"
+                      << "  --verify-replicas N  Number of pod hosts to query with --verify-host-template\n"
                       << "  --scenario NAME      Test scenario (default: all)\n"
                       << "      all              Run all rebalance scenarios\n"
                       << "      smoke            Ingest/query baseline only; no rebalance trigger\n"
@@ -121,7 +132,12 @@ Config parse_args(int argc, char* argv[]) {
         else if (arg == "--rebalance-timeout-sec") cfg.rebalance_timeout_sec = std::stoi(next());
         else if (arg == "--action")    cfg.action = next();
         else if (arg == "--node-id")   cfg.rebalance_node_id = std::stoi(next());
+        else if (arg == "--move-from") cfg.move_from = std::stoi(next());
+        else if (arg == "--move-to")   cfg.move_to = std::stoi(next());
+        else if (arg == "--move-count") cfg.move_count = std::stoi(next());
         else if (arg == "--ingest-threads") cfg.ingest_threads = std::stoi(next());
+        else if (arg == "--verify-host-template") cfg.verify_host_template = next();
+        else if (arg == "--verify-replicas") cfg.verify_replicas = std::stoi(next());
         else if (arg == "--scenario")  cfg.scenario = next();
     }
     return cfg;
@@ -161,6 +177,8 @@ struct HttpResult {
     std::string body;
 };
 
+static bool sql_result_ok(const httplib::Result& res);
+
 static HttpResult http_post_json_result(const Config& cfg, const std::string& path,
                                         const std::string& body) {
     httplib::Client cli(cfg.host, cfg.port);
@@ -177,9 +195,9 @@ static HttpResult http_post_json_result(const Config& cfg, const std::string& pa
 
 void ingest_worker(const Config& cfg, Metrics& m, std::atomic<bool>& running) {
     std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int> sym_dist(0, cfg.num_symbols - 1);
     std::uniform_int_distribution<int> price_dist(10000, 20000);
     std::uniform_int_distribution<int> vol_dist(1, 1000);
+    int next_symbol = 0;
 
     const auto interval = std::chrono::nanoseconds(1'000'000'000LL / std::max(cfg.ticks_per_sec, 1));
     auto next_tick = Clock::now();
@@ -189,7 +207,7 @@ void ingest_worker(const Config& cfg, Metrics& m, std::atomic<bool>& running) {
     cli.set_read_timeout(5);
 
     while (running.load(std::memory_order_relaxed)) {
-        int sym = sym_dist(rng);
+        int sym = next_symbol++ % std::max(cfg.num_symbols, 1);
         auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         int price = price_dist(rng);
@@ -201,7 +219,7 @@ void ingest_worker(const Config& cfg, Metrics& m, std::atomic<bool>& running) {
             std::to_string(now_ns) + ")";
 
         auto res = cli.Post("/", sql, "text/plain");
-        if (res && res->status == 200)
+        if (sql_result_ok(res))
             m.inserts_ok.fetch_add(1, std::memory_order_relaxed);
         else
             m.inserts_fail.fetch_add(1, std::memory_order_relaxed);
@@ -236,7 +254,7 @@ void query_worker(const Config& cfg, Metrics& m, std::atomic<bool>& running) {
 
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        if (res && res->status == 200) {
+        if (sql_result_ok(res)) {
             m.queries_ok.fetch_add(1, std::memory_order_relaxed);
             m.record_query_latency(ms);
         } else {
@@ -259,10 +277,119 @@ std::string get_rebalance_status(const Config& cfg) {
     return http_get(cfg, "/admin/rebalance/status");
 }
 
+static Config with_host(const Config& cfg, std::string host) {
+    Config copy = cfg;
+    copy.host = std::move(host);
+    return copy;
+}
+
+static std::string format_verify_host(const std::string& tmpl, int ordinal) {
+    auto pos = tmpl.find("%d");
+    if (pos == std::string::npos) return tmpl;
+
+    std::string out;
+    out.reserve(tmpl.size() + 8);
+    out.append(tmpl, 0, pos);
+    out += std::to_string(ordinal);
+    out.append(tmpl, pos + 2, std::string::npos);
+    return out;
+}
+
+static std::vector<std::string> integrity_hosts(const Config& cfg) {
+    std::vector<std::string> hosts;
+    if (!cfg.verify_host_template.empty() && cfg.verify_replicas > 0) {
+        hosts.reserve(static_cast<size_t>(cfg.verify_replicas));
+        for (int i = 0; i < cfg.verify_replicas; ++i)
+            hosts.push_back(format_verify_host(cfg.verify_host_template, i));
+    }
+
+    if (hosts.empty())
+        hosts.push_back(cfg.host);
+
+    return hosts;
+}
+
+static bool parse_count_response(const std::string& resp, long long& count) {
+    try {
+        auto dp = resp.find("\"data\":[[");
+        if (dp != std::string::npos) {
+            count = std::stoll(resp.substr(dp + 9));
+        } else {
+            count = std::stoll(resp);
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool sql_body_ok(const std::string& resp) {
+    return !resp.empty() && resp.find("\"error\"") == std::string::npos;
+}
+
+static bool sql_result_ok(const httplib::Result& res) {
+    if (!res || res->status != 200) return false;
+    return res->body.find("\"error\"") == std::string::npos;
+}
+
+static bool prepare_trades_schema(const Config& cfg) {
+    bool ok = true;
+    for (const auto& host : integrity_hosts(cfg)) {
+        const auto host_cfg = with_host(cfg, host);
+        (void)http_post(host_cfg, "DROP TABLE IF EXISTS trades");
+        const auto resp = http_post(
+            host_cfg,
+            "CREATE TABLE IF NOT EXISTS trades ("
+            "symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)");
+        if (!sql_body_ok(resp)) {
+            std::cerr << "  ERROR: could not prepare trades schema on "
+                      << host << ": " << resp.substr(0, 160) << "\n";
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+static int parse_status_counter(const std::string& status,
+                                const std::string& key,
+                                int default_value = -1) {
+    const std::string needle = "\"" + key + "\":";
+    const auto pos = status.find(needle);
+    if (pos == std::string::npos) return default_value;
+    try {
+        return std::stoi(status.substr(pos + needle.size()));
+    } catch (...) {
+        return default_value;
+    }
+}
+
+static bool rebalance_status_succeeded(const std::string& status) {
+    return status.find("\"IDLE\"") != std::string::npos &&
+           parse_status_counter(status, "failed_moves", 0) == 0;
+}
+
+static std::string move_partitions_body(const Config& cfg, int from, int to) {
+    const int count = cfg.move_count > 0 ? cfg.move_count : cfg.num_symbols;
+    std::string body = R"({"action":"move_partitions","moves":[)";
+    for (int i = 0; i < count; ++i) {
+        if (i > 0) body += ',';
+        body += R"({"symbol":)" + std::to_string(i % cfg.num_symbols) +
+                R"(,"from":)" + std::to_string(from) +
+                R"(,"to":)" + std::to_string(to) + "}";
+    }
+    body += "]}";
+    return body;
+}
+
 bool trigger_rebalance(const Config& cfg, const std::string& action, int node_id,
                        std::string* error = nullptr) {
-    std::string body = R"({"action":")" + action + R"(","node_id":)" +
-        std::to_string(node_id) + "}";
+    std::string body;
+    if (action == "move_partitions") {
+        body = move_partitions_body(cfg, cfg.move_from, cfg.move_to);
+    } else {
+        body = R"({"action":")" + action + R"(","node_id":)" +
+               std::to_string(node_id) + "}";
+    }
     auto resp = http_post_json_result(cfg, "/admin/rebalance/start", body);
     if (resp.status == 200 && resp.body.find("\"ok\":true") != std::string::npos)
         return true;
@@ -279,36 +406,46 @@ bool wait_rebalance_done(const Config& cfg, int timeout_sec) {
     while (Clock::now() < deadline) {
         auto status = get_rebalance_status(cfg);
         if (status.find("\"IDLE\"") != std::string::npos)
-            return true;
+            return rebalance_status_succeeded(status);
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     return false;
 }
 
 bool verify_data_integrity(const Config& cfg, int expected_symbols) {
+    const auto hosts = integrity_hosts(cfg);
     int verified = 0;
     uint64_t total_rows = 0;
+    if (hosts.size() > 1) {
+        std::cout << "  Verification hosts: " << hosts.size() << "\n";
+    }
     for (int s = 0; s < expected_symbols; ++s) {
-        std::string sql = "SELECT count(*) FROM trades WHERE symbol = " + std::to_string(s);
-        auto resp = http_post(cfg, sql);
-        if (!resp.empty()) {
-            try {
-                // Response may be JSON: {"columns":["*"],"data":[[N]],...}
-                // or plain number
-                long long cnt = 0;
-                auto dp = resp.find("\"data\":[[");
-                if (dp != std::string::npos) {
-                    cnt = std::stoll(resp.substr(dp + 9));
-                } else {
-                    cnt = std::stoll(resp);
-                }
-                if (cnt > 0) ++verified;
-                total_rows += static_cast<uint64_t>(cnt);
-            } catch (...) {
-                // Parse failed — skip this symbol (don't count as verified)
+        long long symbol_rows = 0;
+        bool parsed_any = false;
+        const std::string sql =
+            "SELECT count(*) FROM trades WHERE symbol = " + std::to_string(s);
+
+        for (const auto& host : hosts) {
+            const auto host_cfg = with_host(cfg, host);
+            auto resp = http_post(host_cfg, sql);
+            if (resp.empty())
+                continue;
+
+            long long cnt = 0;
+            if (parse_count_response(resp, cnt)) {
+                parsed_any = true;
+                symbol_rows += cnt;
+            } else {
                 std::cerr << "  WARN: Could not parse count for symbol " << s
-                          << ": " << resp.substr(0, 60) << "\n";
+                          << " from " << host << ": " << resp.substr(0, 60) << "\n";
             }
+        }
+
+        if (symbol_rows > 0) ++verified;
+        if (symbol_rows > 0)
+            total_rows += static_cast<uint64_t>(symbol_rows);
+        else if (!parsed_any) {
+            std::cerr << "  WARN: No count response for symbol " << s << "\n";
         }
     }
     std::cout << "  Symbols verified: " << verified << "/" << expected_symbols;
@@ -607,18 +744,21 @@ bool scenario_basic(const Config& cfg, int node_id) {
     // Phase 5: Rapid Start/Cancel Stress
     std::cout << "\n--- Phase 5: Rapid Start/Cancel Stress ---\n";
     bool phase5_ok = true;
+    Config cancel_cfg = cfg;
+    if (cancel_cfg.action == "move_partitions")
+        cancel_cfg.move_count = 1;
     for (int cycle = 0; cycle < 5; ++cycle) {
-        std::string body = R"({"action":")" + cfg.action + R"(","node_id":)" +
-            std::to_string(node_id) + "}";
-        auto resp = http_post_json(cfg, "/admin/rebalance/start", body);
-        if (resp.find("\"ok\":true") == std::string::npos) {
-            std::cerr << "  Cycle " << cycle << ": start failed\n";
+        std::string trigger_error;
+        if (!trigger_rebalance(cancel_cfg, cancel_cfg.action, node_id, &trigger_error)) {
+            std::cerr << "  Cycle " << cycle << ": start failed";
+            if (!trigger_error.empty()) std::cerr << ": " << trigger_error;
+            std::cerr << "\n";
             phase5_ok = false;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        cancel_rebalance(cfg);
-        if (!wait_rebalance_done(cfg, 30)) {
+        cancel_rebalance(cancel_cfg);
+        if (!wait_rebalance_done(cancel_cfg, 30)) {
             std::cerr << "  Cycle " << cycle << ": did not return to IDLE\n";
             phase5_ok = false;
             break;
@@ -656,7 +796,13 @@ bool scenario_basic(const Config& cfg, int node_id) {
 bool scenario_add_remove_cycle(const Config& cfg, int node_id) {
     Metrics metrics;
     std::cout << "\n=== Scenario: Add/Remove Cycle ===\n";
-    std::cout << "  Tests: add_node → verify → remove_node → verify (round-trip)\n";
+    if (cfg.action == "move_partitions") {
+        std::cout << "  Tests: move_partitions "
+                  << cfg.move_from << "->" << cfg.move_to
+                  << " -> verify -> reverse -> verify\n";
+    } else {
+        std::cout << "  Tests: add_node -> verify -> remove_node -> verify (round-trip)\n";
+    }
 
     // Baseline
     std::cout << "\n--- Baseline (" << cfg.baseline_sec << "s) ---\n";
@@ -667,13 +813,16 @@ bool scenario_add_remove_cycle(const Config& cfg, int node_id) {
     bool rm_ok = true;
 
     // Step 1: add_node under load
-    std::cout << "\n--- Step 1: add_node (node_id=" << node_id << ") ---\n";
+    std::cout << "\n--- Step 1: "
+              << (cfg.action == "move_partitions" ? "move_partitions" : "add_node")
+              << " ---\n";
     {
         Config add_cfg = cfg;
-        add_cfg.action = "add_node";
+        if (cfg.action != "move_partitions")
+            add_cfg.action = "add_node";
         auto r = run_rebalance_phase(add_cfg, metrics, node_id);
         std::cout << "  Duration: " << std::fixed << std::setprecision(1) << r.duration_sec << "s\n";
-        print_phase("add_node", r, &baseline);
+        print_phase(add_cfg.action.c_str(), r, &baseline);
         if (!r.rebalance_triggered || !r.rebalance_completed) add_ok = false;
     }
 
@@ -681,13 +830,20 @@ bool scenario_add_remove_cycle(const Config& cfg, int node_id) {
     add_ok = add_ok && verify_data_integrity(cfg, cfg.num_symbols);
 
     // Step 2: remove_node under load (reverse)
-    std::cout << "\n--- Step 2: remove_node (node_id=" << node_id << ") ---\n";
+    std::cout << "\n--- Step 2: "
+              << (cfg.action == "move_partitions" ? "move_partitions reverse" : "remove_node")
+              << " ---\n";
     {
         Config rm_cfg = cfg;
-        rm_cfg.action = "remove_node";
+        if (cfg.action == "move_partitions") {
+            rm_cfg.move_from = cfg.move_to;
+            rm_cfg.move_to = cfg.move_from;
+        } else {
+            rm_cfg.action = "remove_node";
+        }
         auto r = run_rebalance_phase(rm_cfg, metrics, node_id);
         std::cout << "  Duration: " << std::fixed << std::setprecision(1) << r.duration_sec << "s\n";
-        print_phase("remove_node", r, &baseline);
+        print_phase(rm_cfg.action.c_str(), r, &baseline);
         if (!r.rebalance_triggered || !r.rebalance_completed) rm_ok = false;
     }
 
@@ -728,8 +884,12 @@ bool scenario_pause_resume(const Config& cfg, int node_id) {
         return false;
     }
 
-    // Pause after 1s
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    // move_partitions over existing nodes can finish quickly, so pause earlier
+    // in that mode while preserving the original add/remove timing.
+    if (cfg.action == "move_partitions")
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    else
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     auto pause_resp = http_post_json(cfg, "/admin/rebalance/pause", "");
     bool paused = pause_resp.find("\"ok\":true") != std::string::npos;
     std::cout << "  Pause: " << (paused ? "OK" : "FAIL") << "\n";
@@ -815,7 +975,10 @@ bool scenario_heavy_query(const Config& cfg, int node_id) {
 bool scenario_back_to_back(const Config& cfg, int node_id) {
     Metrics metrics;
     std::cout << "\n=== Scenario: Back-to-Back Rebalances ===\n";
-    std::cout << "  Tests: 3 consecutive remove_node rebalances with ingest running\n";
+    const std::string action =
+        (cfg.action == "move_partitions") ? "move_partitions" : "remove_node";
+    std::cout << "  Tests: 3 consecutive " << action
+              << " rebalances with ingest running\n";
 
     std::atomic<bool> running{true};
     std::thread ingest_t(ingest_worker, std::cref(cfg), std::ref(metrics), std::ref(running));
@@ -825,14 +988,16 @@ bool scenario_back_to_back(const Config& cfg, int node_id) {
     for (int cycle = 0; cycle < 3; ++cycle) {
         std::cout << "\n--- Cycle " << (cycle + 1) << "/3 ---\n";
 
-        std::cout << "  remove_node(" << node_id << ")... ";
-        if (trigger_rebalance(cfg, "remove_node", node_id)) {
+        std::cout << "  " << action << "(" << node_id << ")... ";
+        if (trigger_rebalance(cfg, action, node_id)) {
             bool done = wait_rebalance_done(cfg, 60);
             std::cout << (done ? "OK" : "TIMEOUT") << "\n";
             if (!done) all_ok = false;
         } else {
-            // May fail if node already removed — that's expected after first cycle
+            // May fail if node already removed in remove_node mode.
             std::cout << "SKIP (already removed)\n";
+            if (action == "move_partitions")
+                all_ok = false;
         }
     }
 
@@ -939,6 +1104,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::cerr << "WARNING: /admin/cluster not available, but /ping OK\n";
+    }
+
+    std::cout << "Preparing trades schema...\n";
+    if (!prepare_trades_schema(cfg)) {
+        std::cerr << "ERROR: failed to prepare trades schema\n";
+        return 1;
     }
 
     int node_id = cfg.rebalance_node_id;

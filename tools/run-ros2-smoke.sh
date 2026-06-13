@@ -24,6 +24,10 @@ ROS2_CONDA_PACKAGES=(
     ros-jazzy-ros-base
     ros-jazzy-rclcpp
     ros-jazzy-std-msgs
+    ros-jazzy-sensor-msgs
+    ros-jazzy-nav-msgs
+    ros-jazzy-tf2-msgs
+    ros-jazzy-geometry-msgs
     ros-jazzy-rosbag2-cpp
     ros-jazzy-rosbag2-storage-default-plugins
     ros-jazzy-ros2topic
@@ -33,6 +37,10 @@ ROS2_CONDA_PACKAGES=(
 ROS2_REQUIRED_PACKAGES=(
     rclcpp
     std_msgs
+    sensor_msgs
+    nav_msgs
+    tf2_msgs
+    geometry_msgs
     rosbag2_cpp
     rosbag2_storage
     rosbag2_storage_default_plugins
@@ -90,7 +98,7 @@ verify_ros_packages() {
     info "Verifying ROS 2 packages"
     run_ros2 bash -lc "
         ros2 --help >/dev/null
-        ros2 pkg list | rg '^(rclcpp|std_msgs|rosbag2_cpp|rosbag2_storage|rosbag2_storage_default_plugins|ros2topic|demo_nodes_cpp)$'
+        ros2 pkg list | rg '^(rclcpp|std_msgs|sensor_msgs|nav_msgs|tf2_msgs|geometry_msgs|rosbag2_cpp|rosbag2_storage|rosbag2_storage_default_plugins|ros2topic|demo_nodes_cpp)$'
     "
 }
 

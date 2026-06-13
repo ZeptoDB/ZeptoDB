@@ -50,6 +50,31 @@ CREATE TABLE IF NOT EXISTS cache_events (
     timestamp_ns INT64
 )
 """.strip(),
+    "context_traces": """
+CREATE TABLE IF NOT EXISTS context_traces (
+    trace_id SYMBOL,
+    run_id SYMBOL,
+    tenant_id SYMBOL,
+    memory_id SYMBOL,
+    rank INT64,
+    score_micros INT64,
+    similarity_micros INT64,
+    token_count INT64,
+    reason SYMBOL,
+    timestamp_ns INT64
+)
+""".strip(),
+    "context_replay_events": """
+CREATE TABLE IF NOT EXISTS context_replay_events (
+    event_id SYMBOL,
+    run_id SYMBOL,
+    tenant_id SYMBOL,
+    source_table SYMBOL,
+    query SYMBOL,
+    row_count INT64,
+    timestamp_ns INT64
+)
+""".strip(),
     "llm_calls": """
 CREATE TABLE IF NOT EXISTS llm_calls (
     call_id SYMBOL,
@@ -61,6 +86,20 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     completion_tokens INT64,
     latency_ms INT64,
     cache_hit INT64,
+    timestamp_ns INT64
+)
+""".strip(),
+    "llm_errors": """
+CREATE TABLE IF NOT EXISTS llm_errors (
+    event_id SYMBOL,
+    call_id SYMBOL,
+    run_id SYMBOL,
+    tenant_id SYMBOL,
+    provider SYMBOL,
+    model SYMBOL,
+    error_type SYMBOL,
+    status SYMBOL,
+    latency_ms INT64,
     timestamp_ns INT64
 )
 """.strip(),

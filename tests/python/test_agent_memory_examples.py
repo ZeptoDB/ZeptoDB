@@ -9,6 +9,15 @@ from examples.agent_memory.adapters import (
     openai_state_model,
 )
 from examples.agent_memory.agentops_schema import AGENTOPS_DDL, install_agentops_schema
+from examples.agent_memory.context_trace import (
+    build_context_replay_sql,
+    build_context_trace_sql,
+    explain_memory_selection,
+)
+from examples.agent_memory.otel_mapping import (
+    map_span_to_agentops_sql,
+    map_spans_to_agentops_sql,
+)
 from examples.agent_memory.agent_attached_timeseries_demo import (
     USE_CASES,
     run_all_use_cases,
@@ -257,6 +266,123 @@ def test_agentops_schema_installs_all_tables():
     assert all(sql.startswith("CREATE TABLE IF NOT EXISTS") for sql in db.sql)
     assert any("agent_runs" in sql for sql in db.sql)
     assert any("llm_calls" in sql for sql in db.sql)
+    assert any("llm_errors" in sql for sql in db.sql)
+    assert any("context_traces" in sql for sql in db.sql)
+    assert any("context_replay_events" in sql for sql in db.sql)
+
+
+def test_context_trace_explains_selected_memories_and_replay_snapshot():
+    context = {
+        "memories": [
+            {
+                "record": {
+                    "memory_id": "mem_1",
+                    "token_count": 8,
+                    "importance": 2.0,
+                    "access_count": 3,
+                    "pinned": True,
+                },
+                "score": 8.25,
+                "similarity": 0.91,
+            }
+        ]
+    }
+    replay = [
+        {
+            "source_table": "service_metrics",
+            "query": "SELECT count(*) FROM service_metrics",
+            "row_count": 42,
+        }
+    ]
+
+    trace_sql = build_context_trace_sql(
+        context,
+        run_id="run_1",
+        tenant_id="tenant_a",
+        timestamp_ns=123,
+    )
+    replay_sql = build_context_replay_sql(
+        replay,
+        run_id="run_1",
+        tenant_id="tenant_a",
+        timestamp_ns=123,
+    )
+
+    assert explain_memory_selection(context["memories"][0]) == (
+        "pinned+semantic_match+importance+prior_use+token_budget_fit"
+    )
+    assert len(trace_sql) == 1
+    assert "INSERT INTO context_traces" in trace_sql[0]
+    assert "'mem_1'" in trace_sql[0]
+    assert "8250000" in trace_sql[0]
+    assert len(replay_sql) == 1
+    assert "INSERT INTO context_replay_events" in replay_sql[0]
+    assert "'service_metrics'" in replay_sql[0]
+
+
+def test_otel_mapping_maps_genai_tokens_cache_and_latency():
+    span = {
+        "traceId": "trace_1",
+        "spanId": "span_llm",
+        "name": "gen_ai.chat",
+        "startTimeUnixNano": "1000000000",
+        "endTimeUnixNano": "1123000000",
+        "attributes": [
+            {"key": "tenant.id", "value": {"stringValue": "tenant_a"}},
+            {"key": "agent.run_id", "value": {"stringValue": "run_1"}},
+            {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+            {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4.1"}},
+            {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "12"}},
+            {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "7"}},
+            {"key": "gen_ai.cache.hit", "value": {"boolValue": True}},
+            {"key": "gen_ai.cache.type", "value": {"stringValue": "semantic"}},
+        ],
+    }
+
+    sql = map_span_to_agentops_sql(span)
+
+    assert any("INSERT INTO llm_calls" in row for row in sql)
+    assert any("'openai'" in row and "'gpt-4.1'" in row for row in sql)
+    assert any("12" in row and "7" in row and "123" in row for row in sql)
+    assert any("INSERT INTO cache_events" in row and "'semantic'" in row for row in sql)
+
+
+def test_otel_mapping_maps_tool_calls_and_model_errors():
+    spans = [
+        {
+            "traceId": "trace_2",
+            "spanId": "span_tool",
+            "startTimeUnixNano": "2000000000",
+            "endTimeUnixNano": "2010000000",
+            "attributes": {
+                "agent.run_id": "run_2",
+                "tenant.id": "tenant_a",
+                "gen_ai.tool.name": "inventory_lookup",
+                "gen_ai.tool.call.id": "tool_1",
+                "tool.status": "ok",
+            },
+        },
+        {
+            "traceId": "trace_2",
+            "spanId": "span_error",
+            "startTimeUnixNano": "3000000000",
+            "endTimeUnixNano": "3005000000",
+            "status": {"code": "STATUS_CODE_ERROR", "message": "rate_limit"},
+            "attributes": {
+                "agent.run_id": "run_2",
+                "tenant.id": "tenant_a",
+                "gen_ai.system": "openai",
+                "gen_ai.response.model": "gpt-4.1",
+                "error.type": "rate_limit",
+            },
+        },
+    ]
+
+    sql = map_spans_to_agentops_sql(spans)
+
+    assert any("INSERT INTO tool_calls" in row and "'inventory_lookup'" in row for row in sql)
+    assert any("INSERT INTO llm_errors" in row and "'rate_limit'" in row for row in sql)
+    assert any("INSERT INTO llm_calls" in row and "'span_error'" in row for row in sql)
 
 
 def test_production_agent_demo_records_memory_cache_and_telemetry():

@@ -203,6 +203,14 @@ private:
     /// Try to extract a single symbol ID from "WHERE symbol = <literal>".
     std::optional<SymbolId> extract_symbol_filter(const std::string& sql) const;
 
+    /// Try to extract the primary table name for table-aware routing.
+    std::optional<std::string> extract_table_name(const std::string& sql) const;
+
+    /// Resolve a table id for routing when a local schema snapshot knows the
+    /// table. Returns 0 for legacy/no-CREATE-table paths.
+    uint16_t resolve_routing_table_id_locked(
+        const std::optional<std::string>& table_name) const;
+
     mutable std::shared_mutex                        mutex_;
     std::vector<std::shared_ptr<NodeEndpoint>>       endpoints_;
 

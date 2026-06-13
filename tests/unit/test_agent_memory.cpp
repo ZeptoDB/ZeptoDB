@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -34,11 +35,14 @@ using zeptodb::ai::AgentMemoryAnnConfig;
 using zeptodb::ai::AgentMemoryAnnMode;
 using zeptodb::ai::AgentMemoryEntryKind;
 using zeptodb::ai::AgentMemoryEvictionConfig;
+using zeptodb::ai::AgentMemoryEvictionTarget;
 using zeptodb::ai::AgentMemoryIdConfig;
 using zeptodb::ai::AgentMemoryNodeId;
 using zeptodb::ai::AgentMemoryRouter;
 using zeptodb::ai::AgentMemoryRouterConfig;
 using zeptodb::ai::AgentMemoryRoutingMode;
+using zeptodb::ai::AgentMemoryStats;
+using zeptodb::ai::AgentMemoryTenantQuota;
 using zeptodb::ai::CacheEntry;
 using zeptodb::ai::CacheLookup;
 using zeptodb::ai::CacheLookupResult;
@@ -579,6 +583,186 @@ TEST(AgentMemoryStoreTest, AnnMetadataUpdateDoesNotDirtyIndex) {
     EXPECT_EQ(stats.ann_fallback_count, 0u);
 }
 
+TEST(AgentMemoryStoreTest, AnnEmbeddingUpdateMaintainsCleanIndex) {
+    AgentMemoryStore store;
+    AgentMemoryAnnConfig ann;
+    ann.mode = AgentMemoryAnnMode::SparseProjection;
+    ann.min_records = 1;
+    ann.oversample = 16;
+    ann.index.tables = 1;
+    ann.index.bits_per_table = 1;
+    ann.index.probe_radius = 1;
+    ann.index.max_candidates = 1'000;
+    store.set_ann_config(ann);
+
+    MemoryRecord left;
+    left.memory_id = "left";
+    left.tenant_id = "tenant_a";
+    left.namespace_id = "agent";
+    left.content = "left";
+    left.embedding = {1.0f, 0.0f};
+    ASSERT_TRUE(store.put_memory(left).ok);
+
+    MemoryRecord moving;
+    moving.memory_id = "moving";
+    moving.tenant_id = "tenant_a";
+    moving.namespace_id = "agent";
+    moving.content = "moving";
+    moving.embedding = {0.0f, 1.0f};
+    ASSERT_TRUE(store.put_memory(moving).ok);
+
+    ASSERT_TRUE(store.rebuild_ann_index().ok);
+    EXPECT_EQ(store.stats().ann_rebuild_count, 1u);
+
+    moving.embedding = {1.0f, 0.0f};
+    moving.importance = 10.0;
+    ASSERT_TRUE(store.put_memory(moving).ok);
+
+    MemoryQuery q;
+    q.tenant_id = "tenant_a";
+    q.namespace_id = "agent";
+    q.query_embedding = {1.0f, 0.0f};
+    q.limit = 1;
+    q.update_access = false;
+
+    const auto matches = store.search(q);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches[0].record.memory_id, "moving");
+    const auto stats = store.stats();
+    EXPECT_EQ(stats.ann_rebuild_count, 1u);
+    EXPECT_GE(stats.ann_search_count, 1u);
+    EXPECT_EQ(stats.ann_fallback_count, 0u);
+}
+
+TEST(AgentMemoryStoreTest, AnnDeleteMaintainsCleanIndexAndRemapsMovedRow) {
+    AgentMemoryStore store;
+    AgentMemoryAnnConfig ann;
+    ann.mode = AgentMemoryAnnMode::SparseProjection;
+    ann.min_records = 1;
+    ann.oversample = 16;
+    ann.index.tables = 1;
+    ann.index.bits_per_table = 1;
+    ann.index.probe_radius = 1;
+    ann.index.max_candidates = 1'000;
+    store.set_ann_config(ann);
+
+    MemoryRecord removed;
+    removed.memory_id = "removed";
+    removed.tenant_id = "tenant_a";
+    removed.namespace_id = "agent";
+    removed.content = "removed";
+    removed.embedding = {1.0f, 0.0f};
+    removed.importance = 100.0;
+    ASSERT_TRUE(store.put_memory(removed).ok);
+
+    MemoryRecord middle;
+    middle.memory_id = "middle";
+    middle.tenant_id = "tenant_a";
+    middle.namespace_id = "agent";
+    middle.content = "middle";
+    middle.embedding = {0.0f, 1.0f};
+    ASSERT_TRUE(store.put_memory(middle).ok);
+
+    MemoryRecord moved;
+    moved.memory_id = "moved";
+    moved.tenant_id = "tenant_a";
+    moved.namespace_id = "agent";
+    moved.content = "moved";
+    moved.embedding = {1.0f, 0.0f};
+    moved.importance = 10.0;
+    ASSERT_TRUE(store.put_memory(moved).ok);
+
+    ASSERT_TRUE(store.rebuild_ann_index().ok);
+    EXPECT_EQ(store.stats().ann_rebuild_count, 1u);
+
+    ASSERT_TRUE(store.remove_memory("removed", "tenant_a"));
+
+    MemoryQuery q;
+    q.tenant_id = "tenant_a";
+    q.namespace_id = "agent";
+    q.query_embedding = {1.0f, 0.0f};
+    q.limit = 1;
+    q.update_access = false;
+
+    const auto matches = store.search(q);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches[0].record.memory_id, "moved");
+    const auto stats = store.stats();
+    EXPECT_EQ(stats.ann_rebuild_count, 1u);
+    EXPECT_EQ(stats.ann_indexed_vectors, 2u);
+    EXPECT_GE(stats.ann_search_count, 1u);
+    EXPECT_EQ(stats.ann_fallback_count, 0u);
+}
+
+TEST(AgentMemoryStoreTest, IvfAnnSearchAndMaintenancePreserveCleanIndex) {
+    AgentMemoryStore store;
+    AgentMemoryAnnConfig ann;
+    ann.mode = AgentMemoryAnnMode::Ivf;
+    ann.min_records = 1;
+    ann.oversample = 16;
+    ann.index.ivf_centroids = 2;
+    ann.index.ivf_probe = 1;
+    ann.index.max_candidates = 1'000;
+    store.set_ann_config(ann);
+
+    MemoryRecord removed;
+    removed.memory_id = "removed";
+    removed.tenant_id = "tenant_a";
+    removed.namespace_id = "agent";
+    removed.content = "removed";
+    removed.embedding = {1.0f, 0.0f};
+    removed.importance = 100.0;
+    ASSERT_TRUE(store.put_memory(removed).ok);
+
+    MemoryRecord middle;
+    middle.memory_id = "middle";
+    middle.tenant_id = "tenant_a";
+    middle.namespace_id = "agent";
+    middle.content = "middle";
+    middle.embedding = {0.0f, 1.0f};
+    ASSERT_TRUE(store.put_memory(middle).ok);
+
+    MemoryRecord moved;
+    moved.memory_id = "moved";
+    moved.tenant_id = "tenant_a";
+    moved.namespace_id = "agent";
+    moved.content = "moved";
+    moved.embedding = {1.0f, 0.0f};
+    moved.importance = 10.0;
+    ASSERT_TRUE(store.put_memory(moved).ok);
+
+    ASSERT_TRUE(store.rebuild_ann_index().ok);
+    EXPECT_EQ(store.stats().ann_rebuild_count, 1u);
+
+    ASSERT_TRUE(store.remove_memory("removed", "tenant_a"));
+
+    MemoryQuery q;
+    q.tenant_id = "tenant_a";
+    q.namespace_id = "agent";
+    q.query_embedding = {1.0f, 0.0f};
+    q.limit = 1;
+    q.update_access = false;
+
+    auto matches = store.search(q);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches[0].record.memory_id, "moved");
+
+    middle.embedding = {1.0f, 0.0f};
+    middle.importance = 20.0;
+    ASSERT_TRUE(store.put_memory(middle).ok);
+
+    matches = store.search(q);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches[0].record.memory_id, "middle");
+    const auto stats = store.stats();
+    EXPECT_EQ(stats.ann_rebuild_count, 1u);
+    EXPECT_EQ(stats.ann_indexed_vectors, 2u);
+    EXPECT_GT(stats.ann_memory_bytes, 0u);
+    EXPECT_GT(stats.ann_tombstone_entries, 0u);
+    EXPECT_GE(stats.ann_search_count, 2u);
+    EXPECT_EQ(stats.ann_fallback_count, 0u);
+}
+
 #ifdef ZEPTO_ENABLE_HNSWLIB
 TEST(AgentMemoryStoreTest, HnswAnnSearchPreservesTenantPartition) {
     AgentMemoryStore store;
@@ -705,6 +889,132 @@ TEST(AgentMemoryStoreTest, CapacityEvictionAllowsPinnedOverflow) {
     EXPECT_EQ(store.stats().evicted_memory_count, 0u);
 }
 
+TEST(AgentMemoryStoreTest, TenantNamespaceQuotaEvictsOnlyMatchingMemories) {
+    AgentMemoryStore store;
+    const int64_t now = AgentMemoryStore::now_ns();
+
+    auto put = [&](std::string id,
+                   std::string tenant,
+                   std::string ns,
+                   int64_t created_at_ns,
+                   double importance = 0.0) {
+        MemoryRecord r;
+        r.memory_id = std::move(id);
+        r.tenant_id = std::move(tenant);
+        r.namespace_id = std::move(ns);
+        r.content = "quota memory";
+        r.embedding = {1.0f, 0.0f};
+        r.created_at_ns = created_at_ns;
+        r.importance = importance;
+        ASSERT_TRUE(store.put_memory(r).ok);
+    };
+
+    put("tenant_a_old", "tenant_a", "agent", now - 10'000'000'000);
+    put("tenant_a_hot", "tenant_a", "agent", now - 9'000'000'000, 3.0);
+    put("tenant_a_recent", "tenant_a", "agent", now);
+    put("tenant_a_other_ns", "tenant_a", "other", now - 11'000'000'000);
+    put("tenant_b_old", "tenant_b", "agent", now - 12'000'000'000);
+    put("tenant_b_recent", "tenant_b", "agent", now);
+
+    AgentMemoryEvictionConfig config;
+    AgentMemoryTenantQuota quota;
+    quota.tenant_id = "tenant_a";
+    quota.namespace_id = "agent";
+    quota.max_memories = 2;
+    config.tenant_quotas.push_back(quota);
+    store.set_eviction_config(config);
+
+    EXPECT_EQ(store.stats().memory_count, 5u);
+    EXPECT_EQ(store.stats().evicted_memory_count, 1u);
+    EXPECT_FALSE(store.get_memory("tenant_a_old").has_value());
+    EXPECT_TRUE(store.get_memory("tenant_a_hot").has_value());
+    EXPECT_TRUE(store.get_memory("tenant_a_recent").has_value());
+    EXPECT_TRUE(store.get_memory("tenant_a_other_ns").has_value());
+    EXPECT_TRUE(store.get_memory("tenant_b_old").has_value());
+    EXPECT_TRUE(store.get_memory("tenant_b_recent").has_value());
+}
+
+TEST(AgentMemoryStoreTest, TenantWideQuotaAllowsPinnedOverflow) {
+    AgentMemoryStore store;
+    AgentMemoryEvictionConfig config;
+    AgentMemoryTenantQuota quota;
+    quota.tenant_id = "tenant_a";
+    quota.max_memories = 1;
+    config.tenant_quotas.push_back(quota);
+    store.set_eviction_config(config);
+
+    for (int i = 0; i < 2; ++i) {
+        MemoryRecord r;
+        r.memory_id = "tenant_a_pinned_" + std::to_string(i);
+        r.tenant_id = "tenant_a";
+        r.namespace_id = i == 0 ? "agent" : "other";
+        r.content = "pinned quota memory";
+        r.embedding = {1.0f, 0.0f};
+        r.pinned = true;
+        ASSERT_TRUE(store.put_memory(r).ok);
+    }
+
+    EXPECT_EQ(store.stats().memory_count, 2u);
+    EXPECT_EQ(store.stats().evicted_memory_count, 0u);
+}
+
+TEST(AgentMemoryStoreTest, TenantWideCacheQuotaEvictsOnlyMatchingCacheEntries) {
+    AgentMemoryStore store;
+    const int64_t now = AgentMemoryStore::now_ns();
+
+    auto store_cache_entry = [&](std::string id,
+                                 std::string tenant,
+                                 std::string ns,
+                                 std::string prompt,
+                                 int64_t created_at_ns,
+                                 uint64_t access_count = 0) {
+        CacheEntry entry;
+        entry.cache_id = std::move(id);
+        entry.tenant_id = std::move(tenant);
+        entry.namespace_id = std::move(ns);
+        entry.prompt = std::move(prompt);
+        entry.response = "quota response";
+        entry.embedding = {1.0f, 0.0f};
+        entry.created_at_ns = created_at_ns;
+        entry.access_count = access_count;
+        ASSERT_TRUE(store.store_cache(entry).ok);
+    };
+
+    store_cache_entry("tenant_a_old", "tenant_a", "agent", "old prompt",
+                      now - 10'000'000'000);
+    store_cache_entry("tenant_a_hot", "tenant_a", "agent", "hot prompt",
+                      now - 9'000'000'000, 10);
+    store_cache_entry("tenant_a_other_ns", "tenant_a", "other", "other prompt",
+                      now);
+    store_cache_entry("tenant_b_old", "tenant_b", "agent", "tenant b prompt",
+                      now - 11'000'000'000);
+
+    AgentMemoryEvictionConfig config;
+    AgentMemoryTenantQuota quota;
+    quota.tenant_id = "tenant_a";
+    quota.max_cache_entries = 2;
+    config.tenant_quotas.push_back(quota);
+    store.set_eviction_config(config);
+
+    EXPECT_EQ(store.stats().cache_count, 3u);
+    EXPECT_EQ(store.stats().evicted_cache_count, 1u);
+
+    CacheLookup lookup;
+    lookup.tenant_id = "tenant_a";
+    lookup.namespace_id = "agent";
+    lookup.prompt = "old prompt";
+    EXPECT_FALSE(store.lookup_cache(lookup).hit);
+    lookup.prompt = "hot prompt";
+    EXPECT_TRUE(store.lookup_cache(lookup).hit);
+    lookup.namespace_id = "other";
+    lookup.prompt = "other prompt";
+    EXPECT_TRUE(store.lookup_cache(lookup).hit);
+    lookup.tenant_id = "tenant_b";
+    lookup.namespace_id = "agent";
+    lookup.prompt = "tenant b prompt";
+    EXPECT_TRUE(store.lookup_cache(lookup).hit);
+}
+
 TEST(AgentMemoryStoreTest, ExpiredEvictionRemovesMemoryAndCacheOnWrite) {
     AgentMemoryStore store;
     const int64_t now = AgentMemoryStore::now_ns();
@@ -818,6 +1128,84 @@ TEST(AgentMemoryStoreTest, CacheCapacityEvictsLowestRetentionEntry) {
     EXPECT_TRUE(store.lookup_cache(hot_lookup).hit);
 }
 
+TEST(AgentMemoryStoreTest, StoreResultReportsAutomaticEvictionTombstoneKeys) {
+    AgentMemoryStore store;
+    AgentMemoryEvictionConfig config;
+    config.max_memories = 1;
+    config.max_cache_entries = 1;
+    store.set_eviction_config(config);
+    const int64_t now = AgentMemoryStore::now_ns();
+
+    MemoryRecord old_memory;
+    old_memory.memory_id = "old_memory";
+    old_memory.tenant_id = "tenant_a";
+    old_memory.namespace_id = "agent";
+    old_memory.content = "old memory";
+    old_memory.embedding = {1.0f, 0.0f};
+    old_memory.created_at_ns = now - 10'000'000'000;
+    ASSERT_TRUE(store.put_memory(old_memory).ok);
+
+    MemoryRecord new_memory;
+    new_memory.memory_id = "new_memory";
+    new_memory.tenant_id = "tenant_a";
+    new_memory.namespace_id = "agent";
+    new_memory.content = "new memory";
+    new_memory.embedding = {1.0f, 0.0f};
+    new_memory.created_at_ns = now;
+    new_memory.importance = 1.0;
+    const auto stored_memory = store.put_memory(new_memory);
+    ASSERT_TRUE(stored_memory.ok) << stored_memory.error;
+    ASSERT_EQ(stored_memory.evictions.size(), 1u);
+    EXPECT_EQ(stored_memory.evictions[0].target,
+              AgentMemoryEvictionTarget::Memory);
+    EXPECT_EQ(stored_memory.evictions[0].memory_id, "old_memory");
+    EXPECT_EQ(stored_memory.evictions[0].tenant_id, "tenant_a");
+
+    CacheEntry old_cache;
+    old_cache.cache_id = "old_cache";
+    old_cache.tenant_id = "tenant_a";
+    old_cache.namespace_id = "agent";
+    old_cache.prompt = "old prompt";
+    old_cache.response = "old response";
+    old_cache.embedding = {1.0f, 0.0f};
+    old_cache.created_at_ns = now - 10'000'000'000;
+    ASSERT_TRUE(store.store_cache(old_cache).ok);
+
+    CacheEntry new_cache;
+    new_cache.cache_id = "new_cache";
+    new_cache.tenant_id = "tenant_a";
+    new_cache.namespace_id = "agent";
+    new_cache.prompt = "new prompt";
+    new_cache.response = "new response";
+    new_cache.embedding = {1.0f, 0.0f};
+    new_cache.created_at_ns = now;
+    const auto stored_cache = store.store_cache(new_cache);
+    ASSERT_TRUE(stored_cache.ok) << stored_cache.error;
+    ASSERT_EQ(stored_cache.evictions.size(), 1u);
+    EXPECT_EQ(stored_cache.evictions[0].target,
+              AgentMemoryEvictionTarget::Cache);
+    EXPECT_EQ(stored_cache.evictions[0].tenant_id, "tenant_a");
+    EXPECT_EQ(stored_cache.evictions[0].namespace_id, "agent");
+    EXPECT_EQ(stored_cache.evictions[0].prompt, "old prompt");
+
+    MemoryRecord expired_memory;
+    expired_memory.memory_id = "expired_memory";
+    expired_memory.tenant_id = "tenant_a";
+    expired_memory.namespace_id = "agent";
+    expired_memory.content = "expired";
+    expired_memory.embedding = {1.0f, 0.0f};
+    expired_memory.expires_at_ns = now - 1;
+    const auto expired_result = store.put_memory(expired_memory);
+    ASSERT_TRUE(expired_result.ok) << expired_result.error;
+    ASSERT_EQ(expired_result.evictions.size(), 1u);
+    EXPECT_TRUE(std::any_of(expired_result.evictions.begin(),
+                            expired_result.evictions.end(),
+        [](const auto& eviction) {
+            return eviction.target == AgentMemoryEvictionTarget::Memory &&
+                   eviction.memory_id == "expired_memory";
+        }));
+}
+
 TEST(AgentMemoryStoreTest, ExactAndSemanticCache) {
     AgentMemoryStore store;
     CacheEntry entry;
@@ -904,6 +1292,44 @@ TEST(AgentMemoryStoreTest, PersistenceRoundTripRestoresMemoryAndCache) {
     ASSERT_TRUE(hit.hit);
     EXPECT_TRUE(hit.exact);
     EXPECT_EQ(hit.entry.cache_id, "cache_persist");
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST(AgentMemoryStoreTest, SnapshotStatsTrackSuccessAndFailures) {
+    AgentMemoryStore store;
+    auto initial = store.stats();
+    EXPECT_EQ(initial.snapshot_failures_total, 0u);
+    EXPECT_EQ(initial.snapshot_latency_seconds, 0.0);
+    EXPECT_EQ(initial.snapshot_total_bytes, 0u);
+
+    auto failed = store.save_to_directory("");
+    EXPECT_FALSE(failed.ok);
+    EXPECT_EQ(failed.error, "snapshot directory is required");
+    auto after_failure = store.stats();
+    EXPECT_EQ(after_failure.snapshot_failures_total, 1u);
+    EXPECT_GE(after_failure.snapshot_latency_seconds, 0.0);
+
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("zeptodb_agent_memory_snapshot_stats_" + std::to_string(::getpid()) +
+         "_" + std::to_string(AgentMemoryStore::now_ns()));
+    MemoryRecord record;
+    record.memory_id = "mem_snapshot_stats";
+    record.tenant_id = "tenant_a";
+    record.namespace_id = "agent";
+    record.content = "snapshot stats";
+    ASSERT_TRUE(store.put_memory(record).ok);
+
+    auto saved = store.save_to_directory(dir.string());
+    ASSERT_TRUE(saved.ok) << saved.error;
+    auto after_success = store.stats();
+    EXPECT_EQ(after_success.snapshot_failures_total, 1u);
+    EXPECT_GE(after_success.snapshot_latency_seconds, 0.0);
+    EXPECT_GT(after_success.snapshot_records_bytes, 0u);
+    EXPECT_GT(after_success.snapshot_vectors_bytes, 0u);
+    EXPECT_EQ(after_success.snapshot_total_bytes,
+              after_success.snapshot_records_bytes +
+                  after_success.snapshot_vectors_bytes);
 
     std::filesystem::remove_all(dir);
 }
@@ -1238,6 +1664,72 @@ TEST(AgentMemoryWireTest, RoundTripsMemoryCacheAndStoreResult) {
     ASSERT_TRUE(decoded_lookup_result.hit);
     EXPECT_TRUE(decoded_lookup_result.exact);
     EXPECT_EQ(decoded_lookup_result.entry.cache_id, "cache_wire");
+
+    AgentMemoryStats stats;
+    stats.memory_count = 5;
+    stats.cache_count = 2;
+    stats.embedding_dim = 128;
+    stats.evicted_memory_count = 3;
+    stats.evicted_cache_count = 1;
+    stats.ann_enabled = true;
+    stats.ann_indexed_vectors = 4;
+    stats.ann_partitions = 2;
+    stats.ann_buckets = 8;
+    stats.ann_max_bucket_size = 6;
+    stats.ann_memory_bytes = 13;
+    stats.ann_tombstone_entries = 14;
+    stats.ann_rebuild_count = 7;
+    stats.ann_last_rebuild_ms = 1.5;
+    stats.ann_search_count = 9;
+    stats.ann_fallback_count = 10;
+    stats.snapshot_records_bytes = 15;
+    stats.snapshot_vectors_bytes = 16;
+    stats.snapshot_total_bytes = 31;
+    stats.snapshot_latency_seconds = 0.25;
+    stats.snapshot_failures_total = 17;
+    stats.tenant_quota_count = 18;
+    AgentMemoryStats decoded_stats;
+    const auto stats_payload = zeptodb::ai::serialize_agent_memory_stats(stats);
+    ASSERT_TRUE(zeptodb::ai::deserialize_agent_memory_stats(
+        stats_payload.data(), stats_payload.size(), &decoded_stats, &error))
+        << error;
+    EXPECT_EQ(decoded_stats.memory_count, 5u);
+    EXPECT_EQ(decoded_stats.embedding_dim, 128u);
+    EXPECT_TRUE(decoded_stats.ann_enabled);
+    EXPECT_EQ(decoded_stats.ann_memory_bytes, 13u);
+    EXPECT_EQ(decoded_stats.ann_tombstone_entries, 14u);
+    EXPECT_EQ(decoded_stats.snapshot_records_bytes, 15u);
+    EXPECT_EQ(decoded_stats.snapshot_vectors_bytes, 16u);
+    EXPECT_EQ(decoded_stats.snapshot_total_bytes, 31u);
+    EXPECT_DOUBLE_EQ(decoded_stats.snapshot_latency_seconds, 0.25);
+    EXPECT_EQ(decoded_stats.snapshot_failures_total, 17u);
+    EXPECT_EQ(decoded_stats.tenant_quota_count, 18u);
+
+    auto legacy_stats_payload = stats_payload;
+    legacy_stats_payload.resize(129);  // Stats payload before footprint fields.
+    AgentMemoryStats legacy_decoded_stats;
+    ASSERT_TRUE(zeptodb::ai::deserialize_agent_memory_stats(
+        legacy_stats_payload.data(), legacy_stats_payload.size(),
+        &legacy_decoded_stats, &error)) << error;
+    EXPECT_EQ(legacy_decoded_stats.memory_count, 5u);
+    EXPECT_EQ(legacy_decoded_stats.ann_rebuild_count, 7u);
+    EXPECT_DOUBLE_EQ(legacy_decoded_stats.ann_last_rebuild_ms, 1.5);
+    EXPECT_EQ(legacy_decoded_stats.ann_search_count, 9u);
+    EXPECT_EQ(legacy_decoded_stats.ann_fallback_count, 10u);
+    EXPECT_DOUBLE_EQ(legacy_decoded_stats.snapshot_latency_seconds, 0.25);
+    EXPECT_EQ(legacy_decoded_stats.snapshot_failures_total, 17u);
+    EXPECT_EQ(legacy_decoded_stats.tenant_quota_count, 18u);
+    EXPECT_EQ(legacy_decoded_stats.ann_memory_bytes, 0u);
+    EXPECT_EQ(legacy_decoded_stats.ann_tombstone_entries, 0u);
+    EXPECT_EQ(legacy_decoded_stats.snapshot_records_bytes, 0u);
+    EXPECT_EQ(legacy_decoded_stats.snapshot_vectors_bytes, 0u);
+    EXPECT_EQ(legacy_decoded_stats.snapshot_total_bytes, 0u);
+
+    auto truncated_tail_payload = stats_payload;
+    truncated_tail_payload.pop_back();
+    EXPECT_FALSE(zeptodb::ai::deserialize_agent_memory_stats(
+        truncated_tail_payload.data(), truncated_tail_payload.size(),
+        &decoded_stats, &error));
 }
 
 class AgentMemoryHttpTest : public ::testing::Test {
@@ -1483,6 +1975,88 @@ TEST_F(AgentMemoryHttpTest, RoutedMemoryAndCacheWritesUseRemoteOwner) {
                      .hit);
 
     remote_rpc.stop();
+}
+
+TEST_F(AgentMemoryHttpTest, ClusterStatsAggregateLocalAndRemoteNodes) {
+    auto remote_pipeline = make_pipeline();
+    auto remote_executor = std::make_unique<QueryExecutor>(*remote_pipeline);
+    zeptodb::server::HttpServer remote_server(
+        *remote_executor, zepto_test_util::pick_free_port());
+
+    zeptodb::cluster::TcpRpcServer remote_rpc;
+    remote_rpc.set_agent_memory_stats_callback(
+        [&remote_server](const uint8_t* data, size_t len) {
+            return remote_server.handle_agent_memory_stats_rpc(data, len);
+        });
+    const uint16_t rpc_port = zepto_test_util::pick_free_port();
+    remote_rpc.start(rpc_port, [](const std::string&) {
+        zeptodb::sql::QueryResultSet result;
+        result.error = "SQL is not used by this test";
+        return result;
+    });
+
+    AgentMemoryRouterConfig config;
+    config.self_node_id = 1;
+    config.mode = AgentMemoryRoutingMode::Routed;
+    config.virtual_nodes_per_node = 16;
+
+    std::unordered_map<AgentMemoryNodeId,
+                       std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes;
+    remotes.emplace(2, std::make_shared<zeptodb::cluster::TcpRpcClient>(
+        "127.0.0.1", rpc_port, 2000));
+    std::string error;
+    ASSERT_TRUE(server_->set_agent_memory_routing(
+        config, {1, 2}, std::move(remotes), &error)) << error;
+
+    MemoryRecord local;
+    local.memory_id = "cluster_local";
+    local.tenant_id = "t1";
+    local.namespace_id = "agent";
+    local.content = "local stats memory";
+    local.embedding = {1.0f, 0.0f};
+    ASSERT_TRUE(server_->agent_memory_store().put_memory(local).ok);
+
+    MemoryRecord remote;
+    remote.memory_id = "cluster_remote";
+    remote.tenant_id = "t1";
+    remote.namespace_id = "agent";
+    remote.content = "remote stats memory";
+    remote.embedding = {0.0f, 1.0f};
+    ASSERT_TRUE(remote_server.agent_memory_store().put_memory(remote).ok);
+
+    auto stats = http_get(port_, "/api/ai/stats?scope=cluster");
+    ASSERT_EQ(stats.status, 200) << stats.body;
+    EXPECT_NE(stats.body.find("\"scope\":\"cluster\""), std::string::npos);
+    EXPECT_NE(stats.body.find("\"partial_failures\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"aggregate\":{\"memory_count\":2"),
+              std::string::npos);
+    EXPECT_NE(stats.body.find("\"embedding_dim\":2"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"node_id\":1,\"local\":true"),
+              std::string::npos);
+    EXPECT_NE(stats.body.find("\"node_id\":2,\"local\":false"),
+              std::string::npos);
+
+    remote_rpc.stop();
+}
+
+TEST_F(AgentMemoryHttpTest, ClusterStatsReportsMissingRemoteClient) {
+    AgentMemoryRouterConfig config;
+    config.self_node_id = 1;
+    config.mode = AgentMemoryRoutingMode::Routed;
+    config.virtual_nodes_per_node = 16;
+
+    std::string error;
+    ASSERT_TRUE(server_->set_agent_memory_routing(config, {1, 2}, {}, &error))
+        << error;
+
+    auto stats = http_get(port_, "/api/ai/stats?scope=cluster");
+    ASSERT_EQ(stats.status, 200) << stats.body;
+    EXPECT_NE(stats.body.find("\"scope\":\"cluster\""), std::string::npos);
+    EXPECT_NE(stats.body.find("\"partial_failures\":1"), std::string::npos);
+    EXPECT_NE(stats.body.find("missing Agent Memory stats RPC client for node 2"),
+              std::string::npos);
+    EXPECT_NE(stats.body.find("\"aggregate\":{\"memory_count\":0"),
+              std::string::npos);
 }
 
 TEST_F(AgentMemoryHttpTest, RoutedRemoteOwnerWritePersistsOwnerWalBeforeAck) {
@@ -1807,6 +2381,149 @@ TEST_F(AgentMemoryHttpTest, SyncReplicationRejectsMissingReplicaAck) {
     EXPECT_FALSE(replay_server.agent_memory_store()
                      .get_memory(owner_memory_id, "t1")
                      .has_value());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_F(AgentMemoryHttpTest,
+       FailedDurabilityRestoresCapacityEvictionSideEffects) {
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("zeptodb_agent_memory_rollback_eviction_" + std::to_string(::getpid()) +
+         "_" + std::to_string(AgentMemoryStore::now_ns()));
+
+    AgentMemoryRouterConfig config;
+    config.self_node_id = 1;
+    config.ring_epoch = 7;
+    config.mode = AgentMemoryRoutingMode::Routed;
+    config.virtual_nodes_per_node = 64;
+
+    std::string error;
+    ASSERT_TRUE(server_->set_agent_memory_persistence(dir.string(), &error, 0))
+        << error;
+    std::unordered_map<AgentMemoryNodeId,
+                       std::shared_ptr<zeptodb::cluster::TcpRpcClient>> remotes;
+    remotes.emplace(2, std::make_shared<zeptodb::cluster::TcpRpcClient>(
+        "127.0.0.1", zepto_test_util::pick_free_port(), 100));
+    ASSERT_TRUE(server_->set_agent_memory_routing(
+        config, {1, 2}, std::move(remotes), &error)) << error;
+
+    AgentMemoryRouter probe(config);
+    probe.add_node(1);
+    probe.add_node(2);
+    std::string old_memory_id;
+    std::string new_memory_id;
+    for (int i = 0; i < 10'000; ++i) {
+        const auto candidate = "rollback_mem_" + std::to_string(i);
+        const auto key = AgentMemoryRouter::memory_key(
+            "t1", "agent", "", "", "", candidate);
+        if (probe.route(key).node_id != 1u) continue;
+        if (old_memory_id.empty()) {
+            old_memory_id = candidate;
+        } else {
+            new_memory_id = candidate;
+            break;
+        }
+    }
+    ASSERT_FALSE(old_memory_id.empty());
+    ASSERT_FALSE(new_memory_id.empty());
+
+    std::string old_prompt;
+    std::string new_prompt;
+    for (int i = 0; i < 10'000; ++i) {
+        const auto candidate = "rollback prompt " + std::to_string(i);
+        const auto key = AgentMemoryRouter::cache_key(
+            "t1", "agent", AgentMemoryStore::normalize_prompt(candidate));
+        if (probe.route(key).node_id != 1u) continue;
+        if (old_prompt.empty()) {
+            old_prompt = candidate;
+        } else {
+            new_prompt = candidate;
+            break;
+        }
+    }
+    ASSERT_FALSE(old_prompt.empty());
+    ASSERT_FALSE(new_prompt.empty());
+
+    AgentMemoryEvictionConfig eviction;
+    eviction.max_memories = 1;
+    eviction.max_cache_entries = 1;
+    server_->agent_memory_store().set_eviction_config(eviction);
+
+    const int64_t now = AgentMemoryStore::now_ns();
+    auto old_memory = http_post(port_, "/api/ai/memories",
+        std::string(R"({"tenant_id":"t1","namespace":"agent","memory_id":")") +
+        old_memory_id +
+        R"(","content":"old retained after rollback","created_at_ns":)" +
+        std::to_string(now - 10'000'000'000) +
+        R"(,"embedding":[1,0]})");
+    ASSERT_EQ(old_memory.status, 200) << old_memory.body;
+
+    server_->set_agent_memory_replication_mode(AgentMemoryReplicationMode::Sync);
+    auto new_memory = http_post(port_, "/api/ai/memories",
+        std::string(R"({"tenant_id":"t1","namespace":"agent","memory_id":")") +
+        new_memory_id +
+        R"(","content":"failed memory","created_at_ns":)" +
+        std::to_string(now) +
+        R"(,"importance":1.0,"embedding":[1,0]})");
+    EXPECT_EQ(new_memory.status, 500) << new_memory.body;
+    EXPECT_NE(new_memory.body.find("below required"), std::string::npos);
+    const auto restored_memory = server_->agent_memory_store()
+        .get_memory(old_memory_id, "t1");
+    ASSERT_TRUE(restored_memory.has_value());
+    EXPECT_EQ(restored_memory->content, "old retained after rollback");
+    EXPECT_FALSE(server_->agent_memory_store()
+                     .get_memory(new_memory_id, "t1")
+                     .has_value());
+    auto stats = server_->agent_memory_store().stats();
+    EXPECT_EQ(stats.memory_count, 1u);
+    EXPECT_EQ(stats.evicted_memory_count, 0u);
+
+    server_->set_agent_memory_replication_mode(AgentMemoryReplicationMode::Routed);
+    auto old_cache = http_post(port_, "/api/ai/cache/store",
+        std::string(R"({"tenant_id":"t1","namespace":"agent","prompt":")") +
+        old_prompt +
+        R"(","response":"old cache response","embedding":[1,0]})");
+    ASSERT_EQ(old_cache.status, 200) << old_cache.body;
+    std::this_thread::sleep_for(2ms);
+
+    server_->set_agent_memory_replication_mode(AgentMemoryReplicationMode::Sync);
+    auto new_cache = http_post(port_, "/api/ai/cache/store",
+        std::string(R"({"tenant_id":"t1","namespace":"agent","prompt":")") +
+        new_prompt +
+        R"(","response":"failed cache response","embedding":[1,0]})");
+    EXPECT_EQ(new_cache.status, 500) << new_cache.body;
+    EXPECT_NE(new_cache.body.find("below required"), std::string::npos);
+
+    CacheLookup old_lookup;
+    old_lookup.tenant_id = "t1";
+    old_lookup.namespace_id = "agent";
+    old_lookup.prompt = old_prompt;
+    EXPECT_TRUE(server_->agent_memory_store().lookup_cache(old_lookup).hit);
+    CacheLookup new_lookup;
+    new_lookup.tenant_id = "t1";
+    new_lookup.namespace_id = "agent";
+    new_lookup.prompt = new_prompt;
+    EXPECT_FALSE(server_->agent_memory_store().lookup_cache(new_lookup).hit);
+    stats = server_->agent_memory_store().stats();
+    EXPECT_EQ(stats.cache_count, 1u);
+    EXPECT_EQ(stats.evicted_cache_count, 0u);
+
+    auto replay_pipeline = make_pipeline();
+    auto replay_executor = std::make_unique<QueryExecutor>(*replay_pipeline);
+    zeptodb::server::HttpServer replay_server(
+        *replay_executor, zepto_test_util::pick_free_port());
+    ASSERT_TRUE(replay_server.set_agent_memory_persistence(dir.string(), &error))
+        << error;
+    ASSERT_TRUE(replay_server.set_agent_memory_routing(config, {1, 2}, {}, &error))
+        << error;
+    EXPECT_TRUE(replay_server.agent_memory_store()
+                    .get_memory(old_memory_id, "t1")
+                    .has_value());
+    EXPECT_FALSE(replay_server.agent_memory_store()
+                     .get_memory(new_memory_id, "t1")
+                     .has_value());
+    EXPECT_TRUE(replay_server.agent_memory_store().lookup_cache(old_lookup).hit);
+    EXPECT_FALSE(replay_server.agent_memory_store().lookup_cache(new_lookup).hit);
 
     std::filesystem::remove_all(dir);
 }
@@ -2283,7 +3000,13 @@ TEST_F(AgentMemoryHttpTest, OwnerFailoverAdoptsShardOnDeterministicSuccessor) {
         1, 7, 8, {2});
     ASSERT_TRUE(result.ok) << result.error;
     EXPECT_TRUE(result.adopted);
+    EXPECT_TRUE(result.replica_promoted);
+    EXPECT_FALSE(result.degraded);
+    EXPECT_FALSE(result.replay_source_missing);
+    EXPECT_EQ(result.source_node_id, 1u);
     EXPECT_EQ(result.replacement_node_id, 2u);
+    EXPECT_EQ(result.source_ring_epoch, 7u);
+    EXPECT_EQ(result.new_ring_epoch, 8u);
 
     auto get = http_get(replacement_port, "/api/ai/memories/" + memory_id +
                                       "?tenant_id=t1&namespace=agent");
@@ -2294,6 +3017,50 @@ TEST_F(AgentMemoryHttpTest, OwnerFailoverAdoptsShardOnDeterministicSuccessor) {
     replacement_server.stop();
     server_->stop();
     server_.reset();
+    std::filesystem::remove_all(dir);
+}
+
+TEST_F(AgentMemoryHttpTest, OwnerFailoverReportsDegradedWhenReplaySourceMissing) {
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("zeptodb_agent_memory_degraded_failover_" + std::to_string(::getpid()) +
+         "_" + std::to_string(AgentMemoryStore::now_ns()));
+
+    AgentMemoryRouterConfig config;
+    config.self_node_id = 2;
+    config.ring_epoch = 7;
+    config.mode = AgentMemoryRoutingMode::Routed;
+    config.virtual_nodes_per_node = 8;
+
+    std::string error;
+    ASSERT_TRUE(server_->set_agent_memory_persistence(dir.string(), &error, 0))
+        << error;
+    ASSERT_TRUE(server_->set_agent_memory_routing(config, {2}, {}, &error))
+        << error;
+
+    auto result = server_->handle_agent_memory_owner_failover(
+        1, 7, 8, {2});
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_FALSE(result.adopted);
+    EXPECT_FALSE(result.replica_promoted);
+    EXPECT_TRUE(result.degraded);
+    EXPECT_TRUE(result.replay_source_missing);
+    EXPECT_EQ(result.source_node_id, 1u);
+    EXPECT_EQ(result.replacement_node_id, 2u);
+    EXPECT_EQ(result.source_ring_epoch, 7u);
+    EXPECT_EQ(result.new_ring_epoch, 8u);
+    EXPECT_NE(result.degraded_reason.find("source agent memory shard is empty"),
+              std::string::npos);
+
+    auto stats = http_get(port_, "/api/ai/stats");
+    ASSERT_EQ(stats.status, 200) << stats.body;
+    EXPECT_NE(stats.body.find("\"failover\""), std::string::npos);
+    EXPECT_NE(stats.body.find("\"degraded\":true"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"replay_source_missing\":true"),
+              std::string::npos);
+    EXPECT_NE(stats.body.find("\"replacement_node_id\":2"), std::string::npos);
+    EXPECT_NE(stats.body.find("source agent memory shard is empty"),
+              std::string::npos);
+
     std::filesystem::remove_all(dir);
 }
 
@@ -2437,6 +3204,82 @@ TEST_F(AgentMemoryHttpTest, WalTombstonesRemoveMemoryAndCacheOnReplay) {
     std::filesystem::remove_all(dir);
 }
 
+TEST_F(AgentMemoryHttpTest, WalTombstonesCaptureAutomaticEvictionsOnReplay) {
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("zeptodb_agent_memory_http_auto_tombstone_" + std::to_string(::getpid()) +
+         "_" + std::to_string(AgentMemoryStore::now_ns()));
+
+    std::string error;
+    ASSERT_TRUE(server_->set_agent_memory_persistence(dir.string(), &error, 0))
+        << error;
+    AgentMemoryEvictionConfig config;
+    config.max_memories = 1;
+    config.max_cache_entries = 1;
+    server_->agent_memory_store().set_eviction_config(config);
+
+    const int64_t now = AgentMemoryStore::now_ns();
+    auto old_memory = http_post(port_, "/api/ai/memories",
+        std::string(R"({"tenant_id":"t1","namespace":"agent",)")
+        + R"("memory_id":"auto_old","content":"evicted memory",)"
+        + R"("created_at_ns":)" + std::to_string(now - 10'000'000'000) +
+        R"(,"embedding":[1,0]})");
+    ASSERT_EQ(old_memory.status, 200) << old_memory.body;
+    auto new_memory = http_post(port_, "/api/ai/memories",
+        std::string(R"({"tenant_id":"t1","namespace":"agent",)")
+        + R"("memory_id":"auto_new","content":"retained memory",)"
+        + R"("created_at_ns":)" + std::to_string(now) +
+        R"(,"importance":1.0,"embedding":[1,0]})");
+    ASSERT_EQ(new_memory.status, 200) << new_memory.body;
+    EXPECT_FALSE(server_->agent_memory_store()
+                     .get_memory("auto_old", "t1")
+                     .has_value());
+
+    auto old_cache = http_post(port_, "/api/ai/cache/store",
+        R"({"tenant_id":"t1","namespace":"agent","prompt":"auto old cache",)"
+        R"("response":"evicted cache","embedding":[1,0]})");
+    ASSERT_EQ(old_cache.status, 200) << old_cache.body;
+    std::this_thread::sleep_for(2ms);
+    auto new_cache = http_post(port_, "/api/ai/cache/store",
+        R"({"tenant_id":"t1","namespace":"agent","prompt":"auto new cache",)"
+        R"("response":"retained cache","embedding":[1,0]})");
+    ASSERT_EQ(new_cache.status, 200) << new_cache.body;
+
+    CacheLookup old_lookup;
+    old_lookup.tenant_id = "t1";
+    old_lookup.namespace_id = "agent";
+    old_lookup.prompt = "auto old cache";
+    EXPECT_FALSE(server_->agent_memory_store().lookup_cache(old_lookup).hit);
+    EXPECT_TRUE(std::filesystem::exists(dir / "wal.log"));
+
+    auto replay_pipeline = make_pipeline();
+    auto replay_executor = std::make_unique<QueryExecutor>(*replay_pipeline);
+    zeptodb::server::HttpServer replay_server(
+        *replay_executor, zepto_test_util::pick_free_port());
+    ASSERT_TRUE(replay_server.set_agent_memory_persistence(dir.string(), &error))
+        << error;
+
+    EXPECT_FALSE(replay_server.agent_memory_store()
+                     .get_memory("auto_old", "t1")
+                     .has_value());
+    const auto replayed_new = replay_server.agent_memory_store()
+        .get_memory("auto_new", "t1");
+    ASSERT_TRUE(replayed_new.has_value());
+    EXPECT_EQ(replayed_new->content, "retained memory");
+
+    EXPECT_FALSE(replay_server.agent_memory_store().lookup_cache(old_lookup).hit);
+    CacheLookup new_lookup;
+    new_lookup.tenant_id = "t1";
+    new_lookup.namespace_id = "agent";
+    new_lookup.prompt = "auto new cache";
+    const auto replayed_cache =
+        replay_server.agent_memory_store().lookup_cache(new_lookup);
+    ASSERT_TRUE(replayed_cache.hit);
+    EXPECT_EQ(replayed_cache.entry.response, "retained cache");
+
+    server_->stop();
+    std::filesystem::remove_all(dir);
+}
+
 TEST_F(AgentMemoryHttpTest, ExposesStatsAndPrometheusMetrics) {
     AgentMemoryEvictionConfig config;
     config.max_memories = 1;
@@ -2459,9 +3302,22 @@ TEST_F(AgentMemoryHttpTest, ExposesStatsAndPrometheusMetrics) {
     EXPECT_NE(stats.body.find("\"cache_count\":0"), std::string::npos);
     EXPECT_NE(stats.body.find("\"embedding_dim\":2"), std::string::npos);
     EXPECT_NE(stats.body.find("\"evicted_memory_count\":1"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"snapshot_records_bytes\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"snapshot_vectors_bytes\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"snapshot_total_bytes\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"snapshot_latency_seconds\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"snapshot_failures_total\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"tenant_quota_count\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"memory_bytes\":0"), std::string::npos);
+    EXPECT_NE(stats.body.find("\"tombstone_entries\":0"), std::string::npos);
     EXPECT_NE(stats.body.find("\"max_memories\":1"), std::string::npos);
-    EXPECT_EQ(stats.body.find("first"), std::string::npos);
-    EXPECT_EQ(stats.body.find("second"), std::string::npos);
+    EXPECT_EQ(stats.body.find("\"first\""), std::string::npos);
+    EXPECT_EQ(stats.body.find("\"second\""), std::string::npos);
+
+    auto invalid_scope = http_get(port_, "/api/ai/stats?scope=global");
+    EXPECT_EQ(invalid_scope.status, 400) << invalid_scope.body;
+    EXPECT_NE(invalid_scope.body.find("scope must be local or cluster"),
+              std::string::npos);
 
     auto metrics = http_get(port_, "/metrics");
     ASSERT_EQ(metrics.status, 200) << metrics.body;
@@ -2471,5 +3327,21 @@ TEST_F(AgentMemoryHttpTest, ExposesStatsAndPrometheusMetrics) {
     EXPECT_NE(metrics.body.find("zepto_agent_memory_evictions_total 1"), std::string::npos);
     EXPECT_NE(metrics.body.find("zepto_agent_memory_max_records 1"), std::string::npos);
     EXPECT_NE(metrics.body.find("zepto_agent_cache_max_entries 1"), std::string::npos);
-    EXPECT_EQ(metrics.body.find("second"), std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_tenant_quotas 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_snapshot_latency_seconds 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_snapshot_failures_total 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_snapshot_records_bytes 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_snapshot_vectors_bytes 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_snapshot_total_bytes 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_ann_memory_bytes 0"),
+              std::string::npos);
+    EXPECT_NE(metrics.body.find("zepto_agent_memory_ann_tombstone_entries 0"),
+              std::string::npos);
+    EXPECT_EQ(metrics.body.find("\"second\""), std::string::npos);
 }

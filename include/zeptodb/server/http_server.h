@@ -16,6 +16,9 @@
 //                 — Ingest an Arrow IPC RecordBatchStream into ZeptoDB ticks.
 //                    Query params map columns (`table`, `sym_col`, `price_col`,
 //                    `vol_col`, `ts_col`) and numeric scales.
+//   POST /insert/msgpack
+//                 — Ingest a MessagePack map of column arrays into ZeptoDB
+//                    ticks with the same mapping/scaling query params.
 //   GET  /        — Execute SQL via `?query=` param (always JSON)
 //   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe
@@ -65,6 +68,7 @@ class AgentMemoryStore;
 struct CacheEntry;
 struct CacheLookup;
 struct CacheLookupResult;
+struct AgentMemoryEvictionEvent;
 struct MemoryGetResult;
 struct MemoryQuery;
 struct MemoryRecord;
@@ -85,7 +89,14 @@ enum class AgentMemoryReplicationMode {
 struct AgentMemoryOwnerFailoverResult {
     bool ok = false;
     bool adopted = false;
+    bool replica_promoted = false;
+    bool degraded = false;
+    bool replay_source_missing = false;
+    zeptodb::ai::AgentMemoryNodeId source_node_id = 0;
     zeptodb::ai::AgentMemoryNodeId replacement_node_id = 0;
+    uint64_t source_ring_epoch = 0;
+    uint64_t new_ring_epoch = 0;
+    std::string degraded_reason;
     std::string error;
 };
 
@@ -245,7 +256,8 @@ public:
 
     /// TcpRpc callbacks for remote Agent Memory operations. Write callbacks
     /// return serialized StoreResult payloads and mark local persistence dirty
-    /// on successful writes. Read callbacks return serialized lookup payloads.
+    /// on successful writes. Read callbacks return serialized lookup/stats
+    /// payloads.
     std::vector<uint8_t> handle_agent_memory_put_rpc(const uint8_t* data, size_t len);
     std::vector<uint8_t> handle_agent_cache_store_rpc(const uint8_t* data, size_t len);
     std::vector<uint8_t> handle_agent_memory_delete_rpc(const uint8_t* data, size_t len);
@@ -253,6 +265,7 @@ public:
     std::vector<uint8_t> handle_agent_memory_get_rpc(const uint8_t* data, size_t len);
     std::vector<uint8_t> handle_agent_memory_search_rpc(const uint8_t* data, size_t len);
     std::vector<uint8_t> handle_agent_cache_lookup_rpc(const uint8_t* data, size_t len);
+    std::vector<uint8_t> handle_agent_memory_stats_rpc(const uint8_t* data, size_t len);
     std::vector<uint8_t> handle_agent_memory_replica_append_rpc(const uint8_t* data,
                                                                 size_t len);
 
@@ -317,6 +330,10 @@ private:
         const std::string& namespace_id,
         const std::string& prompt,
         std::string* error = nullptr);
+    bool persist_agent_memory_eviction_tombstones_(
+        const std::vector<zeptodb::ai::AgentMemoryEvictionEvent>& evictions,
+        std::string* error = nullptr,
+        size_t* failed_index = nullptr);
     zeptodb::ai::StoreResult put_agent_memory_routed_(
         zeptodb::ai::MemoryRecord record,
         bool* local_write);
@@ -342,6 +359,9 @@ private:
         std::string* error);
     zeptodb::ai::CacheLookupResult lookup_agent_cache_routed_(
         zeptodb::ai::CacheLookup lookup);
+    void record_agent_memory_failover_status_(
+        const AgentMemoryOwnerFailoverResult& result);
+    AgentMemoryOwnerFailoverResult agent_memory_failover_status_() const;
 
     // Execute a query with optional timeout and QueryTracker registration.
     // subject is the identity string (remote_addr when auth is off).
@@ -353,6 +373,7 @@ private:
     static std::string build_error_json(const std::string& msg);
     static std::string build_stats_json(
         const zeptodb::core::PipelineStats& stats);
+    std::string build_agent_memory_stats_json(bool cluster_scope) const;
     std::string build_prometheus_metrics() const;
 
     // Cluster helpers: scatter stats/metrics requests to all nodes
@@ -404,6 +425,8 @@ private:
                                                               agent_memory_remotes_;
     AgentMemoryReplicationMode                                 agent_memory_replication_mode_ =
         AgentMemoryReplicationMode::Routed;
+    mutable std::mutex                                          agent_memory_failover_mu_;
+    AgentMemoryOwnerFailoverResult                             agent_memory_last_failover_;
     std::atomic<uint64_t>                                      agent_memory_wal_tx_counter_{1};
 
     // Cluster coordinator (null = standalone mode)

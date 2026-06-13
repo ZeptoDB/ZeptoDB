@@ -1,6 +1,6 @@
 #pragma once
 // ============================================================================
-// ZeptoDB: OPC-UA Consumer (Physical AI / Industry) — PoC
+// ZeptoDB: OPC-UA Consumer / Server (Physical AI / Industry)
 // ============================================================================
 // OPC-UA (IEC 62541) client that subscribes to one or more server-side nodes
 // and routes each DataChange notification as a TickMessage into the ZeptoDB
@@ -28,12 +28,12 @@
 //      queue_size / discard_oldest) replace Kafka's poll / commit knobs
 //      and MQTT's QoS.
 //
-// PoC scope (this file / devlog 101):
-//   * Scalar nodes only (Int16/32/64, Float, Double, Boolean).
-//   * SourceTimestamp preferred, ServerTimestamp fallback.
-//   * No real UA_Client calls yet — start() is a stub.  Production UA_Client
-//     wiring, security, HA, A&C, structured variants, browse/discover,
-//     reconnect, and server mode are tracked in BACKLOG P9.
+// Shipped scope:
+//   * Live UA_Client subscriptions, reconnect, Basic256Sha256, quality mapping.
+//   * Scalar, array, string, Structured-field, Historical Access, and A&C hooks.
+//   * OpcUaServer exposes configured ZeptoDB symbols as OPC-UA variable nodes.
+//   * Default builds without open62541 fail closed for live connectivity while
+//     keeping all pure decode/replay/snapshot contracts unit-testable.
 // ============================================================================
 
 #include "zeptodb/common/types.h"
@@ -46,6 +46,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +62,7 @@ struct OpcUaNodeMap {
     std::string node_id;
     SymbolId    symbol_id   = 0;
     double      value_scale = 10000.0;
+    uint32_t    array_symbol_stride = 1;  ///< array[i] maps to symbol_id + i * stride
 };
 
 // ============================================================================
@@ -100,8 +102,7 @@ struct OpcUaConfig {
     int backpressure_retries  = 3;
     int backpressure_sleep_us = 100;
 
-    // Reconnect / timeout knobs (config-struct only at this stage; honored
-    // by the real UA_Client integration in BACKLOG P9 #2b).
+    // Reconnect / timeout knobs honored by the real UA_Client integration.
     uint32_t connect_timeout_ms    = 5000;   ///< initial UA_Client_connect timeout
     uint32_t session_timeout_ms    = 60000;  ///< server session timeout
     uint32_t reconnect_interval_ms = 2000;   ///< base reconnect backoff (BACKLOG P9 #2i)
@@ -177,7 +178,7 @@ public:
     /// Returns false if:
     ///   - config_.nodes is empty
     ///   - security config is invalid (see is_valid_security)
-    ///   - ZEPTO_OPCUA_AVAILABLE is not defined (PoC: always false)
+    ///   - ZEPTO_OPCUA_AVAILABLE is not defined
     ///   - license does not grant Feature::IOT_CONNECTORS
     bool start();
     void stop();
@@ -202,7 +203,7 @@ public:
     /// (`IgnoreBad` + non-GOOD → `decode_errors++`) or encode it into
     /// `TickMessage.volume` (`AcceptAll` = raw status, `AcceptAllGoodAs1`
     /// = 1 if GOOD else 0).  Default 0 keeps every existing caller —
-    /// including the PoC unit tests — on the GOOD/`volume=1` path with
+    /// including the unit tests — on the GOOD/`volume=1` path with
     /// no source change.  BACKLOG P9 #2j, devlog 107.
     bool on_data_change(const std::string& node_id,
                         int64_t value,
@@ -227,7 +228,7 @@ public:
 
     /// Minimal variant representation for unit testing the coerce path
     /// without pulling in `open62541.h`.  Mirrors the subset of UA_Variant
-    /// types we support at PoC level.
+    /// types supported by the scalar coercion path.
     enum class VariantType : uint8_t {
         Int16, Int32, Int64,
         Float, Double,
@@ -243,6 +244,84 @@ public:
         bool    b   = false;
     };
 
+    /// One field decoded from an OPC-UA Structured variant. `symbol_id` is
+    /// explicit because server field order and field names are not stable
+    /// enough to infer engine partition identity.
+    struct StructuredField {
+        std::string field_name;
+        SymbolId    symbol_id = 0;
+        Variant     value;
+        double      value_scale = 1.0;
+        std::string engineering_unit;
+    };
+
+    /// One historical value read from a server historian. This shares the
+    /// normal NodeId map and quality policy so HA backfills land identically
+    /// to live subscription samples.
+    struct HistoricalSample {
+        std::string node_id;
+        Variant     value;
+        uint64_t    source_ts_ns = 0;
+        int64_t     status = 0;
+    };
+
+    /// Live Historical Access read parameters. Timestamps are Unix
+    /// nanoseconds and are converted to OPC-UA DateTime internally.
+    struct HistoryReadOptions {
+        uint64_t start_ts_ns = 0;
+        uint64_t end_ts_ns = 0;
+        uint32_t values_per_node = 0;  ///< 0 lets the server choose the batch size
+        bool return_bounds = false;
+    };
+
+    /// OPC-UA Alarms & Conditions event mapped into a tick stream. Active
+    /// alarms store positive severity; cleared alarms store negative severity.
+    struct AlarmEvent {
+        SymbolId symbol_id = 0;
+        int64_t  severity = 0;
+        bool     active = true;
+        uint64_t source_ts_ns = 0;
+        int64_t  status = 0;
+    };
+
+    /// Dispatch fields from one Structured variant. Returns true only if every
+    /// field is supported and successfully routed.
+    bool on_structured_change(const std::vector<StructuredField>& fields,
+                              uint64_t source_ts_ns,
+                              int64_t status = 0);
+
+    /// Expand one OPC-UA array DataValue into one TickMessage per element.
+    /// The first element uses the node's configured symbol_id; later elements
+    /// use `symbol_id + index * array_symbol_stride`. Unsupported elements
+    /// bump decode_errors and make the aggregate return value false.
+    bool on_array_change(const std::string& node_id,
+                         const std::vector<Variant>& values,
+                         uint64_t source_ts_ns,
+                         int64_t status = 0);
+
+    /// Map a UA String value into a deterministic dictionary/symbol code and
+    /// dispatch it through the same scalar route. When a local pipeline is
+    /// configured, the pipeline symbol dictionary owns the code; otherwise a
+    /// stable FNV-1a fallback code is used so remote-only tests and consumers
+    /// can still route the value without a local storage target.
+    bool on_string_change(const std::string& node_id,
+                          const std::string& value,
+                          uint64_t source_ts_ns,
+                          int64_t status = 0);
+
+    /// Replay Historical Access samples through the normal live-ingest path.
+    /// Returns the number of samples successfully routed.
+    size_t ingest_history(const std::vector<HistoricalSample>& samples);
+
+    /// Read Historical Access samples from the live open62541 client session
+    /// and route them through the same path as subscription samples. Returns
+    /// the number of historical data values successfully routed. Default
+    /// builds without open62541 return 0 and bump ingest_failures once.
+    size_t read_history(const HistoryReadOptions& options);
+
+    /// Dispatch an Alarms & Conditions event as a dedicated tick stream.
+    bool on_alarm_event(const AlarmEvent& event);
+
     /// Coerce a Variant to int64 using `value_scale` for float/double.
     /// Returns false on Unsupported types (caller bumps decode_errors).
     static bool coerce_variant_to_int64(const Variant& v,
@@ -252,6 +331,9 @@ public:
     /// Convert UA DateTime (100 ns ticks since 1601-01-01 UTC) to ns since
     /// the Unix epoch.  Returns 0 for values before 1970 (clamp to epoch).
     static uint64_t ua_datetime_to_ns(int64_t ua_datetime_100ns_since_1601);
+
+    /// Convert Unix ns to UA DateTime (100 ns ticks since 1601-01-01 UTC).
+    static int64_t ns_to_ua_datetime(uint64_t unix_ns);
 
     /// Minimal security-config sanity check.  Returns false on obviously
     /// inconsistent combos (e.g. Sign with Policy::None).  Does NOT attempt
@@ -278,7 +360,11 @@ private:
 
     // NodeId → (SymbolId, value_scale) lookup, built in start() from
     // config_.nodes so on_data_change() is O(1) per notification.
-    struct NodeBinding { SymbolId symbol_id; double value_scale; };
+    struct NodeBinding {
+        SymbolId symbol_id;
+        double   value_scale;
+        uint32_t array_symbol_stride;
+    };
     std::unordered_map<std::string, NodeBinding> node_map_;
 
     // Opaque handles reserved for the production UA_Client integration.
@@ -297,6 +383,85 @@ private:
 
     // Resolved destination table_id (devlog 084 pattern). 0 = legacy path.
     uint16_t table_id_ = 0;
+
+    bool dispatch_value(SymbolId symbol_id,
+                        int64_t value,
+                        uint64_t source_ts_ns,
+                        int64_t status,
+                        size_t bytes_consumed);
+};
+
+// ============================================================================
+// OPC-UA server mode
+// ============================================================================
+
+struct OpcUaServerNode {
+    std::string node_id;       ///< empty = generated from namespace_index + symbol_id
+    SymbolId    symbol_id = 0;
+    std::string display_name;
+    int64_t     initial_value = 0;
+};
+
+struct OpcUaServerConfig {
+    std::string endpoint = "opc.tcp://0.0.0.0:4840";
+    std::string application_name = "zepto-opcua-server";
+    uint16_t namespace_index = 1;
+    uint32_t iterate_sleep_ms = 50;
+    std::vector<OpcUaServerNode> nodes;
+};
+
+struct OpcUaServerStats {
+    uint64_t writes = 0;
+    uint64_t write_failures = 0;
+    uint64_t start_failures = 0;
+};
+
+/// Minimal ZeptoDB-as-OPC-UA-server wrapper. The engine can publish current
+/// symbol values via publish_value(); open62541 builds expose configured
+/// symbols as OPC-UA variable nodes, while default builds keep the same
+/// snapshot contract testable and return false from start().
+class OpcUaServer {
+public:
+    explicit OpcUaServer(OpcUaServerConfig config);
+    ~OpcUaServer();
+
+    OpcUaServer(const OpcUaServer&) = delete;
+    OpcUaServer& operator=(const OpcUaServer&) = delete;
+
+    bool start();
+    void stop();
+    bool is_running() const { return running_.load(std::memory_order_relaxed); }
+
+    bool publish_value(SymbolId symbol_id,
+                       int64_t value,
+                       uint64_t source_ts_ns = 0,
+                       int64_t status = 0);
+    std::optional<int64_t> snapshot_value(SymbolId symbol_id) const;
+    OpcUaServerStats stats() const;
+
+private:
+    struct NodeState {
+        std::string node_id;
+        std::string display_name;
+        int64_t value = 0;
+        uint64_t source_ts_ns = 0;
+        int64_t status = 0;
+    };
+
+    OpcUaServerConfig config_;
+    std::atomic<bool> running_{false};
+
+    mutable std::mutex mu_;
+    std::unordered_map<SymbolId, NodeState> values_;
+
+    mutable std::mutex stats_mu_;
+    OpcUaServerStats stats_;
+
+    void* server_handle_ = nullptr;  // UA_Server* when ZEPTO_OPCUA_AVAILABLE
+
+    bool write_live_value(SymbolId symbol_id, const NodeState& state);
+    void bump_start_failure();
+    void bump_write_failure();
 };
 
 } // namespace zeptodb::feeds

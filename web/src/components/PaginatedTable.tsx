@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import {
   Table, TableHead, TableRow, TableCell, TableBody, TableContainer,
   Box, IconButton, Typography, Select, MenuItem, type SelectChangeEvent,
@@ -31,9 +31,6 @@ export default function PaginatedTable({ columns, data, stickyHeader = true, max
   const [sortDir, setSortDir] = useState<SortDir>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<Record<number, string>>({});
-
-  // Reset page, sort & filters when data changes
-  useEffect(() => { setPage(0); setSortCol(null); setSortDir(null); setFilters({}); }, [data]);
 
   const handleSort = (colIdx: number) => {
     if (sortCol === colIdx) {

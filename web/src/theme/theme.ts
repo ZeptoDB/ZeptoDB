@@ -8,7 +8,6 @@ const buildTheme = (mode: PaletteMode) => {
   // Electric Indigo Brand Theme
   const backgroundDefault = isDark ? "#0A0C10" : "#F8FAFC";
   const backgroundPaper = isDark ? "#11161D" : "rgba(255, 255, 255, 0.8)";
-  const surfaceElevation = "#1B2129";
   const primaryMain = isDark ? "#4D7CFF" : "#2563EB";
   const secondaryMain = isDark ? "#00F5D4" : "#7C3AED";
   const textPrimary = isDark ? "#F8FAFC" : "#0F172A";

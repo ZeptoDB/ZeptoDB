@@ -939,6 +939,48 @@ TEST(HttpCluster, StandaloneMode_ReturnsStandalone) {
     server.stop();
 }
 
+TEST(HttpCluster, SingleTickRpcDrainsBeforeSuccess) {
+    TestNode node;
+    ASSERT_TRUE(node.executor->execute(
+        "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
+    const uint16_t table_id =
+        node.pipeline->schema_registry().get_table_id("trades");
+    ASSERT_NE(table_id, 0u);
+
+    TcpRpcServer server;
+    server.start(P(19901),
+        [&](const std::string& sql) {
+            return node.executor->execute(sql);
+        },
+        [&](const zeptodb::ingestion::TickMessage& msg) {
+            const bool ok = node.pipeline->ingest_tick(msg);
+            if (ok) {
+                node.pipeline->schema_registry().mark_has_data(msg.table_id);
+                node.pipeline->drain_sync(101);
+            }
+            return ok;
+        });
+
+    std::this_thread::sleep_for(20ms);
+
+    TcpRpcClient client("127.0.0.1", P(19901));
+    zeptodb::ingestion::TickMessage msg{};
+    msg.table_id = table_id;
+    msg.symbol_id = 4;
+    msg.price = 12345;
+    msg.volume = 10;
+    msg.recv_ts = 1'000'000'000LL;
+
+    ASSERT_TRUE(client.ingest_tick(msg));
+    auto result = client.execute_sql("SELECT count(*) FROM trades WHERE symbol = 4");
+    ASSERT_TRUE(result.error.empty()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    ASSERT_EQ(result.rows[0].size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 1);
+
+    server.stop();
+}
+
 // ── Test: cluster mode with coordinator returns mode=cluster ──
 TEST(HttpCluster, ClusterMode_ReturnsClusterAndMultipleNodes) {
     // Node 0 (coordinator / local)
@@ -998,6 +1040,42 @@ TEST(HttpCluster, ClusterMode_ReturnsClusterAndMultipleNodes) {
     EXPECT_NE(nodes_body.find("\"id\":0"), std::string::npos);
     EXPECT_NE(nodes_body.find("\"id\":1"), std::string::npos);
     EXPECT_NE(nodes_body.find("\"state\":\"ACTIVE\""), std::string::npos);
+
+    ASSERT_TRUE(coord_node.executor->execute(
+        "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
+    ASSERT_TRUE(data_node.executor->execute(
+        "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
+    const uint16_t table_id =
+        coord_node.pipeline->schema_registry().get_table_id("trades");
+    ASSERT_NE(table_id, 0u);
+
+    SymbolId remote_symbol = 0;
+    for (SymbolId s = 1; s < 10000; ++s) {
+        if (coordinator.router().route(table_id, s) == 1 &&
+            coordinator.router().route(s) == 0) {
+            remote_symbol = s;
+            break;
+        }
+    }
+    ASSERT_NE(remote_symbol, 0u);
+
+    zeptodb::ingestion::TickMessage msg{};
+    msg.table_id = table_id;
+    msg.symbol_id = remote_symbol;
+    msg.price = 12345;
+    msg.volume = 10;
+    msg.recv_ts = 1'000'000'000LL;
+    ASSERT_TRUE(data_node.pipeline->ingest_tick(msg));
+    data_node.pipeline->schema_registry().mark_has_data(table_id);
+    data_node.pipeline->drain_sync(100);
+
+    auto query_body = http_get(
+        "localhost", http_port,
+        "/?query=SELECT%20count(*)%20FROM%20trades%20WHERE%20symbol%20%3D%20" +
+            std::to_string(remote_symbol),
+        auth.admin_key);
+    EXPECT_NE(query_body.find("\"data\":[[1]]"), std::string::npos)
+        << query_body;
 
     server.stop();
     rpc_srv.stop();

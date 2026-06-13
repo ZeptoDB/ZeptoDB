@@ -56,5 +56,5 @@ confirms persisted state replays on both amd64 and arm64.
 
 ## Follow-ups
 
-- Consider adding a dedicated `--agent-only` mode to `run_eks_bench.sh` for
-  faster EKS Agent Memory iteration when the core K8s harness is already green.
+- Dedicated `--agent-only` mode was added in devlog 161 for faster EKS Agent
+  Memory iteration when the core K8s harness is already green.

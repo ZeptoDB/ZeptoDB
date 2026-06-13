@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   Box, Card, Typography, Table, TableHead, TableRow, TableCell, TableBody,
   TableContainer, Chip, CircularProgress, Alert, IconButton, Tooltip,
-  Breadcrumbs, Link, Stack, Divider,
+  Breadcrumbs, Link,
 } from "@mui/material";
+import { useQuery } from "@tanstack/react-query";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import StorageIcon from "@mui/icons-material/Storage";
@@ -14,6 +15,12 @@ import { useAuth } from "@/lib/auth";
 import PaginatedTable from "@/components/PaginatedTable";
 
 interface SchemaCol { column: string; type: string; nullable?: string }
+interface TableDetail {
+  schema: SchemaCol[];
+  rowCount: number;
+  colStats: Record<string, { min: string; max: string; nulls: number }>;
+  preview: { columns: string[]; data: (string | number)[][] } | null;
+}
 
 const MONO = { fontFamily: "'JetBrains Mono', monospace", fontSize: 13 };
 const HEADER = { fontWeight: 600, fontSize: 12, textTransform: "uppercase" as const, color: "text.secondary", letterSpacing: 0.5 };
@@ -24,60 +31,61 @@ export default function TableDetailPage() {
   const router = useRouter();
   const { auth } = useAuth();
 
-  const [schema, setSchema] = useState<SchemaCol[]>([]);
-  const [rowCount, setRowCount] = useState<number | null>(null);
-  const [colStats, setColStats] = useState<Record<string, { min: string; max: string; nulls: number }>>({});
-  const [preview, setPreview] = useState<{ columns: string[]; data: (string | number)[][] } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async (): Promise<TableDetail> => {
     const q = (sql: string) => querySQL(sql, auth?.apiKey).catch(() => null);
 
-    Promise.all([
+    const [schemaRes, countRes, previewRes] = await Promise.all([
       q(`DESCRIBE ${tableName}`),
       q(`SELECT count(*) FROM ${tableName}`),
       q(`SELECT * FROM ${tableName} LIMIT 50`),
-    ]).then(([schemaRes, countRes, previewRes]) => {
-      const cols: SchemaCol[] = (schemaRes?.data ?? []).map((r: (string | number)[]) => ({
-        column: String(r[0]), type: String(r[1] ?? "unknown"),
-      }));
-      setSchema(cols);
-      setRowCount(Number(countRes?.data?.[0]?.[0] ?? 0));
-      if (previewRes) setPreview(previewRes);
+    ]);
 
-      // Fetch per-column min/max/null stats for numeric/timestamp columns
-      const statCols = cols.filter(c =>
-        /int|float|double|long|timestamp|short|byte/i.test(c.type)
-      );
-      if (statCols.length > 0) {
-        const exprs = statCols.flatMap(c => [
-          `min(${c.column})`, `max(${c.column})`,
-        ]);
-        q(`SELECT ${exprs.join(",")} FROM ${tableName}`).then(statsRes => {
-          if (!statsRes?.data?.[0]) return;
-          const row = statsRes.data[0];
-          const map: typeof colStats = {};
-          statCols.forEach((c, i) => {
-            map[c.column] = {
-              min: String(row[i * 2] ?? "—"),
-              max: String(row[i * 2 + 1] ?? "—"),
-              nulls: 0,
-            };
-          });
-          setColStats(map);
+    const cols: SchemaCol[] = (schemaRes?.data ?? []).map((r: (string | number)[]) => ({
+      column: String(r[0]), type: String(r[1] ?? "unknown"),
+    }));
+
+    const statCols = cols.filter(c =>
+      /int|float|double|long|timestamp|short|byte/i.test(c.type)
+    );
+    const colStats: TableDetail["colStats"] = {};
+    if (statCols.length > 0) {
+      const exprs = statCols.flatMap(c => [
+        `min(${c.column})`, `max(${c.column})`,
+      ]);
+      const statsRes = await q(`SELECT ${exprs.join(",")} FROM ${tableName}`);
+      const row = statsRes?.data?.[0];
+      if (row) {
+        statCols.forEach((c, i) => {
+          colStats[c.column] = {
+            min: String(row[i * 2] ?? "—"),
+            max: String(row[i * 2 + 1] ?? "—"),
+            nulls: 0,
+          };
         });
       }
-    }).catch(e => setError(e.message)).finally(() => setLoading(false));
+    }
+
+    return {
+      schema: cols,
+      rowCount: Number(countRes?.data?.[0]?.[0] ?? 0),
+      preview: previewRes,
+      colStats,
+    };
   }, [tableName, auth]);
 
-  useEffect(() => { load(); }, [load]);
+  const { data, isLoading: loading, error, refetch } = useQuery<TableDetail>({
+    queryKey: ["table-detail", tableName, auth?.apiKey],
+    queryFn: load,
+  });
 
   if (loading) {
     return <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}><CircularProgress /></Box>;
   }
+
+  const schema = data?.schema ?? [];
+  const rowCount = data?.rowCount ?? 0;
+  const colStats = data?.colStats ?? {};
+  const preview = data?.preview ?? null;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -91,10 +99,10 @@ export default function TableDetailPage() {
           <Typography color="text.primary" fontSize={14} fontWeight={600}>{tableName}</Typography>
         </Breadcrumbs>
         <Box sx={{ flex: 1 }} />
-        <Tooltip title="Refresh"><IconButton size="small" onClick={load}><RefreshIcon /></IconButton></Tooltip>
+        <Tooltip title="Refresh"><IconButton size="small" onClick={() => refetch()}><RefreshIcon /></IconButton></Tooltip>
       </Box>
 
-      {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+      {error && <Alert severity="error">{error instanceof Error ? error.message : "Failed to load table"}</Alert>}
 
       {/* Summary cards */}
       <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>

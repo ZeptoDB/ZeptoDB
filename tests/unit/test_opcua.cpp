@@ -106,6 +106,17 @@ TEST(OpcUaUaDatetime, Before1970Returns0) {
     EXPECT_EQ(OpcUaConsumer::ua_datetime_to_ns(116444736000000000LL - 1), 0u);
 }
 
+TEST(OpcUaUaDatetime, NsToUaDatetimeRoundTripAt100nsGranularity) {
+    constexpr uint64_t kNs = 12345678900ULL;
+    const int64_t ua = OpcUaConsumer::ns_to_ua_datetime(kNs);
+    EXPECT_EQ(OpcUaConsumer::ua_datetime_to_ns(ua), 12345678900ULL);
+    const uint64_t max_ns = std::numeric_limits<uint64_t>::max();
+    const int64_t max_ua = OpcUaConsumer::ns_to_ua_datetime(max_ns);
+    EXPECT_LT(max_ua, std::numeric_limits<int64_t>::max());
+    EXPECT_EQ(OpcUaConsumer::ua_datetime_to_ns(max_ua),
+              (max_ns / 100ULL) * 100ULL);
+}
+
 // ============================================================================
 // Security validation
 // ============================================================================
@@ -919,3 +930,213 @@ TEST(OpcUaUnsupportedVariant, ExplicitDecodeErrorsIncrement) {
     EXPECT_EQ(s.route_local,       0u);
     EXPECT_EQ(s.route_remote,      0u);
 }
+
+// ============================================================================
+// Production variant profiles: arrays, Structured values, strings, HA, A&C
+// ============================================================================
+TEST(OpcUaArrayVariant, ExpandsElementsToSequentialSymbols) {
+    OpcUaConfig cfg;
+    cfg.nodes.push_back({"ns=2;s=MotorTemps", 100, 10.0, 2});
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    Variant a; a.type = VariantType::Double; a.f64 = 1.25;
+    Variant b; b.type = VariantType::Int32;  b.i64 = 7;
+    Variant c; c.type = VariantType::Boolean; c.b = true;
+
+    EXPECT_TRUE(consumer.on_array_change(
+        "ns=2;s=MotorTemps", {a, b, c}, 123456789ULL));
+
+    auto s = consumer.stats();
+    EXPECT_EQ(s.messages_consumed, 3u);
+    EXPECT_EQ(s.route_local, 3u);
+    EXPECT_EQ(s.decode_errors, 0u);
+    EXPECT_EQ(s.bytes_consumed, 3u * sizeof(int64_t));
+}
+
+TEST(OpcUaArrayVariant, EmptyArrayIncrementsDecodeErrors) {
+    auto cfg = cfg_with_node("ns=2;s=Empty", 7);
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    EXPECT_FALSE(consumer.on_array_change("ns=2;s=Empty", {}, 1));
+    auto s = consumer.stats();
+    EXPECT_EQ(s.decode_errors, 1u);
+    EXPECT_EQ(s.messages_consumed, 0u);
+}
+
+TEST(OpcUaStructuredVariant, DispatchesExplicitFieldSymbolsWithScale) {
+    OpcUaConfig cfg;
+    cfg.nodes.push_back({"ns=2;s=PumpStruct", 1, 1.0});
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    OpcUaConsumer::StructuredField pressure;
+    pressure.field_name = "pressure";
+    pressure.symbol_id = 201;
+    pressure.value.type = VariantType::Double;
+    pressure.value.f64 = 12.5;
+    pressure.value_scale = 100.0;
+    pressure.engineering_unit = "bar";
+
+    OpcUaConsumer::StructuredField running;
+    running.field_name = "running";
+    running.symbol_id = 202;
+    running.value.type = VariantType::Boolean;
+    running.value.b = true;
+
+    EXPECT_TRUE(consumer.on_structured_change({pressure, running}, 99));
+    auto s = consumer.stats();
+    EXPECT_EQ(s.messages_consumed, 2u);
+    EXPECT_EQ(s.route_local, 2u);
+    EXPECT_EQ(s.decode_errors, 0u);
+}
+
+TEST(OpcUaStringVariant, InternsStringValueThroughPipelineDictionary) {
+    auto cfg = cfg_with_node("ns=2;s=MachineState", 77);
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    EXPECT_TRUE(consumer.on_string_change("ns=2;s=MachineState", "RUNNING", 10));
+    EXPECT_GE(pipeline.symbol_dict().find("RUNNING"), 0);
+
+    auto s = consumer.stats();
+    EXPECT_EQ(s.messages_consumed, 1u);
+    EXPECT_EQ(s.route_local, 1u);
+    EXPECT_EQ(s.decode_errors, 0u);
+}
+
+TEST(OpcUaHistoricalAccess, ReplaysSamplesAndReportsDecodeFailures) {
+    auto cfg = cfg_with_node("ns=2;s=Temp", 7);
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    Variant ok; ok.type = VariantType::Int64; ok.i64 = 42;
+    Variant bad; bad.type = VariantType::Unsupported;
+
+    std::vector<OpcUaConsumer::HistoricalSample> samples = {
+        {"ns=2;s=Temp", ok, 1, 0},
+        {"ns=2;s=Missing", ok, 2, 0},
+        {"ns=2;s=Temp", bad, 3, 0},
+    };
+
+    EXPECT_EQ(consumer.ingest_history(samples), 1u);
+    auto s = consumer.stats();
+    EXPECT_EQ(s.messages_consumed, 1u);
+    EXPECT_EQ(s.route_local, 1u);
+    EXPECT_EQ(s.decode_errors, 2u);
+}
+
+TEST(OpcUaHistoricalAccess, LiveReadUnavailableReportsIngestFailure) {
+    auto cfg = cfg_with_node("ns=2;s=Temp", 7);
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    OpcUaConsumer::HistoryReadOptions options;
+    options.start_ts_ns = 100;
+    options.end_ts_ns = 200;
+    options.values_per_node = 10;
+
+    EXPECT_EQ(consumer.read_history(options), 0u);
+    auto s = consumer.stats();
+    EXPECT_EQ(s.ingest_failures, 1u);
+    EXPECT_EQ(s.messages_consumed, 0u);
+}
+
+TEST(OpcUaAlarmsConditions, DispatchesActiveAndClearedAlarmEvents) {
+    OpcUaConfig cfg;
+    cfg.nodes.push_back({"ns=2;s=AlarmProxy", 1, 1.0});
+    OpcUaConsumer consumer(cfg);
+    zeptodb::core::ZeptoPipeline pipeline;
+    consumer.set_pipeline(&pipeline);
+
+    OpcUaConsumer::AlarmEvent active;
+    active.symbol_id = 9001;
+    active.severity = 750;
+    active.active = true;
+    active.source_ts_ns = 100;
+
+    OpcUaConsumer::AlarmEvent cleared = active;
+    cleared.active = false;
+    cleared.source_ts_ns = 200;
+
+    EXPECT_TRUE(consumer.on_alarm_event(active));
+    EXPECT_TRUE(consumer.on_alarm_event(cleared));
+
+    auto s = consumer.stats();
+    EXPECT_EQ(s.messages_consumed, 2u);
+    EXPECT_EQ(s.route_local, 2u);
+    EXPECT_EQ(s.decode_errors, 0u);
+}
+
+// ============================================================================
+// OPC-UA server mode
+// ============================================================================
+TEST(OpcUaServerMode, PublishesSnapshotValues) {
+    OpcUaServerConfig cfg;
+    cfg.nodes.push_back({"ns=1;s=temp", 101, "temp", 25});
+    OpcUaServer server(cfg);
+
+    ASSERT_TRUE(server.snapshot_value(101).has_value());
+    EXPECT_EQ(*server.snapshot_value(101), 25);
+    EXPECT_TRUE(server.publish_value(101, 42, 1000, 0));
+    EXPECT_EQ(*server.snapshot_value(101), 42);
+
+    auto s = server.stats();
+    EXPECT_EQ(s.writes, 1u);
+    EXPECT_EQ(s.write_failures, 0u);
+}
+
+TEST(OpcUaServerMode, RejectsUnknownSymbolPublish) {
+    OpcUaServerConfig cfg;
+    cfg.nodes.push_back({"ns=1;s=temp", 101, "temp", 25});
+    OpcUaServer server(cfg);
+
+    EXPECT_FALSE(server.publish_value(999, 42));
+    auto s = server.stats();
+    EXPECT_EQ(s.writes, 0u);
+    EXPECT_EQ(s.write_failures, 1u);
+}
+
+TEST(OpcUaServerMode, GeneratesNodeIdsForSymbols) {
+    OpcUaServerConfig cfg;
+    cfg.namespace_index = 2;
+    cfg.nodes.push_back({"", 202, "", 7});
+    OpcUaServer server(cfg);
+
+    EXPECT_EQ(*server.snapshot_value(202), 7);
+    EXPECT_TRUE(server.publish_value(202, 8));
+    EXPECT_EQ(*server.snapshot_value(202), 8);
+}
+
+TEST(OpcUaServerMode, StartRejectsInvalidConfig) {
+    OpcUaServerConfig empty;
+    OpcUaServer empty_server(empty);
+    EXPECT_FALSE(empty_server.start());
+    EXPECT_EQ(empty_server.stats().start_failures, 1u);
+
+    OpcUaServerConfig duplicate;
+    duplicate.nodes.push_back({"ns=1;s=a", 7, "a", 0});
+    duplicate.nodes.push_back({"ns=1;s=b", 7, "b", 0});
+    OpcUaServer duplicate_server(duplicate);
+    EXPECT_FALSE(duplicate_server.start());
+    EXPECT_EQ(duplicate_server.stats().start_failures, 1u);
+}
+
+#ifndef ZEPTO_OPCUA_AVAILABLE
+TEST(OpcUaServerMode, StartWithoutCompiledOpen62541ReturnsFalse) {
+    OpcUaServerConfig cfg;
+    cfg.nodes.push_back({"ns=1;s=temp", 101, "temp", 25});
+    OpcUaServer server(cfg);
+
+    EXPECT_FALSE(server.start());
+    EXPECT_FALSE(server.is_running());
+    EXPECT_EQ(server.stats().start_failures, 1u);
+}
+#endif

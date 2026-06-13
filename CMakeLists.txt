@@ -61,6 +61,7 @@ option(ZEPTO_USE_TCMALLOC   "Link tcmalloc_minimal for HFT allocation performanc
 option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
 option(ZEPTO_USE_MQTT       "Enable MQTT consumer (requires paho-mqttpp3)" OFF)
+option(ZEPTO_USE_KINESIS    "Enable AWS Kinesis consumer (requires AWS SDK C++ kinesis)" OFF)
 option(ZEPTO_USE_OPCUA      "Enable OPC-UA consumer (requires open62541)" OFF)
 option(ZEPTO_USE_ROS2       "Enable ROS 2 scalar subscriber and rosbag2 import/replay (requires ROS 2 packages)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
@@ -165,27 +166,135 @@ endif()
 
 # --- open62541 (OPC-UA consumer, optional) ---
 if(ZEPTO_USE_OPCUA)
-    find_library(OPEN62541_LIB open62541 QUIET)
-    if(OPEN62541_LIB)
-        message(STATUS "open62541: ${OPEN62541_LIB} (OPC-UA consumer enabled)")
+    set(ZEPTO_OPCUA_TARGET "")
+    set(ZEPTO_OPCUA_DETECTION_METHOD "")
+    set(ZEPTO_OPCUA_INCLUDE_DIRS "")
+    set(ZEPTO_OPCUA_VERSION "")
+    set(ZEPTO_OPCUA_HAS_HISTORIZING OFF)
+
+    find_package(open62541 CONFIG QUIET)
+    if(open62541_FOUND)
+        if(TARGET open62541::open62541)
+            set(ZEPTO_OPCUA_TARGET open62541::open62541)
+        elseif(TARGET open62541)
+            set(ZEPTO_OPCUA_TARGET open62541)
+        endif()
+        set(ZEPTO_OPCUA_DETECTION_METHOD "CMake package")
+        if(DEFINED open62541_VERSION)
+            set(ZEPTO_OPCUA_VERSION "${open62541_VERSION}")
+        endif()
+    endif()
+
+    if(NOT ZEPTO_OPCUA_TARGET)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(OPEN62541_PC QUIET IMPORTED_TARGET open62541)
+            if(OPEN62541_PC_FOUND AND TARGET PkgConfig::OPEN62541_PC)
+                set(ZEPTO_OPCUA_TARGET PkgConfig::OPEN62541_PC)
+                set(ZEPTO_OPCUA_DETECTION_METHOD "pkg-config")
+                set(ZEPTO_OPCUA_INCLUDE_DIRS ${OPEN62541_PC_INCLUDE_DIRS})
+                set(ZEPTO_OPCUA_VERSION "${OPEN62541_PC_VERSION}")
+            endif()
+        endif()
+    endif()
+
+    if(NOT ZEPTO_OPCUA_TARGET)
+        find_path(OPEN62541_INCLUDE_DIR NAMES open62541/client.h)
+        find_library(OPEN62541_LIBRARY NAMES open62541)
+        if(OPEN62541_INCLUDE_DIR AND OPEN62541_LIBRARY)
+            add_library(zepto_open62541 UNKNOWN IMPORTED)
+            set_target_properties(zepto_open62541 PROPERTIES
+                IMPORTED_LOCATION "${OPEN62541_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${OPEN62541_INCLUDE_DIR}"
+            )
+            set(ZEPTO_OPCUA_TARGET zepto_open62541)
+            set(ZEPTO_OPCUA_DETECTION_METHOD "find_path/find_library")
+            set(ZEPTO_OPCUA_INCLUDE_DIRS "${OPEN62541_INCLUDE_DIR}")
+
+            set(_open62541_config "${OPEN62541_INCLUDE_DIR}/open62541/config.h")
+            if(EXISTS "${_open62541_config}")
+                foreach(_ver_part MAJOR MINOR PATCH)
+                    file(STRINGS "${_open62541_config}" _open62541_${_ver_part}
+                         REGEX "^#define[ \t]+UA_OPEN62541_VER_${_ver_part}[ \t]+[0-9]+")
+                    if(_open62541_${_ver_part})
+                        string(REGEX REPLACE ".*UA_OPEN62541_VER_${_ver_part}[ \t]+([0-9]+).*" "\\1"
+                               _open62541_${_ver_part} "${_open62541_${_ver_part}}")
+                    endif()
+                endforeach()
+                if(_open62541_MAJOR AND _open62541_MINOR AND _open62541_PATCH)
+                    set(ZEPTO_OPCUA_VERSION "${_open62541_MAJOR}.${_open62541_MINOR}.${_open62541_PATCH}")
+                endif()
+            endif()
+        endif()
+    endif()
+
+    if(ZEPTO_OPCUA_TARGET)
+        if(NOT ZEPTO_OPCUA_INCLUDE_DIRS)
+            get_target_property(_open62541_target_includes
+                ${ZEPTO_OPCUA_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+            if(_open62541_target_includes)
+                set(ZEPTO_OPCUA_INCLUDE_DIRS ${_open62541_target_includes})
+            endif()
+        endif()
+
+        include(CheckCXXSourceCompiles)
+        include(CMakePushCheckState)
+        cmake_push_check_state(RESET)
+        if(ZEPTO_OPCUA_INCLUDE_DIRS)
+            set(CMAKE_REQUIRED_INCLUDES ${ZEPTO_OPCUA_INCLUDE_DIRS})
+        endif()
+        set(CMAKE_REQUIRED_LIBRARIES ${ZEPTO_OPCUA_TARGET})
+        set(CMAKE_REQUIRED_QUIET ON)
+        check_cxx_source_compiles("
+            #include <open62541/client.h>
+            #ifndef UA_ENABLE_HISTORIZING
+            #error UA_ENABLE_HISTORIZING missing
+            #endif
+            int main() { return 0; }
+        " ZEPTO_OPCUA_HAS_HISTORIZING)
+        cmake_pop_check_state()
+
         set(ZEPTO_HAS_OPCUA ON)
+        set(_open62541_label "open62541")
+        if(ZEPTO_OPCUA_VERSION)
+            set(_open62541_label "${_open62541_label} ${ZEPTO_OPCUA_VERSION}")
+        endif()
+        message(STATUS "${_open62541_label}: found via ${ZEPTO_OPCUA_DETECTION_METHOD} (OPC-UA client/server enabled)")
+        if(ZEPTO_OPCUA_HAS_HISTORIZING)
+            message(STATUS "open62541: UA_ENABLE_HISTORIZING enabled (live Historical Access enabled)")
+        else()
+            message(STATUS "open62541: UA_ENABLE_HISTORIZING not detected — live Historical Access disabled")
+            message(STATUS "  Rebuild open62541 with historizing support for OpcUaConsumer::read_history()")
+        endif()
     else()
-        message(STATUS "open62541: not found — OPC-UA consumer disabled")
-        message(STATUS "  Install: sudo dnf install -y open62541-devel")
+        message(STATUS "open62541: not found — OPC-UA client/server disabled")
+        message(STATUS "  Install libopen62541-dev/open62541-devel or provide open62541Config.cmake/pkg-config metadata")
         set(ZEPTO_USE_OPCUA OFF)
         set(ZEPTO_HAS_OPCUA OFF)
     endif()
 else()
     set(ZEPTO_HAS_OPCUA OFF)
+    set(ZEPTO_OPCUA_HAS_HISTORIZING OFF)
 endif()
 
-# --- ROS 2 / rclcpp + std_msgs (Physical AI bridge, optional) ---
+# --- ROS 2 / rclcpp + standard message profiles (Physical AI bridge, optional) ---
 if(ZEPTO_USE_ROS2)
     find_package(rclcpp QUIET)
     find_package(std_msgs QUIET)
+    find_package(sensor_msgs QUIET)
+    find_package(nav_msgs QUIET)
+    find_package(tf2_msgs QUIET)
+    find_package(geometry_msgs QUIET)
     if(rclcpp_FOUND AND std_msgs_FOUND)
         message(STATUS "rclcpp/std_msgs: found (ROS 2 scalar subscriber enabled)")
         set(ZEPTO_HAS_ROS2 ON)
+        if(sensor_msgs_FOUND AND nav_msgs_FOUND AND tf2_msgs_FOUND AND geometry_msgs_FOUND)
+            message(STATUS "ROS 2 standard messages: found (IMU/JointState/Odometry/TF/LaserScan profiles enabled)")
+            set(ZEPTO_HAS_ROS2_STANDARD ON)
+        else()
+            message(STATUS "ROS 2 standard messages: not fully found — standard profiles disabled")
+            set(ZEPTO_HAS_ROS2_STANDARD OFF)
+        endif()
         find_package(rosbag2_cpp QUIET)
         find_package(rosbag2_storage QUIET)
         if(rosbag2_cpp_FOUND AND rosbag2_storage_FOUND)
@@ -200,10 +309,12 @@ if(ZEPTO_USE_ROS2)
         message(STATUS "  Install a ROS 2 distro and source its setup.bash before configuring")
         set(ZEPTO_USE_ROS2 OFF)
         set(ZEPTO_HAS_ROS2 OFF)
+        set(ZEPTO_HAS_ROS2_STANDARD OFF)
         set(ZEPTO_HAS_ROS2_BAG OFF)
     endif()
 else()
     set(ZEPTO_HAS_ROS2 OFF)
+    set(ZEPTO_HAS_ROS2_STANDARD OFF)
     set(ZEPTO_HAS_ROS2_BAG OFF)
 endif()
 
@@ -374,11 +485,37 @@ if(ZEPTO_USE_S3)
     find_package(AWSSDK CONFIG COMPONENTS s3 QUIET)
     if(AWSSDK_FOUND)
         message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (S3 업로드 활성화)")
+        set(ZEPTO_S3_AWSSDK_LIBS ${AWSSDK_LINK_LIBRARIES})
     else()
         message(STATUS "AWS SDK C++: 없음 — S3 업로드 비활성화")
         message(STATUS "  설치: sudo dnf install -y aws-sdk-cpp-s3")
         set(ZEPTO_USE_S3 OFF)
     endif()
+endif()
+
+# --- AWS SDK C++ Kinesis (optional) ---
+if(ZEPTO_USE_KINESIS)
+    find_file(ZEPTO_AWS_KINESIS_CONFIG
+        NAMES aws-cpp-sdk-kinesisConfig.cmake aws-cpp-sdk-kinesis-config.cmake
+        PATH_SUFFIXES
+            lib/cmake/aws-cpp-sdk-kinesis
+            lib64/cmake/aws-cpp-sdk-kinesis
+    )
+    if(ZEPTO_AWS_KINESIS_CONFIG)
+        find_package(AWSSDK CONFIG COMPONENTS kinesis QUIET)
+    endif()
+    if(AWSSDK_FOUND AND ZEPTO_AWS_KINESIS_CONFIG)
+        message(STATUS "AWS SDK C++: ${AWSSDK_VERSION} (Kinesis consumer enabled)")
+        set(ZEPTO_HAS_KINESIS ON)
+        set(ZEPTO_KINESIS_AWSSDK_LIBS ${AWSSDK_LINK_LIBRARIES})
+    else()
+        message(STATUS "AWS SDK C++: not found — Kinesis consumer disabled")
+        message(STATUS "  Install: sudo dnf install -y aws-sdk-cpp-kinesis")
+        set(ZEPTO_USE_KINESIS OFF)
+        set(ZEPTO_HAS_KINESIS OFF)
+    endif()
+else()
+    set(ZEPTO_HAS_KINESIS OFF)
 endif()
 
 # --- OpenSSL (TLS + crypto for auth) ---
@@ -517,7 +654,7 @@ if(ZEPTO_USE_PARQUET)
     target_compile_definitions(zepto_storage PUBLIC ZEPTO_PARQUET_ENABLED=1)
 endif()
 if(ZEPTO_USE_S3)
-    target_link_libraries(zepto_storage PUBLIC ${AWSSDK_LINK_LIBRARIES})
+    target_link_libraries(zepto_storage PUBLIC ${ZEPTO_S3_AWSSDK_LIBS})
     target_compile_definitions(zepto_storage PUBLIC ZEPTO_S3_ENABLED=1)
 endif()
 
@@ -712,6 +849,7 @@ endif()
 
 add_library(zepto_server STATIC
     src/server/http_server.cpp
+    src/server/msgpack_ingest.cpp
 )
 target_include_directories(zepto_server PUBLIC
     ${CMAKE_SOURCE_DIR}/include
@@ -811,6 +949,7 @@ target_include_directories(zepto_migration PUBLIC
 )
 target_link_libraries(zepto_migration PUBLIC
     zepto_common
+    zepto_auth
 )
 
 # --- Scheduler (.z.ts equivalent) ---
@@ -876,6 +1015,34 @@ else()
     message(STATUS "zepto_mqtt: decode/routing only (no paho-mqttpp3)")
 endif()
 
+# --- AWS Kinesis Consumer (depends on zepto_core + zepto_cluster + zepto_kafka for shared decoders) ---
+add_library(zepto_kinesis STATIC
+    src/feeds/kinesis_consumer.cpp
+)
+target_include_directories(zepto_kinesis PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_kinesis PUBLIC
+    zepto_core
+    zepto_cluster
+    zepto_kafka
+)
+if(ZEPTO_HAS_KINESIS)
+    target_compile_definitions(zepto_kinesis PUBLIC ZEPTO_KINESIS_AVAILABLE=1)
+    target_link_libraries(zepto_kinesis PUBLIC ${ZEPTO_KINESIS_AWSSDK_LIBS})
+    message(STATUS "zepto_kinesis: AWS polling enabled")
+else()
+    message(STATUS "zepto_kinesis: decode/routing only (no AWS SDK Kinesis)")
+endif()
+
+# --- Telegraf external output (outputs.execd line protocol writer) ---
+add_library(zepto_telegraf_output STATIC
+    src/feeds/telegraf_output.cpp
+)
+target_include_directories(zepto_telegraf_output PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # --- OPC-UA Consumer (depends on zepto_core + zepto_cluster) ---
 add_library(zepto_opcua STATIC
     src/feeds/opcua_consumer.cpp
@@ -889,8 +1056,11 @@ target_link_libraries(zepto_opcua PUBLIC
 )
 if(ZEPTO_HAS_OPCUA)
     target_compile_definitions(zepto_opcua PUBLIC ZEPTO_OPCUA_AVAILABLE=1)
-    target_link_libraries(zepto_opcua PUBLIC ${OPEN62541_LIB})
-    message(STATUS "zepto_opcua: OPC-UA server connectivity enabled (PoC — see BACKLOG P9)")
+    if(ZEPTO_OPCUA_HAS_HISTORIZING)
+        target_compile_definitions(zepto_opcua PUBLIC ZEPTO_OPCUA_HISTORIZING_AVAILABLE=1)
+    endif()
+    target_link_libraries(zepto_opcua PUBLIC ${ZEPTO_OPCUA_TARGET})
+    message(STATUS "zepto_opcua: OPC-UA client/server connectivity enabled")
 else()
     message(STATUS "zepto_opcua: NodeId-map / routing only (no open62541)")
 endif()
@@ -919,6 +1089,22 @@ if(ZEPTO_HAS_ROS2)
     endforeach()
     if(ZEPTO_ROS2_TARGETS)
         target_link_libraries(zepto_ros2 PUBLIC ${ZEPTO_ROS2_TARGETS})
+    endif()
+    if(ZEPTO_HAS_ROS2_STANDARD)
+        target_compile_definitions(zepto_ros2 PUBLIC ZEPTO_ROS2_STANDARD_AVAILABLE=1)
+        foreach(_ros2_standard_target
+                sensor_msgs::sensor_msgs__rosidl_typesupport_cpp
+                sensor_msgs::sensor_msgs__rosidl_generator_cpp
+                nav_msgs::nav_msgs__rosidl_typesupport_cpp
+                nav_msgs::nav_msgs__rosidl_generator_cpp
+                tf2_msgs::tf2_msgs__rosidl_typesupport_cpp
+                tf2_msgs::tf2_msgs__rosidl_generator_cpp
+                geometry_msgs::geometry_msgs__rosidl_typesupport_cpp
+                geometry_msgs::geometry_msgs__rosidl_generator_cpp)
+            if(TARGET ${_ros2_standard_target})
+                target_link_libraries(zepto_ros2 PUBLIC ${_ros2_standard_target})
+            endif()
+        endforeach()
     endif()
     if(ZEPTO_HAS_ROS2_BAG)
         target_compile_definitions(zepto_ros2 PUBLIC ZEPTO_ROS2_BAG_AVAILABLE=1)
@@ -964,10 +1150,26 @@ if(ZEPTO_HAS_ROS2)
     if(DEFINED std_msgs_LIBRARIES)
         target_link_libraries(zepto_ros2 PUBLIC ${std_msgs_LIBRARIES})
     endif()
+    foreach(_ros2_standard_pkg sensor_msgs nav_msgs tf2_msgs geometry_msgs)
+        if(DEFINED ${_ros2_standard_pkg}_INCLUDE_DIRS)
+            target_include_directories(zepto_ros2 PUBLIC ${${_ros2_standard_pkg}_INCLUDE_DIRS})
+        endif()
+        if(DEFINED ${_ros2_standard_pkg}_LIBRARIES)
+            target_link_libraries(zepto_ros2 PUBLIC ${${_ros2_standard_pkg}_LIBRARIES})
+        endif()
+    endforeach()
     if(ZEPTO_HAS_ROS2_BAG)
-        message(STATUS "zepto_ros2: ROS 2 std_msgs scalar subscriber and rosbag2 import/replay enabled")
+        if(ZEPTO_HAS_ROS2_STANDARD)
+            message(STATUS "zepto_ros2: ROS 2 scalar + standard profiles and rosbag2 import/replay enabled")
+        else()
+            message(STATUS "zepto_ros2: ROS 2 std_msgs scalar subscriber and rosbag2 import/replay enabled")
+        endif()
     else()
-        message(STATUS "zepto_ros2: ROS 2 std_msgs scalar subscriber enabled")
+        if(ZEPTO_HAS_ROS2_STANDARD)
+            message(STATUS "zepto_ros2: ROS 2 scalar + standard profiles enabled")
+        else()
+            message(STATUS "zepto_ros2: ROS 2 std_msgs scalar subscriber enabled")
+        endif()
     endif()
 else()
     message(STATUS "zepto_ros2: config/mapping/routing only (no rclcpp)")
@@ -987,6 +1189,33 @@ target_link_libraries(zepto-migrate PRIVATE
     zepto_common
 )
 target_compile_options(zepto-migrate PRIVATE -O2)
+
+# OPC-UA address-space discovery CLI. In default builds it compiles as a
+# diagnostic stub; with ZEPTO_USE_OPCUA=ON it connects through open62541.
+add_executable(zepto-opcua-browse
+    tools/zepto-opcua-browse.cpp
+)
+target_include_directories(zepto-opcua-browse PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto-opcua-browse PRIVATE
+    zepto_opcua
+)
+target_compile_options(zepto-opcua-browse PRIVATE -O2)
+
+# Telegraf external output writer. This is used from Telegraf's
+# `outputs.execd` and sends parsed line protocol to ZeptoDB over HTTP SQL.
+add_executable(zepto-telegraf-output
+    tools/zepto-telegraf-output.cpp
+)
+target_include_directories(zepto-telegraf-output PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(zepto-telegraf-output PRIVATE
+    zepto_telegraf_output
+)
+target_compile_options(zepto-telegraf-output PRIVATE -O2)
 
 # Interactive SQL CLI
 add_executable(zepto-cli
@@ -1333,6 +1562,9 @@ message(STATUS "  LZ4:           ${ZEPTO_USE_LZ4}")
 message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
 message(STATUS "  Arrow Flight:  ${ZEPTO_HAS_FLIGHT}")
+message(STATUS "  Kinesis:       ${ZEPTO_HAS_KINESIS}")
+message(STATUS "  OPC-UA:        ${ZEPTO_HAS_OPCUA}")
+message(STATUS "  OPC-UA HA:     ${ZEPTO_OPCUA_HAS_HISTORIZING}")
 message(STATUS "  DuckDB:        ${ZEPTO_ENABLE_DUCKDB}")
 message(STATUS "  hnswlib ANN:   ${ZEPTO_ENABLE_HNSWLIB}")
 message(STATUS "  Tests:         ${ZEPTO_BUILD_TESTS}")

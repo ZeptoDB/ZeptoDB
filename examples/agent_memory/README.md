@@ -67,8 +67,45 @@ The demo installs these tables with `CREATE TABLE IF NOT EXISTS`:
 - `agent_runs`
 - `retrieval_events`
 - `cache_events`
+- `context_traces`
+- `context_replay_events`
 - `llm_calls`
+- `llm_errors`
 - `tool_calls`
+
+## Context Trace And Replay
+
+`context_trace.py` builds AgentOps INSERT statements that explain why each
+memory entered a prompt and record the time-series query snapshots used around
+that decision.
+
+```python
+from examples.agent_memory.context_trace import (
+    build_context_replay_sql,
+    build_context_trace_sql,
+)
+
+for sql in build_context_trace_sql(context, run_id="run_1", tenant_id="tenant_a", timestamp_ns=now_ns):
+    db.execute(sql)
+
+for sql in build_context_replay_sql(snapshots, run_id="run_1", tenant_id="tenant_a", timestamp_ns=now_ns):
+    db.execute(sql)
+```
+
+## OpenTelemetry GenAI Mapping
+
+`otel_mapping.py` converts OTLP JSON span dictionaries into INSERT statements
+for the AgentOps tables. It maps GenAI provider/model spans, prompt/completion
+token counts, cache-hit attributes, tool-call spans, latency, and model errors
+without requiring an OpenTelemetry SDK dependency.
+
+```python
+from examples.agent_memory.otel_mapping import map_spans_to_agentops_sql
+
+sql_rows = map_spans_to_agentops_sql(otlp_spans, default_tenant_id="tenant_a")
+for sql in sql_rows:
+    db.execute(sql)
+```
 
 ## Agent-Attached Time-Series Demos
 

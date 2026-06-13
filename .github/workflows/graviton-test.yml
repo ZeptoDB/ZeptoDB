@@ -2,10 +2,10 @@ name: Graviton ARM64 Build & Test
 
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
     paths-ignore: ['docs/**', 'web/**', '*.md']
   pull_request:
-    branches: [main]
+    branches: [dev, main]
     paths-ignore: ['docs/**', 'web/**', '*.md']
   workflow_dispatch:
 
@@ -15,7 +15,7 @@ env:
 jobs:
   build-and-test:
     runs-on: [self-hosted, linux, ARM64]
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v6

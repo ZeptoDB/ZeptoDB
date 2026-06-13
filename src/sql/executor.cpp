@@ -282,6 +282,9 @@ using namespace zeptodb::core;
 using namespace zeptodb::storage;
 using namespace zeptodb::execution;
 
+static double eval_arith_as_f64(const ArithExpr& node,
+                                const Partition& part, uint32_t idx);
+
 // ============================================================================
 // 고해상도 타이머
 // ============================================================================
@@ -698,6 +701,7 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
     }
 
     size_t inserted = 0;
+    size_t failed = 0;
     for (auto& row : stmt.value_rows) {
         if (row.size() != cols.size()) {
             QueryResultSet err;
@@ -738,12 +742,17 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
         msg.msg_type  = 0;  // Trade
         msg.table_id  = pipeline_.schema_registry().get_table_id(stmt.table_name);
 
+        bool ok = false;
         if (cluster_node_) {
-            cluster_node_->ingest_tick(msg);   // route to partition owner (devlog 103)
+            ok = cluster_node_->ingest_tick(msg);   // route to partition owner (devlog 103)
         } else {
-            pipeline_.ingest_tick(msg);        // single-node fallback
+            ok = pipeline_.ingest_tick(msg);        // single-node fallback
         }
-        ++inserted;
+        if (ok) {
+            ++inserted;
+        } else {
+            ++failed;
+        }
     }
 
     // Drain to ensure data is stored before returning
@@ -751,6 +760,13 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
 
     if (inserted > 0)
         pipeline_.schema_registry().mark_has_data(stmt.table_name);
+
+    if (failed > 0) {
+        QueryResultSet err;
+        err.error = "Failed to ingest " + std::to_string(failed) +
+                    " of " + std::to_string(stmt.value_rows.size()) + " rows";
+        return err;
+    }
 
     QueryResultSet result;
     result.column_names = {"inserted"};
@@ -1304,14 +1320,28 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
     // Table-scoped partitioning: resolve table_id once for the FROM table.
     // 0 = legacy/default (no CREATE TABLE) → queries span all partitions.
     const uint16_t from_tid = pipeline_.schema_registry().get_table_id(stmt.from_table);
+    auto symbol_partitions = [&](zeptodb::SymbolId symbol) {
+        auto& pm = pipeline_.partition_manager();
+        if (from_tid != 0) {
+            return pm.get_partitions_for_symbol(from_tid, symbol);
+        }
+
+        std::vector<Partition*> parts;
+        auto all_parts = pm.get_all_partitions();
+        parts.reserve(all_parts.size());
+        for (auto* part : all_parts) {
+            if (part->key().symbol_id == symbol) {
+                parts.push_back(part);
+            }
+        }
+        return parts;
+    };
 
     // WHERE symbol = N 조건 추출 (파티션 레벨 필터링)
     int64_t sym_filter = -1;
     if (has_where_symbol(stmt, sym_filter, stmt.from_alias)) {
         // symbol 기반 파티션 필터링
-        auto& pm = pipeline_.partition_manager();
-        auto sym_parts = pm.get_partitions_for_symbol(
-            from_tid, static_cast<zeptodb::SymbolId>(sym_filter));
+        auto sym_parts = symbol_partitions(static_cast<zeptodb::SymbolId>(sym_filter));
 
         // Further narrow by time range if present (avoids passing entire symbol
         // history to exec functions when a tight timestamp window is queried).
@@ -1387,10 +1417,9 @@ QueryResultSet QueryExecutor::exec_select(const SelectStmt& stmt_in) {
     // WHERE symbol IN (1, 2, 3) → multi-partition routing
     std::vector<int64_t> in_syms;
     if (has_where_symbol_in(stmt, in_syms) && !in_syms.empty()) {
-        auto& pm = pipeline_.partition_manager();
         std::vector<Partition*> left_parts;
         for (int64_t s : in_syms) {
-            auto sp = pm.get_partitions_for_symbol(from_tid, static_cast<zeptodb::SymbolId>(s));
+            auto sp = symbol_partitions(static_cast<zeptodb::SymbolId>(s));
             if (has_ts_range) {
                 for (auto* p : sp)
                     if (p->overlaps_time_range(ts_lo_filter, ts_hi_filter))
@@ -1523,14 +1552,36 @@ static bool col_is_float(const Partition& part, const std::string& col_name) {
     return cv->type() == ColumnType::FLOAT64 || cv->type() == ColumnType::FLOAT32;
 }
 
-// ── scan_compare: vectorized column scan with type dispatch ─────────────────
-template<typename T>
-static void scan_compare(const void* raw, size_t n, CompareOp op, T val,
-                         std::vector<uint32_t>& out) {
-    const T* data = static_cast<const T*>(raw);
-    for (size_t i = 0; i < n; ++i) {
-        if (compare_val(data[i], op, val))
-            out.push_back(static_cast<uint32_t>(i));
+static int64_t read_column_as_i64(const ColumnVector& cv, size_t row_idx) {
+    if (row_idx >= cv.size() || cv.raw_data() == nullptr) return 0;
+    switch (cv.type()) {
+        case ColumnType::INT32:
+            return static_cast<const int32_t*>(cv.raw_data())[row_idx];
+        case ColumnType::INT64:
+        case ColumnType::TIMESTAMP_NS:
+            return static_cast<const int64_t*>(cv.raw_data())[row_idx];
+        case ColumnType::FLOAT32:
+            return static_cast<int64_t>(static_cast<const float*>(cv.raw_data())[row_idx]);
+        case ColumnType::FLOAT64:
+            return static_cast<int64_t>(static_cast<const double*>(cv.raw_data())[row_idx]);
+        case ColumnType::SYMBOL:
+        case ColumnType::STRING:
+            return static_cast<int64_t>(static_cast<const uint32_t*>(cv.raw_data())[row_idx]);
+        case ColumnType::BOOL:
+            return static_cast<int64_t>(static_cast<const uint8_t*>(cv.raw_data())[row_idx]);
+    }
+    return 0;
+}
+
+static double read_column_as_f64(const ColumnVector& cv, size_t row_idx) {
+    if (row_idx >= cv.size() || cv.raw_data() == nullptr) return 0.0;
+    switch (cv.type()) {
+        case ColumnType::FLOAT32:
+            return static_cast<double>(static_cast<const float*>(cv.raw_data())[row_idx]);
+        case ColumnType::FLOAT64:
+            return static_cast<const double*>(cv.raw_data())[row_idx];
+        default:
+            return static_cast<double>(read_column_as_i64(cv, row_idx));
     }
 }
 
@@ -1571,21 +1622,62 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
             return result;
         }
         case Expr::Kind::BETWEEN: {
+            if (expr->lhs_expr) {
+                std::vector<uint32_t> result;
+                result.reserve(num_rows / 4);
+                const double lo = static_cast<double>(expr->lo);
+                const double hi = static_cast<double>(expr->hi);
+                for (size_t i = 0; i < num_rows; ++i) {
+                    const double value = eval_arith_as_f64(*expr->lhs_expr, part,
+                                                           static_cast<uint32_t>(i));
+                    if (value >= lo && value <= hi) {
+                        result.push_back(static_cast<uint32_t>(i));
+                    }
+                }
+                return result;
+            }
             if (expr->column == "symbol") {
                 std::vector<uint32_t> all(num_rows);
                 for (size_t i = 0; i < num_rows; ++i) all[i] = static_cast<uint32_t>(i);
                 return all;
             }
-            const int64_t* data = get_col_data(part, expr->column);
-            if (!data) return {};
+            const ColumnVector* cv = part.get_column(expr->column);
+            if (!cv) return {};
             std::vector<uint32_t> result;
-            for (size_t i = 0; i < num_rows; ++i) {
-                if (data[i] >= expr->lo && data[i] <= expr->hi) {
-                    result.push_back(static_cast<uint32_t>(i));
+            if (cv->type() == ColumnType::FLOAT32 || cv->type() == ColumnType::FLOAT64) {
+                const double lo = static_cast<double>(expr->lo);
+                const double hi = static_cast<double>(expr->hi);
+                for (size_t i = 0; i < num_rows; ++i) {
+                    const double value = read_column_as_f64(*cv, i);
+                    if (value >= lo && value <= hi) {
+                        result.push_back(static_cast<uint32_t>(i));
+                    }
+                }
+            } else {
+                for (size_t i = 0; i < num_rows; ++i) {
+                    const int64_t value = read_column_as_i64(*cv, i);
+                    if (value >= expr->lo && value <= expr->hi) {
+                        result.push_back(static_cast<uint32_t>(i));
+                    }
                 }
             }
             return result;
         }        case Expr::Kind::COMPARE: {
+            if (expr->lhs_expr) {
+                std::vector<uint32_t> result;
+                result.reserve(num_rows / 4);
+                const double cmp = expr->is_float
+                    ? expr->value_f
+                    : static_cast<double>(expr->value);
+                for (size_t i = 0; i < num_rows; ++i) {
+                    const double value = eval_arith_as_f64(*expr->lhs_expr, part,
+                                                           static_cast<uint32_t>(i));
+                    if (compare_val(value, expr->op, cmp)) {
+                        result.push_back(static_cast<uint32_t>(i));
+                    }
+                }
+                return result;
+            }
             if (expr->column == "symbol") {
                 std::vector<uint32_t> all(num_rows);
                 for (size_t i = 0; i < num_rows; ++i) all[i] = static_cast<uint32_t>(i);
@@ -1595,10 +1687,23 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
             if (!cv) return {};
             std::vector<uint32_t> result;
             result.reserve(num_rows / 4);
-            if (expr->is_float) {
-                scan_compare<double>(cv->raw_data(), num_rows, expr->op, expr->value_f, result);
+            if (expr->is_float ||
+                cv->type() == ColumnType::FLOAT64 ||
+                cv->type() == ColumnType::FLOAT32) {
+                const double cmp = expr->is_float
+                    ? expr->value_f
+                    : static_cast<double>(expr->value);
+                for (size_t i = 0; i < num_rows; ++i) {
+                    if (compare_val(read_column_as_f64(*cv, i), expr->op, cmp)) {
+                        result.push_back(static_cast<uint32_t>(i));
+                    }
+                }
             } else {
-                scan_compare<int64_t>(cv->raw_data(), num_rows, expr->op, expr->value, result);
+                for (size_t i = 0; i < num_rows; ++i) {
+                    if (compare_val(read_column_as_i64(*cv, i), expr->op, expr->value)) {
+                        result.push_back(static_cast<uint32_t>(i));
+                    }
+                }
             }
             return result;
         }
@@ -1616,9 +1721,9 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
         }
         case Expr::Kind::IN: {
             const auto& vals = expr->in_values;
-            const int64_t* data = get_col_data(part, expr->column);
+            const ColumnVector* cv = part.get_column(expr->column);
             // symbol column: not stored as data, use partition key
-            if (!data && expr->column == "symbol") {
+            if (!cv && expr->column == "symbol") {
                 int64_t sym = static_cast<int64_t>(part.key().symbol_id);
                 bool match = false;
                 for (int64_t v : vals) { if (sym == v) { match = true; break; } }
@@ -1628,13 +1733,13 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
                 for (size_t i = 0; i < num_rows; ++i) result[i] = static_cast<uint32_t>(i);
                 return result;
             }
-            if (!data) return {};
+            if (!cv) return {};
             std::vector<uint32_t> result;
             result.reserve(num_rows / 4);
             for (size_t i = 0; i < num_rows; ++i) {
                 bool found = false;
                 for (int64_t v : vals) {
-                    if (data[i] == v) { found = true; break; }
+                    if (read_column_as_i64(*cv, i) == v) { found = true; break; }
                 }
                 if (found != expr->negated) {
                     result.push_back(static_cast<uint32_t>(i));
@@ -1644,9 +1749,9 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
         }
         case Expr::Kind::IS_NULL: {
             // NULL is represented by INT64_MIN sentinel in ZeptoDB
-            const int64_t* data = get_col_data(part, expr->column);
+            const ColumnVector* cv = part.get_column(expr->column);
             std::vector<uint32_t> result;
-            if (!data) {
+            if (!cv) {
                 // Column absent → treat all rows as NULL
                 if (!expr->negated) {
                     result.resize(num_rows);
@@ -1657,7 +1762,7 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
             }
             result.reserve(num_rows / 8);
             for (size_t i = 0; i < num_rows; ++i) {
-                bool is_null = (data[i] == INT64_MIN);
+                bool is_null = (read_column_as_i64(*cv, i) == INT64_MIN);
                 if (expr->negated ? !is_null : is_null)
                     result.push_back(static_cast<uint32_t>(i));
             }
@@ -1691,8 +1796,8 @@ std::vector<uint32_t> QueryExecutor::eval_expr(
                 if (expr->column == "symbol") {
                     v = static_cast<int64_t>(part.key().symbol_id);
                 } else {
-                    const int64_t* data = get_col_data(part, expr->column);
-                    v = data ? data[i] : 0;
+                    const ColumnVector* cv = part.get_column(expr->column);
+                    v = cv ? read_column_as_i64(*cv, i) : 0;
                 }
                 std::string s = std::to_string(v);
                 bool matched = like_match(s);
@@ -2036,30 +2141,51 @@ bool QueryExecutor::eval_expr_single_row(
         case Expr::Kind::NOT:
             return !eval_expr_single_row(expr->left, part, row_idx);
         case Expr::Kind::BETWEEN: {
-            if (expr->column == "symbol") return true;
-            const int64_t* data = get_col_data(part, expr->column);
-            if (!data) return false;
-            return data[row_idx] >= expr->lo && data[row_idx] <= expr->hi;
-        }
-        case Expr::Kind::COMPARE: {
+            if (expr->lhs_expr) {
+                const double value = eval_arith_as_f64(*expr->lhs_expr, part, row_idx);
+                return value >= static_cast<double>(expr->lo) &&
+                       value <= static_cast<double>(expr->hi);
+            }
             if (expr->column == "symbol") return true;
             const ColumnVector* cv = part.get_column(expr->column);
             if (!cv) return false;
-            if (expr->is_float) {
-                const double* d = static_cast<const double*>(cv->raw_data());
-                return compare_val(d[row_idx], expr->op, expr->value_f);
+            if (cv->type() == ColumnType::FLOAT32 || cv->type() == ColumnType::FLOAT64) {
+                const double value = read_column_as_f64(*cv, row_idx);
+                return value >= static_cast<double>(expr->lo) &&
+                       value <= static_cast<double>(expr->hi);
             }
-            const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
-            return compare_val(d[row_idx], expr->op, expr->value);
+            const int64_t value = read_column_as_i64(*cv, row_idx);
+            return value >= expr->lo && value <= expr->hi;
+        }
+        case Expr::Kind::COMPARE: {
+            if (expr->lhs_expr) {
+                const double cmp = expr->is_float
+                    ? expr->value_f
+                    : static_cast<double>(expr->value);
+                return compare_val(eval_arith_as_f64(*expr->lhs_expr, part, row_idx),
+                                   expr->op, cmp);
+            }
+            if (expr->column == "symbol") return true;
+            const ColumnVector* cv = part.get_column(expr->column);
+            if (!cv) return false;
+            if (expr->is_float ||
+                cv->type() == ColumnType::FLOAT64 ||
+                cv->type() == ColumnType::FLOAT32) {
+                const double cmp = expr->is_float
+                    ? expr->value_f
+                    : static_cast<double>(expr->value);
+                return compare_val(read_column_as_f64(*cv, row_idx), expr->op, cmp);
+            }
+            return compare_val(read_column_as_i64(*cv, row_idx), expr->op, expr->value);
         }
         case Expr::Kind::IN: {
             int64_t v;
             if (expr->column == "symbol") {
                 v = static_cast<int64_t>(part.key().symbol_id);
             } else {
-                const int64_t* data = get_col_data(part, expr->column);
-                if (!data) return false;
-                v = data[row_idx];
+                const ColumnVector* cv = part.get_column(expr->column);
+                if (!cv) return false;
+                v = read_column_as_i64(*cv, row_idx);
             }
             bool found = false;
             for (int64_t iv : expr->in_values) {
@@ -2068,8 +2194,8 @@ bool QueryExecutor::eval_expr_single_row(
             return found != expr->negated;
         }
         case Expr::Kind::IS_NULL: {
-            const int64_t* data = get_col_data(part, expr->column);
-            bool is_null = !data || (data[row_idx] == INT64_MIN);
+            const ColumnVector* cv = part.get_column(expr->column);
+            bool is_null = !cv || (read_column_as_i64(*cv, row_idx) == INT64_MIN);
             return expr->negated ? !is_null : is_null;
         }
         case Expr::Kind::LIKE: {
@@ -2077,8 +2203,8 @@ bool QueryExecutor::eval_expr_single_row(
             if (expr->column == "symbol") {
                 v = static_cast<int64_t>(part.key().symbol_id);
             } else {
-                const int64_t* data = get_col_data(part, expr->column);
-                v = data ? data[row_idx] : 0;
+                const ColumnVector* cv = part.get_column(expr->column);
+                v = cv ? read_column_as_i64(*cv, row_idx) : 0;
             }
             std::string s = std::to_string(v);
             const auto& pat = expr->like_pattern;
@@ -2223,6 +2349,103 @@ static int64_t date_trunc_bucket(const std::string& unit) {
     return 1LL; // unknown unit: no truncation
 }
 
+static int64_t eval_arith(const ArithExpr& node,
+                          const Partition& part, uint32_t idx);
+
+static double eval_arith_as_f64(const ArithExpr& node,
+                                const Partition& part, uint32_t idx);
+
+static double deg_to_rad(double degrees) {
+    return degrees * 3.141592653589793238462643383279502884 / 180.0;
+}
+
+static bool is_spatial_distance_fn(const std::string& name) {
+    return name == "haversine" || name == "st_distance";
+}
+
+static double eval_spatial_distance_m(const ArithExpr& node,
+                                      const Partition& part,
+                                      uint32_t idx)
+{
+    if (node.func_args.size() != 4) return 0.0;
+    const double lat1 = eval_arith_as_f64(*node.func_args[0], part, idx);
+    const double lon1 = eval_arith_as_f64(*node.func_args[1], part, idx);
+    const double lat2 = eval_arith_as_f64(*node.func_args[2], part, idx);
+    const double lon2 = eval_arith_as_f64(*node.func_args[3], part, idx);
+    if (!std::isfinite(lat1) || !std::isfinite(lon1) ||
+        !std::isfinite(lat2) || !std::isfinite(lon2)) {
+        return 0.0;
+    }
+
+    constexpr double earth_radius_m = 6'371'008.8;
+    const double dlat = deg_to_rad(lat2 - lat1);
+    const double dlon = deg_to_rad(lon2 - lon1);
+    const double rlat1 = deg_to_rad(lat1);
+    const double rlat2 = deg_to_rad(lat2);
+    const double sin_dlat = std::sin(dlat / 2.0);
+    const double sin_dlon = std::sin(dlon / 2.0);
+    const double a = sin_dlat * sin_dlat +
+                     std::cos(rlat1) * std::cos(rlat2) * sin_dlon * sin_dlon;
+    const double clamped = std::clamp(a, 0.0, 1.0);
+    return earth_radius_m * 2.0 * std::atan2(std::sqrt(clamped),
+                                             std::sqrt(1.0 - clamped));
+}
+
+static bool eval_spatial_within(const ArithExpr& node,
+                                const Partition& part,
+                                uint32_t idx)
+{
+    if (node.func_args.size() != 5) return false;
+    ArithExpr distance_node;
+    distance_node.kind = ArithExpr::Kind::FUNC;
+    distance_node.func_name = "st_distance";
+    distance_node.func_args.assign(node.func_args.begin(), node.func_args.begin() + 4);
+    const double radius_m = eval_arith_as_f64(*node.func_args[4], part, idx);
+    if (!std::isfinite(radius_m) || radius_m < 0.0) return false;
+    return eval_spatial_distance_m(distance_node, part, idx) <= radius_m;
+}
+
+static int64_t spatial_distance_to_i64(double meters) {
+    if (!std::isfinite(meters)) return 0;
+    const double max_i64 = static_cast<double>(std::numeric_limits<int64_t>::max());
+    if (meters >= max_i64) return std::numeric_limits<int64_t>::max();
+    return static_cast<int64_t>(std::llround(meters));
+}
+
+static double eval_arith_as_f64(const ArithExpr& node,
+                                const Partition& part, uint32_t idx)
+{
+    switch (node.kind) {
+        case ArithExpr::Kind::LITERAL:
+            return node.is_float_literal ? node.literal_f : static_cast<double>(node.literal);
+        case ArithExpr::Kind::COLUMN: {
+            if (node.column == "symbol")
+                return static_cast<double>(part.key().symbol_id);
+            const ColumnVector* cv = part.get_column(node.column);
+            return cv ? read_column_as_f64(*cv, idx) : 0.0;
+        }
+        case ArithExpr::Kind::BINARY: {
+            const double lv = eval_arith_as_f64(*node.left, part, idx);
+            const double rv = eval_arith_as_f64(*node.right, part, idx);
+            switch (node.arith_op) {
+                case ArithOp::ADD: return lv + rv;
+                case ArithOp::SUB: return lv - rv;
+                case ArithOp::MUL: return lv * rv;
+                case ArithOp::DIV: return rv != 0.0 ? lv / rv : 0.0;
+            }
+        }
+        case ArithExpr::Kind::FUNC:
+            if (is_spatial_distance_fn(node.func_name)) {
+                return eval_spatial_distance_m(node, part, idx);
+            }
+            if (node.func_name == "st_within") {
+                return eval_spatial_within(node, part, idx) ? 1.0 : 0.0;
+            }
+            return static_cast<double>(eval_arith(node, part, idx));
+    }
+    return 0.0;
+}
+
 // eval_arith: evaluate an ArithExpr for a single row
 static int64_t eval_arith(const ArithExpr& node,
                           const Partition& part, uint32_t idx)
@@ -2247,6 +2470,12 @@ static int64_t eval_arith(const ArithExpr& node,
             }
         }
         case ArithExpr::Kind::FUNC: {
+            if (is_spatial_distance_fn(node.func_name)) {
+                return spatial_distance_to_i64(eval_spatial_distance_m(node, part, idx));
+            }
+            if (node.func_name == "st_within") {
+                return eval_spatial_within(node, part, idx) ? 1 : 0;
+            }
             if (node.func_name == "now") {
                 return std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count();
@@ -3049,14 +3278,12 @@ QueryResultSet QueryExecutor::exec_simple_select(
             if (is_star) {
                 for (const auto& cv : part->columns()) {
                     if (cv->type() == ColumnType::FLOAT64 || cv->type() == ColumnType::FLOAT32) {
-                        const double* d = static_cast<const double*>(cv->raw_data());
-                        double fv = d ? d[idx] : 0.0;
+                        double fv = read_column_as_f64(*cv, idx);
                         row.push_back(store_double(fv));
                         trow.emplace_back(fv);
                         need_typed = true;
                     } else {
-                        const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
-                        int64_t iv = d ? d[idx] : 0;
+                        int64_t iv = read_column_as_i64(*cv, idx);
                         row.push_back(iv);
                         trow.emplace_back(iv);
                     }
@@ -3078,14 +3305,12 @@ QueryResultSet QueryExecutor::exec_simple_select(
                         const auto* cv = part->get_column(sel.column);
                         if (cv && (cv->type() == ColumnType::FLOAT64 ||
                                    cv->type() == ColumnType::FLOAT32)) {
-                            const double* d = static_cast<const double*>(cv->raw_data());
-                            double fv = d ? d[idx] : 0.0;
+                            double fv = read_column_as_f64(*cv, idx);
                             val = store_double(fv);
                             trow.emplace_back(fv);
                             need_typed = true;
                         } else {
-                            const int64_t* d = get_col_data(*part, sel.column);
-                            val = d ? d[idx] : 0;
+                            val = cv ? read_column_as_i64(*cv, idx) : 0;
                             trow.emplace_back(val);
                         }
                     }

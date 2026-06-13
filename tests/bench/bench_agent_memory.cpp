@@ -15,10 +15,12 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -37,6 +39,11 @@ using zeptodb::ai::MemoryRecord;
 
 using clock_t_ = std::chrono::steady_clock;
 
+struct RealEmbeddingFixture {
+    std::vector<std::vector<float>> vectors;
+    size_t dimension = 0;
+};
+
 struct Args {
     size_t records = 10'000;
     size_t dim = 128;
@@ -45,9 +52,15 @@ struct Args {
     bool skip_snapshot = false;
     bool compare_ann = false;
     bool read_only_search = false;
-    bool semantic_fixture = false;
+    bool records_explicit = false;
+    bool dim_explicit = false;
+    std::string fixture = "mixed";
+    std::string embedding_file;
+    std::shared_ptr<RealEmbeddingFixture> real_fixture;
     double ann_threshold_ms = 10.0;
     size_t recall_queries = 1;
+    size_t cluster_count = 64;
+    double cluster_noise = 0.05;
     std::vector<size_t> sweep_records = {10'000, 100'000, 1'000'000};
     std::string ann_mode = "off";
     std::string ann_label;
@@ -61,6 +74,8 @@ struct Args {
     size_t ann_hnsw_m = 16;
     size_t ann_hnsw_ef_construction = 200;
     size_t ann_hnsw_ef_search = 64;
+    size_t ann_ivf_centroids = 256;
+    size_t ann_ivf_probe = 8;
 };
 
 struct BenchSummary {
@@ -77,8 +92,12 @@ struct BenchSummary {
     double recall_min_at_k = 1.0;
     size_t recall_queries = 1;
     size_t ann_indexed_vectors = 0;
+    size_t ann_memory_bytes = 0;
+    size_t ann_tombstone_entries = 0;
+    size_t snapshot_total_bytes = 0;
     uint64_t ann_search_count = 0;
     uint64_t ann_fallback_count = 0;
+    std::string fixture = "mixed";
     std::string ann_mode = "off";
     size_t ann_max_candidates = 0;
     size_t ann_oversample = 0;
@@ -88,6 +107,8 @@ struct BenchSummary {
     size_t ann_hnsw_m = 0;
     size_t ann_hnsw_ef_construction = 0;
     size_t ann_hnsw_ef_search = 0;
+    size_t ann_ivf_centroids = 0;
+    size_t ann_ivf_probe = 0;
 };
 
 static double elapsed_us(const clock_t_::time_point& start) {
@@ -133,6 +154,171 @@ static std::vector<float> make_embedding(size_t dim, size_t seed) {
     return out;
 }
 
+static std::string trim_copy(const std::string& value) {
+    size_t begin = 0;
+    while (begin < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
+        ++begin;
+    }
+    size_t end = value.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+static bool parse_embedding_line(const std::string& line,
+                                 std::vector<float>* out,
+                                 std::string* error) {
+    if (!out) return false;
+    out->clear();
+    const size_t comment = line.find('#');
+    std::string normalized = comment == std::string::npos
+        ? line
+        : line.substr(0, comment);
+    normalized = trim_copy(normalized);
+    if (normalized.empty()) return true;
+    for (char& ch : normalized) {
+        if (ch == ',' || ch == ';' || ch == '[' || ch == ']') {
+            ch = ' ';
+        }
+    }
+
+    std::stringstream stream(normalized);
+    std::string token;
+    while (stream >> token) {
+        char* end = nullptr;
+        const float value = std::strtof(token.c_str(), &end);
+        if (end == token.c_str() || (end != nullptr && *end != '\0') ||
+            !std::isfinite(value)) {
+            if (error) *error = "embedding token is not a finite float: " + token;
+            return false;
+        }
+        out->push_back(value);
+    }
+    return true;
+}
+
+static std::shared_ptr<RealEmbeddingFixture> load_real_embedding_fixture(
+    const std::string& path) {
+    std::ifstream input(path);
+    if (!input.is_open()) {
+        std::cerr << "failed to open --embedding-file: " << path << "\n";
+        std::exit(1);
+    }
+
+    auto fixture = std::make_shared<RealEmbeddingFixture>();
+    std::string line;
+    size_t line_no = 0;
+    while (std::getline(input, line)) {
+        ++line_no;
+        std::vector<float> vector;
+        std::string error;
+        if (!parse_embedding_line(line, &vector, &error)) {
+            std::cerr << path << ":" << line_no << ": " << error << "\n";
+            std::exit(1);
+        }
+        if (vector.empty()) continue;
+        if (fixture->dimension == 0) {
+            fixture->dimension = vector.size();
+        } else if (vector.size() != fixture->dimension) {
+            std::cerr << path << ":" << line_no
+                      << ": embedding dimension mismatch: expected "
+                      << fixture->dimension << ", got " << vector.size() << "\n";
+            std::exit(1);
+        }
+        fixture->vectors.push_back(std::move(vector));
+    }
+    if (fixture->vectors.empty()) {
+        std::cerr << "--embedding-file contains no vectors: " << path << "\n";
+        std::exit(1);
+    }
+    return fixture;
+}
+
+static size_t real_fixture_size(const Args& args) {
+    return args.real_fixture ? args.real_fixture->vectors.size() : 0;
+}
+
+static size_t real_fixture_index_for_tenant_a(const Args& args,
+                                              size_t index) {
+    const size_t count = real_fixture_size(args);
+    if (count == 0) return 0;
+    if (count == 1) return 0;
+    return (index * 2) % count;
+}
+
+static bool semantic_only_ranking(const Args& args) {
+    return args.fixture == "semantic" || args.fixture == "clustered" ||
+        args.fixture == "real";
+}
+
+static size_t fixture_cluster_count(const Args& args) {
+    return std::max<size_t>(1, args.cluster_count);
+}
+
+static std::vector<float> make_clustered_embedding(size_t dim,
+                                                   size_t cluster,
+                                                   size_t member_seed,
+                                                   double noise) {
+    auto center = make_embedding(dim, 1'000'003 + cluster * 97'531);
+    const auto jitter = make_embedding(dim, 7'000'019 + member_seed * 13);
+    for (size_t i = 0; i < dim; ++i) {
+        center[i] = static_cast<float>(
+            static_cast<double>(center[i]) + noise * static_cast<double>(jitter[i]));
+    }
+    return center;
+}
+
+static size_t record_cluster(const Args& args, size_t record_index) {
+    return (record_index / 2) % fixture_cluster_count(args);
+}
+
+static std::vector<float> make_memory_embedding(const Args& args,
+                                                size_t record_index) {
+    if (args.fixture == "real" && args.real_fixture) {
+        return args.real_fixture->vectors[record_index % real_fixture_size(args)];
+    }
+    if (args.fixture == "clustered") {
+        return make_clustered_embedding(args.dim,
+                                        record_cluster(args, record_index),
+                                        record_index,
+                                        args.cluster_noise);
+    }
+    return make_embedding(args.dim, record_index);
+}
+
+static std::vector<float> make_query_embedding(const Args& args,
+                                               size_t query_index) {
+    if (args.fixture == "real" && args.real_fixture) {
+        return args.real_fixture->vectors[
+            real_fixture_index_for_tenant_a(args, query_index)];
+    }
+    if (args.fixture == "clustered") {
+        return make_clustered_embedding(args.dim,
+                                        query_index % fixture_cluster_count(args),
+                                        10'000'019 + query_index,
+                                        args.cluster_noise * 0.25);
+    }
+    return make_embedding(args.dim, 42 + query_index * 7919);
+}
+
+static std::vector<float> make_cache_embedding(const Args& args,
+                                               size_t cache_index) {
+    if (args.fixture == "real" && args.real_fixture) {
+        return args.real_fixture->vectors[
+            real_fixture_index_for_tenant_a(args, cache_index)];
+    }
+    if (args.fixture == "clustered") {
+        return make_clustered_embedding(args.dim,
+                                        cache_index % fixture_cluster_count(args),
+                                        20'000'003 + cache_index,
+                                        args.cluster_noise);
+    }
+    return make_embedding(args.dim, cache_index * 17 + 5);
+}
+
 static std::vector<size_t> parse_record_list(const std::string& csv) {
     std::vector<size_t> records;
     std::stringstream stream(csv);
@@ -168,8 +354,10 @@ static Args parse_args(int argc, char* argv[]) {
         const std::string arg = argv[i];
         if (arg == "--records" && i + 1 < argc) {
             args.records = static_cast<size_t>(std::atoll(argv[++i]));
+            args.records_explicit = true;
         } else if (arg == "--dim" && i + 1 < argc) {
             args.dim = static_cast<size_t>(std::atoll(argv[++i]));
+            args.dim_explicit = true;
         } else if (arg == "--iters" && i + 1 < argc) {
             args.iters = static_cast<size_t>(std::atoll(argv[++i]));
         } else if (arg == "--sweep") {
@@ -177,7 +365,15 @@ static Args parse_args(int argc, char* argv[]) {
         } else if (arg == "--compare-ann") {
             args.compare_ann = true;
         } else if (arg == "--semantic-fixture") {
-            args.semantic_fixture = true;
+            args.fixture = "semantic";
+        } else if (arg == "--fixture" && i + 1 < argc) {
+            args.fixture = argv[++i];
+        } else if (arg == "--embedding-file" && i + 1 < argc) {
+            args.embedding_file = argv[++i];
+        } else if (arg == "--clusters" && i + 1 < argc) {
+            args.cluster_count = static_cast<size_t>(std::atoll(argv[++i]));
+        } else if (arg == "--cluster-noise" && i + 1 < argc) {
+            args.cluster_noise = std::atof(argv[++i]);
         } else if (arg == "--sweep-records" && i + 1 < argc) {
             args.sweep_records = parse_record_list(argv[++i]);
         } else if (arg == "--skip-snapshot") {
@@ -210,15 +406,22 @@ static Args parse_args(int argc, char* argv[]) {
         } else if (arg == "--ann-hnsw-ef-search" && i + 1 < argc) {
             args.ann_hnsw_ef_search =
                 static_cast<size_t>(std::atoll(argv[++i]));
+        } else if (arg == "--ann-ivf-centroids" && i + 1 < argc) {
+            args.ann_ivf_centroids = static_cast<size_t>(std::atoll(argv[++i]));
+        } else if (arg == "--ann-ivf-probe" && i + 1 < argc) {
+            args.ann_ivf_probe = static_cast<size_t>(std::atoll(argv[++i]));
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0]
                       << " [--records 10000] [--dim 128] [--iters 100]\n"
                       << "       [--sweep] [--compare-ann]\n"
                       << "       [--semantic-fixture]\n"
+                      << "       [--fixture mixed|semantic|clustered|real]\n"
+                      << "       [--embedding-file PATH]\n"
+                      << "       [--clusters 64] [--cluster-noise 0.05]\n"
                       << "       [--sweep-records 10000,100000,1000000]\n"
                       << "       [--skip-snapshot]\n"
                       << "       [--recall-queries 1]\n"
-                      << "       [--ann off|auto|sparse_projection|hnsw]\n"
+                      << "       [--ann off|auto|sparse_projection|hnsw|ivf]\n"
                       << "       [--ann-min-records 50000]\n"
                       << "       [--ann-max-candidates 50000]\n"
                       << "       [--ann-oversample 8]\n"
@@ -227,6 +430,8 @@ static Args parse_args(int argc, char* argv[]) {
                       << "       [--ann-hnsw-m 16]\n"
                       << "       [--ann-hnsw-ef-construction 200]\n"
                       << "       [--ann-hnsw-ef-search 64]\n"
+                      << "       [--ann-ivf-centroids 256]\n"
+                      << "       [--ann-ivf-probe 8]\n"
                       << "       [--ann-threshold-ms 10.0]\n";
             std::exit(0);
         }
@@ -236,6 +441,8 @@ static Args parse_args(int argc, char* argv[]) {
     args.iters = std::max<size_t>(1, args.iters);
     args.ann_threshold_ms = std::max(0.1, args.ann_threshold_ms);
     args.recall_queries = std::max<size_t>(1, args.recall_queries);
+    args.cluster_count = std::max<size_t>(1, args.cluster_count);
+    args.cluster_noise = std::max(0.0, args.cluster_noise);
     args.ann_min_records = std::max<size_t>(1, args.ann_min_records);
     args.ann_max_candidates = std::max<size_t>(1, args.ann_max_candidates);
     args.ann_oversample = std::max<size_t>(1, args.ann_oversample);
@@ -246,6 +453,40 @@ static Args parse_args(int argc, char* argv[]) {
     args.ann_hnsw_ef_construction =
         std::max<size_t>(args.ann_hnsw_m, args.ann_hnsw_ef_construction);
     args.ann_hnsw_ef_search = std::max<size_t>(1, args.ann_hnsw_ef_search);
+    args.ann_ivf_centroids = std::max<size_t>(1, args.ann_ivf_centroids);
+    args.ann_ivf_probe = std::max<size_t>(1, args.ann_ivf_probe);
+    if (args.fixture != "mixed" && args.fixture != "semantic" &&
+        args.fixture != "clustered" && args.fixture != "real") {
+        std::cerr << "invalid --fixture: " << args.fixture << "\n";
+        std::exit(1);
+    }
+    return args;
+}
+
+static Args prepare_args(Args args) {
+    if (args.fixture != "real") return args;
+    if (args.embedding_file.empty()) {
+        std::cerr << "--fixture real requires --embedding-file\n";
+        std::exit(1);
+    }
+    args.real_fixture = load_real_embedding_fixture(args.embedding_file);
+    if (args.dim_explicit && args.dim != args.real_fixture->dimension) {
+        std::cerr << "--dim " << args.dim
+                  << " does not match --embedding-file dimension "
+                  << args.real_fixture->dimension << "\n";
+        std::exit(1);
+    }
+    args.dim = args.real_fixture->dimension;
+    if (!args.records_explicit) {
+        args.records = args.real_fixture->vectors.size();
+    } else if (args.records > args.real_fixture->vectors.size()) {
+        std::cerr << "--records " << args.records
+                  << " exceeds --embedding-file vector count "
+                  << args.real_fixture->vectors.size() << "\n";
+        std::exit(1);
+    }
+    args.cluster_count = 0;
+    args.cluster_noise = 0.0;
     return args;
 }
 
@@ -263,6 +504,7 @@ static AgentMemoryAnnMode parse_ann_mode(const std::string& value) {
         }
         return AgentMemoryAnnMode::Hnsw;
     }
+    if (value == "ivf") return AgentMemoryAnnMode::Ivf;
     std::cerr << "invalid --ann mode: " << value << "\n";
     std::exit(1);
 }
@@ -284,6 +526,8 @@ static AgentMemoryAnnConfig make_ann_config(const Args& args) {
     ann_config.index.hnsw_m = args.ann_hnsw_m;
     ann_config.index.hnsw_ef_construction = args.ann_hnsw_ef_construction;
     ann_config.index.hnsw_ef_search = args.ann_hnsw_ef_search;
+    ann_config.index.ivf_centroids = args.ann_ivf_centroids;
+    ann_config.index.ivf_probe = args.ann_ivf_probe;
     return ann_config;
 }
 
@@ -292,6 +536,11 @@ static void configure_ann(AgentMemoryStore* store, const Args& args) {
 }
 
 static void seed_store(AgentMemoryStore* store, const Args& args) {
+    if (args.fixture == "real" &&
+        (!args.real_fixture || args.records > args.real_fixture->vectors.size())) {
+        std::cerr << "--fixture real requires at least --records vectors\n";
+        std::exit(1);
+    }
     store->reserve_memory_capacity(args.records, std::min<size_t>(args.records, 512));
     const int64_t now = AgentMemoryStore::now_ns();
     for (size_t i = 0; i < args.records; ++i) {
@@ -305,9 +554,9 @@ static void seed_store(AgentMemoryStore* store, const Args& args) {
         r.type = "memory";
         r.content = "memory item " + std::to_string(i) + " with reusable context";
         r.metadata_json = R"({"source":"bench","trusted":true})";
-        r.embedding = make_embedding(args.dim, i);
+        r.embedding = make_memory_embedding(args, i);
         r.token_count = 8 + static_cast<int64_t>(i % 16);
-        if (args.semantic_fixture) {
+        if (semantic_only_ranking(args)) {
             r.importance = 0.0;
             r.created_at_ns = now;
             r.pinned = false;
@@ -330,7 +579,7 @@ static void seed_store(AgentMemoryStore* store, const Args& args) {
         c.namespace_id = "agent";
         c.prompt = "question " + std::to_string(i);
         c.response = "cached answer " + std::to_string(i);
-        c.embedding = make_embedding(args.dim, i * 17 + 5);
+        c.embedding = make_cache_embedding(args, i);
         c.token_count = 16;
         const auto stored = store->store_cache(std::move(c));
         if (!stored.ok) {
@@ -383,7 +632,7 @@ static RecallSummary measure_recall(AgentMemoryStore* store,
     double min_recall = 1.0;
     for (size_t i = 0; i < args.recall_queries; ++i) {
         auto exact_query = base_query;
-        exact_query.query_embedding = make_embedding(args.dim, 42 + i * 7919);
+        exact_query.query_embedding = make_query_embedding(args, i);
         exact_query.force_scan = true;
         exact_query.update_access = false;
 
@@ -415,7 +664,7 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     const AgentMemoryAnnConfig ann_config = make_ann_config(args);
     configure_ann(store, args);
 
-    const std::vector<float> query = make_embedding(args.dim, 42);
+    const std::vector<float> query = make_query_embedding(args, 0);
     MemoryQuery search_query;
     search_query.tenant_id = "tenant_a";
     search_query.namespace_id = "agent";
@@ -434,13 +683,15 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     CacheLookup exact;
     exact.tenant_id = "tenant_a";
     exact.namespace_id = "agent";
-    exact.prompt = " question 42 ";
+    const size_t cache_count = std::min<size_t>(args.records, 512);
+    exact.prompt = " question "
+        + std::to_string(std::min<size_t>(42, cache_count - 1)) + " ";
 
     CacheLookup semantic;
     semantic.tenant_id = "tenant_a";
     semantic.namespace_id = "agent";
     semantic.prompt = "semantic fallback";
-    semantic.embedding = make_embedding(args.dim, 5);
+    semantic.embedding = make_cache_embedding(args, 5);
     semantic.semantic_threshold = 0.0;
 
     std::cout << "Agent Memory benchmark"
@@ -453,14 +704,25 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
               << " ann_tables=" << args.ann_tables
               << " ann_bits=" << args.ann_bits
               << " ann_probe_radius=" << args.ann_probe_radius
+              << " fixture=" << args.fixture
               << " hnsw_m=" << args.ann_hnsw_m
               << " hnsw_efc=" << args.ann_hnsw_ef_construction
               << " hnsw_efs=" << args.ann_hnsw_ef_search
+              << " ivf_centroids=" << args.ann_ivf_centroids
+              << " ivf_probe=" << args.ann_ivf_probe
               << " recall_queries=" << args.recall_queries
-              << (args.semantic_fixture ? " semantic_fixture=true" : "")
               << (args.read_only_search ? " read_only_search=true" : "")
               << (args.skip_snapshot ? " skip_snapshot=true" : "")
-              << "\n\n";
+              << "\n";
+    if (args.fixture == "clustered") {
+        std::cout << "  clusters=" << args.cluster_count
+                  << " cluster_noise=" << args.cluster_noise << "\n";
+    } else if (args.fixture == "real") {
+        std::cout << "  embedding_file=" << args.embedding_file
+                  << " vectors=" << real_fixture_size(args)
+                  << " dim=" << args.dim << "\n";
+    }
+    std::cout << "\n";
 
     BenchSummary summary;
     summary.records = args.records;
@@ -473,9 +735,13 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     summary.ann_hnsw_m = args.ann_hnsw_m;
     summary.ann_hnsw_ef_construction = args.ann_hnsw_ef_construction;
     summary.ann_hnsw_ef_search = args.ann_hnsw_ef_search;
+    summary.ann_ivf_centroids = args.ann_ivf_centroids;
+    summary.ann_ivf_probe = args.ann_ivf_probe;
+    summary.fixture = args.fixture;
     summary.recall_queries = args.recall_queries;
     if (ann_config.mode == AgentMemoryAnnMode::SparseProjection ||
         ann_config.mode == AgentMemoryAnnMode::Hnsw ||
+        ann_config.mode == AgentMemoryAnnMode::Ivf ||
         (ann_config.mode == AgentMemoryAnnMode::Auto &&
          args.records >= args.ann_min_records)) {
         const auto build_start = clock_t_::now();
@@ -487,13 +753,17 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
         }
         const auto stats = store->stats();
         summary.ann_indexed_vectors = stats.ann_indexed_vectors;
+        summary.ann_memory_bytes = stats.ann_memory_bytes;
+        summary.ann_tombstone_entries = stats.ann_tombstone_entries;
         std::cout << std::left << std::setw(32) << "ann rebuild"
                   << " " << std::fixed << std::setprecision(2)
                   << summary.ann_build_ms << " ms"
                   << " indexed=" << summary.ann_indexed_vectors
                   << " partitions=" << stats.ann_partitions
                   << " buckets=" << stats.ann_buckets
-                  << " max_bucket=" << stats.ann_max_bucket_size << "\n";
+                  << " max_bucket=" << stats.ann_max_bucket_size
+                  << " ann_memory_bytes=" << stats.ann_memory_bytes
+                  << " ann_tombstones=" << stats.ann_tombstone_entries << "\n";
     }
     const auto stats_before_search = store->stats();
 
@@ -568,8 +838,10 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     }
 
     const uint64_t bytes = directory_bytes(dir);
+    const auto saved_stats = store->stats();
     summary.save_ms = save_ms;
     summary.load_ms = load_ms;
+    summary.snapshot_total_bytes = saved_stats.snapshot_total_bytes;
     summary.bytes_per_item = static_cast<double>(bytes) / static_cast<double>(args.records);
     std::cout << "\n";
     std::cout << std::left << std::setw(32) << "snapshot save"
@@ -580,6 +852,10 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
               << " " << std::fixed << std::setprecision(1)
               << static_cast<double>(bytes) / static_cast<double>(args.records)
               << " bytes\n";
+    std::cout << std::left << std::setw(32) << "snapshot sidecar bytes"
+              << " records=" << saved_stats.snapshot_records_bytes
+              << " vectors=" << saved_stats.snapshot_vectors_bytes
+              << " total=" << saved_stats.snapshot_total_bytes << "\n";
 
     std::error_code ec;
     fs::remove_all(dir, ec);
@@ -608,6 +884,8 @@ static std::vector<Args> compare_profiles(Args args) {
     exact.ann_hnsw_m = 0;
     exact.ann_hnsw_ef_construction = 0;
     exact.ann_hnsw_ef_search = 0;
+    exact.ann_ivf_centroids = 0;
+    exact.ann_ivf_probe = 0;
 
     Args sparse_fast = args;
     sparse_fast.ann_label = "sparse_fast";
@@ -622,6 +900,8 @@ static std::vector<Args> compare_profiles(Args args) {
     sparse_fast.ann_hnsw_m = 0;
     sparse_fast.ann_hnsw_ef_construction = 0;
     sparse_fast.ann_hnsw_ef_search = 0;
+    sparse_fast.ann_ivf_centroids = 0;
+    sparse_fast.ann_ivf_probe = 0;
 
     Args sparse_wide = args;
     sparse_wide.ann_label = "sparse_wide";
@@ -636,8 +916,34 @@ static std::vector<Args> compare_profiles(Args args) {
     sparse_wide.ann_hnsw_m = 0;
     sparse_wide.ann_hnsw_ef_construction = 0;
     sparse_wide.ann_hnsw_ef_search = 0;
+    sparse_wide.ann_ivf_centroids = 0;
+    sparse_wide.ann_ivf_probe = 0;
 
     std::vector<Args> profiles{exact, sparse_fast, sparse_wide};
+
+    Args ivf_fast = args;
+    ivf_fast.ann_label = "ivf_fast";
+    ivf_fast.ann_mode = "ivf";
+    ivf_fast.ann_max_candidates = 4'000;
+    ivf_fast.ann_oversample = 16;
+    ivf_fast.ann_ivf_centroids = 128;
+    ivf_fast.ann_ivf_probe = 4;
+    ivf_fast.ann_hnsw_m = 0;
+    ivf_fast.ann_hnsw_ef_construction = 0;
+    ivf_fast.ann_hnsw_ef_search = 0;
+    profiles.push_back(ivf_fast);
+
+    Args ivf_recall = args;
+    ivf_recall.ann_label = "ivf_recall";
+    ivf_recall.ann_mode = "ivf";
+    ivf_recall.ann_max_candidates = 50'000;
+    ivf_recall.ann_oversample = 32;
+    ivf_recall.ann_ivf_centroids = 256;
+    ivf_recall.ann_ivf_probe = 16;
+    ivf_recall.ann_hnsw_m = 0;
+    ivf_recall.ann_hnsw_ef_construction = 0;
+    ivf_recall.ann_hnsw_ef_search = 0;
+    profiles.push_back(ivf_recall);
 #ifdef ZEPTO_ENABLE_HNSWLIB
     Args hnsw_fast = args;
     hnsw_fast.ann_label = "hnsw_fast";
@@ -647,6 +953,8 @@ static std::vector<Args> compare_profiles(Args args) {
     hnsw_fast.ann_hnsw_m = 16;
     hnsw_fast.ann_hnsw_ef_construction = 100;
     hnsw_fast.ann_hnsw_ef_search = 64;
+    hnsw_fast.ann_ivf_centroids = 0;
+    hnsw_fast.ann_ivf_probe = 0;
     profiles.push_back(hnsw_fast);
 
     Args hnsw_recall = args;
@@ -657,6 +965,8 @@ static std::vector<Args> compare_profiles(Args args) {
     hnsw_recall.ann_hnsw_m = 24;
     hnsw_recall.ann_hnsw_ef_construction = 200;
     hnsw_recall.ann_hnsw_ef_search = 200;
+    hnsw_recall.ann_ivf_centroids = 0;
+    hnsw_recall.ann_ivf_probe = 0;
     profiles.push_back(hnsw_recall);
 #endif
 
@@ -681,6 +991,7 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
     std::cout << "\n=== ANN Decision Summary ===\n";
     std::cout << std::left << std::setw(12) << "records"
               << std::setw(20) << "ann"
+              << std::setw(12) << "fixture"
               << std::setw(13) << "cand"
               << std::setw(8) << "os"
               << std::setw(8) << "tbl"
@@ -689,10 +1000,14 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
               << std::setw(8) << "M"
               << std::setw(8) << "efc"
               << std::setw(8) << "efs"
+              << std::setw(8) << "ivfc"
+              << std::setw(8) << "ivfp"
               << std::right << std::setw(14) << "search p50"
               << std::setw(14) << "context p50"
               << std::setw(14) << "semantic p50"
               << std::setw(14) << "ann build"
+              << std::setw(12) << "ann MB"
+              << std::setw(12) << "sidecar MB"
               << std::setw(14) << "recall avg"
               << std::setw(14) << "recall min"
               << std::setw(10) << "rq"
@@ -704,6 +1019,7 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
             s.context_p50_ms > ann_threshold_ms;
         std::cout << std::left << std::setw(12) << s.records
                   << std::setw(20) << s.ann_mode
+                  << std::setw(12) << s.fixture
                   << std::setw(13) << s.ann_max_candidates
                   << std::setw(8) << s.ann_oversample
                   << std::setw(8) << s.ann_tables
@@ -712,11 +1028,17 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
                   << std::setw(8) << s.ann_hnsw_m
                   << std::setw(8) << s.ann_hnsw_ef_construction
                   << std::setw(8) << s.ann_hnsw_ef_search
+                  << std::setw(8) << s.ann_ivf_centroids
+                  << std::setw(8) << s.ann_ivf_probe
                   << std::right << std::setw(11) << std::fixed << std::setprecision(2)
                   << s.search_p50_ms << " ms"
                   << std::setw(11) << s.context_p50_ms << " ms"
                   << std::setw(11) << s.semantic_p50_ms << " ms"
                   << std::setw(11) << s.ann_build_ms << " ms"
+                  << std::setw(12) << std::fixed << std::setprecision(2)
+                  << static_cast<double>(s.ann_memory_bytes) / (1024.0 * 1024.0)
+                  << std::setw(12)
+                  << static_cast<double>(s.snapshot_total_bytes) / (1024.0 * 1024.0)
                   << std::setw(14) << std::fixed << std::setprecision(3)
                   << s.recall_at_k
                   << std::setw(14) << s.recall_min_at_k
@@ -731,7 +1053,7 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
 }
 
 int main(int argc, char* argv[]) {
-    const Args args = parse_args(argc, argv);
+    const Args args = prepare_args(parse_args(argc, argv));
     if (!args.sweep) {
         std::vector<BenchSummary> summaries;
         if (args.compare_ann) {

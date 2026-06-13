@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace zeptodb::ai {
@@ -119,10 +120,52 @@ struct CacheLookupResult {
     CacheEntry entry;
 };
 
+enum class AgentMemoryEvictionTarget {
+    Memory,
+    Cache,
+};
+
+// Tombstone key plus snapshot for a memory/cache entry removed by automatic TTL,
+// tenant quota, or capacity eviction. The HTTP owner path persists the key as a
+// regular delete WAL record and can restore the snapshot if persistence fails
+// before the tombstone is durable.
+struct AgentMemoryEvictionEvent {
+    AgentMemoryEvictionTarget target = AgentMemoryEvictionTarget::Memory;
+    std::string memory_id;
+    std::string tenant_id;
+    std::string namespace_id;
+    std::string prompt;
+    MemoryRecord memory;
+    CacheEntry cache;
+};
+
 struct StoreResult {
+    StoreResult() = default;
+    StoreResult(bool ok_in, std::string id_in, std::string error_in)
+        : ok(ok_in), id(std::move(id_in)), error(std::move(error_in)) {}
+    StoreResult(bool ok_in,
+                std::string id_in,
+                std::string error_in,
+                std::vector<AgentMemoryEvictionEvent> evictions_in)
+        : ok(ok_in),
+          id(std::move(id_in)),
+          error(std::move(error_in)),
+          evictions(std::move(evictions_in)) {}
+
     bool ok = false;
     std::string id;
     std::string error;
+    std::vector<AgentMemoryEvictionEvent> evictions;
+};
+
+// Optional per-tenant quota. tenant_id is required; an empty namespace_id matches
+// all namespaces for that tenant, otherwise it matches exactly. Max values of 0
+// are unbounded.
+struct AgentMemoryTenantQuota {
+    std::string tenant_id;
+    std::string namespace_id;
+    size_t max_memories = 0;
+    size_t max_cache_entries = 0;
 };
 
 // Runtime eviction policy. A max value of 0 means unbounded. Pinned memories are
@@ -133,6 +176,7 @@ struct AgentMemoryEvictionConfig {
     size_t max_cache_entries = 0;
     bool evict_expired_on_write = true;
     bool protect_pinned = true;
+    std::vector<AgentMemoryTenantQuota> tenant_quotas;
 };
 
 struct AgentMemoryStats {
@@ -146,10 +190,22 @@ struct AgentMemoryStats {
     size_t ann_partitions = 0;
     size_t ann_buckets = 0;
     size_t ann_max_bucket_size = 0;
+    size_t ann_memory_bytes = 0;
+    size_t ann_tombstone_entries = 0;
     uint64_t ann_rebuild_count = 0;
     double ann_last_rebuild_ms = 0.0;
     uint64_t ann_search_count = 0;
     uint64_t ann_fallback_count = 0;
+    // Last persisted Agent Memory sidecar file sizes, in bytes.
+    size_t snapshot_records_bytes = 0;
+    size_t snapshot_vectors_bytes = 0;
+    size_t snapshot_total_bytes = 0;
+    // Last save_to_directory() attempt duration in seconds.
+    double snapshot_latency_seconds = 0.0;
+    // Failed save_to_directory() attempts since store creation or clear().
+    uint64_t snapshot_failures_total = 0;
+    // Number of configured tenant/namespace quota policies.
+    size_t tenant_quota_count = 0;
 };
 
 // Runtime identity used for owner-scoped automatic ids in routed multi-node
@@ -165,6 +221,7 @@ enum class AgentMemoryAnnMode {
     Auto,
     SparseProjection,
     Hnsw,
+    Ivf,
 };
 
 // ANN accelerates semantic candidate generation. The final result still passes
@@ -257,6 +314,13 @@ public:
     // Returns the total number of entries removed.
     size_t evict_expired(int64_t now_ns = 0);
 
+    // Restore entries removed by automatic eviction after a failed persistence
+    // step. This intentionally bypasses eviction enforcement so rollback can
+    // preserve the pre-write live state even if it temporarily exceeds limits.
+    // Returns the number of restored entries.
+    size_t restore_evicted_entries(
+        const std::vector<AgentMemoryEvictionEvent>& evictions);
+
     // Persist memory/cache metadata plus embedding vectors to a sidecar
     // directory. v0 uses two native-endian binary files:
     //   records.bin  - scalar/string metadata and vector offsets
@@ -316,15 +380,45 @@ private:
     std::optional<AnnBuildSnapshot> ann_build_snapshot_locked_() const;
     StoreResult build_and_swap_ann_index_(AnnBuildSnapshot snapshot);
     bool try_add_ann_entry_locked_(size_t row_id, const MemoryRecord& record);
+    bool try_remove_ann_entry_locked_(size_t row_id, const MemoryRecord& record);
+    bool try_replace_ann_entry_locked_(const std::string& old_partition_key,
+                                       bool old_had_embedding,
+                                       size_t row_id,
+                                       const MemoryRecord& record);
+    bool try_update_ann_row_id_locked_(const std::string& partition_key,
+                                       bool has_embedding,
+                                       size_t old_row_id,
+                                       size_t new_row_id);
+    void remove_memory_row_locked_(size_t row);
     void mark_ann_dirty_locked_();
     std::string ann_partition_key_(const std::string& tenant_id,
                                    const std::string& namespace_id) const;
     double memory_retention_score_(const MemoryRecord& record, int64_t now) const;
     double cache_retention_score_(const CacheEntry& entry, int64_t now) const;
-    size_t evict_expired_locked_(int64_t now);
-    void enforce_eviction_locked_(int64_t now);
-    bool evict_one_memory_for_capacity_locked_(int64_t now);
-    bool evict_one_cache_for_capacity_locked_(int64_t now);
+    size_t evict_expired_locked_(
+        int64_t now,
+        std::vector<AgentMemoryEvictionEvent>* evictions = nullptr);
+    void enforce_eviction_locked_(
+        int64_t now,
+        std::vector<AgentMemoryEvictionEvent>* evictions = nullptr);
+    bool memory_matches_quota_(const MemoryRecord& record,
+                               const AgentMemoryTenantQuota& quota) const;
+    bool cache_matches_quota_(const CacheEntry& entry,
+                              const AgentMemoryTenantQuota& quota) const;
+    size_t memory_count_for_quota_locked_(const AgentMemoryTenantQuota& quota) const;
+    size_t cache_count_for_quota_locked_(const AgentMemoryTenantQuota& quota) const;
+    bool evict_one_memory_for_quota_locked_(const AgentMemoryTenantQuota& quota,
+                                            int64_t now,
+                                            std::vector<AgentMemoryEvictionEvent>* evictions);
+    bool evict_one_cache_for_quota_locked_(const AgentMemoryTenantQuota& quota,
+                                           int64_t now,
+                                           std::vector<AgentMemoryEvictionEvent>* evictions);
+    bool evict_one_memory_for_capacity_locked_(
+        int64_t now,
+        std::vector<AgentMemoryEvictionEvent>* evictions);
+    bool evict_one_cache_for_capacity_locked_(
+        int64_t now,
+        std::vector<AgentMemoryEvictionEvent>* evictions);
     void rebuild_expiry_counts_locked_();
     void rebuild_memory_index_locked_();
     void rebuild_cache_index_locked_();
@@ -357,6 +451,11 @@ private:
     double ann_last_rebuild_ms_ = 0.0;
     uint64_t ann_search_count_ = 0;
     uint64_t ann_fallback_count_ = 0;
+    mutable double snapshot_latency_seconds_ = 0.0;
+    mutable uint64_t snapshot_failures_total_ = 0;
+    mutable size_t snapshot_records_bytes_ = 0;
+    mutable size_t snapshot_vectors_bytes_ = 0;
+    mutable size_t snapshot_total_bytes_ = 0;
     std::vector<MemoryRecord> memories_;
     std::unordered_map<std::string, size_t> memory_index_;
     std::vector<CacheEntry> cache_entries_;

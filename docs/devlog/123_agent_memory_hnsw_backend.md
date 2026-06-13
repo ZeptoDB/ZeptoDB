@@ -64,8 +64,9 @@ importance, recency, pinned status, and access counts.
 
 ## Follow-ups
 
-- Add clustered and real embedding fixtures before making any default-policy
-  decision.
+- Clustered fixtures were added in devlog 170, and precomputed real-vector file
+  fixtures were added in devlog 171. Run larger production embedding dumps
+  before making any default-policy decision.
 - Extend the append-only incremental path from devlog 125 with update/delete
   support instead of rebuilding on search after non-append mutations.
 - Measure HNSW memory overhead and persisted sidecar footprint.

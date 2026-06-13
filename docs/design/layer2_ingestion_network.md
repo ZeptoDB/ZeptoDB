@@ -146,7 +146,28 @@ server.add_metrics_provider([&consumer]() {
 
 `KafkaConsumer` uses the standard Kafka consumer API (group ID, `subscribe()`, `consume()`). Any Kafka-API-compatible broker (Redpanda, WarpStream, MSK) works without code changes.
 
-Last updated: 2026-03-23 (Kafka Prometheus metrics exposure added)
+## AWS Kinesis consumer (devlog 175)
+
+`KinesisConsumer` adds an AWS-native streaming ingress path in the same feed
+layer pattern as Kafka and MQTT. It polls one configured Kinesis stream shard,
+decodes each record using the shared `MessageFormat` contract
+(`JSON`, `BINARY`, or `JSON_HUMAN`), then dispatches the resulting
+`TickMessage` through the same table-aware single-node or cluster routing path.
+
+Default/no-SDK builds compile the full decode, routing, table-aware ingest, and
+metrics surface but return `false` from `start()`. Live AWS polling is enabled
+with `-DZEPTO_USE_KINESIS=ON` when AWS SDK C++ Kinesis is available. The live
+path requests a shard iterator, calls `GetRecords`, advances to
+`NextShardIterator`, and sleeps `poll_interval_ms` only on empty polls or AWS
+errors. `KinesisConfig::max_records_per_poll` is validated in the Kinesis API
+range `[1, 10000]`.
+
+Kinesis is gated by `Feature::IOT_CONNECTORS`, matching MQTT, OPC-UA, and ROS 2
+because it is a cloud/IoT streaming connector rather than a Kafka-compatible
+enterprise bus. Metrics are exposed through `KinesisConsumer::format_prometheus`
+and can be appended to `/metrics` with `HttpServer::add_metrics_provider()`.
+
+Last updated: 2026-06-12 (AWS Kinesis consumer — devlog 175)
 
 ## Table-aware ingest (Stage B — devlog 084)
 
@@ -206,7 +227,7 @@ the handler setters to cascade the resolved id. No other surface changes
 are expected (the structs are not on any current wire protocol or WAL
 format).
 
-Last updated: 2026-05-31 (HTTP Arrow IPC ingest — devlog 147)
+Last updated: 2026-06-11 (HTTP MessagePack columnar ingest — devlog 174)
 
 ## HTTP Arrow IPC ingest (devlog 147)
 
@@ -233,7 +254,87 @@ or table ACL denial return JSON errors and do not claim success for the failing
 batch. Builds without Arrow return `406 Not Acceptable`, matching the Arrow IPC
 query response path.
 
-## 6. Ingest capacity tuning (devlog 102)
+## HTTP MessagePack columnar ingest (devlog 174)
+
+`POST /insert/msgpack` adds a second binary columnar ingest surface for clients
+that can batch rows but should not take an Arrow runtime dependency. The server
+decodes a MessagePack top-level map of column arrays, maps configured columns
+into `TickMessage`, and calls `QueryExecutor::ingest_tick_batch()`. This keeps
+table-id resolution, cluster routing, queue backpressure fallback,
+`drain_sync()`, and `SchemaRegistry::mark_has_data()` identical to SQL `INSERT`
+and Arrow IPC ingest.
+
+Default mapping mirrors Arrow IPC ingest:
+
+| MessagePack key | Default | Notes |
+|---|---|---|
+| symbol | `sym` (`symbol` alias accepted) | integer symbol IDs or strings; strings are interned through the pipeline `StringDictionary` |
+| price | `price` | numeric, converted to int64 after `price_scale` |
+| volume | `volume` | numeric, converted to int64 after `volume_scale` |
+| timestamp | `timestamp` | optional ns timestamps; missing column uses ingest-time ns stamps |
+| msg_type | `msg_type` | optional; defaults to trade (`0`) |
+
+The decoder intentionally supports the MessagePack subset needed for columnar
+ingest without adding a new dependency: maps with string keys, arrays, strings,
+integers, floats, `nil`, and booleans. Required columns reject nulls and
+non-numeric values; optional `timestamp` and `msg_type` allow `nil` entries.
+The request is fail-fast: malformed payloads, missing columns, length mismatch,
+unsupported types, overflow, invalid scales, unknown tables, tenant rejection,
+or table ACL denial return JSON errors and do not claim success for the failing
+batch.
+
+## 6. Telegraf external output (devlog 160)
+
+`zepto-telegraf-output` is a standalone external output program for Telegraf's
+`outputs.execd` path. Telegraf serializes collected metrics as Influx line
+protocol and writes them to the program's stdin; the ZeptoDB writer parses each
+line, maps it into the canonical tick columns, and sends SQL `INSERT` batches
+to `POST /` on the ZeptoDB HTTP server.
+
+### Data flow
+
+```
+Telegraf inputs (OPC-UA, Modbus, SNMP, system, MQTT, ...)
+        ↓
+Telegraf serializer: data_format = "influx"
+        ↓
+outputs.execd stdin
+        ↓
+zepto-telegraf-output
+        ↓
+HTTP POST /  INSERT INTO <table> (symbol, price, volume, timestamp)
+        ↓
+QueryExecutor::exec_insert()
+        ↓
+ZeptoPipeline::ingest_tick()
+```
+
+### Mapping
+
+| ZeptoDB column | Source |
+|---|---|
+| `symbol` | Configured tag, default `symbol`; falls back to measurement name |
+| `price` | Configured numeric field, default `value`, scaled to int64 |
+| `volume` | Configured numeric field, default `volume`, or `default_volume` |
+| `timestamp` | Line-protocol timestamp normalized from `ns`/`us`/`ms`/`s` to ns |
+
+The writer validates destination table names as simple SQL identifiers and
+SQL-escapes symbol strings before generating each INSERT. Malformed line
+protocol, non-finite numbers, non-numeric price/volume fields, unsafe table
+names, and timestamp conversion overflow fail closed.
+
+### Transport choice
+
+The first P5 implementation uses SQL-over-HTTP rather than the newer binary
+ingest format. This keeps the integration small, works in default builds, and
+reuses the existing SQL INSERT path for table ACL, tenant namespace enforcement,
+cluster routing, schema durability, and synchronous drain semantics. The P4
+MessagePack ingest endpoint is now available as the intended follow-on
+transport while keeping the same Telegraf-side external plugin shape.
+
+Operations guide: `docs/operations/TELEGRAF_OUTPUT.md`.
+
+## 7. Ingest capacity tuning (devlog 102)
 
 Two `PipelineConfig` knobs control single-pod ingest throughput. Both
 are backward-compatible (`0` = engine default, default build behaves
@@ -277,4 +378,4 @@ Helm exposure: `pipeline.drainThreads` / `pipeline.ringBufferCapacity`
 in `deploy/helm/zeptodb/values.yaml`. CLI: `--drain-threads N` and
 `--ring-buffer-capacity N` on `zepto_http_server`.
 
-Last updated: 2026-04-25 (devlog 102)
+Last updated: 2026-06-03 (Telegraf external output — devlog 160)

@@ -21,6 +21,7 @@ add_executable(zepto_tests
     unit/test_scheduler.cpp
     unit/test_features.cpp
     unit/test_kafka.cpp
+    unit/test_kinesis.cpp
     unit/test_mqtt.cpp
     unit/test_opcua.cpp
     unit/test_opcua_integration.cpp
@@ -28,6 +29,7 @@ add_executable(zepto_tests
     unit/test_metrics_collector.cpp
     unit/test_flight_server.cpp
     unit/test_http_arrow_ipc.cpp
+    unit/test_http_msgpack_ingest.cpp
     unit/test_agent_memory.cpp
     unit/test_flat_hash_map.cpp
     unit/test_rebalance.cpp
@@ -50,6 +52,7 @@ add_executable(zepto_tests
     unit/test_s3_sink.cpp
     unit/test_parquet_writer.cpp
     unit/test_cold_tier.cpp
+    unit/test_telegraf_output.cpp
 )
 if(ZEPTO_USE_JIT)
     target_sources(zepto_tests PRIVATE unit/test_jit_simd.cpp)
@@ -69,11 +72,13 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_scheduler
     zepto_server
     zepto_kafka
+    zepto_kinesis
     zepto_mqtt
     zepto_opcua
     zepto_ros2
     zepto_flight
     zepto_feeds
+    zepto_telegraf_output
     GTest::gtest_main
 )
 if(ZEPTO_HAS_OPENSSL)
@@ -149,4 +154,3 @@ target_link_libraries(test_migration PRIVATE
     GTest::gtest
 )
 gtest_discover_tests(test_migration)
-

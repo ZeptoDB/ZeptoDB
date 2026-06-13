@@ -128,24 +128,53 @@ void RebalanceManager::run_loop() {
         }
     }
 
-    // Broadcast ring update to all nodes via RingConsensus
+    // Apply and broadcast ring updates only when the full plan committed.
+    // Partial success is not safe for a topology change: future routes could
+    // point at shards that did not receive their copied partitions.
     if (consensus_) {
         RebalanceAction act;
         NodeId node;
         size_t completed;
+        size_t failed;
         {
             std::lock_guard lk(mu_);
             act = action_;
             node = action_node_;
             completed = status_.completed_moves;
+            failed = status_.failed_moves;
         }
-        if (completed > 0 && act != RebalanceAction::NONE && state_.load(std::memory_order_acquire) != RebalanceState::CANCELLING) {
+        if (completed > 0 && failed == 0 && act != RebalanceAction::NONE &&
+            state_.load(std::memory_order_acquire) != RebalanceState::CANCELLING) {
+            if (act == RebalanceAction::ADD_NODE)
+                router_.add_node(node);
+            else
+                router_.remove_node(node);
+
             bool ok = (act == RebalanceAction::ADD_NODE)
                           ? consensus_->propose_add(node)
                           : consensus_->propose_remove(node);
             if (!ok) {
                 ZEPTO_WARN("RebalanceManager: ring broadcast failed for node {}", node);
             }
+        }
+    } else {
+        RebalanceAction act;
+        NodeId node;
+        size_t completed;
+        size_t failed;
+        {
+            std::lock_guard lk(mu_);
+            act = action_;
+            node = action_node_;
+            completed = status_.completed_moves;
+            failed = status_.failed_moves;
+        }
+        if (completed > 0 && failed == 0 && act != RebalanceAction::NONE &&
+            state_.load(std::memory_order_acquire) != RebalanceState::CANCELLING) {
+            if (act == RebalanceAction::ADD_NODE)
+                router_.add_node(node);
+            else
+                router_.remove_node(node);
         }
     }
 

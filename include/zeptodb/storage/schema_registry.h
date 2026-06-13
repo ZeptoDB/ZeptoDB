@@ -13,8 +13,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <shared_mutex>
 #include <sstream>
@@ -47,7 +49,7 @@ struct TableSchema {
     std::vector<ColumnDef> columns;
     int64_t                ttl_ns = 0;  // 0 = no retention limit
     bool                   has_data = false;  // set true on first INSERT
-    uint16_t               table_id = 0;  // assigned by SchemaRegistry (0 = legacy/default)
+    uint16_t               table_id = 0;  // stable name-derived id (0 = legacy/default)
 };
 
 // ============================================================================
@@ -55,19 +57,33 @@ struct TableSchema {
 // ============================================================================
 class SchemaRegistry {
 public:
+    // Stable cluster-wide table id derived from the table name. 0 remains the
+    // legacy/default id, so the mapping is restricted to [1, 65535].
+    [[nodiscard]] static uint16_t stable_table_id(const std::string& name) {
+        uint32_t h = 2166136261u;  // FNV-1a 32-bit
+        for (unsigned char c : name) {
+            h ^= static_cast<uint32_t>(c);
+            h *= 16777619u;
+        }
+        return static_cast<uint16_t>((h % 65535u) + 1u);
+    }
+
     // Create a new table. Returns false if the table already exists.
     bool create(const std::string& name, std::vector<ColumnDef> cols) {
         std::unique_lock lk(mu_);
         if (tables_.count(name)) return false;
-        if (next_table_id_ == 0) {
-            // uint16_t wrapped: >65535 CREATEs in this process lifetime.
-            // Refuse to reuse table_id=0 (reserved for legacy path).
+        const uint16_t table_id = allocate_table_id_locked_(name);
+        if (table_id == 0) {
             return false;
         }
         TableSchema s;
         s.table_name = name;
         s.columns    = std::move(cols);
-        s.table_id   = next_table_id_++;
+        s.table_id   = table_id;
+        if (next_table_id_ <= table_id &&
+            table_id < std::numeric_limits<uint16_t>::max()) {
+            next_table_id_ = static_cast<uint16_t>(table_id + 1);
+        }
         tables_[name] = std::move(s);
         return true;
     }
@@ -89,6 +105,15 @@ public:
         auto it = tables_.find(name);
         if (it == tables_.end()) return std::nullopt;
         return it->second;
+    }
+
+    // Returns a copy of the schema by stable table_id.
+    [[nodiscard]] std::optional<TableSchema> get(uint16_t table_id) const {
+        std::shared_lock lk(mu_);
+        for (const auto& [_, schema] : tables_) {
+            if (schema.table_id == table_id) return schema;
+        }
+        return std::nullopt;
     }
 
     bool add_column(const std::string& name, ColumnDef col) {
@@ -149,13 +174,24 @@ public:
         if (it != tables_.end()) it->second.has_data = true;
     }
 
+    void mark_has_data(uint16_t table_id) {
+        if (table_id == 0) return;
+        std::unique_lock lk(mu_);
+        for (auto& [_, schema] : tables_) {
+            if (schema.table_id == table_id) {
+                schema.has_data = true;
+                return;
+            }
+        }
+    }
+
     [[nodiscard]] bool has_data(const std::string& name) const {
         std::shared_lock lk(mu_);
         auto it = tables_.find(name);
         return it != tables_.end() && it->second.has_data;
     }
 
-    // Returns the table_id assigned at CREATE, or 0 if the table does not exist.
+    // Returns the stable table_id assigned at CREATE, or 0 if the table does not exist.
     // table_id = 0 is reserved for the legacy/default (no CREATE TABLE) path.
     [[nodiscard]] uint16_t get_table_id(const std::string& name) const {
         std::shared_lock lk(mu_);
@@ -407,9 +443,27 @@ private:
         return json_find_int_gen_(s, key, start, out);
     }
 
+    [[nodiscard]] uint16_t allocate_table_id_locked_(const std::string& name) const {
+        uint16_t candidate = stable_table_id(name);
+        for (uint32_t attempt = 0; attempt < 65535u; ++attempt) {
+            bool used = false;
+            for (const auto& [_, schema] : tables_) {
+                if (schema.table_id == candidate) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) return candidate;
+            candidate = (candidate == std::numeric_limits<uint16_t>::max())
+                ? uint16_t{1}
+                : static_cast<uint16_t>(candidate + 1);
+        }
+        return 0;
+    }
+
     mutable std::shared_mutex mu_;
     std::unordered_map<std::string, TableSchema> tables_;
-    uint16_t next_table_id_ = 1;  // 0 reserved for legacy/default; never reused on drop
+    uint16_t next_table_id_ = 1;  // catalog compatibility; ids are name-derived on create
 };
 
 } // namespace zeptodb::storage

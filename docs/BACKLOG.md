@@ -1,15 +1,153 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1395 C++ tests passing
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1442 C++ tests run
+> (1441 passed, 1 live S3 upload skipped)
 >
-> Last cleaned: 2026-06-02
+> Last cleaned: 2026-06-09
 >
-> Devlog: last `150_eks_rebalance_bench_hardening.md` → next `151_*.md`
+> Devlog: last `172_p3_agent_memory_ann_maintenance_footprint_ivf.md` → next `173_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 Agent Memory ANN maintenance, footprint, and IVF** (devlog 172) —
+  sparse-projection, HNSW, and IVF ANN indexes now support incremental
+  update/delete maintenance for clean indexes, including tombstone accounting
+  and row-id remaps after compacting deletes. `/api/ai/stats`, cluster stats,
+  Prometheus, and `bench_agent_memory` now expose ANN memory bytes, ANN
+  tombstones, and persisted `records.bin` / `vectors.bin` sidecar sizes.
+  `bench_agent_memory --compare-ann` includes `ivf_fast` and `ivf_recall`
+  profiles, and `zepto_http_server` accepts
+  `--agent-memory-ann ivf`, `--agent-memory-ann-ivf-centroids`, and
+  `--agent-memory-ann-ivf-probe`. Narrows the P3 stronger ANN row to larger
+  production embedding-dump runs, tenant-filter/default-policy evaluation, and
+  optional managed embedding provider work.
+- ✅ **P3 Agent Memory real embedding fixture** (devlog 171) —
+  `bench_agent_memory` now supports `--fixture real --embedding-file PATH`
+  for precomputed vector files. The loader validates finite float tokens,
+  consistent dimensions, and record-count bounds, then uses those vectors for
+  seeded memories, cache entries, and recall queries. Devlog 172 adds
+  update/delete maintenance, footprint telemetry, and IVF comparison profiles.
+- ✅ **P3 Agent Memory clustered ANN fixture** (devlog 170) —
+  `bench_agent_memory` now supports `--fixture mixed|semantic|clustered`.
+  The clustered fixture generates deterministic center-plus-noise embeddings
+  and query vectors so sparse projection and HNSW can be compared on
+  cluster-shaped semantic neighborhoods instead of only random vectors. Devlog
+  171 adds precomputed real-vector file fixtures.
+- ✅ **P3 Multi-node Agent Memory capacity rollback** (devlog 169) —
+  owner-side HTTP/RPC writes now restore write-triggered automatic eviction
+  side effects when primary durability fails, and restore only the failed and
+  later eviction tombstones when tombstone persistence fails after partial
+  success. This closes the remaining P3 Multi-node Agent Memory backlog gap;
+  shard migration dual-write catch-up remains documented future work outside
+  the closed P3 row.
+- ✅ **P3 Multi-node Agent Memory failover status** (devlog 168) —
+  `AgentMemoryOwnerFailoverResult` now reports source/replacement ids, epochs,
+  replay promotion, degraded state, and missing replay-source status. Local
+  `/api/ai/stats` exposes the last failover status so operators can distinguish
+  clean successor replay from a degraded failover with no usable replay source.
+  Devlog 169 closes the final capacity-eviction rollback gap.
+- ✅ **P3 Multi-node Agent Memory eviction tombstones** (devlog 167) —
+  owner-side HTTP/RPC writes now carry automatic TTL, tenant-quota, and capacity
+  eviction keys out of `AgentMemoryStore` and persist them as committed delete
+  WAL tombstones. Restart replay and replica shard adoption no longer resurrect
+  entries evicted by a live owner write. Devlog 168 adds failover status and
+  devlog 169 closes rollback for non-durable eviction side effects.
+- ✅ **P3 Multi-node Agent Memory cluster stats** (devlog 166) —
+  `/api/ai/stats?scope=cluster` now scatters Agent Memory stats over routed
+  `TcpRpc`, returns per-node stats plus aggregate counts, and reports missing
+  or invalid remote stats responses as `partial_failures`. Default
+  `/api/ai/stats` remains local/backward-compatible. Devlogs 167-169 close the
+  remaining P3 multi-node durability/failover gaps.
+- ✅ **P3 Context trace/replay** (devlog 165) —
+  AgentOps schema helpers now include `context_traces` and
+  `context_replay_events`, with `examples/agent_memory/context_trace.py`
+  building SQL rows that explain selected memories by rank, score, similarity,
+  token budget fit, pinned/importance/prior-use signals, and related
+  time-series replay snapshots. Closes the P3 context trace/replay row.
+- ✅ **P3 OpenTelemetry/LLM trace ingest mapping** (devlog 164) —
+  `examples/agent_memory/otel_mapping.py` now converts OTLP JSON-style GenAI,
+  cache, tool-call, and error spans into AgentOps SQL INSERT statements.
+  AgentOps schema helpers include `llm_errors`, and tests cover provider/model
+  mapping, token counts, cache hits, latency, tool calls, and model errors.
+  Closes the P3 OpenTelemetry trace mapping row.
+- ✅ **P3 Agent Memory tenant/namespace eviction quotas** (devlog 163) —
+  `AgentMemoryEvictionConfig` now supports scoped tenant quotas for memory and
+  cache entries. Quotas can target a whole tenant or one tenant namespace,
+  evict only matching entries before global caps run, keep pinned-memory
+  overflow protection, and expose configured quota count through
+  `/api/ai/stats` and Prometheus. Closes the P3 tenant-scoped eviction row.
+- ✅ **P3 Agent Memory snapshot failure/latency metrics** (devlog 162) —
+  `AgentMemoryStore::save_to_directory()` now records the last snapshot attempt
+  duration and total failed snapshot attempts. `/api/ai/stats` exposes
+  `snapshot_latency_seconds` and `snapshot_failures_total`, while `/metrics`
+  exports `zepto_agent_memory_snapshot_latency_seconds` and
+  `zepto_agent_memory_snapshot_failures_total`. Closes the P3 snapshot
+  observability row.
+- ✅ **P3 Agent Memory agent-only EKS harness mode** (devlog 161) —
+  `tests/k8s/run_eks_bench.sh --agent-only` now reruns only the Agent Memory
+  E2E stage after the core EKS compat/HA harness is already green. The mode
+  preserves wake/node-readiness checks, image tag overrides, cleanup, result
+  summaries, and `--keep` handling while skipping compat/HA and native engine
+  benchmark stages. Closes the P3 harness row.
+- ✅ **P5 Telegraf external output plugin** (devlog 160) — adds
+  `zepto-telegraf-output`, an `outputs.execd` writer that reads Telegraf
+  Influx line protocol from stdin, maps metrics to ZeptoDB
+  `(symbol, price, volume, timestamp)` rows, and writes HTTP SQL INSERT
+  batches with auth/tenant headers, field mapping, scaling, timestamp-unit,
+  and batch-size options. Includes parser/mapping tests and an operations
+  guide. Closes the P5 Telegraf row.
+- ✅ **P9 factory 10KHz live competitor run** (devlog 159) — adds
+  `tools/factory-10khz-workload.py` and
+  `tools/run-factory-10khz-live-docker.sh` to run the Sector-B factory proof
+  against real local Docker deployments of ZeptoDB, InfluxDB, and
+  TimescaleDB. The closure run sustained 10,000 rows/sec for 60 seconds on
+  each system with 600,000 inserted and 600,000 verified rows, zero failed
+  writes, and no skipped competitors. Closes the last P9 open item.
+- ✅ **P9 OPC-UA live HA + server mode** (devlog 155) — adds
+  `OpcUaConsumer::read_history()` for live open62541 `HistoryRead_raw`
+  backfills when historizing support is compiled in, plus `OpcUaServer`
+  for exposing configured ZeptoDB symbols as OPC-UA Int64 variable nodes.
+  Default builds fail closed with clear stats/diagnostics while preserving
+  testable snapshot and replay contracts. Devlog 159 closes the remaining
+  factory competitor live run, leaving P9 with no open backlog items.
+- ✅ **P9 OPC-UA production-profile closeout** (devlog 154) — adds
+  `zepto-opcua-browse` address-space discovery, array expansion, string value
+  mapping, Structured-field hooks with engineering-unit metadata, Historical
+  Access replay hooks, Alarms & Conditions event hooks, and a factory 10 KHz
+  competitor benchmark harness. Devlog 155 closes the live HistoryRead and
+  server-mode follow-ups; devlog 159 closes the actual InfluxDB /
+  TimescaleDB factory live run.
+- ✅ **P9 Physical AI closeout** (devlog 153) — closes the remaining ROS 2
+  roadmap track and logistics documentation slice: `TypedProfile` rows now
+  forward over cluster RPC when the owner is remote, SQL supports
+  `haversine`, `ST_Distance`, and `ST_Within` over float latitude/longitude
+  columns, and new docs/examples cover Isaac Sim/digital twin replay, robot
+  RL replay, LiDAR ASOF JOIN, fleet anomaly detection, edge deployment,
+  Physical AI use cases, cold-chain audit recipes, logistics design, and the
+  logistics benchmark suite. Devlogs 154-155 close the OPC-UA production
+  extensions, and devlog 159 closes the external competitor factory
+  benchmark.
+- ✅ **ROS 2 schema-aware typed ingest** (devlog 152) —
+  `Ros2IngestMode::TypedProfile` now maps standard Physical AI messages into
+  wide typed tables backed by `SchemaRegistry` and
+  `ZeptoPipeline::ingest_typed_row()`. IMU, JointState, Odometry, TFMessage,
+  and LaserScan typed schemas carry timestamp, receive time, robot/session,
+  topic/frame metadata, quality, and profile-specific numeric columns. Live
+  ROS and rosbag2 paths share the typed mapping, extra table columns are
+  default-filled, and SQL reads `SYMBOL`/narrow/floating columns with
+  type-aware access. Closes P9 1e.
+- ✅ **ROS 2 standard message profiles** (devlog 151) — `Ros2Consumer`
+  now supports `Ros2IngestMode::StandardProfile` for
+  `sensor_msgs/msg/Imu`, `sensor_msgs/msg/JointState`,
+  `nav_msgs/msg/Odometry`, `tf2_msgs/msg/TFMessage`, and
+  `sensor_msgs/msg/LaserScan`. Profiles flatten configured numeric fields
+  into the existing table-aware scalar ingest path; JointState and TF expand
+  arrays with `symbol_id + index`; LaserScan records metadata plus finite
+  range/intensity summaries. The RoboStack Jazzy smoke now installs/verifies
+  standard message packages and passed with ROS scalar + standard profiles +
+  rosbag2 enabled. Closes P9 1d.
 - ✅ **EKS rebalance bench hardening** (devlog 150) — `bench_rebalance`
   now fails fast when a rebalance trigger cannot be issued, preserves HTTP
   status/body diagnostics, supports `--rebalance-timeout-sec`, and has a
@@ -98,13 +236,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **OpenTelemetry/LLM trace ingest mapping** | Map GenAI spans, tool calls, token counts, latency, model errors, and cache hits into ZeptoDB tables to make observability the first production-grade agent use case. | M |
-| **Context trace/replay** | Explain why each memory entered the prompt and replay the time-series state that surrounded the decision; useful for debugging, audits, and prompt-injection review. | M |
-| **Multi-node Agent Memory** | Foundation done in devlog 122, routed memory/cache write RPCs done in devlog 124, point memory/exact-cache lookup routing done in devlog 126, fan-out search/context merge done in devlog 128, shard-local snapshot paths with startup ownership validation done in devlog 130, local Agent Memory WAL replay done in devlog 131, remote owner WAL/fencing regression coverage done in devlog 132, semantic-cache fan-out done in devlog 133, explicit failed-owner shard adoption done in devlog 134, quorum/sync replica WAL ACK policy done in devlog 135, WAL prepare/commit markers with failed-write rollback done in devlog 136, explicit delete tombstones done in devlog 137, and deterministic owner failover orchestration done in devlog 138. Remaining gaps: tenant quotas, cluster stats, automatic TTL/capacity-eviction tombstones, replica promotion/degraded-state reporting, and full transactional rollback for capacity-eviction side effects. | L |
-| **Agent Memory snapshot failure/latency metrics** | Flush cadence and memory/eviction metrics now exist; operators still need snapshot latency and failure gauges. | S |
-| **Tenant-scoped Agent Memory eviction** | Global caps now exist; larger deployments may need per-tenant/namespace limits for fair sharing under memory pressure. | S |
-| **EKS Agent Memory agent-only harness mode** | Add `--agent-only` to `tests/k8s/run_eks_bench.sh` so Agent Memory E2E can be rerun quickly after the core K8s compat/HA harness is already green. | S |
-| **Agent Memory stronger ANN family** | Sparse projection and optional hnswlib HNSW are now comparable with the devlog 121/123 harness. HNSW gives much better semantic-only recall at low search latency, but first-build graph cost is high and mixed-ranking recall is still weak on random vectors. Devlog 125 moved rebuild work outside the store mutex and added append-only incremental maintenance for clean indexes; devlog 127 moved lazy rebuilds to a background worker with generation coalescing. Next: clustered/real embedding fixtures, update/delete graph maintenance, memory overhead, tenant-filter behavior, persisted index footprint, and IVF comparison before choosing a production default. | M |
+| **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.
@@ -117,9 +249,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **ClickHouse wire protocol** | DBeaver, DataGrip, Grafana native | L |
 | **JDBC/ODBC drivers** | Tableau, Excel, Power BI | L |
-| **MessagePack columnar ingest endpoint** | Wire-compatible with Telegraf and InfluxDB Line Protocol clients. Single batch decode replaces per-tick JSON parse. Smaller scope than Arrow IPC, faster to ship; complementary to it. From Arc analysis (2026-05-13). | S |
 
-> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept. Arrow IPC ingest endpoint (devlog 147) — `POST /insert/arrow` binary columnar tick ingest with table-aware routing. Arrow-enabled EKS bench images and cross-arch `/insert/arrow` smoke are complete (devlog 149).
+> ✅ Done: Arrow IPC query response (devlog 119) — `POST /` content negotiation via `Accept: application/vnd.apache.arrow.stream` / `?default_format=Arrow` / `?format=arrow`; ~2–3× faster than JSON on large result sets. JSON remains default; errors stay JSON regardless of Accept. Arrow IPC ingest endpoint (devlog 147) — `POST /insert/arrow` binary columnar tick ingest with table-aware routing. Arrow-enabled EKS bench images and cross-arch `/insert/arrow` smoke are complete (devlog 149). MessagePack columnar ingest (devlog 174) — `POST /insert/msgpack` accepts a dependency-light map-of-column-arrays payload with the same table-aware batch ingest path.
 
 ---
 
@@ -129,12 +260,17 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **Kafka Connect Sink** | Enterprise pipeline standard | M |
 | **CDC connector (Debezium)** | PostgreSQL/MySQL → real-time sync | M |
-| **AWS Kinesis consumer** | AWS-native streaming | S |
 | **Apache Pulsar consumer** | Kafka alternative | S |
-| **Telegraf output plugin** | One plugin unlocks 300+ Telegraf input integrations (industrial PLCs, server metrics, network gear). Highest leverage-per-effort connector. Arc shipped this and it visibly drove adoption. From Arc analysis (2026-05-13). | S |
-| **MQTT consumer** | Industrial IoT standard. Topic → measurement mapping; QoS 0/1/2; reconnection. Currently a gap vs Arc (`internal/mqtt/`) and a P9 prerequisite for many IoT/Smart-Factory use cases. From Arc analysis (2026-05-13). | S |
 
-> ✅ Done: S3 Parquet sink connector (devlog 118) — Hive-partitioned S3 keys, Helm `coldTier.*`, `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars, operator recipe doc.
+> ✅ Done: MQTT consumer (devlog 081) — QoS 0/1/2, topic wildcards,
+> shared Kafka JSON/BINARY/JSON_HUMAN decoders, Paho optional-dep pattern.
+> S3 Parquet sink connector (devlog 118) — Hive-partitioned S3 keys, Helm
+> `coldTier.*`, `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars,
+> operator recipe doc. Telegraf external output plugin (devlog 160) —
+> `outputs.execd` line-protocol stdin → ZeptoDB HTTP SQL INSERT writer.
+> AWS Kinesis consumer (devlog 175) — shard polling surface with shared
+> JSON/BINARY/JSON_HUMAN decoders, table-aware routing, metrics, and no-SDK
+> fallback.
 
 ---
 
@@ -182,9 +318,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **Bench: symbol-aware / batched HTTP client** | Current HTTP bench is latency-bound at ~90/s under N≥2 (RPC hop per non-local INSERT). Need a driver that either batches or computes ownership client-side. | S |
-| **Live scale-out rebalance EKS topology** | `bench_rebalance` now fails fast and the fast harness validates smoke ingest/query on both archs, but full `add_remove_cycle` impact numbers still need a topology/admin path that can start and register a new node, or a scenario rewrite that benchmarks moves over existing registered nodes. | M |
 
-> ✅ Done: P8-I4 ingest-rate HPA (devlog 117), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
+> ✅ Done: P8-I4 ingest-rate HPA (devlog 117), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103), and full cross-arch EKS live rebalance integrity closure (devlog 158). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
 
 ---
 
@@ -192,36 +327,17 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 Design anchor: [`docs/design/ros2_physical_ai_roadmap.md`](design/ros2_physical_ai_roadmap.md).
 
-### ROS 2 roadmap track
-
-| # | Task | Why | Effort |
-|---|------|-----|--------|
-| 1d | **Standard message profiles** | IMU, JointState, Odometry, TF, LaserScan metadata; enough for robotics and AV demos | M |
-| 1e | **Schema-aware typed ingest** | Wide typed tables for standard messages; avoids forcing every message through scalar `TickMessage` shape | L |
-| 1f | **Isaac Sim / digital twin hook** | `/clock`-aware simulation ingest and Omniverse/Isaac warehouse replay path | M |
-| 1g | **ROS 2 reference examples** | Robot RL replay, LiDAR ASOF JOIN, fleet anomaly detection demos | S |
-| 1h | **Robot/factory edge deployment guide** | Docker Compose / k3s / systemd recipes for robot-local or lab-edge deployments | S |
-
 ### Open items
 
-| # | Task | Why | Effort |
-|---|------|-----|--------|
-| 2f | **OPC-UA: browse + auto-discover CLI** | Enumerate server address space, auto-populate `nodes[]` | S |
-| 2d | **OPC-UA: structured & array variants** | Engineering units, array → multiple TickMessages | M |
-| 2g | **OPC-UA: Historical Access (HA)** | Server-side historian backfill for initial load | M |
-| 2h | **OPC-UA: Alarms & Conditions (A&C)** | Alarm events as separate tick stream | M |
-| 2e | **OPC-UA: string values** | UA String → symbol columns (blocked on string-column engine) | S |
-| 2l | **OPC-UA: server mode** | Expose ZeptoDB as OPC-UA server (P10 candidate) | L |
-| 4 | **Factory 10KHz bench vs InfluxDB/TimescaleDB** | Sector-B sales proof | S |
-| 5 | **Physical AI use-case docs** | Promote to first-class `docs/usecases/` vertical | S |
-| 6a | **Spatial functions** (`haversine`, `ST_Distance`, `ST_Within`) | AGV collision, geofence, drone proximity | M |
-| 6b | **Cold-chain immutable table** | FDA/EU GDP regulatory audit trail | S |
-| 6c | **Entity-timeline recipes** | Order/pallet state tracking (WMS/OMS) | S |
-| 6d | **Logistics design doc + market section** | Formalize logistics as GTM sector | S |
-| 6e | **Edge deployment guide** | k3s / Docker Compose / systemd on industrial PC | S |
-| 6f | **Logistics benchmark suite** | 2K AGV + 1M sorter + 50K RFID vs competitors | S |
+No open P9 backlog items remain.
 
-> ✅ Done: OPC-UA PoC (devlog 101), Sprint 1 (105-106), Sprint 2 (107-109), Sprint 3 (110). Connector is SLA-grade.
+> ✅ Done: ROS 2 roadmap track 1f-1i, spatial SQL 6a, Physical AI docs 5,
+> cold-chain recipe 6b, entity-timeline/logistics docs 6c-6e, and logistics
+> benchmark suite spec 6f (devlog 153). OPC-UA PoC (devlog 101), Sprint 1
+> (105-106), Sprint 2 (107-109), Sprint 3 (110), and P9 production-profile
+> contracts / browse CLI / factory bench harness (154), live HistoryRead,
+> server mode (155), and factory 10KHz live competitor run (159) are also
+> done.
 
 ---
 
@@ -248,17 +364,17 @@ Design anchor: [`docs/design/ros2_physical_ai_roadmap.md`](design/ros2_physical_
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
-| **P3** | Agent Memory / AI Context | 7 | OpenTelemetry trace mapping → context trace/replay |
-| **P4** | Tool Integration | 3 | MessagePack columnar ingest (S) → ClickHouse wire protocol (L) |
-| **P5** | Data Pipelines | 6 | Telegraf output plugin (S) → CDC connector (M) |
+| **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
+| **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
+| **P5** | Data Pipelines | 3 | Apache Pulsar consumer (S) → CDC connector (M) → Kafka Connect Sink (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
-| **P9** | Physical AI / IoT | 20 | standard ROS message profiles, OPC-UA browse CLI |
+| **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 63 items + 4 manual tasks**
+**Total open: 37 items + 4 manual tasks**
 
-**Critical path: P5 Telegraf/MQTT ecosystem → P9 ROS 2 standard message profiles → P2 launch collateral**
+**Critical path: P5 cloud/streaming connectors → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

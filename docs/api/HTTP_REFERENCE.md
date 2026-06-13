@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-05-31*
+*Last updated: 2026-06-11*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -13,6 +13,7 @@ using the ClickHouse data source plugin with no modification.
 - [AI Agent Memory API](#ai-agent-memory-api)
 - [SQL Query — POST /](#sql-query--post-)
 - [Arrow IPC Ingest — POST /insert/arrow](#arrow-ipc-ingest--post-insertarrow)
+- [MessagePack Columnar Ingest — POST /insert/msgpack](#messagepack-columnar-ingest--post-insertmsgpack)
 - [Response Format](#response-format)
 - [Authentication](#authentication)
 - [/stats](#stats)
@@ -63,9 +64,11 @@ cd build && ninja -j$(nproc)
 | `--agent-memory-max-memories N` | entry count | Maximum retained Agent Memory records. `0` means unbounded. Pinned memories are protected from capacity eviction. Default: `0`. |
 | `--agent-memory-max-cache-entries N` | entry count | Maximum retained Agent Cache records. `0` means unbounded. Default: `0`. |
 | `--agent-memory-replication-mode local\|routed\|quorum\|sync` | mode | Owner WAL replica acknowledgement policy. `local`/`routed` acknowledge after the owner-local commit marker. `quorum` waits for enough replica WAL ACKs to form a majority with the owner commit. `sync` waits for every configured replica before owner commit. Default: `routed`. |
-| `--agent-memory-ann off\|auto\|sparse_projection\|hnsw` | mode | Enables optional ANN candidate generation for memory search/context. `hnsw` requires `ZEPTO_ENABLE_HNSWLIB=ON`. Default: `off`. |
+| `--agent-memory-ann off\|auto\|sparse_projection\|hnsw\|ivf` | mode | Enables optional ANN candidate generation for memory search/context. `hnsw` requires `ZEPTO_ENABLE_HNSWLIB=ON`; `ivf` uses the dependency-free inverted-file baseline. Default: `off`. |
 | `--agent-memory-ann-min-records N` | entry count | Auto-mode threshold before ANN is used. Default: `50000`. |
 | `--agent-memory-ann-max-candidates N` | entry count | Maximum ANN candidates reranked per search. Default: `50000`. |
+| `--agent-memory-ann-ivf-centroids N` | list count | IVF centroid/list count per tenant/namespace partition. Default: `256`. |
+| `--agent-memory-ann-ivf-probe N` | list count | IVF lists probed per query. Default: `8`. |
 | `--agent-memory-ring-epoch N` | integer | Initial routed Agent Memory ring epoch used in owner-scoped ids and remote RPC fencing. Default: `1`. |
 | `--failover-enabled` | flag | In non-HA cluster mode, starts `HealthMonitor` + `FailoverManager` and wires Agent Memory deterministic owner failover. |
 | `--health-heartbeat-port N` | port | UDP heartbeat port for `--failover-enabled`. Default: `9100`. |
@@ -161,6 +164,7 @@ print(df)
 |--------|------|:---:|-------------|
 | `POST` | `/` | yes | Execute SQL query |
 | `POST` | `/insert/arrow` | yes | Ingest Apache Arrow IPC RecordBatchStream rows |
+| `POST` | `/insert/msgpack` | yes | Ingest MessagePack map-of-column-arrays rows |
 | `GET` | `/` | yes | Execute SQL via `?query=` param |
 | `GET` | `/ping` | no | Health check — returns `"Ok\n"` |
 | `GET` | `/health` | no | Kubernetes liveness probe |
@@ -170,7 +174,7 @@ print(df)
 | `GET` | `/metrics` | no | Prometheus OpenMetrics |
 | `GET` | `/admin/keys` | admin | List API keys |
 | `GET` | `/api/license` | no | Current license edition and features |
-| `GET` | `/api/ai/stats` | yes | Agent Memory counts, eviction counters, and retention config |
+| `GET` | `/api/ai/stats` | yes | Agent Memory local or cluster counts, eviction counters, snapshot health, and retention config |
 | `POST` | `/api/ai/memories` | yes | Store or update an agent memory |
 | `GET` | `/api/ai/memories/:memory_id` | yes | Fetch one agent memory by id |
 | `DELETE` | `/api/ai/memories/:memory_id` | yes | Delete one agent memory by id |
@@ -227,25 +231,35 @@ snapshots, or `0` for stop-only snapshots with WAL replay in between.
 Set `--agent-memory-replication-mode quorum` or `sync` in routed mode to copy
 prepared WAL records and commit markers to configured Agent Memory replicas
 before acknowledging memory/cache writes. Failed persisted writes are rolled
-back from the live owner store. Replicas write those records under the source
-owner shard path and do not expose them in live search until explicit shard
-adoption.
+back from the live owner store for the primary upsert/delete and for any
+write-triggered eviction side effects whose tombstones are not durable. Replicas
+write those records under the source owner shard path and do not expose them in
+live search until explicit shard adoption.
 
 Bound memory growth with `--agent-memory-max-memories` and
 `--agent-memory-max-cache-entries`. Capacity eviction removes expired entries
 first, then the lowest-retention unpinned memories or least-retained cache
 entries based on recency, importance, and access count. Pinned memories are
 protected from capacity eviction, so the memory count can exceed the configured
-limit when all remaining candidates are pinned.
+limit when all remaining candidates are pinned. Owner-side HTTP/RPC writes
+persist delete tombstones for automatic TTL, tenant-quota, and capacity
+evictions they trigger, so WAL replay and later shard adoption preserve the
+live owner's eviction state. If tombstone persistence fails after partial
+success, the owner restores only the failed and later evicted entries before
+returning an error, leaving already durable tombstones applied.
 
 The default retrieval path uses exact filtered top-K scan and parallelizes large
 full scans internally. Optional experimental ANN candidate generation can be
 enabled with `--agent-memory-ann auto`, `--agent-memory-ann sparse_projection`,
-or, in hnswlib-enabled builds, `--agent-memory-ann hnsw`. ANN only selects
-semantic candidates; the final result still applies
+in hnswlib-enabled builds, `--agent-memory-ann hnsw`, or
+`--agent-memory-ann ivf`. ANN only selects semantic candidates; the final result
+still applies
 tenant/session/type filters, TTL checks, and the normal
 pinned/importance/recency/access-count ranking. The index is derived state and is
-rebuilt from memory vectors after snapshot load.
+rebuilt from memory vectors after snapshot load. Clean indexes maintain appends,
+embedding updates, deletes, tombstones, and compacting row-id remaps
+incrementally; if maintenance cannot be applied, search falls back to exact scan
+until the background rebuild publishes a fresh index.
 
 When `X-Zepto-Tenant-Id` is present it is copied into the request tenant scope. If
 the JSON body also has `tenant_id` and it differs, the request returns `400`.
@@ -263,9 +277,15 @@ after the exact prompt owner misses.
 
 ### `GET /api/ai/stats`
 
-Returns Agent Memory counts, eviction counters, embedding dimension, and the
-current eviction config. It does not expose memory content, prompts, responses,
-or metadata.
+Returns Agent Memory counts, eviction counters, embedding dimension, snapshot
+health, last local owner-failover status, and the current eviction config. It
+does not expose memory content, prompts, responses, or metadata.
+
+Query parameters:
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `scope` | `local` | `local` returns this HTTP server's node-local stats and eviction config. `cluster` scatters stats to routed Agent Memory nodes and returns aggregate plus per-node counters. Invalid values return `400`. |
 
 ```bash
 curl -s http://localhost:8123/api/ai/stats
@@ -280,6 +300,12 @@ Response:
   "embedding_dim": 2,
   "evicted_memory_count": 1,
   "evicted_cache_count": 0,
+  "snapshot_records_bytes": 5242880,
+  "snapshot_vectors_bytes": 67108864,
+  "snapshot_total_bytes": 72351744,
+  "snapshot_latency_seconds": 0.0042,
+  "snapshot_failures_total": 0,
+  "tenant_quota_count": 2,
   "ann": {
     "mode": "auto",
     "enabled": true,
@@ -289,6 +315,8 @@ Response:
     "partitions": 2,
     "buckets": 16342,
     "max_bucket_size": 345,
+    "memory_bytes": 9830400,
+    "tombstone_entries": 12,
     "rebuild_count": 1,
     "last_rebuild_ms": 138.37,
     "search_count": 10,
@@ -297,9 +325,99 @@ Response:
   "eviction_config": {
     "max_memories": 100000,
     "max_cache_entries": 10000,
+    "tenant_quota_count": 2,
     "evict_expired_on_write": true,
     "protect_pinned": true
+  },
+  "failover": {
+    "source_node_id": 1,
+    "replacement_node_id": 2,
+    "source_ring_epoch": 7,
+    "new_ring_epoch": 8,
+    "ok": true,
+    "adopted": false,
+    "replica_promoted": false,
+    "degraded": true,
+    "replay_source_missing": true,
+    "degraded_reason": "source agent memory shard is empty",
+    "error": ""
   }
+}
+```
+
+Cluster response:
+
+```bash
+curl -s 'http://localhost:8123/api/ai/stats?scope=cluster'
+```
+
+```json
+{
+  "scope": "cluster",
+  "partial_failures": 1,
+  "aggregate": {
+    "memory_count": 3,
+    "cache_count": 1,
+    "embedding_dim": 128,
+    "evicted_memory_count": 2,
+    "evicted_cache_count": 0,
+    "snapshot_records_bytes": 10485760,
+    "snapshot_vectors_bytes": 134217728,
+    "snapshot_total_bytes": 144703488,
+    "snapshot_latency_seconds": 0.006,
+    "snapshot_failures_total": 0,
+    "tenant_quota_count": 2,
+    "ann": {
+      "enabled": true,
+      "indexed_vectors": 3,
+      "partitions": 2,
+      "buckets": 128,
+      "max_bucket_size": 4,
+      "memory_bytes": 196608,
+      "tombstone_entries": 0,
+      "rebuild_count": 1,
+      "last_rebuild_ms": 10.4,
+      "search_count": 7,
+      "fallback_count": 0
+    }
+  },
+  "nodes": [
+    {
+      "node_id": 1,
+      "local": true,
+      "stats": {
+        "memory_count": 1,
+        "cache_count": 0,
+        "embedding_dim": 128,
+        "evicted_memory_count": 0,
+        "evicted_cache_count": 0,
+        "snapshot_records_bytes": 5242880,
+        "snapshot_vectors_bytes": 67108864,
+        "snapshot_total_bytes": 72351744,
+        "snapshot_latency_seconds": 0.004,
+        "snapshot_failures_total": 0,
+        "tenant_quota_count": 1,
+        "ann": {
+          "enabled": true,
+          "indexed_vectors": 1,
+          "partitions": 1,
+          "buckets": 64,
+          "max_bucket_size": 2,
+          "memory_bytes": 98304,
+          "tombstone_entries": 0,
+          "rebuild_count": 1,
+          "last_rebuild_ms": 10.4,
+          "search_count": 4,
+          "fallback_count": 0
+        }
+      }
+    },
+    {
+      "node_id": 2,
+      "local": false,
+      "error": "missing Agent Memory stats RPC client for node 2"
+    }
+  ]
 }
 ```
 
@@ -649,6 +767,99 @@ curl -s -X POST \
 
 ---
 
+## MessagePack Columnar Ingest — POST /insert/msgpack
+
+`POST /insert/msgpack` accepts a MessagePack top-level map whose values are
+column arrays. It is a dependency-light binary ingest path for Telegraf-style
+and embedded clients that can batch rows but do not need the full Arrow runtime.
+
+**Request**:
+
+| Field | Value |
+|-------|-------|
+| Method | `POST` |
+| Path | `/insert/msgpack` |
+| Body | MessagePack map of column arrays |
+| Content-Type | Optional; `application/msgpack` recommended |
+
+The default payload shape is:
+
+```text
+{
+  "sym": ["AAPL", "AAPL"],
+  "price": [15000, 15010],
+  "volume": [100, 120],
+  "timestamp": [1711000000000000000, 1711000000000000001],
+  "msg_type": [0, 0]
+}
+```
+
+`timestamp` and `msg_type` are optional. If `timestamp` is absent, ZeptoDB
+assigns ingest-time nanosecond timestamps. If `msg_type` is absent, rows default
+to trade (`0`).
+
+**Query parameters**:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `table` / `table_name` | empty | Destination ZeptoDB table. Empty uses legacy `table_id=0`. Non-empty names must already exist. |
+| `sym_col` / `symbol_col` | `sym` | Symbol column. The default also accepts a payload key named `symbol`. Integer IDs and strings are supported; strings are dictionary-interned. |
+| `price_col` | `price` | Numeric price column. Values are converted to int64 after `price_scale`. |
+| `vol_col` / `volume_col` | `volume` | Numeric volume column. Values are converted to int64 after `volume_scale`. |
+| `ts_col` / `timestamp_col` | `timestamp` | Optional timestamp column in nanoseconds. |
+| `msg_type_col` | `msg_type` | Optional uint8-compatible message type column. Missing values default to `0` (trade). |
+| `price_scale` | `1.0` | Multiplier applied before int64 conversion. Use `100` to store cents from decimal prices. |
+| `volume_scale` / `vol_scale` | `1.0` | Multiplier applied before int64 conversion. |
+
+**Supported MessagePack values**:
+
+- Top-level: map with string keys.
+- Columns: arrays of strings or numeric values.
+- Strings: `fixstr`, `str8`, `str16`, `str32`.
+- Integers: positive fixint, negative fixint, `uint8/16/32/64`, `int8/16/32/64`.
+- Floats: `float32`, `float64`.
+- `nil` is accepted only for optional `timestamp` / `msg_type` entries.
+
+**Response**:
+
+```json
+{"inserted": 1000, "failed": 0}
+```
+
+The response also includes `X-Zepto-Format: msgpack-columnar` on success.
+
+**Errors**:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Malformed MessagePack, missing required column, column length mismatch, unsupported type, invalid scale, integer overflow, unknown table, or tenant-scoped request without `table=`. |
+| `403` | Table ACL or tenant namespace rejection. If table ACL is active, `table=` is required. |
+
+**Example**:
+
+```bash
+python3 - <<'PY'
+import msgpack
+
+payload = {
+    "symbol": ["AAPL", "AAPL"],
+    "price": [15000, 15010],
+    "volume": [100, 120],
+    "timestamp": [1711000000000000000, 1711000000000000001],
+}
+
+with open("/tmp/trades.msgpack", "wb") as f:
+    f.write(msgpack.packb(payload, use_bin_type=True))
+PY
+
+curl -s -X POST \
+  'http://localhost:8123/insert/msgpack?table=trades&sym_col=symbol' \
+  -H 'Content-Type: application/msgpack' \
+  --data-binary @/tmp/trades.msgpack
+```
+
+---
+
 ## Response Format
 
 Responses are JSON unless the client explicitly requests a binary Arrow query
@@ -868,6 +1079,30 @@ zepto_agent_memory_evictions_total 1
 # TYPE zepto_agent_cache_evictions_total counter
 zepto_agent_cache_evictions_total 0
 
+# HELP zepto_agent_memory_tenant_quotas Configured Agent Memory tenant quota count
+# TYPE zepto_agent_memory_tenant_quotas gauge
+zepto_agent_memory_tenant_quotas 2
+
+# HELP zepto_agent_memory_snapshot_latency_seconds Last Agent Memory snapshot attempt duration in seconds
+# TYPE zepto_agent_memory_snapshot_latency_seconds gauge
+zepto_agent_memory_snapshot_latency_seconds 0.0042
+
+# HELP zepto_agent_memory_snapshot_failures_total Total failed Agent Memory snapshot attempts
+# TYPE zepto_agent_memory_snapshot_failures_total counter
+zepto_agent_memory_snapshot_failures_total 0
+
+# HELP zepto_agent_memory_snapshot_records_bytes Last Agent Memory records sidecar size in bytes
+# TYPE zepto_agent_memory_snapshot_records_bytes gauge
+zepto_agent_memory_snapshot_records_bytes 5242880
+
+# HELP zepto_agent_memory_snapshot_vectors_bytes Last Agent Memory vectors sidecar size in bytes
+# TYPE zepto_agent_memory_snapshot_vectors_bytes gauge
+zepto_agent_memory_snapshot_vectors_bytes 67108864
+
+# HELP zepto_agent_memory_snapshot_total_bytes Last Agent Memory sidecar total size in bytes
+# TYPE zepto_agent_memory_snapshot_total_bytes gauge
+zepto_agent_memory_snapshot_total_bytes 72351744
+
 # HELP zepto_agent_memory_ann_indexed_vectors Agent Memory vectors indexed by ANN
 # TYPE zepto_agent_memory_ann_indexed_vectors gauge
 zepto_agent_memory_ann_indexed_vectors 100000
@@ -887,6 +1122,14 @@ zepto_agent_memory_ann_searches_total 10
 # HELP zepto_agent_memory_ann_fallbacks_total Agent Memory ANN searches that fell back to filtered scan
 # TYPE zepto_agent_memory_ann_fallbacks_total counter
 zepto_agent_memory_ann_fallbacks_total 0
+
+# HELP zepto_agent_memory_ann_memory_bytes Estimated Agent Memory ANN index bytes
+# TYPE zepto_agent_memory_ann_memory_bytes gauge
+zepto_agent_memory_ann_memory_bytes 9830400
+
+# HELP zepto_agent_memory_ann_tombstone_entries Agent Memory ANN tombstone entries retained by incremental maintenance
+# TYPE zepto_agent_memory_ann_tombstone_entries gauge
+zepto_agent_memory_ann_tombstone_entries 12
 ```
 
 ### Grafana setup

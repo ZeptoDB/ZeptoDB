@@ -159,11 +159,33 @@ public:
             rpc_server_.set_security(config_.rpc_security);
         }
 
+        rpc_server_.set_typed_row_ingest_callback(
+            [this](zeptodb::core::TypedRowMessage row) {
+                return local_pipeline_.ingest_typed_row(std::move(row));
+            });
+
         rpc_server_.start(
             rport,
             [this](const std::string& sql) { return execute_sql_local(sql); },
             [this](const zeptodb::ingestion::TickMessage& msg) {
-                return local_pipeline_.ingest_tick(msg);
+                const bool ok = local_pipeline_.ingest_tick(msg);
+                if (ok) {
+                    local_pipeline_.schema_registry().mark_has_data(msg.table_id);
+                }
+                return ok;
+            },
+            [this](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
+                size_t applied = 0;
+                for (const auto& msg : batch) {
+                    if (local_pipeline_.ingest_tick(msg)) {
+                        local_pipeline_.schema_registry().mark_has_data(msg.table_id);
+                        ++applied;
+                    }
+                }
+                if (applied > 0) {
+                    local_pipeline_.drain_sync(applied + 100);
+                }
+                return applied;
             });
 
         // Register stats/metrics callbacks for remote collection

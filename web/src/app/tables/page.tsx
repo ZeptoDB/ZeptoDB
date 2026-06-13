@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useState } from "react";
 import {
   Box, Card, Typography, Table, TableHead, TableRow, TableCell, TableBody,
   TableContainer, Chip, CircularProgress, Alert, IconButton, Tooltip, TextField,
@@ -9,6 +9,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import SearchIcon from "@mui/icons-material/Search";
 import StorageIcon from "@mui/icons-material/Storage";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { querySQL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -17,27 +18,18 @@ interface TableInfo { name: string; rows: number }
 export default function TablesPage() {
   const { auth } = useAuth();
   const router = useRouter();
-  const [tables, setTables] = useState<TableInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
-  const loadTables = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    querySQL("SHOW TABLES", auth?.apiKey)
-      .then((r) => {
-        const list: TableInfo[] = (r.data ?? []).map((row: (string | number)[]) => ({
+  const { data: tables = [], isLoading: loading, error, refetch } = useQuery<TableInfo[]>({
+    queryKey: ["tables", auth?.apiKey],
+    queryFn: async () => {
+      const r = await querySQL("SHOW TABLES", auth?.apiKey);
+      return (r.data ?? []).map((row: (string | number)[]) => ({
           name: String(row[0]),
           rows: Number(row[1] ?? 0),
-        }));
-        setTables(list);
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [auth]);
-
-  useEffect(() => { loadTables(); }, [loadTables]);
+      }));
+    },
+  });
 
   const filtered = tables.filter((t) => t.name.toLowerCase().includes(filter.toLowerCase()));
 
@@ -54,11 +46,11 @@ export default function TablesPage() {
           <Chip label={`${tables.length}`} size="small" variant="outlined" sx={{ ml: 1, borderColor: "rgba(255, 255, 255, 0.12)" }} />
         </Box>
         <Tooltip title="Refresh">
-          <IconButton onClick={loadTables} size="small"><RefreshIcon /></IconButton>
+          <IconButton onClick={() => refetch()} size="small"><RefreshIcon /></IconButton>
         </Tooltip>
       </Box>
 
-      {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+      {error && <Alert severity="error">{error instanceof Error ? error.message : "Failed to load tables"}</Alert>}
 
       {/* Table List */}
       <Card>

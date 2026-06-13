@@ -19,6 +19,7 @@ All integer columns are `int64`. Floating-point values are stored as fixed-point
 - [Window Functions](#window-functions)
 - [Financial Functions](#financial-functions)
 - [Date/Time Functions](#datetime-functions)
+- [Spatial Functions](#spatial-functions)
 - [String Functions](#string-functions)
 - [JOINs](#joins)
 - [Set Operations](#set-operations)
@@ -697,6 +698,56 @@ SELECT EPOCH_MS(timestamp) AS ts_ms  FROM trades WHERE symbol = 1
 
 -- Use in arithmetic
 SELECT price, EPOCH_S(timestamp) * 1000 AS ts_ms_manual FROM trades
+```
+
+---
+
+## Spatial Functions
+
+Spatial functions operate on latitude/longitude coordinates in decimal degrees
+and return distances in rounded meters. They are intended for AGV collision
+checks, geofences, drone proximity, yard automation, and logistics replay.
+
+### HAVERSINE / ST_DISTANCE
+
+`haversine(lat1, lon1, lat2, lon2)` and
+`ST_Distance(lat1, lon1, lat2, lon2)` are aliases. Both use the haversine
+formula with an Earth radius of 6,371,008.8 meters.
+
+```sql
+SELECT timestamp,
+       haversine(lat, lon, 37.7749, -122.4194) AS distance_m
+FROM agv_pose
+WHERE symbol = 900
+ORDER BY timestamp ASC
+```
+
+```sql
+SELECT count(*)
+FROM agv_pose
+WHERE ST_Distance(lat, lon, 37.7749, -122.4194) < 50
+```
+
+### ST_WITHIN
+
+`ST_Within(lat, lon, center_lat, center_lon, radius_m)` returns true when the
+point is within `radius_m` meters of the center point. Negative radii return
+false.
+
+```sql
+SELECT agv_id, timestamp
+FROM agv_pose
+WHERE ST_Within(lat, lon, 37.7749, -122.4194, 50)
+```
+
+Spatial predicates can be combined with normal filters:
+
+```sql
+SELECT count(*)
+FROM agv_pose
+WHERE symbol = 900
+  AND timestamp BETWEEN 1710000000000000000 AND 1710000060000000000
+  AND ST_Within(lat, lon, 37.7749, -122.4194, 50)
 ```
 
 ---

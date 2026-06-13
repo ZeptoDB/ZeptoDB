@@ -25,8 +25,10 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 
 namespace zeptodb::core {
 
@@ -45,6 +47,53 @@ static inline int64_t pipeline_now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::high_resolution_clock::now().time_since_epoch()
     ).count();
+}
+
+static bool append_default_value(ColumnVector& column) {
+    switch (column.type()) {
+    case ColumnType::INT32:
+        return column.append<int32_t>(0);
+    case ColumnType::INT64:
+    case ColumnType::TIMESTAMP_NS:
+        return column.append<int64_t>(0);
+    case ColumnType::FLOAT32:
+        return column.append<float>(0.0F);
+    case ColumnType::FLOAT64:
+        return column.append<double>(0.0);
+    case ColumnType::SYMBOL:
+    case ColumnType::STRING:
+        return column.append<uint32_t>(0);
+    case ColumnType::BOOL:
+        return column.append<uint8_t>(0);
+    }
+    return false;
+}
+
+static bool append_typed_value(ColumnVector& column, const TypedColumnValue& value) {
+    if (column.type() != value.type) {
+        return false;
+    }
+    switch (column.type()) {
+    case ColumnType::INT32:
+        if (value.i64 < std::numeric_limits<int32_t>::min() ||
+            value.i64 > std::numeric_limits<int32_t>::max()) {
+            return false;
+        }
+        return column.append<int32_t>(static_cast<int32_t>(value.i64));
+    case ColumnType::INT64:
+    case ColumnType::TIMESTAMP_NS:
+        return column.append<int64_t>(value.i64);
+    case ColumnType::FLOAT32:
+        return column.append<float>(static_cast<float>(value.f64));
+    case ColumnType::FLOAT64:
+        return column.append<double>(value.f64);
+    case ColumnType::SYMBOL:
+    case ColumnType::STRING:
+        return column.append<uint32_t>(value.u32);
+    case ColumnType::BOOL:
+        return column.append<uint8_t>(value.u8 == 0 ? 0 : 1);
+    }
+    return false;
 }
 
 // ============================================================================
@@ -267,6 +316,86 @@ bool ZeptoPipeline::ingest_tick(TickMessage msg) {
     stats_.last_ingest_latency_ns.store(
         pipeline_now_ns() - t0, std::memory_order_relaxed);
     return ok;
+}
+
+bool ZeptoPipeline::ingest_typed_row(TypedRowMessage row) {
+    const int64_t t0 = pipeline_now_ns();
+    if (row.table_id == 0 || row.symbol_id == 0 || row.columns.empty()) {
+        return false;
+    }
+    const auto table_schema = schema_registry_.get(row.table_id);
+    if (!table_schema) {
+        return false;
+    }
+
+    std::unordered_map<std::string, const TypedColumnValue*> values;
+    values.reserve(row.columns.size());
+    for (const auto& value : row.columns) {
+        if (value.name.empty()) {
+            return false;
+        }
+        if (!values.emplace(value.name, &value).second) {
+            return false;
+        }
+        const auto schema_it = std::find_if(
+            table_schema->columns.begin(),
+            table_schema->columns.end(),
+            [&](const ColumnDef& column) { return column.name == value.name; });
+        if (schema_it == table_schema->columns.end() || schema_it->type != value.type) {
+            return false;
+        }
+    }
+
+    Partition& partition = partition_mgr_.get_or_create(
+        row.table_id, row.symbol_id, row.timestamp);
+    auto partition_write = partition.lock_for_write();
+
+    for (const auto& schema_column : table_schema->columns) {
+        if (const auto* column = partition.get_column(schema_column.name)) {
+            if (column->type() != schema_column.type) {
+                return false;
+            }
+        }
+    }
+
+    const size_t existing_rows = partition.num_rows();
+    for (const auto& schema_column : table_schema->columns) {
+        if (partition.get_column(schema_column.name)) {
+            continue;
+        }
+        auto& column = partition.add_column(schema_column.name, schema_column.type);
+        for (size_t i = 0; i < existing_rows; ++i) {
+            if (!append_default_value(column)) {
+                return false;
+            }
+        }
+    }
+
+    std::vector<std::pair<ColumnVector*, size_t>> touched;
+    touched.reserve(partition.columns().size());
+    for (const auto& column_ptr : partition.columns()) {
+        ColumnVector& column = *column_ptr;
+        const size_t old_size = column.size();
+        touched.push_back({&column, old_size});
+
+        const auto value_it = values.find(column.name());
+        const bool ok = value_it == values.end()
+            ? append_default_value(column)
+            : append_typed_value(column, *value_it->second);
+        if (!ok) {
+            for (auto& [touched_column, size] : touched) {
+                touched_column->set_size(size);
+            }
+            return false;
+        }
+    }
+
+    stats_.ticks_ingested.fetch_add(1, std::memory_order_relaxed);
+    stats_.ticks_stored.fetch_add(1, std::memory_order_relaxed);
+    stats_.last_ingest_latency_ns.store(
+        pipeline_now_ns() - t0, std::memory_order_relaxed);
+    schema_registry_.mark_has_data(table_schema->table_name);
+    return true;
 }
 
 size_t ZeptoPipeline::ingest_batch(int32_t symbol,

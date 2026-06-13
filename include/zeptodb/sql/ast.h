@@ -163,16 +163,19 @@ struct ArithExpr {
     std::string table_alias;
     std::string column;
 
-    // LITERAL: integer constant
+    // LITERAL: integer or floating-point constant
     int64_t literal = 0;
+    double  literal_f = 0.0;
+    bool    is_float_literal = false;
 
     // BINARY: left op right
     ArithOp arith_op = ArithOp::MUL;
     std::shared_ptr<ArithExpr> left;
     std::shared_ptr<ArithExpr> right;
 
-    // FUNC: date/time function call or string function
+    // FUNC: date/time, string, or spatial function call
     // func_name: "date_trunc" | "now" | "epoch_s" | "epoch_ms" | "substr"
+    //            | "haversine" | "st_distance" | "st_within"
     // func_unit: unit string for date_trunc ("ns","us","ms","s","min","hour","day","week")
     // func_arg:  argument expression (nullptr for NOW())
     // func_arg2: second argument expression (for SUBSTR length)
@@ -180,6 +183,7 @@ struct ArithExpr {
     std::string func_unit;
     std::shared_ptr<ArithExpr> func_arg;
     std::shared_ptr<ArithExpr> func_arg2;
+    std::vector<std::shared_ptr<ArithExpr>> func_args;
 };
 
 // ============================================================================
@@ -228,6 +232,7 @@ struct Expr {
     bool        is_float = false;
     std::string value_str;         // 문자열 리터럴
     bool        is_string = false;
+    std::shared_ptr<ArithExpr> lhs_expr;   // expression-valued LHS, e.g. haversine(...) < 50
     std::shared_ptr<ArithExpr> value_expr; // RHS expression (NOW() - INTERVAL '5 min')
 
     // BETWEEN 필드

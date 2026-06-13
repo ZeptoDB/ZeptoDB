@@ -4,7 +4,15 @@
 real `UA_Client` integration devlog 106). Tier-2 shipped in Sprint 2:
 quality mapping + integration test (devlog 107), Basic256Sha256
 security (devlog 108), reconnect / failover policy (devlog 109).
-Connector is now ready for first-commercial industrial deployments.
+Tier-3 observability shipped in devlog 110. P9 production-profile
+contracts shipped in devlog 154: browse config discovery, arrays, strings,
+Structured-field hooks, Historical Access replay hooks, and Alarms &
+Conditions event hooks. Devlog 155 ships live `HistoryRead_raw` wiring and
+ZeptoDB-as-OPC-UA-server mode. Devlog 156 hardens open62541 detection across
+CMake package, pkg-config, and manual include/library installs, and reports
+whether `UA_ENABLE_HISTORIZING` is available. Connector is now ready for
+first-commercial industrial deployments; the remaining P9 work is the external
+factory competitor run against live InfluxDB and TimescaleDB deployments.
 **Library:** [open62541](https://www.open62541.org/) (MPL 2.0)
 **Source:** `include/zeptodb/feeds/opcua_consumer.h` · `src/feeds/opcua_consumer.cpp`
 **Tests:** `tests/unit/test_opcua.cpp`
@@ -24,13 +32,18 @@ OPC-UA server ──► OpcUaConsumer ──ingest_tick(TickMessage)──► Ze
 This unlocks **Sector B (smart-factory / industrial)** use-cases — Samsung,
 SK, TSMC, Siemens — where OPC-UA is the dominant fieldbus-to-IT protocol.
 
-### PoC scope (MVP — this devlog)
+### Shipped scope
 
-- **Client mode only.** OPC-UA server mode (exposing ZeptoDB queries) is
-  backlog.
-- **Scalar variants only.** Int16 / Int32 / Int64 / Float / Double /
-  Boolean. Float/Double are coerced to `int64` via a per-node
-  `value_scale` — identical pattern to Kafka/MQTT JSON_HUMAN decode.
+- **Client mode.** Live open62541 subscriptions, reconnect, Basic256Sha256,
+  quality mapping, array/string/Structured dispatch, and Historical Access
+  reads.
+- **Server mode.** `OpcUaServer` exposes configured ZeptoDB symbols as
+  OPC-UA Int64 variable nodes and lets the engine publish current values.
+- **Scalar and production-profile variants.** Int16 / Int32 / Int64 /
+  Float / Double / Boolean, strings, arrays, explicit Structured fields,
+  Historical Access samples, and Alarms & Conditions event hooks.
+  Float/Double are coerced to `int64` via a per-node `value_scale` —
+  identical pattern to Kafka/MQTT JSON_HUMAN decode.
 - **SourceTimestamp preferred, ServerTimestamp fallback.**
 - **Single subscription, one or more monitored items.**
 - Config validation, NodeId→SymbolId mapping, routing (single/multi-node),
@@ -51,17 +64,31 @@ SK, TSMC, Siemens — where OPC-UA is the dominant fieldbus-to-IT protocol.
 2. ~~`Basic256Sha256` security (certificate loading, trust list, server
    cert validation).~~ — **shipped in devlog 108 (BACKLOG P9 #2c)**. MVP
    limits: single-cert trust list, no revocation list.
-3. Structured & array variants, engineering units.
-4. String variants (blocked on string-column column support).
-5. `zepto-opcua-browse` CLI for address-space auto-discovery.
-6. Historical Access (HA) for backfill.
-7. Alarms & Conditions (A&C) as a separate tick stream.
+3. ~~Structured & array variants, engineering units.~~ — **shipped in
+   devlog 154** as explicit Structured-field hooks plus array expansion to
+   `symbol_id + index * array_symbol_stride`; live open62541 array callbacks
+   now enter this path.
+4. ~~String variants.~~ — **shipped in devlog 154** via
+   `on_string_change()`, mapping UA String values to dictionary/symbol codes.
+5. ~~`zepto-opcua-browse` CLI for address-space auto-discovery.~~ —
+   **shipped in devlog 154**. Default builds provide a diagnostic stub;
+   `ZEPTO_USE_OPCUA=ON` builds browse a live server and emit `nodes[]`
+   config JSON/CSV.
+6. ~~Historical Access (HA) live HistoryRead adapter.~~ — **shipped in
+   devlog 155**. `read_history()` calls open62541 `UA_Client_HistoryRead_raw`
+   when the library was built with `UA_ENABLE_HISTORIZING`, decodes returned
+   `UA_HistoryData` values, and reuses the live subscription dispatch path.
+7. ~~Alarms & Conditions (A&C) as a separate tick stream.~~ — **shipped
+   in devlog 154** through `on_alarm_event()`, with active alarms encoded
+   as positive severity and cleared alarms as negative severity.
 8. ~~Reconnect / failover policy knobs.~~ — **shipped in devlog 109
    (BACKLOG P9 #2i)**: exponential backoff up to 16× base, ±25% jitter,
    automatic subscription rebuild, `OpcUaStats::reconnects` counter.
 9. UA StatusCode / quality mapping to `volume` or a dedicated column.
 10. Integration test against open62541's `tutorial_server_variable`.
-11. OPC-UA **server mode** (P10 candidate).
+11. ~~OPC-UA server mode.~~ — **shipped in devlog 155** through
+    `OpcUaServer`, which exposes configured symbols as Int64 variable nodes
+    and updates them via `publish_value()`.
 
 ---
 
@@ -71,12 +98,30 @@ SK, TSMC, Siemens — where OPC-UA is the dominant fieldbus-to-IT protocol.
 |-----------|-----------|
 | License | MPL 2.0 — compatible with ZeptoDB BUSL-1.1 (file-level copyleft only) |
 | Maturity | Used by Siemens, Beckhoff, B&R, Eclipse Milo Node, and shipped inside reference stacks |
-| Footprint | Single C library, `find_library(open62541)`, `~1 MB` static |
+| Footprint | Single C library, target-based CMake/pkg-config/fallback detection, `~1 MB` static |
 | Security | Built-in `Basic256Sha256`, certificate store, UA 1.04 compliant |
-| Distro coverage | `dnf install open62541-devel` on RHEL/Amazon Linux; `apt install libopen62541-dev` on Debian/Ubuntu |
+| Distro coverage | `apt install libopen62541-dev` on Debian/Ubuntu; `open62541-devel` where provided by RPM repos; Amazon Linux 2023 may require source-built open62541 or supplied CMake/pkg-config metadata |
 
 Commercial stacks (Unified Automation, Prosys) were rejected: per-seat
 licensing conflicts with the OSS edition's "no runtime fees" promise.
+
+### 2.1 Build-time detection
+
+`ZEPTO_USE_OPCUA=ON` now probes open62541 in this order:
+
+1. `find_package(open62541 CONFIG)` for source-built or vendor-installed
+   packages that export `open62541::open62541`.
+2. `pkg-config` via `PkgConfig::OPEN62541_PC`.
+3. Manual `find_path(open62541/client.h)` + `find_library(open62541)`.
+
+The selected dependency is linked as an imported target, so include paths and
+link options travel with the dependency instead of relying on a bare library
+path. Configure output also reports `OPC-UA` and `OPC-UA HA`; HA is enabled
+only when the installed headers expose `UA_ENABLE_HISTORIZING`. If open62541
+or historizing support is missing, ZeptoDB keeps the default fail-closed build:
+NodeId mapping, routing, snapshots, and tests remain available, while live
+client/server connectivity or live Historical Access clearly reports disabled
+status at configure time.
 
 ---
 
@@ -147,7 +192,14 @@ Implemented as `OpcUaConsumer::ua_datetime_to_ns()` (pure, unit-tested).
 ### 4.3 Variant coercion
 
 `OpcUaConsumer::coerce_variant_to_int64(variant, scale, out)` handles the
-six MVP scalar types. Array and Structured variants are BACKLOG P9 #3.
+six MVP scalar types. `on_array_change()` expands arrays into per-element
+ticks using `symbol_id + index * array_symbol_stride`. Structured values use
+explicit `StructuredField` mappings so engineering units and field names are
+preserved at the connector boundary while the engine still receives the same
+`TickMessage` contract.
+
+String values use `on_string_change()`, which maps the UA String payload to a
+dictionary/symbol code before dispatch.
 
 ### 4.4 Quality handling (`UA_DataValue.status` → `TickMessage.volume`)
 
@@ -291,14 +343,19 @@ Mirrors `MqttConsumer` exactly — the same method set, same semantics:
 | `start()` / `stop()` / `is_running()` | lifecycle |
 | `stats()` | snapshot `OpcUaStats` |
 | `on_data_change(node_id, value, src_ts_ns)` | pure, testable |
+| `on_array_change(node_id, values, src_ts_ns)` | array → multiple tick rows |
+| `on_string_change(node_id, value, src_ts_ns)` | UA String → symbol code |
+| `on_structured_change(fields, src_ts_ns)` | Structured fields → explicit symbols |
+| `ingest_history(samples)` | HA replay contract |
+| `on_alarm_event(event)` | A&C event stream |
 | `ingest_decoded(TickMessage)` | pure, testable dispatch |
 | static `coerce_variant_to_int64(v, scale, out)` | pure |
 | static `ua_datetime_to_ns(ua_dt)` | pure |
 | static `is_valid_security(mode, policy)` | pure |
 
-`OpcUaStats` has the same six counters as `MqttStats`:
+`OpcUaStats` has the same core counters as `MqttStats`, plus reconnects:
 `messages_consumed`, `bytes_consumed`, `decode_errors`, `route_local`,
-`route_remote`, `ingest_failures`.
+`route_remote`, `ingest_failures`, `reconnects`.
 
 ---
 
@@ -362,6 +419,28 @@ Mirrors `MqttConsumer` exactly — the same method set, same semantics:
 - `OpcUaStats` counters consistent across hit+miss scenarios.
 - Config defaults.
 
+### Production profile hooks (devlog 154)
+
+- Array values expand into sequential symbols and reject empty arrays.
+- Structured-field values dispatch through explicit field symbols and per-field
+  scale.
+- String values intern through the pipeline dictionary when available.
+- Historical Access replay returns the number of routed samples and reports
+  missing nodes / unsupported variants as decode errors.
+- Alarms & Conditions events dispatch active and cleared severities into a
+  dedicated tick stream.
+- `zepto-opcua-browse` builds in the default no-open62541 configuration and
+  returns a clear diagnostic when live browse support is not compiled in.
+
+### Historical Access and server mode (devlog 155)
+
+- `read_history()` returns 0 and bumps `ingest_failures` in default builds
+  without open62541/historizing support.
+- `ns_to_ua_datetime()` round-trips Unix ns at OPC-UA's 100 ns granularity.
+- `OpcUaServer` publishes configured symbol snapshots, rejects unknown symbols,
+  generates default NodeIds, rejects invalid startup configs, and fails closed
+  when open62541 is not compiled in.
+
 ### Integration (devlog 107, BACKLOG P9 #2k — shipped)
 
 `tests/unit/test_opcua_integration.cpp` spins up open62541's bundled
@@ -404,7 +483,8 @@ still pass.
 
 ## 11. Cross-References
 
-- BACKLOG P9 entries 1–11 (production follow-ups)
+- BACKLOG P9 live follow-up: external factory competitor lab run against
+  InfluxDB and TimescaleDB.
 - Devlog 081 (`MqttConsumer`) — identical pattern, two-of-three connector twins
 - Devlog 082 (table-scoped partitioning) — provides `table_id` addressable routing
 - Devlog 084 (table-aware ingest) — provides `table_name` → `table_id` resolution
@@ -434,7 +514,7 @@ Default `queue_size=10` in the PoC is tuned for a demo, not a fab: at
 10 KHz sampling with a 100 ms publishing interval, 1 000 samples queue
 per node per publish cycle — a 10-slot queue with `discard_oldest=true`
 silently drops 99 % of spikes. Sector-aware profiles are tracked as
-BACKLOG P9 #2q.
+shipped profile defaults (`OpcUaConfig::apply_profile`).
 
 ---
 
@@ -451,11 +531,11 @@ they surface as flip-target assertions for the production work. The
 | `OpcUaEdgeDatetime.FarFutureOverflow` | Signed multiply overflow in `ua_datetime_to_ns` for values approaching `INT64_MAX` | P9 #2m follow-up | Low impact — only affects dates > year 2287 |
 | ~~`OpcUaEdgeConfig.DuplicateNodeIdFirstWinsSilently`~~ → `DuplicateNodeIdRejected` | ~~`emplace` on duplicate `node_id` silently drops the second entry~~ | **P9 #2p — fixed (devlog 105)**, `start()` rejects duplicates up-front | — |
 | ~~`OpcUaEdgeConfig.EmptyNodeIdAccepted`~~ → `EmptyNodeIdRejected` | ~~Empty `node_id` string was accepted into the map~~ | **P9 #2p — fixed (devlog 105)**, `start()` rejects empty `node_id` | — |
-| `OpcUaEdgeConcurrency.StatsUnderThreadedWrites` | `stats()` snapshot can tear across fields under 8-writer contention | P9 #2r | Non-blocker — acceptable for PoC dashboards, tighten for SLA reporting |
+| ~~`OpcUaEdgeConcurrency.StatsUnderThreadedWrites`~~ | ~~`stats()` snapshot can tear across fields under 8-writer contention~~ | **P9 #2r — fixed (devlog 110)**, stats transitions are single-lock snapshots | — |
 
 The real `UA_Client` integration (2b) **landed in devlog 106**. It
 consumes the `connect_timeout_ms` / `session_timeout_ms` knobs added in
 devlog 105 (#2o), and the sector profiles
 (`OpcUaConfig::apply_profile` — #2q) are now exposed to pilot customers.
-The reconnect loop (#2i) still consumes `reconnect_interval_ms` and is
-Sprint-2 work.
+The reconnect loop (#2i) landed in devlog 109 and consumes
+`reconnect_interval_ms` for jittered exponential backoff.

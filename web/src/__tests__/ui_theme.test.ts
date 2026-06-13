@@ -19,12 +19,10 @@ describe("Quantum Precision Theme", () => {
 
   it("configures backdrop filter (Glassmorphism) on Paper and Card components", () => {
     const theme = getTheme("dark");
-    const paperOverrides = theme.components?.MuiPaper?.styleOverrides?.root;
-    // @ts-ignore
+    const paperOverrides = theme.components?.MuiPaper?.styleOverrides?.root as { backdropFilter?: string } | undefined;
     expect(paperOverrides?.backdropFilter).toBe("blur(16px)");
     
-    const cardOverrides = theme.components?.MuiCard?.styleOverrides?.root;
-    // @ts-ignore
+    const cardOverrides = theme.components?.MuiCard?.styleOverrides?.root as { backdropFilter?: string } | undefined;
     expect(cardOverrides?.backdropFilter).toBe("blur(16px)");
   });
 });

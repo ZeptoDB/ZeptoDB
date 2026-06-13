@@ -16,6 +16,7 @@
 
 #include "zeptodb/cluster/cluster_node.h"
 #include "zeptodb/cluster/cluster_node_base.h"
+#include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/auth/license_validator.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/sql/executor.h"
@@ -67,7 +68,7 @@ static void ensure_enterprise_license_di() {
 // Find a symbol_id whose PartitionRouter routes to `target_node` on `node`
 // under the given `table_id`.  Must use the table-aware overload because
 // ClusterNode::ingest_tick() routes via (msg.table_id, msg.symbol_id) and the
-// first CREATE TABLE gets table_id=1, not 0.
+// named table's stable id is not the same as the legacy table_id=0 route.
 static SymbolId find_symbol_routed_to(ClusterNode<SharedMemBackend>& node,
                                       uint16_t table_id,
                                       NodeId target_node) {
@@ -244,20 +245,32 @@ TEST(DistributedInsert, RoutesToRemoteOwner) {
 
     std::this_thread::sleep_for(100ms);
 
+    // Create an unrelated table on only one node first. `trades` must still
+    // get the same stable table_id on both nodes; otherwise remote INSERTs can
+    // be stored under one pod's id and queried under another pod's id.
+    ASSERT_TRUE(n2->execute_sql_local(
+        "CREATE TABLE warmup_only_on_n2 (symbol INT64, price INT64)").ok());
+
     // CREATE TABLE on BOTH nodes so the remote INSERT can resolve table_id.
     ASSERT_TRUE(n1->execute_sql_local(
         "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
     ASSERT_TRUE(n2->execute_sql_local(
         "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
 
-    // Resolve the real table_id (CREATE TABLE assigns the first table_id=1)
-    // and pick a symbol that routes to node 2 under that key.  Using the
-    // single-arg route(sym) — i.e. table_id=0 — would pick a key from a
-    // different hash slot than ingest_tick's (table_id, sym) lookup, causing
-    // flaky half-the-time mis-routes.
+    // Resolve the real stable table_id and pick a symbol that routes to node 2
+    // under that key.  Using the single-arg route(sym) — i.e. table_id=0 —
+    // would pick a key from a different hash slot than ingest_tick's
+    // (table_id, sym) lookup, causing flaky half-the-time mis-routes.
     uint16_t tid = n1->pipeline().schema_registry().get_table_id("trades");
     ASSERT_NE(tid, 0u);
-    SymbolId sym = find_symbol_routed_to(*n1, tid, 2);
+    EXPECT_EQ(tid, n2->pipeline().schema_registry().get_table_id("trades"));
+    SymbolId sym = 0;
+    for (SymbolId s = 1; s < 10000; ++s) {
+        if (n1->route(tid, s) == 2 && n1->route(s) == 1) {
+            sym = s;
+            break;
+        }
+    }
     ASSERT_NE(sym, 0u);
 
     zeptodb::sql::QueryExecutor ex(n1->pipeline());
@@ -282,6 +295,39 @@ TEST(DistributedInsert, RoutesToRemoteOwner) {
         << "tick must be routed to remote owner (node 2)";
     EXPECT_EQ(n1_after - n1_before, 0u)
         << "tick must NOT land on node 1 (non-owner receiving HTTP INSERT)";
+
+    EXPECT_TRUE(n2->pipeline().schema_registry().has_data("trades"))
+        << "remote tick RPC must make the table visible to SQL on the owner";
+
+    zeptodb::sql::QueryResultSet remote_count;
+    for (int i = 0; i < 200; ++i) {
+        remote_count = n2->execute_sql_local(
+            "SELECT count(*) FROM trades WHERE symbol = " + std::to_string(sym));
+        if (remote_count.ok() &&
+            !remote_count.rows.empty() &&
+            !remote_count.rows[0].empty() &&
+            remote_count.rows[0][0] == 1) {
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_TRUE(remote_count.ok()) << remote_count.error;
+    ASSERT_FALSE(remote_count.rows.empty());
+    ASSERT_FALSE(remote_count.rows[0].empty());
+    EXPECT_EQ(remote_count.rows[0][0], 1)
+        << "remote owner must expose routed ticks through local SQL";
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", p1, 1}, n1->pipeline());
+    coord.add_remote_node({"127.0.0.1", static_cast<uint16_t>(p2 + 100), 2});
+    auto coordinated_count = coord.execute_sql(
+        "SELECT count(*) FROM trades WHERE symbol = " + std::to_string(sym));
+    ASSERT_TRUE(coordinated_count.ok()) << coordinated_count.error;
+    ASSERT_FALSE(coordinated_count.rows.empty());
+    ASSERT_FALSE(coordinated_count.rows[0].empty());
+    EXPECT_EQ(coordinated_count.rows[0][0], 1)
+        << "coordinator single-symbol SELECT must use the same table-aware "
+           "route as distributed INSERT";
 
     n1->leave_cluster();
     n2->leave_cluster();

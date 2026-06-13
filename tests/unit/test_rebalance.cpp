@@ -15,10 +15,11 @@
 
 #include "test_port_helper.h"
 
+#include <algorithm>
 #include <chrono>
-#include <thread>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
+#include <thread>
 
 using namespace zeptodb::cluster;
 using namespace std::chrono_literals;
@@ -1324,6 +1325,17 @@ TEST_F(RebalanceTest, HistoryRecordedAfterAddNode) {
     EXPECT_FALSE(hist[0].cancelled);
 }
 
+TEST_F(RebalanceTest, AddNodeAppliesRouterWithoutConsensus) {
+    RebalanceManager mgr(router_, migrator_);
+
+    EXPECT_EQ(router_.node_count(), 1u);
+    EXPECT_TRUE(mgr.start_add_node(2));
+    EXPECT_TRUE(mgr.wait(10));
+
+    auto nodes = router_.all_nodes();
+    EXPECT_NE(std::find(nodes.begin(), nodes.end(), 2u), nodes.end());
+}
+
 TEST_F(RebalanceTest, HistoryRecordedAfterCancel) {
     RebalanceManager mgr(router_, migrator_);
     EXPECT_TRUE(mgr.start_add_node(2));
@@ -1398,6 +1410,37 @@ TEST_F(RebalanceTest, PartialMoveDataIntegrity) {
     auto r = ex_dst.execute("SELECT count(*) FROM trades WHERE symbol = 500");
     ASSERT_TRUE(r.ok());
     EXPECT_EQ(r.rows[0][0], 5);
+}
+
+TEST_F(RebalanceTest, PartialMovePreservesTradesTableId) {
+    router_.add_node(2);
+
+    zeptodb::sql::QueryExecutor ex_src(*src_pipeline_);
+    zeptodb::sql::QueryExecutor ex_dst(*dst_pipeline_);
+    ASSERT_TRUE(ex_src.execute(
+        "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
+    ASSERT_TRUE(ex_dst.execute(
+        "CREATE TABLE trades (symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
+
+    const uint16_t table_id = src_pipeline_->schema_registry().get_table_id("trades");
+    ASSERT_NE(table_id, 0u);
+    ASSERT_EQ(table_id, dst_pipeline_->schema_registry().get_table_id("trades"));
+
+    auto tick = make_tick(610, 10000000LL, 100, 1'000'000'000LL);
+    tick.table_id = table_id;
+    ASSERT_TRUE(src_pipeline_->ingest_tick(tick));
+    src_pipeline_->drain_sync(100);
+
+    RebalanceManager mgr(router_, migrator_);
+    std::vector<PartitionRouter::Move> moves;
+    moves.push_back({610, 1, 2});
+    EXPECT_TRUE(mgr.start_move_partitions(std::move(moves)));
+    EXPECT_TRUE(mgr.wait(10));
+
+    auto r = ex_dst.execute("SELECT count(*) FROM trades WHERE symbol = 610");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_FALSE(r.rows.empty());
+    EXPECT_EQ(r.rows[0][0], 1);
 }
 
 // 39. Pause/resume during partial-move

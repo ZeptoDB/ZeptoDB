@@ -1,5 +1,5 @@
 "use client";
-import { Box, Paper, Typography, Grid, Chip, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, Tooltip as MuiTooltip, LinearProgress } from "@mui/material";
+import { Box, Paper, Typography, Grid, Chip, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, LinearProgress } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { fetchNodes, fetchCluster, fetchMetricsHistory, fetchRebalanceStatus, fetchRebalanceHistory } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -87,7 +87,8 @@ function StatCard({ label, value, sub, color = "primary.main" }: { label: string
 }
 
 /** Convert raw metrics array into time-series keyed by timestamp for multi-node line chart */
-export function buildTimeSeries(metrics: MetricsPoint[], nodeIds: number[]) {
+export function buildTimeSeries(metrics: MetricsPoint[], _nodeIds: number[]) {
+  void _nodeIds;
   const byTime = new Map<number, Record<string, number>>();
   for (const m of metrics) {
     let entry = byTime.get(m.timestamp_ms);
