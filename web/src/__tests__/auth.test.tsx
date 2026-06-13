@@ -13,7 +13,7 @@ const mockSessionStorage = {
 };
 Object.defineProperty(globalThis, "sessionStorage", { value: mockSessionStorage });
 
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import { AuthProvider, useAuth } from "@/lib/auth";
 
 function TestConsumer() {

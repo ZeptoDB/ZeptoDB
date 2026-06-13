@@ -15,7 +15,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import EditIcon from "@mui/icons-material/Edit";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   fetchKeys, createKey, revokeKey, updateKey, fetchQueries, killQuery, fetchAudit,
   fetchTenants, createTenant, deleteTenant, fetchSessions, fetchKeyUsage
@@ -26,6 +26,63 @@ const MONO = { fontFamily: "'JetBrains Mono', monospace", fontSize: 13 };
 const HEADER = { fontWeight: 600, fontSize: 12, textTransform: "uppercase" as const, color: "text.secondary" };
 const ROLES = ["admin", "writer", "reader", "analyst", "metrics"];
 
+interface AdminKey {
+  id: string;
+  name: string;
+  role: string;
+  enabled: boolean;
+  allowed_symbols?: string[];
+  allowed_tables?: string[];
+  tenant_id?: string;
+  expires_at_ns?: number;
+  last_used_ns?: number;
+}
+
+interface ActiveQuery {
+  id: string;
+  subject: string;
+  sql: string;
+  started_at_ns?: number;
+}
+
+interface AuditEvent {
+  ts: number;
+  subject: string;
+  role: string;
+  action: string;
+  detail: string;
+  from: string;
+}
+
+interface TenantUsage {
+  active_queries: number;
+  total_queries: number;
+  rejected_queries: number;
+}
+
+interface TenantRow {
+  tenant_id: string;
+  name: string;
+  table_namespace?: string;
+  max_concurrent_queries?: number;
+  usage?: TenantUsage;
+}
+
+interface SessionRow {
+  user: string;
+  remote_addr: string;
+  connected_at_ns: number;
+  last_active_ns: number;
+  query_count: number;
+}
+
+interface KeyUsage {
+  id: string;
+  name: string;
+  last_used_ns?: number;
+  allowed_symbols?: string[];
+}
+
 function roleColor(role: string): "error" | "warning" | "info" | "success" | "default" {
   if (role === "admin") return "error";
   if (role === "writer") return "warning";
@@ -33,8 +90,8 @@ function roleColor(role: string): "error" | "warning" | "info" | "success" | "de
   return "default";
 }
 
-function timeAgo(ns: number) {
-  const sec = (Date.now() * 1e6 - ns) / 1e9;
+function timeAgo(ns: number, nowNs: number) {
+  const sec = (nowNs - ns) / 1e9;
   if (sec < 60) return `${Math.floor(sec)}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
@@ -43,7 +100,6 @@ function timeAgo(ns: number) {
 
 export default function AdminPage() {
   const { auth } = useAuth();
-  const qc = useQueryClient();
   const [tab, setTab] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -60,7 +116,7 @@ export default function AdminPage() {
 
   // ── Edit Key Dialog ──
   const [editOpen, setEditOpen] = useState(false);
-  const [editKey, setEditKey] = useState<any>(null);
+  const [editKey, setEditKey] = useState<AdminKey | null>(null);
   const [editSymbols, setEditSymbols] = useState("");
   const [editTables, setEditTables] = useState("");
   const [editTenantId, setEditTenantId] = useState("");
@@ -81,24 +137,25 @@ export default function AdminPage() {
   // ── Audit Filters ──
   const [auditSearch, setAuditSearch] = useState("");
   const [auditRoleFilter, setAuditRoleFilter] = useState("ALL");
+  const [nowNs, setNowNs] = useState(() => Date.now() * 1e6);
 
-  const { data: keys, refetch: refetchKeys } = useQuery({
+  const { data: keys, refetch: refetchKeys } = useQuery<AdminKey[] | null>({
     queryKey: ["admin-keys"], queryFn: () => fetchKeys(auth?.apiKey), refetchInterval: 10000,
   });
-  const { data: queries, refetch: refetchQueries } = useQuery({
+  const { data: queries, refetch: refetchQueries } = useQuery<ActiveQuery[] | null>({
     queryKey: ["admin-queries"], queryFn: () => fetchQueries(auth?.apiKey), refetchInterval: 3000,
   });
-  const { data: audit, refetch: refetchAudit } = useQuery({
+  const { data: audit, refetch: refetchAudit } = useQuery<AuditEvent[] | null>({
     queryKey: ["admin-audit"], queryFn: () => fetchAudit(auth?.apiKey, 500), refetchInterval: 5000,
   });
-  const { data: tenants, refetch: refetchTenants } = useQuery({
+  const { data: tenants, refetch: refetchTenants } = useQuery<TenantRow[] | null>({
     queryKey: ["admin-tenants"], queryFn: () => fetchTenants(auth?.apiKey), refetchInterval: 10000,
   });
-  const { data: sessions, refetch: refetchSessions } = useQuery({
+  const { data: sessions, refetch: refetchSessions } = useQuery<SessionRow[] | null>({
     queryKey: ["admin-sessions"], queryFn: () => fetchSessions(auth?.apiKey), refetchInterval: 5000,
   });
 
-  const { data: keyUsage } = useQuery({
+  const { data: keyUsage } = useQuery<KeyUsage | null>({
     queryKey: ["admin-key-usage", selectedKeyId],
     queryFn: () => selectedKeyId ? fetchKeyUsage(selectedKeyId, auth?.apiKey) : null,
     enabled: !!selectedKeyId,
@@ -126,7 +183,7 @@ export default function AdminPage() {
     if (!editKey) return;
     setError(null);
     try {
-      const patch: Record<string, unknown> = {};
+      const patch: Parameters<typeof updateKey>[1] = {};
       patch.symbols = editSymbols.trim() ? editSymbols.split(",").map(s => s.trim()).filter(Boolean) : [];
       patch.tables = editTables.trim() ? editTables.split(",").map(s => s.trim()).filter(Boolean) : [];
       patch.tenant_id = editTenantId.trim();
@@ -143,13 +200,14 @@ export default function AdminPage() {
     }
   }, [editKey, editSymbols, editTables, editTenantId, editEnabled, editExpiryDays, auth, refetchKeys]);
 
-  const openEdit = useCallback((k: any) => {
+  const openEdit = useCallback((k: AdminKey) => {
     setEditKey(k);
     setEditSymbols((k.allowed_symbols ?? []).join(", "));
     setEditTables((k.allowed_tables ?? []).join(", "));
     setEditTenantId(k.tenant_id ?? "");
     setEditEnabled(k.enabled);
-    setEditExpiryDays(k.expires_at_ns > 0 ? String(Math.max(1, Math.round((k.expires_at_ns - Date.now() * 1e6) / 86400e9))) : "");
+    const expiresAtNs = k.expires_at_ns ?? 0;
+    setEditExpiryDays(expiresAtNs > 0 ? String(Math.max(1, Math.round((expiresAtNs - Date.now() * 1e6) / 86400e9))) : "");
     setEditOpen(true);
   }, []);
 
@@ -202,13 +260,13 @@ export default function AdminPage() {
   // Derived filtered audit
   const filteredAudit = useMemo(() => {
     if (!audit) return [];
-    let list = audit;
+    let list: AuditEvent[] = audit;
     if (auditRoleFilter !== "ALL") {
-      list = list.filter((e: any) => e.role === auditRoleFilter);
+      list = list.filter((e) => e.role === auditRoleFilter);
     }
     if (auditSearch.trim()) {
       const q = auditSearch.toLowerCase();
-      list = list.filter((e: any) =>
+      list = list.filter((e) =>
         e.subject.toLowerCase().includes(q) ||
         e.action.toLowerCase().includes(q) ||
         e.detail.toLowerCase().includes(q) ||
@@ -221,7 +279,7 @@ export default function AdminPage() {
   const handleDownloadCsv = () => {
     if (!filteredAudit.length) return;
     const header = "Time,Subject,Role,Action,Detail,From\n";
-    const csv = filteredAudit.map((e: any) =>
+    const csv = filteredAudit.map((e) =>
       `${e.ts},"${e.subject}","${e.role}","${e.action}","${e.detail.replace(/"/g, '""')}","${e.from}"`
     ).join("\n");
     const blob = new Blob([header + csv], { type: "text/csv;charset=utf-8;" });
@@ -238,6 +296,11 @@ export default function AdminPage() {
     const t = setTimeout(() => setSuccess(null), 3000);
     return () => clearTimeout(t);
   }, [success]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowNs(Date.now() * 1e6), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3, maxWidth: 1200, mx: "auto" }}>
@@ -283,8 +346,9 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(keys ?? []).map((k: any) => {
-                  const expired = k.expires_at_ns > 0 && Date.now() * 1e6 > k.expires_at_ns;
+                {(keys ?? []).map((k) => {
+                  const expiresAtNs = k.expires_at_ns ?? 0;
+                  const expired = expiresAtNs > 0 && nowNs > expiresAtNs;
                   const scopeCount = (k.allowed_symbols?.length ?? 0) + (k.allowed_tables?.length ?? 0);
                   return (
                     <TableRow key={k.id} hover sx={expired ? { opacity: 0.5 } : undefined}>
@@ -313,9 +377,9 @@ export default function AdminPage() {
                       </TableCell>
                       <TableCell sx={{ ...MONO, color: "text.secondary", fontSize: 12 }}>{k.tenant_id || "—"}</TableCell>
                       <TableCell sx={{ fontSize: 12, color: expired ? "error.main" : "text.secondary" }}>
-                        {k.expires_at_ns > 0 ? timeAgo(k.expires_at_ns).replace(" ago", " left").replace("-", "") : "Never"}
+                        {expiresAtNs > 0 ? timeAgo(expiresAtNs, nowNs).replace(" ago", " left").replace("-", "") : "Never"}
                       </TableCell>
-                      <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{k.last_used_ns ? timeAgo(k.last_used_ns) : "Never"}</TableCell>
+                      <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{k.last_used_ns ? timeAgo(k.last_used_ns, nowNs) : "Never"}</TableCell>
                       <TableCell align="right">
                         <Tooltip title="View Usage">
                           <IconButton size="small" color="primary" onClick={() => { setSelectedKeyId(k.id); setUsageOpen(true); }}><VisibilityIcon fontSize="small" /></IconButton>
@@ -364,12 +428,12 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(queries ?? []).map((q: any) => (
+                {(queries ?? []).map((q) => (
                   <TableRow key={q.id} hover>
                     <TableCell sx={{ ...MONO, color: "text.secondary" }}>{q.id}</TableCell>
                     <TableCell sx={MONO}>{q.subject}</TableCell>
                     <TableCell sx={{ ...MONO, maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.sql}</TableCell>
-                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{q.started_at_ns ? timeAgo(q.started_at_ns) : "—"}</TableCell>
+                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{q.started_at_ns ? timeAgo(q.started_at_ns, nowNs) : "—"}</TableCell>
                     <TableCell align="right">
                       <Tooltip title="Kill query">
                         <IconButton size="small" color="error" onClick={() => handleKill(q.id)}><StopIcon fontSize="small" /></IconButton>
@@ -427,9 +491,9 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filteredAudit.map((e: any, i: number) => (
+                {filteredAudit.map((e, i) => (
                   <TableRow key={i} hover>
-                    <TableCell sx={{ fontSize: 11, color: "text.secondary", whiteSpace: "nowrap" }}>{e.ts ? timeAgo(e.ts) : "—"}</TableCell>
+                    <TableCell sx={{ fontSize: 11, color: "text.secondary", whiteSpace: "nowrap" }}>{e.ts ? timeAgo(e.ts, nowNs) : "—"}</TableCell>
                     <TableCell sx={MONO}>{e.subject}</TableCell>
                     <TableCell><Chip label={e.role} size="small" variant="outlined" sx={{ height: 20 }} /></TableCell>
                     <TableCell sx={MONO}>{e.action}</TableCell>
@@ -518,14 +582,14 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(tenants ?? []).map((t: any) => (
+                {(tenants ?? []).map((t) => (
                   <TableRow key={t.tenant_id} hover>
                     <TableCell sx={MONO}>{t.tenant_id}</TableCell>
                     <TableCell>{t.name}</TableCell>
                     <TableCell sx={{ ...MONO, color: "text.secondary" }}>{t.table_namespace || "—"}</TableCell>
                     <TableCell>{t.max_concurrent_queries || "∞"}</TableCell>
                     <TableCell>{t.usage ? `${t.usage.total_queries} / ${t.usage.active_queries}` : "—"}</TableCell>
-                    <TableCell sx={{ color: t.usage?.rejected_queries > 0 ? "error.main" : "text.secondary" }}>{t.usage?.rejected_queries || 0}</TableCell>
+                    <TableCell sx={{ color: (t.usage?.rejected_queries ?? 0) > 0 ? "error.main" : "text.secondary" }}>{t.usage?.rejected_queries ?? 0}</TableCell>
                     <TableCell align="right">
                       <Tooltip title="Drop Tenant">
                         <IconButton size="small" color="error" onClick={() => handleDeleteTenant(t.tenant_id)}><DeleteIcon fontSize="small" /></IconButton>
@@ -563,12 +627,12 @@ export default function AdminPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(sessions ?? []).map((s: any, i: number) => (
+                {(sessions ?? []).map((s, i) => (
                   <TableRow key={i} hover>
                     <TableCell sx={MONO}>{s.user}</TableCell>
                     <TableCell sx={{ ...MONO, color: "text.secondary" }}>{s.remote_addr}</TableCell>
-                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{timeAgo(s.connected_at_ns)}</TableCell>
-                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{timeAgo(s.last_active_ns)}</TableCell>
+                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{timeAgo(s.connected_at_ns, nowNs)}</TableCell>
+                    <TableCell sx={{ fontSize: 12, color: "text.secondary" }}>{timeAgo(s.last_active_ns, nowNs)}</TableCell>
                     <TableCell sx={MONO}>{s.query_count}</TableCell>
                   </TableRow>
                 ))}
@@ -589,7 +653,7 @@ export default function AdminPage() {
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "16px !important" }}>
           {createdKey ? (
             <Box>
-              <Alert severity="success" sx={{ mb: 2 }}>Key created — copy it now, it won't be shown again.</Alert>
+              <Alert severity="success" sx={{ mb: 2 }}>Key created — copy it now, it won&apos;t be shown again.</Alert>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1, p: 1.5, bgcolor: "background.paper", borderRadius: 1, border: "1px solid", borderColor: "divider" }}>
                 <Typography sx={{ ...MONO, flex: 1, wordBreak: "break-all" }}>{createdKey}</Typography>
                 <Tooltip title="Copy">
@@ -679,7 +743,7 @@ export default function AdminPage() {
               </Box>
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">Last Used</Typography>
-                <Typography sx={MONO}>{keyUsage.last_used_ns ? timeAgo(keyUsage.last_used_ns) : "Never used"}</Typography>
+                <Typography sx={MONO}>{keyUsage.last_used_ns ? timeAgo(keyUsage.last_used_ns, nowNs) : "Never used"}</Typography>
               </Box>
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">Allowed Symbols (Filter)</Typography>

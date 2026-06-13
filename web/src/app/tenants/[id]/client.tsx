@@ -5,9 +5,14 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchTenant } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useParams, useRouter } from "next/navigation";
-import { useRef } from "react";
+import { useEffect, useState } from "react";
 
 const MONO = { fontFamily: "'JetBrains Mono', monospace" };
+interface RateState {
+  prevTotal: number | null;
+  prevTs: number | null;
+  history: number[];
+}
 
 /** Circular gauge with animated arc */
 function Gauge({ label, value, max, unit = "", color = "#4D7CFF" }: {
@@ -100,9 +105,11 @@ export default function TenantDetailPage() {
   const params = useParams<{ id: string }>();
   const tenantId = params.id;
 
-  // Track query rate over time
-  const prevRef = useRef<{ total: number; ts: number } | null>(null);
-  const rateHistoryRef = useRef<number[]>([]);
+  const [rateState, setRateState] = useState<RateState>({
+    prevTotal: null,
+    prevTs: null,
+    history: [],
+  });
 
   const { data: tenant } = useQuery({
     queryKey: ["tenant", tenantId],
@@ -110,23 +117,28 @@ export default function TenantDetailPage() {
     refetchInterval: 3000,
   });
 
-  // Compute query rate delta
-  if (tenant?.usage) {
-    const now = Date.now();
-    const total = tenant.usage.total_queries ?? 0;
-    if (prevRef.current) {
-      const dt = (now - prevRef.current.ts) / 1000;
-      if (dt > 0.5) {
-        const rate = Math.max(0, Math.round((total - prevRef.current.total) / dt));
-        const hist = rateHistoryRef.current;
-        hist.push(rate);
-        if (hist.length > 30) hist.shift();
-        prevRef.current = { total, ts: now };
-      }
-    } else {
-      prevRef.current = { total, ts: now };
-    }
-  }
+  const totalQueries = tenant?.usage?.total_queries;
+
+  useEffect(() => {
+    if (totalQueries == null) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      setRateState((prev) => {
+        if (prev.prevTotal == null || prev.prevTs == null) {
+          return { prevTotal: totalQueries, prevTs: now, history: prev.history };
+        }
+        const dt = (now - prev.prevTs) / 1000;
+        if (dt <= 0.5) return prev;
+        const rate = Math.max(0, Math.round((totalQueries - prev.prevTotal) / dt));
+        return {
+          prevTotal: totalQueries,
+          prevTs: now,
+          history: [...prev.history.slice(-29), rate],
+        };
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [totalQueries]);
 
   if (tenant === null) {
     return (
@@ -184,8 +196,8 @@ export default function TenantDetailPage() {
         {rejectionRate > 0 && (
           <Chip label={`${rejectionRate.toFixed(1)}% rejected`} size="small" color="error" variant="outlined" sx={{ ...MONO, fontSize: 10 }} />
         )}
-        {rateHistoryRef.current.length > 1 && (
-          <RateSparkline history={rateHistoryRef.current} color="#00F5D4" />
+        {rateState.history.length > 1 && (
+          <RateSparkline history={rateState.history} color="#00F5D4" />
         )}
       </Paper>
 

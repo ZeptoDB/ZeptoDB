@@ -28,7 +28,10 @@ credentials, and enable real polling only when the optional SDK is present.
 - `cmake --build build -j$(nproc) --target zepto_tests` — PASS.
 - `./build/tests/zepto_tests --gtest_filter='KinesisConsumerTest.*'` — PASS,
   14 tests.
-- aarch64 / Graviton verification not run yet for this P5 change.
+- Full local x86_64 `./build/tests/zepto_tests` — PASS, 1477 passed,
+  1 live S3 opt-in skipped, 3 disabled.
+- aarch64 / Graviton pre-push `zepto_tests` — PASS, 1464 tests,
+  0 failures, 0 errors, 3 disabled.
 
 ## Follow-ups
 

@@ -1,5 +1,5 @@
 "use client";
-import { Box, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, TableContainer, Chip } from "@mui/material";
+import { Box, Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, TableContainer } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTenants } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -9,11 +9,22 @@ import UpgradeCard from "@/components/UpgradeCard";
 
 const MONO = { fontFamily: "'JetBrains Mono', monospace", fontSize: 13 };
 
+interface TenantRow {
+  tenant_id: string;
+  name: string;
+  table_namespace?: string;
+  max_concurrent_queries?: number;
+  usage?: {
+    active_queries?: number;
+    total_queries?: number;
+  };
+}
+
 export default function TenantsPage() {
   const { auth } = useAuth();
   const router = useRouter();
   const license = useLicense();
-  const { data: tenants } = useQuery({
+  const { data: tenants } = useQuery<TenantRow[] | null>({
     queryKey: ["tenants"], queryFn: () => fetchTenants(auth?.apiKey), refetchInterval: 5000,
   });
 
@@ -38,7 +49,7 @@ export default function TenantsPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {(tenants ?? []).map((t: any) => (
+              {(tenants ?? []).map((t) => (
                 <TableRow key={t.tenant_id} hover sx={{ cursor: "pointer" }} onClick={() => router.push(`/tenants/${t.tenant_id}`)}>
                   <TableCell sx={MONO}>{t.tenant_id}</TableCell>
                   <TableCell>{t.name}</TableCell>
