@@ -38,6 +38,10 @@ when code reached `main`.
   release workflow already updates `ZeptoDB/homebrew-tap` through
   `repository_dispatch`, and the in-repo gitlink had no `.gitmodules` entry,
   which caused checkout cleanup warnings on the self-hosted runner.
+- Hardened the release binary build for CMake 3.31 and Clang 19 by installing
+  `clang-tools-19` and passing `clang-scan-deps-19` explicitly to CMake. The
+  first `v0.1.0` release attempt failed on ARM64 because CMake generated Ninja
+  dependency-scanning rules with `CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS-NOTFOUND`.
 
 ## Verification
 
@@ -60,6 +64,11 @@ when code reached `main`.
 - Release-promotion PR check diagnosis: `Graviton ARM64 Build & Test` reached
   `RebalanceTest.PartialMoveMultipleSymbols` with passing tests before the
   15-minute job timeout cancelled the run; no unit-test assertion failed.
+- Release-promotion PR rerun: `Graviton ARM64 Build & Test` completed
+  successfully in 17m32s after the timeout increase.
+- Failed `v0.1.0` release diagnosis: ARM64 binary build failed at
+  `Build ZeptoDB` with missing `clang-scan-deps`, and the AMD64 matrix leg was
+  cancelled after the matrix failure.
 
 ## Follow-ups
 
