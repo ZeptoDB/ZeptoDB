@@ -57,7 +57,7 @@ from .streaming import StreamingSession
 from .arrow import ArrowSession
 from .utils import check_dependencies, versions
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = [
     "connect",
     "ZeptoConnection",
