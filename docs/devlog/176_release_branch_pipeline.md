@@ -31,6 +31,13 @@ when code reached `main`.
   settings in `docs/deployment/RELEASE_PROCESS.md`.
 - Added `docs/deployment/BRANCH_RELEASE_POLICY.md` as the initial v0.1 policy
   for `dev`, `main`, protected release tags, and the release bot.
+- Increased the Graviton ARM64 workflow timeout from 15 to 30 minutes after
+  the release-promotion PR showed the suite still making progress when the
+  old timeout killed it.
+- Removed the stale `homebrew-tap` gitlink from the repository index. The
+  release workflow already updates `ZeptoDB/homebrew-tap` through
+  `repository_dispatch`, and the in-repo gitlink had no `.gitmodules` entry,
+  which caused checkout cleanup warnings on the self-hosted runner.
 
 ## Verification
 
@@ -50,6 +57,9 @@ when code reached `main`.
 - `git diff --check`.
 - `git diff --name-only | bash .github/scripts/check_docs_updated.sh`.
 - `bash .github/scripts/check_english_first.sh`.
+- Release-promotion PR check diagnosis: `Graviton ARM64 Build & Test` reached
+  `RebalanceTest.PartialMoveMultipleSymbols` with passing tests before the
+  15-minute job timeout cancelled the run; no unit-test assertion failed.
 
 ## Follow-ups
 
