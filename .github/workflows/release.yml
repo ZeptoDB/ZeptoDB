@@ -17,6 +17,8 @@ jobs:
   # ── Build binaries (matrix: amd64 + arm64) ──
   build:
     if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     strategy:
       matrix:
         include:
@@ -33,6 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            release-ccache-${{ matrix.arch }}-
+
       # Install LLVM 19
       - name: Install LLVM 19
         run: |
@@ -46,9 +55,14 @@ jobs:
 
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang-19 clang-tools-19 llvm-19-dev cmake ninja-build git pkg-config \
+            clang-19 clang-tools-19 llvm-19-dev cmake ninja-build git pkg-config ccache \
             libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
             libarrow-dev libarrow-flight-dev libparquet-dev
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
 
       # Build Highway
       - name: Build Highway
@@ -82,6 +96,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang-19 \
             -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
             -DCMAKE_CXX_FLAGS="-march=${{ matrix.march }} -mtune=generic -O3" \
             -DAPEX_CLOUD_NATIVE=ON \
@@ -98,6 +114,10 @@ jobs:
             -DBUILD_TESTS=OFF
           ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli
           strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli
+
+      - name: Print ccache stats
+        if: always()
+        run: ccache --show-stats || true
 
       # Package
       - name: Package binaries
