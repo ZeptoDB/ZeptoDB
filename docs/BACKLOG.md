@@ -1,16 +1,21 @@
 # ZeptoDB Backlog
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full local C++ suite:
-> 1478 tests run (1477 passed, 1 live S3 opt-in skipped; 3 disabled)
+> 1499 tests run (1498 passed, 1 live S3 opt-in skipped; 3 disabled)
 >
 > Last cleaned: 2026-06-13
 >
-> Devlog: last `179_physical_ai_agent_memory_demo.md` → next `180_*.md`
+> Devlog: last `180_p5_pulsar_consumer.md` → next `181_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P5 Apache Pulsar consumer** (devlog 180) —
+  `PulsarConsumer` adds a Pulsar topic/subscription ingress path with shared
+  JSON/BINARY/JSON_HUMAN decoders, table-aware routing, backpressure retries,
+  Prometheus metrics, subscription type controls, and optional live broker
+  polling behind `-DZEPTO_USE_PULSAR=ON`.
 - ✅ **Physical AI Agent Memory demo** (devlog 179) —
   `examples/agent_memory/physical_ai_agent_demo.py` now loads realistic AGV,
   ROS odometry/LaserScan replay, and cold-chain telemetry rows; seeds scoped
@@ -295,9 +300,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Kafka Connect Sink** | Enterprise pipeline standard | M |
 | **CDC connector (Debezium)** | PostgreSQL/MySQL → real-time sync | M |
-| **Apache Pulsar consumer** | Kafka alternative | S |
+| **Kafka Connect Sink** | Enterprise pipeline standard | M |
 
 > ✅ Done: MQTT consumer (devlog 081) — QoS 0/1/2, topic wildcards,
 > shared Kafka JSON/BINARY/JSON_HUMAN decoders, Paho optional-dep pattern.
@@ -307,7 +311,9 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 > `outputs.execd` line-protocol stdin → ZeptoDB HTTP SQL INSERT writer.
 > AWS Kinesis consumer (devlog 175) — shard polling surface with shared
 > JSON/BINARY/JSON_HUMAN decoders, table-aware routing, metrics, and no-SDK
-> fallback.
+> fallback. Apache Pulsar consumer (devlog 180) — topic/subscription polling
+> with Shared/Exclusive/Failover/KeyShared subscription modes, shared decoders,
+> table-aware routing, metrics, and no-SDK fallback.
 
 ---
 
@@ -403,15 +409,15 @@ No open P9 backlog items remain.
 | **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
 | **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
-| **P5** | Data Pipelines | 3 | Apache Pulsar consumer (S) → CDC connector (M) → Kafka Connect Sink (M) |
+| **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 34 items + 4 manual tasks**
+**Total open: 33 items + 4 manual tasks**
 
-**Critical path: P5 Apache Pulsar consumer → P2 launch collateral**
+**Critical path: P5 CDC connector → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

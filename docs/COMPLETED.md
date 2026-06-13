@@ -6,6 +6,15 @@ Last updated: 2026-06-13
 
 ## Latest
 
+- [x] **P5 Apache Pulsar consumer** (devlog 180) —
+  `PulsarConsumer` now mirrors the Kafka/MQTT/Kinesis feed pattern for Pulsar:
+  shared JSON/BINARY/JSON_HUMAN decoders, table-aware `TickMessage` stamping,
+  single-node and cluster routing, backpressure retries, Prometheus metric
+  formatting, config validation, and optional live broker polling behind
+  `-DZEPTO_USE_PULSAR=ON`. Default builds keep decode/routing tests available
+  and return false from `start()` when the Pulsar C++ client is absent. Closes
+  BACKLOG P5 "Apache Pulsar consumer".
+
 - [x] **Physical AI Agent Memory demo** (devlog 179) —
   `examples/agent_memory/physical_ai_agent_demo.py` now loads realistic AGV,
   ROS odometry/LaserScan replay, and cold-chain telemetry rows; seeds scoped

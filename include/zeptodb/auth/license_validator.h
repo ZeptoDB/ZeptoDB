@@ -34,7 +34,7 @@ enum class Feature : uint32_t {
     MIGRATION       = 1u << 5,
     GEO_REPLICATION = 1u << 6,
     ROLLING_UPGRADE = 1u << 7,
-    IOT_CONNECTORS  = 1u << 8,  // MQTT / OPC-UA / ROS 2; future: Pulsar, Kinesis
+    IOT_CONNECTORS  = 1u << 8,  // MQTT / OPC-UA / ROS 2 / Kinesis / Pulsar
 };
 
 // ============================================================================

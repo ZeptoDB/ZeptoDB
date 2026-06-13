@@ -937,8 +937,8 @@ by stable table id for connector code that resolves names once.
 ### Feed handlers
 
 `KafkaConfig::table_name` / `MqttConfig::table_name` /
-`KinesisConfig::table_name` resolve the id once inside `set_pipeline()` and
-stamp it on every decoded tick automatically:
+`KinesisConfig::table_name` / `PulsarConfig::table_name` resolve the id once
+inside `set_pipeline()` and stamp it on every decoded tick automatically:
 
 ```cpp
 zeptodb::feeds::KafkaConfig cfg;
@@ -970,6 +970,32 @@ kinesis.set_pipeline(&pipeline);
 // Testable without AWS:
 const char* payload = R"({"symbol":"AAPL","price":150.25,"volume":100})";
 kinesis.on_record(payload, std::strlen(payload));
+```
+
+Pulsar uses the same decode formats as Kafka, MQTT, and Kinesis. Default builds
+keep the pure decode/routing path testable; live broker polling requires
+`-DZEPTO_USE_PULSAR=ON` and the Apache Pulsar C++ client:
+
+```cpp
+#include "zeptodb/feeds/pulsar_consumer.h"
+#include <cstring>
+
+zeptodb::feeds::PulsarConfig pcfg;
+pcfg.service_url = "pulsar://localhost:6650";
+pcfg.topic = "persistent://public/default/robot-telemetry";
+pcfg.subscription_name = "zepto-physical-ai";
+pcfg.subscription_type = zeptodb::feeds::PulsarSubscriptionType::Shared;
+pcfg.table_name = "robot_telemetry";
+pcfg.format = zeptodb::feeds::MessageFormat::JSON_HUMAN;
+pcfg.symbol_map = {{"agv_17_lidar_clearance", 17}};
+
+zeptodb::feeds::PulsarConsumer pulsar(pcfg);
+pulsar.set_pipeline(&pipeline);
+
+// Testable without a broker:
+const char* payload =
+    R"({"symbol":"agv_17_lidar_clearance","price":0.72,"volume":1})";
+pulsar.on_message(payload, std::strlen(payload));
 ```
 
 FIX / ITCH / Binance parser classes expose `set_table_id(tid)` and

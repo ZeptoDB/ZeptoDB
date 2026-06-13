@@ -62,6 +62,7 @@ option(ZEPTO_USE_LTO        "Enable Link-Time Optimization (GCC -flto)" OFF)
 option(ZEPTO_USE_KAFKA      "Enable Apache Kafka consumer (requires librdkafka++)" OFF)
 option(ZEPTO_USE_MQTT       "Enable MQTT consumer (requires paho-mqttpp3)" OFF)
 option(ZEPTO_USE_KINESIS    "Enable AWS Kinesis consumer (requires AWS SDK C++ kinesis)" OFF)
+option(ZEPTO_USE_PULSAR     "Enable Apache Pulsar consumer (requires pulsar-client-cpp)" OFF)
 option(ZEPTO_USE_OPCUA      "Enable OPC-UA consumer (requires open62541)" OFF)
 option(ZEPTO_USE_ROS2       "Enable ROS 2 scalar subscriber and rosbag2 import/replay (requires ROS 2 packages)" OFF)
 option(ZEPTO_USE_FLIGHT    "Enable Arrow Flight RPC server"  ON)
@@ -162,6 +163,23 @@ if(ZEPTO_USE_MQTT)
     endif()
 else()
     set(ZEPTO_HAS_MQTT OFF)
+endif()
+
+# --- Apache Pulsar C++ client (optional) ---
+if(ZEPTO_USE_PULSAR)
+    find_path(PULSAR_CPP_INCLUDE_DIR pulsar/Client.h QUIET)
+    find_library(PULSAR_CPP_LIB NAMES pulsar pulsarwithdeps QUIET)
+    if(PULSAR_CPP_INCLUDE_DIR AND PULSAR_CPP_LIB)
+        message(STATUS "pulsar-client-cpp: ${PULSAR_CPP_LIB} (Pulsar consumer enabled)")
+        set(ZEPTO_HAS_PULSAR ON)
+    else()
+        message(STATUS "pulsar-client-cpp: not found - Pulsar consumer disabled")
+        message(STATUS "  Install: sudo dnf install -y pulsar-client-devel")
+        set(ZEPTO_USE_PULSAR OFF)
+        set(ZEPTO_HAS_PULSAR OFF)
+    endif()
+else()
+    set(ZEPTO_HAS_PULSAR OFF)
 endif()
 
 # --- open62541 (OPC-UA consumer, optional) ---
@@ -1035,6 +1053,27 @@ else()
     message(STATUS "zepto_kinesis: decode/routing only (no AWS SDK Kinesis)")
 endif()
 
+# --- Apache Pulsar Consumer (depends on zepto_core + zepto_cluster + zepto_kafka for shared decoders) ---
+add_library(zepto_pulsar STATIC
+    src/feeds/pulsar_consumer.cpp
+)
+target_include_directories(zepto_pulsar PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(zepto_pulsar PUBLIC
+    zepto_core
+    zepto_cluster
+    zepto_kafka
+)
+if(ZEPTO_HAS_PULSAR)
+    target_compile_definitions(zepto_pulsar PUBLIC ZEPTO_PULSAR_AVAILABLE=1)
+    target_include_directories(zepto_pulsar PUBLIC ${PULSAR_CPP_INCLUDE_DIR})
+    target_link_libraries(zepto_pulsar PUBLIC ${PULSAR_CPP_LIB})
+    message(STATUS "zepto_pulsar: Pulsar broker connectivity enabled")
+else()
+    message(STATUS "zepto_pulsar: decode/routing only (no pulsar-client-cpp)")
+endif()
+
 # --- Telegraf external output (outputs.execd line protocol writer) ---
 add_library(zepto_telegraf_output STATIC
     src/feeds/telegraf_output.cpp
@@ -1563,6 +1602,7 @@ message(STATUS "  Parquet:       ${ZEPTO_USE_PARQUET}")
 message(STATUS "  S3 Upload:     ${ZEPTO_USE_S3}")
 message(STATUS "  Arrow Flight:  ${ZEPTO_HAS_FLIGHT}")
 message(STATUS "  Kinesis:       ${ZEPTO_HAS_KINESIS}")
+message(STATUS "  Pulsar:        ${ZEPTO_HAS_PULSAR}")
 message(STATUS "  OPC-UA:        ${ZEPTO_HAS_OPCUA}")
 message(STATUS "  OPC-UA HA:     ${ZEPTO_OPCUA_HAS_HISTORIZING}")
 message(STATUS "  DuckDB:        ${ZEPTO_ENABLE_DUCKDB}")

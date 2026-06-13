@@ -384,7 +384,7 @@ feeds:
     topic: market-data
     group_id: zepto-consumer
     auto_offset_reset: latest         # latest | earliest
-    format: json                      # json | binary | itch
+    format: json                      # json | binary | json_human
     price_scale: 10000.0
     poll_timeout_ms: 100
     batch_size: 1024
@@ -394,6 +394,21 @@ feeds:
     symbol_map:
       AAPL: 1
       GOOGL: 2
+
+  pulsar:
+    enabled: false
+    service_url: pulsar://localhost:6650
+    topic: persistent://public/default/market-data
+    subscription_name: zepto-consumer
+    subscription_type: shared         # shared | exclusive | failover | key_shared
+    initial_position: latest          # latest | earliest
+    format: json                      # json | binary | json_human
+    receive_timeout_ms: 100
+    max_messages_per_poll: 1024
+    receiver_queue_size: 1000
+    table_name: trades                # optional, empty = legacy table_id 0
+    backpressure_retries: 3
+    backpressure_sleep_us: 100
 
   fix:
     enabled: false
