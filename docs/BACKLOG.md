@@ -5,12 +5,18 @@
 >
 > Last cleaned: 2026-06-13
 >
-> Devlog: last `178_release_pipeline_parallel_docker_cache.md` → next `179_*.md`
+> Devlog: last `179_physical_ai_agent_memory_demo.md` → next `180_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **Physical AI Agent Memory demo** (devlog 179) —
+  `examples/agent_memory/physical_ai_agent_demo.py` now loads realistic AGV,
+  ROS odometry/LaserScan replay, and cold-chain telemetry rows; seeds scoped
+  Agent Memory with route, sensor, and quality-policy knowledge; retrieves
+  context for Physical AI decisions; and records AgentOps context trace/replay
+  rows.
 - ✅ **Release pipeline parallel Docker cache** (devlog 178) —
   the tag-triggered release workflow now warms Docker BuildKit cache in
   parallel with the amd64/arm64 binary matrix, then performs the Docker Hub

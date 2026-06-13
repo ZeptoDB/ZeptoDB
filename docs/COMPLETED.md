@@ -6,6 +6,14 @@ Last updated: 2026-06-13
 
 ## Latest
 
+- [x] **Physical AI Agent Memory demo** (devlog 179) —
+  `examples/agent_memory/physical_ai_agent_demo.py` now loads realistic AGV,
+  ROS odometry/LaserScan replay, and cold-chain telemetry rows; seeds scoped
+  Agent Memory with route, sensor, and quality-policy knowledge; retrieves
+  context for Physical AI decisions; and records AgentOps context trace/replay
+  rows. Pytest coverage exercises multi-table inserts, memory metadata,
+  trace/replay SQL, empty rows, and epoch-zero timestamps.
+
 - [x] **Release pipeline speedups** (devlogs 177-178) —
   release binary builds now use per-architecture ccache, Docker context upload
   is trimmed through `.dockerignore`, non-code Graviton runs are skipped, and
