@@ -352,6 +352,105 @@ Client Query(VWAP, symbol=AAPL, range=24h)
     → Final aggregation at client
 ```
 
+### 4-D. Replication Cluster vs MPP Cluster
+
+This section is the product and engineering line between a replicated
+single-node OLAP deployment and a ZeptoDB distributed cluster. The short
+version:
+
+- **Replication cluster**: copy the same logical database or partition log to
+  one or more replicas for high availability, failover, and read redundancy.
+- **MPP cluster**: split ownership of data across nodes, route writes to the
+  owning shard, push query fragments to the relevant nodes, and merge partial
+  results at a coordinator.
+- **ZeptoDB uses both layers**: replication protects each owned shard, while
+  MPP-style placement and scatter-gather let the cluster scale beyond the
+  memory, ingest, and CPU limits of one machine.
+
+Replication-only architectures are valuable when the primary problem is
+availability or read fan-out. They do not by themselves remove the single-node
+write owner, memory ceiling, or hot-partition CPU ceiling: each hot stream still
+lands on one logical owner before it is copied elsewhere. This is the key
+difference from embedded-DuckDB replica patterns, cloud-attached DuckDB
+services, and Arc-style replicated OLAP deployments. Those systems can make one
+database easier to serve or share, but the core scaling unit is still a
+replicated database or file set.
+
+ZeptoDB's distributed design instead makes shard ownership explicit. The
+cluster routes a tick by `(table_id, symbol_id, hour_epoch)` to a partition
+owner through `PartitionRouter`; that owner commits into the hot in-memory
+store and WAL, and replicas receive WAL entries according to the configured
+replication mode. Queries either route directly to the owner for single-shard
+work or scatter to multiple nodes and merge partial results for cross-shard
+work.
+
+| Capability | Replication cluster | MPP cluster | ZeptoDB target |
+|------------|---------------------|-------------|----------------|
+| Primary purpose | HA, failover, read redundancy | Horizontal write, storage, and compute scale | Both: RF-based HA plus shard-aware scale-out |
+| Data ownership | One logical owner copied to replicas | Partitions owned by different nodes | `PartitionRouter` owns table/symbol/time placement |
+| Write scaling | Limited by primary owner or replicated log leader | Scales with number of partition owners | HTTP/SQL/Python/feed ingest route to partition owners |
+| Query scaling | Read replicas help repeated local queries | Query fragments run near owned data | Direct routing for affinity queries, scatter-gather for cross-node queries |
+| Failure behavior | Promote or read from replica | Reassign partitions and re-replicate | WAL replication, fencing, failover manager, live rebalancing |
+| Sales message | "More available single database" | "Scale beyond one database node" | "Low-latency hot time-series shards with HA and distributed reads" |
+
+#### Current ZeptoDB status
+
+Implemented today:
+
+1. `PartitionRouter` and consistent hashing provide explicit node placement.
+2. Feed, HTTP/SQL, and Python ingest paths can route writes through
+   `ClusterNodeBase::ingest_tick` / `ingest_tick_batch`.
+3. `WalReplicator` supports async, sync, and quorum replication modes for HA.
+4. `QueryCoordinator` supports direct routing and scatter-gather for supported
+   distributed SELECT shapes, including partial aggregate merging.
+5. Fencing tokens, coordinator HA, K8s lease support, and ring broadcasts
+   protect split-brain-sensitive write paths.
+6. Live rebalancing migrates partitions with dual-write during movement.
+7. DDL replication is fire-and-forget for benchmark and operational
+   convenience; strongly consistent schema logs remain out of scope today.
+
+Not yet a full general-purpose MPP SQL engine:
+
+1. The distributed planner is rule-based, not cost-based.
+2. Arbitrary cross-node joins, distributed windows, DISTINCT, and full
+   subquery/CTE plans still have documented gaps in Section 7.
+3. Replica reads are not yet a primary query-placement policy; owners remain
+   the default read target.
+4. RDMA/CXL data-plane paths are architectural targets; the production-safe
+   TCP/RPC path remains the current portable implementation for many flows.
+5. Global transactions across shards are not part of the design. The hot path
+   is per-partition durable ingest, not distributed OLTP.
+
+#### Design north star
+
+ZeptoDB should keep replication as a durability and availability layer, not as
+the main scale-out story. The scale-out story is owned placement:
+
+```
+Client / feed
+  -> route(table_id, symbol_id, hour_epoch)
+  -> partition owner writes hot column store + WAL
+  -> replicas receive WAL for HA
+  -> query coordinator routes direct or scatter-gather reads
+```
+
+This matters most for Physical AI, IoT, market data, and observability streams:
+the hard problem is continuous high-rate ingest into hot, immediately queryable
+time-series partitions. Replicating one saturated node does not create more hot
+write capacity; adding owners does.
+
+The public positioning should therefore be precise:
+
+- ZeptoDB is **not** "DuckDB with replicas".
+- ZeptoDB is **not yet** a fully general distributed SQL optimizer.
+- ZeptoDB **is** a shard-owned, low-latency time-series cluster with HA,
+  write-sharding, selected MPP-style query paths, and a roadmap toward deeper
+  distributed planning.
+
+Future work that deepens the MPP side lives in P8/P10: RDMA remote scans,
+RDMA WAL replication, replica-aware reads, cost-based distributed planning,
+broadcast or replicated dimension tables, and pluggable partition strategies.
+
 ---
 
 ## 5. Scaling Scenarios

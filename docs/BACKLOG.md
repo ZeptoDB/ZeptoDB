@@ -5,12 +5,19 @@
 >
 > Last cleaned: 2026-06-13
 >
-> Devlog: last `180_p5_pulsar_consumer.md` → next `181_*.md`
+> Devlog: last `181_p2_replication_vs_mpp_cluster.md` → next `182_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P2 replication-vs-MPP cluster design doc** (devlog 181) —
+  `docs/design/phase_c_distributed.md` now formalises ZeptoDB's distributed
+  positioning: replication is the HA/durability layer, while shard ownership,
+  routed writes, and scatter-gather query paths are the MPP scale-out layer.
+  The section includes a comparison table, current implementation status, and
+  honest non-goals so launch collateral can say "scale beyond a single
+  DuckDB-style node" without overstating the distributed SQL planner.
 - ✅ **P5 Apache Pulsar consumer** (devlog 180) —
   `PulsarConsumer` adds a Pulsar topic/subscription ingress path with shared
   JSON/BINARY/JSON_HUMAN decoders, table-aware routing, backpressure retries,
@@ -268,7 +275,6 @@
 | Task | Effort | Notes |
 |------|--------|-------|
 | **YouTube / Loom demo video** | S | Unblocked by devlog 115: `/solutions` is a 5-vertical script-ready walkthrough (Physical AI, Finance, Game, IoT, Observability). Multi-industry messaging foundation is live. |
-| **Replication-cluster vs MPP-cluster design doc** | S | New section in `docs/design/phase_c_distributed.md` formalising the architectural diff vs Arc/MotherDuck/DuckDB-replicas (HA + write-sharding vs true scatter-gather). Doubles as an enterprise-sales artefact ("scale beyond a single DuckDB") and an internal design north star. From Arc competitive analysis (2026-05-13). |
 
 Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `docs/community/`.
 
@@ -406,7 +412,7 @@ No open P9 backlog items remain.
 
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
-| **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
+| **P2** | Visibility & Launch | 1 + 4 manual | Demo video → Show HN → Reddit |
 | **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
 | **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
@@ -416,8 +422,8 @@ No open P9 backlog items remain.
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 33 items + 4 manual tasks**
+**Total open: 32 items + 4 manual tasks**
 
-**Critical path: P5 CDC connector → P2 launch collateral**
+**Critical path: P5 CDC connector → P2 demo video / launch collateral**
 
-> **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.
+> **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) the MPP-cluster vs replication-cluster distinction is now captured in `docs/design/phase_c_distributed.md` (devlog 181) as a launch and enterprise-sales artefact. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

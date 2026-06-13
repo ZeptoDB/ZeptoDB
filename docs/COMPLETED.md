@@ -6,6 +6,16 @@ Last updated: 2026-06-13
 
 ## Latest
 
+- [x] **P2 replication-vs-MPP cluster design doc** (devlog 181) —
+  `docs/design/phase_c_distributed.md` now includes the formal comparison
+  between replication clusters and MPP clusters. It defines replication as
+  ZeptoDB's durability/HA layer, MPP-style shard ownership as the write and
+  query scale-out layer, and clearly marks current capabilities versus
+  non-goals: no full cost-based distributed SQL optimizer yet, no arbitrary
+  cross-node joins/windows/DISTINCT yet, and no global cross-shard
+  transactions. Closes BACKLOG P2 "Replication-cluster vs MPP-cluster design
+  doc".
+
 - [x] **P5 Apache Pulsar consumer** (devlog 180) —
   `PulsarConsumer` now mirrors the Kafka/MQTT/Kinesis feed pattern for Pulsar:
   shared JSON/BINARY/JSON_HUMAN decoders, table-aware `TickMessage` stamping,
