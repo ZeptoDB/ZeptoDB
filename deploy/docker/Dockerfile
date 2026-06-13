@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get install -y -V ./apache-arrow-apt-source-latest-bookworm.deb && \
     rm -f apache-arrow-apt-source-latest-bookworm.deb && \
     apt-get update && apt-get install -y --no-install-recommends \
-    clang-19 llvm-19-dev \
+    clang-19 clang-tools-19 llvm-19-dev \
     cmake ninja-build git pkg-config \
     libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
     libarrow-dev libarrow-flight-dev libparquet-dev \
@@ -71,11 +71,13 @@ COPY third_party ./third_party
 
 RUN mkdir -p build && cd build && \
     sed -i 's/-march=native/-march=x86-64-v2 -mtune=generic/g' ../CMakeLists.txt && \
+    CLANG_SCAN_DEPS="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)" && \
     cmake .. \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER=clang-19 \
         -DCMAKE_CXX_COMPILER=clang++-19 \
+        -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
         -DCMAKE_CXX_FLAGS="-march=x86-64-v2 -mtune=generic -O3" \
         -DCMAKE_CXX_FLAGS_RELEASE="-O3 -march=x86-64-v2 -mtune=generic -DNDEBUG" \
         -DAPEX_CLOUD_NATIVE=ON \
@@ -110,10 +112,13 @@ RUN mkdir -p /runtime-libs && \
 # registry — it's a disposable CI artifact.
 # ============================================================================
 FROM builder AS test
-RUN cd build && cmake .. -G Ninja \
+RUN cd build && \
+    CLANG_SCAN_DEPS="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)" && \
+    cmake .. -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang-19 \
     -DCMAKE_CXX_COMPILER=clang++-19 \
+    -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
     -DBUILD_TESTS=ON \
     -DZEPTO_USE_JIT=ON \
     -DZEPTO_USE_S3=ON \

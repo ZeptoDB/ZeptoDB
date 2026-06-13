@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get install -y -V ./apache-arrow-apt-source-latest-bookworm.deb && \
     rm -f apache-arrow-apt-source-latest-bookworm.deb && \
     apt-get update && apt-get install -y --no-install-recommends \
-    clang-19 llvm-19-dev \
+    clang-19 clang-tools-19 llvm-19-dev \
     cmake ninja-build git pkg-config \
     libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
     libarrow-dev libarrow-flight-dev libparquet-dev \
@@ -66,11 +66,13 @@ COPY tests ./tests
 COPY third_party ./third_party
 
 RUN mkdir -p build && cd build && \
+    CLANG_SCAN_DEPS="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)" && \
     cmake .. \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER=clang-19 \
         -DCMAKE_CXX_COMPILER=clang++-19 \
+        -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
         -DCMAKE_CXX_FLAGS="-mcpu=neoverse-n1 -O3" \
         -DAPEX_CLOUD_NATIVE=ON \
         -DAPEX_USE_HUGEPAGES=ON \
