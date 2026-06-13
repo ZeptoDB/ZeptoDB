@@ -14,7 +14,8 @@ when code reached `main`.
 
 - Added `.github/workflows/version-main-release.yml` to bump the patch version
   on `main`, commit synchronized version files, create `vX.Y.Z`, and dispatch
-  the release workflow.
+  the release workflow. The workflow uses `RELEASE_BOT_TOKEN` because the
+  organization disables write permissions for the default `GITHUB_TOKEN`.
 - Added `.github/scripts/release_version.py` so version calculation and file
   updates are testable outside GitHub Actions. If checked-in version files are
   ahead of the latest tag, that version is published exactly; otherwise the
@@ -49,5 +50,7 @@ when code reached `main`.
 
 ## Follow-ups
 
-- Configure GitHub branch protection so `main` is promoted intentionally and so
-  the release workflow is allowed to write the generated version commit.
+- Add a `RELEASE_BOT_TOKEN` repository secret from a release bot account with
+  permission to bypass the active `main` and `v*` rulesets, or change the
+  organization policy to allow workflow write tokens and narrow the ruleset
+  bypass accordingly.

@@ -53,11 +53,16 @@ The workflow can be triggered either by a `v*` tag push or manually through
 
 The pipeline expects these GitHub settings:
 
-- Actions workflow permissions allow read/write `GITHUB_TOKEN` access.
-- `main` branch protection allows the `github-actions[bot]` release workflow to
-  push the generated version commit and tag, or an equivalent release bot token
-  is configured later.
+- The repository secret `RELEASE_BOT_TOKEN` is configured with permission to
+  push to `main`, create `v*` tags, and dispatch workflows. This repository is
+  under an organization policy that disables write permissions for the default
+  `GITHUB_TOKEN`, so the release workflow cannot rely on `github.token`.
+- `main` and `v*` rulesets allow the release bot account to bypass release
+  automation writes. The current repository ruleset uses repository-admin
+  bypass, so the token owner must have admin permission or the ruleset must be
+  updated to name a narrower bot actor.
 - Required release secrets are present:
+  - `RELEASE_BOT_TOKEN`
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
   - `SITE_DEPLOY_TOKEN`
@@ -69,3 +74,15 @@ The pipeline expects these GitHub settings:
 The default automatic bump is patch-only. Minor or major releases should be
 prepared by manually updating the version files on `dev` before promoting to
 `main`; the automation will publish that higher checked-in version exactly.
+
+## Active Rulesets
+
+The repository is configured with these active rules:
+
+- `Dev branch safety`: protects `dev` from deletion and non-fast-forward
+  updates.
+- `Main release branch`: protects `main` from deletion and non-fast-forward
+  updates, requires a pull request, requires one approving review, dismisses
+  stale reviews on push, and requires review-thread resolution.
+- `Release tags`: protects `v*` tags from unauthorized creation, deletion, and
+  non-fast-forward updates.

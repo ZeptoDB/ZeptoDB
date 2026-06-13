@@ -31,6 +31,17 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require release bot token
+        env:
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_BOT_TOKEN" ]; then
+            echo "::error::RELEASE_BOT_TOKEN is required because organization workflow token write permissions are disabled."
+            exit 1
+          fi
+          git remote set-url origin "https://x-access-token:${RELEASE_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Configure git author
         run: |
@@ -79,5 +90,5 @@ jobs:
       - name: Dispatch release workflow
         if: steps.head_tag.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
         run: gh workflow run release.yml --ref "v${{ steps.version.outputs.version }}"
