@@ -46,7 +46,7 @@ jobs:
 
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang-19 llvm-19-dev cmake ninja-build git pkg-config \
+            clang-19 clang-tools-19 llvm-19-dev cmake ninja-build git pkg-config \
             libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
             libarrow-dev libarrow-flight-dev libparquet-dev
 
@@ -75,12 +75,14 @@ jobs:
         run: |
           LLVM_DIR_PATH="/usr/lib/llvm-19/lib/cmake/llvm"
           [ -d "/usr/lib/aarch64-linux-gnu/cmake/llvm-19" ] && LLVM_DIR_PATH="/usr/lib/aarch64-linux-gnu/cmake/llvm-19"
+          CLANG_SCAN_DEPS="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)"
 
           mkdir -p build && cd build
           cmake .. -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang-19 \
             -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
             -DCMAKE_CXX_FLAGS="-march=${{ matrix.march }} -mtune=generic -O3" \
             -DAPEX_CLOUD_NATIVE=ON \
             -DAPEX_USE_HUGEPAGES=ON \
