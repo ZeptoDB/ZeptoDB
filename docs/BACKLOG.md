@@ -1,16 +1,47 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1442 C++ tests run
-> (1441 passed, 1 live S3 upload skipped)
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full local C++ suite:
+> 1478 tests run (1477 passed, 1 live S3 opt-in skipped; 3 disabled)
 >
-> Last cleaned: 2026-06-09
+> Last cleaned: 2026-06-13
 >
-> Devlog: last `172_p3_agent_memory_ann_maintenance_footprint_ivf.md` → next `173_*.md`
+> Devlog: last `178_release_pipeline_parallel_docker_cache.md` → next `179_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **Release pipeline parallel Docker cache** (devlog 178) —
+  the tag-triggered release workflow now warms Docker BuildKit cache in
+  parallel with the amd64/arm64 binary matrix, then performs the Docker Hub
+  push only after both binary builds and cache warm-up succeed. This overlaps
+  the v0.1.2 19m22s Docker build with the 24m31s slowest binary leg without
+  publishing Docker tags for failed binary releases.
+- ✅ **CI pipeline speedups** (devlog 177) —
+  release binary builds now use per-architecture ccache restore keys,
+  `.dockerignore` cuts Docker context upload to low single-digit MB, and
+  Graviton checks skip docs/web/deploy/workflow-only changes plus generated
+  `chore(release): vX.Y.Z` version commits.
+- ✅ **Dev branch and main release pipeline** (devlog 176) —
+  `dev` is now the integration branch and `main` is the promotion-only release
+  branch. `Version Main Release` synchronizes project versions, commits
+  `chore(release): vX.Y.Z`, creates the protected `v*` tag, and dispatches
+  binary, Docker, GitHub Release, PyPI, and Homebrew publishing.
+- ✅ **P5 AWS Kinesis consumer** (devlog 175) —
+  `KinesisConsumer` adds AWS-native stream polling behind
+  `-DZEPTO_USE_KINESIS=ON`, while default builds keep shared
+  JSON/BINARY/JSON_HUMAN decode, table-aware routing, backpressure retries,
+  Prometheus metrics, and no-SDK fallback testable.
+- ✅ **P4 MessagePack columnar ingest endpoint** (devlog 174) —
+  `POST /insert/msgpack` accepts dependency-light map-of-column-arrays payloads
+  with configurable symbol, price, volume, timestamp, and message-type columns,
+  sharing Arrow IPC ingest's table-aware batch path, ACL checks, tenant checks,
+  cluster routing, and synchronous drain semantics.
+- ✅ **Graviton Arrow IPC / Flight verification** (devlog 173) —
+  the fast cross-arch harness now reconfigures stale Graviton CMake caches when
+  `ZEPTO_USE_FLIGHT=ON` is missing, and Graviton verification confirmed Arrow
+  IPC unit tests, live S3, standalone HTTP Arrow ingest, and multi-node
+  rebalance smoke with Arrow compiled in.
 - ✅ **P3 Agent Memory ANN maintenance, footprint, and IVF** (devlog 172) —
   sparse-projection, HNSW, and IVF ANN indexes now support incremental
   update/delete maintenance for clean indexes, including tombstone accounting
@@ -373,8 +404,8 @@ No open P9 backlog items remain.
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 37 items + 4 manual tasks**
+**Total open: 34 items + 4 manual tasks**
 
-**Critical path: P5 cloud/streaming connectors → P2 launch collateral**
+**Critical path: P5 Apache Pulsar consumer → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

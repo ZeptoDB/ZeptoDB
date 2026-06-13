@@ -41,6 +41,5 @@ avoidable work without weakening release validation.
 
 ## Follow-ups
 
-- Consider splitting the Docker release job into build-cache warming and final
-  push phases only if future release runs still show Docker as the dominant
-  blocker after cache warm-up.
+- The Docker release job was split into parallel cache warming and gated final
+  publish in devlog 178.

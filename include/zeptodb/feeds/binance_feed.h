@@ -14,14 +14,14 @@ namespace zeptodb::feeds {
 // ============================================================================
 // Binance WebSocket Feed Handler
 // ============================================================================
-// TODO: WebSocket 라이브러리 필요 (e.g., websocketpp, boost::beast)
-// 현재는 인터페이스만 정의
+// TODO: Add a WebSocket library dependency, such as websocketpp or boost::beast.
+// This header currently defines the interface only.
 class BinanceFeedHandler : public IFeedHandler {
 public:
     BinanceFeedHandler(const FeedConfig& config, SymbolMapper* mapper);
     ~BinanceFeedHandler() override = default;
 
-    // IFeedHandler 인터페이스
+    // IFeedHandler interface.
     bool connect() override;
     void disconnect() override;
     bool is_connected() const override;
@@ -42,7 +42,7 @@ public:
 
     // Table-aware ingest (Stage B, devlog 084).
     // Setter is a write-only hint for callers that forward Ticks into a
-    // ZeptoDB pipeline — they should stamp `table_id()` onto the produced
+    // ZeptoDB pipeline; they should stamp `table_id()` onto the produced
     // TickMessage before ingest.
     void     set_table_id(uint16_t tid)           { table_id_ = tid; }
     void     set_table_name(std::string name)     { table_name_ = std::move(name); }
@@ -52,7 +52,7 @@ public:
     // devlog 088: JSON parse entry points promoted to public so unit tests
     // can verify the `table_id` stamping invariant without a live WebSocket.
     // Once the full WS transport lands, these should be callable only by
-    // the internal read loop — leaving them public is a minor API surface
+    // the internal read loop; leaving them public is a minor API surface
     // cost; the alternative (`friend` of a test-only class) is uglier.
     // TODO(devlog 088): demote to private once WebSocket transport lands;
     // promoted to public solely for unit-test reachability.
@@ -77,8 +77,8 @@ private:
     uint16_t    table_id_ = 0;
     std::string table_name_;
 
-    // WebSocket 스트림 URL 생성
-    // 예: btcusdt@trade, btcusdt@depth
+    // Build the WebSocket stream URL.
+    // Examples: btcusdt@trade, btcusdt@depth.
     std::string build_stream_url(const std::vector<std::string>& symbols);
 };
 
@@ -86,14 +86,14 @@ private:
 // Binance Stream Types
 // ============================================================================
 enum class BinanceStreamType {
-    TRADE,          // @trade - 실시간 체결
-    AGG_TRADE,      // @aggTrade - 집계 체결
-    KLINE,          // @kline_1m - K라인/캔들
-    MINI_TICKER,    // @miniTicker - 24시간 통계
-    TICKER,         // @ticker - 24시간 통계 (전체)
-    BOOK_TICKER,    // @bookTicker - 최우선 호가
-    DEPTH,          // @depth - 호가창
-    DEPTH_UPDATE    // @depth@100ms - 호가 업데이트
+    TRADE,          // @trade - real-time trade.
+    AGG_TRADE,      // @aggTrade - aggregate trade.
+    KLINE,          // @kline_1m - kline/candlestick.
+    MINI_TICKER,    // @miniTicker - 24-hour mini ticker.
+    TICKER,         // @ticker - full 24-hour ticker.
+    BOOK_TICKER,    // @bookTicker - best bid/ask.
+    DEPTH,          // @depth - order book depth.
+    DEPTH_UPDATE    // @depth@100ms - order book update.
 };
 
 } // namespace zeptodb::feeds

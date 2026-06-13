@@ -134,10 +134,29 @@ jobs:
           name: ${{ matrix.artifact }}
           path: "*.tar.gz"
 
-  # ── Docker image (amd64 only for now) ──
-  docker:
+  # ── Docker image cache warm-up (amd64 only for now) ──
+  docker-cache:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: build
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Warm Docker build cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: false
+          cache-from: type=gha,scope=release-docker
+          cache-to: type=gha,mode=max,scope=release-docker
+
+  # ── Docker image publish (amd64 only for now) ──
+  docker:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [build, docker-cache]
     steps:
       - uses: actions/checkout@v6
 
@@ -160,8 +179,8 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
             ${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=release-docker
+          cache-to: type=gha,mode=max,scope=release-docker
 
   # ── GitHub Release ──
   release:

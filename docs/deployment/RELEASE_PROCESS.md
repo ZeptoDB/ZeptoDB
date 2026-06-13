@@ -57,6 +57,11 @@ Release binary builds use ccache with per-architecture restore keys so repeated
 tag builds can reuse unchanged C++ compilation results. Docker release builds
 use the repository `.dockerignore` to keep local build directories, web build
 output, docs, Git metadata, and benchmark artifacts out of the build context.
+The Docker image path is split into a cache-warming job and a gated publish
+job: cache warming runs in parallel with the amd64/arm64 binary matrix, while
+the Docker Hub push still waits for successful binary artifacts. This preserves
+release gating while removing the previous binary-build-then-Docker-build
+serial bottleneck.
 
 The `Graviton ARM64 Build & Test` workflow is not run for release-bot
 `chore(release): vX.Y.Z` version bump commits. Those commits are validated by

@@ -6,6 +6,14 @@ Last updated: 2026-06-13
 
 ## Latest
 
+- [x] **Release pipeline speedups** (devlogs 177-178) —
+  release binary builds now use per-architecture ccache, Docker context upload
+  is trimmed through `.dockerignore`, non-code Graviton runs are skipped, and
+  Docker release builds warm the BuildKit cache in parallel with amd64/arm64
+  binary builds while the final Docker Hub push remains gated behind successful
+  binaries. The backlog header and recent-completion index are refreshed
+  through devlog 178.
+
 - [x] **Dev branch and main release pipeline** (devlog 176) —
   development now targets `dev`, while `main` is treated as the release branch.
   A new `Version Main Release` workflow synchronizes CMake, Python, and web
