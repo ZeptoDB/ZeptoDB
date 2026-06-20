@@ -29,8 +29,13 @@ namespace {
 class CountingRpcClient : public zeptodb::cluster::RpcClientBase {
 public:
     std::atomic<int> calls{0};
+    std::atomic<int> typed_calls{0};
     bool ingest_tick(const zeptodb::ingestion::TickMessage& /*msg*/) override {
         calls.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    bool ingest_typed_row(const zeptodb::core::TypedRowMessage& /*row*/) override {
+        typed_calls.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 };
@@ -52,6 +57,22 @@ zeptodb::ingestion::TickMessage make_tick(zeptodb::SymbolId sym,
     m.volume    = 100;
     m.recv_ts   = 1'000'000'000LL;
     return m;
+}
+
+zeptodb::core::TypedRowMessage make_typed_row(zeptodb::SymbolId sym,
+                                              uint16_t table_id,
+                                              int64_t timestamp = 1'000'000'000LL) {
+    zeptodb::core::TypedRowMessage row{};
+    row.table_id = table_id;
+    row.symbol_id = sym;
+    row.timestamp = timestamp;
+    row.columns = {
+        zeptodb::core::TypedColumnValue::timestamp("timestamp_ns", timestamp),
+        zeptodb::core::TypedColumnValue::symbol("service", sym),
+        zeptodb::core::TypedColumnValue::float64("score", 0.75),
+        zeptodb::core::TypedColumnValue::int64("outcome", 1),
+    };
+    return row;
 }
 
 } // namespace
@@ -82,6 +103,32 @@ TEST(CoordinatorRoutingAdapter, RoutesToLocalWhenOwnerIsSelf) {
     EXPECT_TRUE(adapter.ingest_tick(make_tick(42, table_id)));
     EXPECT_EQ(pipeline->stats().ticks_ingested.load(), before + 1);
     EXPECT_TRUE(pipeline->schema_registry().has_data("local_ticks"));
+}
+
+TEST(CoordinatorRoutingAdapter, RoutesTypedRowToLocalWhenOwnerIsSelf) {
+    zeptodb::cluster::PartitionRouter router;
+    std::shared_mutex router_mu;
+    router.add_node(1);
+
+    auto pipeline = make_pipeline();
+    ASSERT_TRUE(pipeline->schema_registry().create(
+        "typed_local",
+        {{"timestamp_ns", zeptodb::storage::ColumnType::TIMESTAMP_NS},
+         {"service", zeptodb::storage::ColumnType::SYMBOL},
+         {"score", zeptodb::storage::ColumnType::FLOAT64},
+         {"outcome", zeptodb::storage::ColumnType::INT64}}));
+    const uint16_t table_id =
+        pipeline->schema_registry().get_table_id("typed_local");
+    ASSERT_NE(table_id, 0u);
+
+    zeptodb::cluster::CoordinatorRoutingAdapter::RpcClientMap remotes;
+    zeptodb::cluster::CoordinatorRoutingAdapter adapter(
+        &router, &router_mu, pipeline.get(), /*self_id=*/1, &remotes);
+
+    const uint64_t before = pipeline->stats().ticks_ingested.load();
+    EXPECT_TRUE(adapter.ingest_typed_row(make_typed_row(42, table_id)));
+    EXPECT_EQ(pipeline->stats().ticks_ingested.load(), before + 1);
+    EXPECT_TRUE(pipeline->schema_registry().has_data("typed_local"));
 }
 
 // ----------------------------------------------------------------------------
@@ -115,6 +162,35 @@ TEST(CoordinatorRoutingAdapter, RoutesToRemoteWhenOwnerIsDifferent) {
         << "Remote-owned tick must NOT land in local pipeline";
 }
 
+TEST(CoordinatorRoutingAdapter, RoutesTypedRowToRemoteWhenOwnerIsDifferent) {
+    zeptodb::cluster::PartitionRouter router;
+    std::shared_mutex router_mu;
+    router.add_node(1);
+    router.add_node(2);
+
+    constexpr uint16_t table_id = 7;
+    zeptodb::SymbolId target = 0;
+    for (zeptodb::SymbolId s = 1; s < 10000; ++s) {
+        if (router.route(table_id, s) == 2) { target = s; break; }
+    }
+    ASSERT_NE(target, 0u) << "Failed to find a typed row routing to node 2";
+
+    auto pipeline = make_pipeline();
+    auto stub = std::make_shared<CountingRpcClient>();
+    zeptodb::cluster::CoordinatorRoutingAdapter::RpcClientMap remotes;
+    remotes.emplace(2, stub);
+
+    zeptodb::cluster::CoordinatorRoutingAdapter adapter(
+        &router, &router_mu, pipeline.get(), /*self_id=*/1, &remotes);
+
+    const uint64_t before = pipeline->stats().ticks_ingested.load();
+    EXPECT_TRUE(adapter.ingest_typed_row(make_typed_row(target, table_id)));
+    EXPECT_EQ(stub->typed_calls.load(), 1);
+    EXPECT_EQ(stub->calls.load(), 0);
+    EXPECT_EQ(pipeline->stats().ticks_ingested.load(), before)
+        << "Remote-owned typed row must NOT land in local pipeline";
+}
+
 // ----------------------------------------------------------------------------
 // Case 3: owner is unknown (stale ring) → returns false, no side effects
 // ----------------------------------------------------------------------------
@@ -141,6 +217,33 @@ TEST(CoordinatorRoutingAdapter, DropsOnUnknownOwner) {
     const uint64_t before = pipeline->stats().ticks_ingested.load();
     EXPECT_FALSE(adapter.ingest_tick(make_tick(target)));
     EXPECT_EQ(stub_mismatch->calls.load(), 0);
+    EXPECT_EQ(pipeline->stats().ticks_ingested.load(), before);
+}
+
+TEST(CoordinatorRoutingAdapter, DropsTypedRowOnUnknownOwner) {
+    zeptodb::cluster::PartitionRouter router;
+    std::shared_mutex router_mu;
+    router.add_node(1);
+    router.add_node(99);
+
+    constexpr uint16_t table_id = 11;
+    zeptodb::SymbolId target = 0;
+    for (zeptodb::SymbolId s = 1; s < 10000; ++s) {
+        if (router.route(table_id, s) == 99) { target = s; break; }
+    }
+    ASSERT_NE(target, 0u) << "Failed to find a typed row routing to node 99";
+
+    auto pipeline = make_pipeline();
+    auto stub_mismatch = std::make_shared<CountingRpcClient>();
+    zeptodb::cluster::CoordinatorRoutingAdapter::RpcClientMap remotes;
+    remotes.emplace(2, stub_mismatch);
+
+    zeptodb::cluster::CoordinatorRoutingAdapter adapter(
+        &router, &router_mu, pipeline.get(), /*self_id=*/1, &remotes);
+
+    const uint64_t before = pipeline->stats().ticks_ingested.load();
+    EXPECT_FALSE(adapter.ingest_typed_row(make_typed_row(target, table_id)));
+    EXPECT_EQ(stub_mismatch->typed_calls.load(), 0);
     EXPECT_EQ(pipeline->stats().ticks_ingested.load(), before);
 }
 

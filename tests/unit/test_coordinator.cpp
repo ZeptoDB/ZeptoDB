@@ -97,6 +97,62 @@ TEST(RpcProtocol, RoundTripTwoColsTwoRows) {
     EXPECT_EQ(r2.rows[2][1], 300);
 }
 
+TEST(RpcProtocol, RoundTripPreservesSymbolStrings) {
+    zeptodb::storage::StringDictionary dict;
+    const auto query_id = dict.intern("aoe_payment_002");
+    const auto action = dict.intern("traffic_drain");
+
+    QueryResultSet r;
+    r.column_names = {"query_id", "action_class", "top_action"};
+    r.column_types = {zeptodb::storage::ColumnType::SYMBOL,
+                      zeptodb::storage::ColumnType::SYMBOL,
+                      zeptodb::storage::ColumnType::INT64};
+    r.rows = {{static_cast<int64_t>(query_id),
+               static_cast<int64_t>(action),
+               1}};
+    r.symbol_dict = &dict;
+
+    auto bytes = serialize_result(r);
+    auto r2 = deserialize_result(bytes.data(), bytes.size());
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    ASSERT_EQ(r2.rows.size(), 1u);
+    ASSERT_EQ(r2.string_rows.size(), 2u);
+    EXPECT_EQ(r2.string_rows[0], "aoe_payment_002");
+    EXPECT_EQ(r2.string_rows[1], "traffic_drain");
+    EXPECT_EQ(r2.rows[0][2], 1);
+}
+
+TEST(RpcProtocol, RoundTripPreservesTypedRowStringPayload) {
+    zeptodb::core::TypedRowMessage row;
+    row.table_id = 42;
+    row.symbol_id = 7;
+    row.timestamp = 1000;
+
+    zeptodb::core::TypedColumnValue episode;
+    episode.name = "episode_id";
+    episode.type = zeptodb::storage::ColumnType::STRING;
+    episode.u32 = 11;
+    episode.has_string_value = true;
+    episode.string_value = "aoe_remote_001";
+    row.columns.push_back(episode);
+
+    zeptodb::core::TypedColumnValue empty;
+    empty.name = "deploy_id";
+    empty.type = zeptodb::storage::ColumnType::STRING;
+    empty.u32 = 12;
+    empty.has_string_value = true;
+    row.columns.push_back(empty);
+
+    auto bytes = serialize_typed_row(row);
+    zeptodb::core::TypedRowMessage decoded;
+    ASSERT_TRUE(deserialize_typed_row(bytes.data(), bytes.size(), decoded));
+    ASSERT_EQ(decoded.columns.size(), 2u);
+    EXPECT_TRUE(decoded.columns[0].has_string_value);
+    EXPECT_EQ(decoded.columns[0].string_value, "aoe_remote_001");
+    EXPECT_TRUE(decoded.columns[1].has_string_value);
+    EXPECT_EQ(decoded.columns[1].string_value, "");
+}
+
 TEST(RpcProtocol, RoundTripNegativeValues) {
     QueryResultSet r = make_result({"delta"}, {{-1}, {INT64_MIN}, {INT64_MAX}});
     auto bytes = serialize_result(r);
@@ -190,6 +246,37 @@ TEST(PartialAgg, MergeConcat_PlainSelect) {
     auto merged = merge_results({r1, r2});
     ASSERT_TRUE(merged.ok());
     EXPECT_EQ(merged.rows.size(), 3u);
+}
+
+TEST(PartialAgg, MergeConcatPreservesSymbolStrings) {
+    zeptodb::storage::StringDictionary local_dict;
+    const auto local_query = local_dict.intern("aoe_checkout_002");
+    const auto local_action = local_dict.intern("rollback");
+
+    QueryResultSet local;
+    local.column_names = {"query_id", "action_class", "top_action"};
+    local.column_types = {zeptodb::storage::ColumnType::SYMBOL,
+                          zeptodb::storage::ColumnType::SYMBOL,
+                          zeptodb::storage::ColumnType::INT64};
+    local.rows = {{static_cast<int64_t>(local_query),
+                   static_cast<int64_t>(local_action),
+                   1}};
+    local.symbol_dict = &local_dict;
+
+    QueryResultSet remote;
+    remote.column_names = local.column_names;
+    remote.column_types = local.column_types;
+    remote.rows = {{40, 16, 1}};
+    remote.string_rows = {"aoe_payment_002", "traffic_drain"};
+
+    auto merged = merge_concat_results({local, remote});
+    ASSERT_TRUE(merged.ok()) << merged.error;
+    ASSERT_EQ(merged.rows.size(), 2u);
+    ASSERT_EQ(merged.string_rows.size(), 4u);
+    EXPECT_EQ(merged.string_rows[0], "aoe_checkout_002");
+    EXPECT_EQ(merged.string_rows[1], "rollback");
+    EXPECT_EQ(merged.string_rows[2], "aoe_payment_002");
+    EXPECT_EQ(merged.string_rows[3], "traffic_drain");
 }
 
 TEST(PartialAgg, MergeEmptyResults) {

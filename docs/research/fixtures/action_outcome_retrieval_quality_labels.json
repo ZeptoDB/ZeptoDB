@@ -1,0 +1,168 @@
+{
+  "metadata": {
+    "name": "action_outcome_retrieval_quality_labels",
+    "version": 1,
+    "created_at": "2026-06-13T00:00:00Z",
+    "purpose": "Query-candidate retrieval quality labels for ActionOutcomeReplay Experiment 004.",
+    "label_set": ["useful", "superficial", "misleading"],
+    "notes": "Labels judge whether a retrieved episode should help the next action decision, not whether it is merely similar."
+  },
+  "labels": [
+    {
+      "query_id": "aoe_checkout_002",
+      "candidate_id": "aoe_checkout_001",
+      "label": "useful",
+      "reason": "Same deploy-linked checkout timeout family; rollback success is a useful contrast to failed restart."
+    },
+    {
+      "query_id": "aoe_checkout_002",
+      "candidate_id": "aoe_checkout_003",
+      "label": "superficial",
+      "reason": "Similar checkout latency but CPU-driven mitigation is not the same client-pool regression."
+    },
+    {
+      "query_id": "aoe_checkout_002",
+      "candidate_id": "aoe_checkout_004",
+      "label": "useful",
+      "reason": "Pool wait evidence and config revert provide useful direct-remediation evidence."
+    },
+    {
+      "query_id": "aoe_payment_002",
+      "candidate_id": "aoe_payment_001",
+      "label": "useful",
+      "reason": "External payment gateway timeout was fixed by traffic drain, unlike the failed scale-out."
+    },
+    {
+      "query_id": "aoe_payment_002",
+      "candidate_id": "aoe_payment_003",
+      "label": "superficial",
+      "reason": "Payment errors are similar, but single-pod skew does not match service-wide gateway timeout."
+    },
+    {
+      "query_id": "aoe_payment_002",
+      "candidate_id": "aoe_payment_004",
+      "label": "useful",
+      "reason": "Payment timeout with deploy retry regression gives a useful non-scale-out recovery example."
+    },
+    {
+      "query_id": "aoe_payment_002",
+      "candidate_id": "aoe_distractor_payment_001",
+      "label": "misleading",
+      "reason": "Scale-out succeeded only because CPU was saturated; query CPU is low and traces point external."
+    },
+    {
+      "query_id": "aoe_inventory_002",
+      "candidate_id": "aoe_inventory_001",
+      "label": "useful",
+      "reason": "DB pool saturation recovered through config revert, a useful contrast to failed scale-out."
+    },
+    {
+      "query_id": "aoe_inventory_002",
+      "candidate_id": "aoe_inventory_003",
+      "label": "superficial",
+      "reason": "Inventory DB errors are similar, but one-pod skew does not match service-wide DB saturation."
+    },
+    {
+      "query_id": "aoe_inventory_002",
+      "candidate_id": "aoe_inventory_004",
+      "label": "useful",
+      "reason": "DB saturation from bulk writes is a useful non-scale-out remediation pattern."
+    },
+    {
+      "query_id": "aoe_inventory_002",
+      "candidate_id": "aoe_distractor_inventory_001",
+      "label": "misleading",
+      "reason": "Scale-out succeeded only because DB connections were not saturated and app CPU was high."
+    },
+    {
+      "query_id": "aoe_cache_002",
+      "candidate_id": "aoe_cache_001",
+      "label": "useful",
+      "reason": "Shared recommendation cache freshness lag recovered through targeted cache purge."
+    },
+    {
+      "query_id": "aoe_cache_002",
+      "candidate_id": "aoe_cache_003",
+      "label": "superficial",
+      "reason": "Recommendation staleness is similar, but deploy fallback regression differs from shared cache lag."
+    },
+    {
+      "query_id": "aoe_cache_002",
+      "candidate_id": "aoe_cache_004",
+      "label": "useful",
+      "reason": "Failed scale-out is useful negative evidence for shared cache staleness."
+    },
+    {
+      "query_id": "aoe_cache_002",
+      "candidate_id": "aoe_distractor_cache_001",
+      "label": "misleading",
+      "reason": "Restart worked only for pod-local cache skew, not shared redis freshness lag."
+    },
+    {
+      "query_id": "aoe_cache_002",
+      "candidate_id": "aoe_distractor_cache_002",
+      "label": "misleading",
+      "reason": "Cache purge failed only because the true root cause was deploy fallback logic."
+    },
+    {
+      "query_id": "aoe_queue_003",
+      "candidate_id": "aoe_queue_001",
+      "label": "useful",
+      "reason": "Capacity-driven backlog recovered through scale-out, the key contrast to failed restart."
+    },
+    {
+      "query_id": "aoe_queue_003",
+      "candidate_id": "aoe_queue_002",
+      "label": "superficial",
+      "reason": "Backlog is similar, but poison-message retry loop has a different remediation path."
+    },
+    {
+      "query_id": "aoe_queue_003",
+      "candidate_id": "aoe_queue_004",
+      "label": "superficial",
+      "reason": "Traffic drain protected checkout during broker throttle but does not solve capacity backlog."
+    },
+    {
+      "query_id": "aoe_queue_003",
+      "candidate_id": "aoe_distractor_queue_001",
+      "label": "misleading",
+      "reason": "Restart succeeded only for one stuck consumer partition, not broad capacity shortage."
+    },
+    {
+      "query_id": "aoe_queue_003",
+      "candidate_id": "aoe_distractor_queue_002",
+      "label": "misleading",
+      "reason": "Scale-out failed because of poison-message retries, not because scale-out is wrong for capacity backlog."
+    },
+    {
+      "query_id": "aoe_search_003",
+      "candidate_id": "aoe_search_001",
+      "label": "superficial",
+      "reason": "Restart mitigates memory pressure but is not durable for deploy-wide search leak."
+    },
+    {
+      "query_id": "aoe_search_003",
+      "candidate_id": "aoe_search_002",
+      "label": "useful",
+      "reason": "Rollback fixed deploy-correlated monotonic RSS growth, matching the durable action needed."
+    },
+    {
+      "query_id": "aoe_search_003",
+      "candidate_id": "aoe_search_004",
+      "label": "superficial",
+      "reason": "Shard-local traffic drain is useful mitigation but not the same deploy-wide leak."
+    },
+    {
+      "query_id": "aoe_search_003",
+      "candidate_id": "aoe_distractor_search_001",
+      "label": "misleading",
+      "reason": "Restart succeeded only for a single-pod leak without deploy correlation."
+    },
+    {
+      "query_id": "aoe_search_003",
+      "candidate_id": "aoe_distractor_search_002",
+      "label": "misleading",
+      "reason": "Rollback failed because index refresh, not binary deploy, caused the memory spike."
+    }
+  ]
+}

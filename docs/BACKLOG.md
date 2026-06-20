@@ -1,16 +1,59 @@
 # ZeptoDB Backlog
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full local C++ suite:
-> 1499 tests run (1498 passed, 1 live S3 opt-in skipped; 3 disabled)
+> 1509 tests run (1508 passed, 1 live S3 opt-in skipped; 3 disabled)
 >
 > Last cleaned: 2026-06-13
 >
-> Devlog: last `181_p2_replication_vs_mpp_cluster.md` → next `182_*.md`
+> Devlog: last `194_cluster_window_typed_materialization.md` → next `195_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 cluster-mode window value materialization** (devlog 194) —
+  fixed the distributed full-data window replay path for declared operational
+  tables. `ROW_NUMBER` and `LAG` over
+  `action_outcome_vendor_recommendations_010` now preserve `group_id`,
+  `recommendation_rank`, and `score_micros` values in two-node cluster mode;
+  Experiment 011 now leaves only the cross-node suppression JOIN as an expected
+  distributed planner gap.
+- ✅ **P3 Action-Outcome distributed vendor SQL replay classification**
+  (devlog 193) — added Experiment 011, a two-node replay that materializes
+  Experiment 010 through the distributed HTTP/RPC path. It verifies seed and
+  vendor row counts, distributed ingest, co-located JOINs, and records current
+  distributed planner gaps.
+- ✅ **P3 Action-Outcome vendor SQL/JOIN/window replay** (devlog 192) —
+  implemented alias-aware hash JOIN `WHERE` predicate handling and added a
+  live Experiment 010 SQL replay. The run materializes vendor baseline query,
+  recommendation, retrieval, and suppression tables, then validates
+  failed-repeat JOIN, context top-action JOIN, suppression JOIN, misleading
+  retrieval JOIN, ROW_NUMBER, and LAG checks as pass.
+- ✅ **P3 Action-Outcome vendor baseline experiment** (devlog 191) —
+  added Experiment 010, comparing similar-incident retrieval,
+  runbook/action-prior recommendation, reflection-only memory, and
+  context-gated Action-Outcome Memory on the noisy AIOps fixture. The
+  context-gated variant preserved Top-3 hit rate at 1.00 and improved
+  failed-action avoidance to 1.00 while recording 21 context suppressions.
+- ✅ **P3 string-key hash JOIN materialization** (devlog 190) —
+  added a C++ regression for declared `STRING` key hash JOIN and fixed the
+  executor to read JOIN keys and joined result cells through type-aware
+  `ColumnVector` access. Experiment 009 now reports native string JOIN as pass.
+- ✅ **P3 Action-Outcome JOIN/window replay acceptance** (devlog 189) —
+  added Experiment 009, which validates native string-window rank ordering and
+  numeric SQL JOIN/ROW_NUMBER/LAG acceptance over Action-Outcome replay
+  recommendations.
+- ✅ **P3 Action-Outcome distributed replay C++ regression** (devlog 188) —
+  added a CI-sized two-pipeline TCP RPC regression for Action-Outcome
+  schema-aware `STRING` rows, and hardened typed-row RPC so remote owners bind
+  sender dictionary codes to original `STRING`/`SYMBOL` text before storage.
+- ✅ **P3 Action-Outcome distributed two-node live replay** (devlog 187) —
+  the Action-Outcome SQL seed now passes through a real two-node HTTP/RPC
+  topology. Schema-aware typed-row INSERT routes through the
+  `CoordinatorRoutingAdapter`, remote `TYPED_ROW_INGEST` lands in owner
+  pipelines, distributed concat SELECT preserves decoded `STRING`/`SYMBOL`
+  values, and Experiment 008 records node-local deltas of 140 rows on node 1
+  and 58 rows on node 8.
 - ✅ **P2 replication-vs-MPP cluster design doc** (devlog 181) —
   `docs/design/phase_c_distributed.md` now formalises ZeptoDB's distributed
   positioning: replication is the HA/durability layer, while shard ownership,
@@ -285,6 +328,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
+| **Symbol-less operational table shard-key policy** | Experiment 008 showed that symbol-less generic tables route by `(stable_table_id, symbol_id=0)`, so small table sets can accidentally land on one node for some node-id pairs. Define an explicit shard-key or table-level distribution policy for operational/Action-Outcome tables before promoting distributed replay beyond research. | M |
+| **Small-table distributed hash JOIN for operational tables** | Experiment 011 shows co-located vendor JOINs pass, but `action_outcome_vendor_suppressions_010` on node 1 cannot JOIN recommendations on node 8. Start with broadcast/replicated dimension-table hash JOIN for small operational tables before broader cost-based distributed JOIN planning. | L |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.

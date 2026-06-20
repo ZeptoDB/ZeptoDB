@@ -1,10 +1,73 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-13
+Last updated: 2026-06-20
 
 ---
 
 ## Latest
+
+- [x] **P3 cluster-mode window value materialization** (devlog 194) —
+  Fixed the distributed window fetch-and-compute path for declared operational
+  tables. The coordinator now materializes temporary full-data tables through
+  schema-aware typed rows, preserving generic value columns and decoded
+  `STRING`/`SYMBOL` cells before running ROW_NUMBER/LAG locally. Experiment
+  011 now reports `row_number_window` and `lag_window` as pass; the remaining
+  boundary is the cross-node suppression hash JOIN.
+
+- [x] **P3 Action-Outcome distributed vendor SQL replay classification**
+  (devlog 193) — Added Experiment 011, a two-node replay harness that loads
+  the Action-Outcome seed and Experiment 010 vendor tables through the
+  distributed HTTP/RPC path. It verifies row counts, distributed ingest, and
+  co-located JOINs as pass, then records distributed planner gaps such as the
+  cross-node suppression JOIN.
+
+- [x] **P3 Action-Outcome vendor SQL/JOIN/window replay** (devlog 192) —
+  Implemented alias-aware hash JOIN `WHERE` predicate handling and added a live
+  Experiment 010 SQL replay. The replay materializes six query rows, 72
+  recommendation rows, 72 retrieval rows, and 21 suppression rows, then checks
+  failed-repeat JOIN, context top-action JOIN, suppression JOIN, misleading
+  retrieval JOIN, ROW_NUMBER, and LAG acceptance with native ZeptoDB SQL.
+
+- [x] **P3 Action-Outcome vendor baseline experiment** (devlog 191) —
+  Added Experiment 010, comparing similar-incident retrieval,
+  runbook/action-prior recommendation, reflection-only memory, and
+  context-gated Action-Outcome Memory on the noisy AIOps fixture. The
+  context-gated variant preserved Top-3 hit rate at 1.00 and improved
+  failed-action avoidance to 1.00 while recording 21 context suppressions.
+
+- [x] **P3 string-key hash JOIN materialization** (devlog 190) —
+  Added a C++ regression for declared `STRING` key hash JOIN and fixed the SQL
+  executor to read hash JOIN keys and joined result cells through type-aware
+  `ColumnVector` access. Experiment 009 now reports native string JOIN as pass
+  over the original Action-Outcome research schema.
+
+- [x] **P3 Action-Outcome JOIN/window replay acceptance** (devlog 189) —
+  Added Experiment 009 and a live validator that checks native string-window
+  rank ordering plus numeric SQL JOIN/ROW_NUMBER/LAG acceptance over
+  Action-Outcome replay recommendations.
+
+- [x] **P3 Action-Outcome distributed replay C++ regression** (devlog 188) —
+  Added a CI-sized two-pipeline TCP RPC regression for schema-aware
+  Action-Outcome `STRING` rows routed through `CoordinatorRoutingAdapter`.
+  Typed-row RPC now preserves original `STRING`/`SYMBOL` text payloads so
+  remote owners bind dictionary codes before storage and coordinator SELECT
+  returns semantic strings without relying on local dictionary state.
+
+- [x] **P3 Action-Outcome distributed two-node live replay** (devlog 187) —
+  Two-node live replay now loads the Action-Outcome SQL seed through one HTTP
+  endpoint, routes schema-aware typed rows across two owners, verifies
+  node-local ingest deltas, and returns decoded semantic top-action results
+  through cluster SELECT. The distributed run loaded 203/203 statements with
+  node-local deltas of 140 rows on node 1 and 58 rows on node 8.
+
+- [x] **P3 Action-Outcome generic SQL INSERT materialization** (devlog 186) —
+  SQL `INSERT ... VALUES` now materializes declared `CREATE TABLE` columns
+  through the schema-aware typed-row path, including `STRING`, float, bool,
+  integer, and timestamp columns. Legacy tick-shaped INSERT remains available
+  for tables without registered schemas. The Action-Outcome live SQL replay
+  acceptance report now loads 203/203 statements, verifies row counts, returns
+  six expected top-action rows, and confirms six failed-action avoidance rows.
+  Closes BACKLOG P3 "Action-Outcome generic SQL INSERT replay".
 
 - [x] **P2 replication-vs-MPP cluster design doc** (devlog 181) —
   `docs/design/phase_c_distributed.md` now includes the formal comparison

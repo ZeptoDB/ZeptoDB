@@ -320,7 +320,7 @@ bool ZeptoPipeline::ingest_tick(TickMessage msg) {
 
 bool ZeptoPipeline::ingest_typed_row(TypedRowMessage row) {
     const int64_t t0 = pipeline_now_ns();
-    if (row.table_id == 0 || row.symbol_id == 0 || row.columns.empty()) {
+    if (row.table_id == 0 || row.columns.empty()) {
         return false;
     }
     const auto table_schema = schema_registry_.get(row.table_id);
@@ -328,9 +328,9 @@ bool ZeptoPipeline::ingest_typed_row(TypedRowMessage row) {
         return false;
     }
 
-    std::unordered_map<std::string, const TypedColumnValue*> values;
+    std::unordered_map<std::string, TypedColumnValue*> values;
     values.reserve(row.columns.size());
-    for (const auto& value : row.columns) {
+    for (auto& value : row.columns) {
         if (value.name.empty()) {
             return false;
         }
@@ -345,10 +345,18 @@ bool ZeptoPipeline::ingest_typed_row(TypedRowMessage row) {
             return false;
         }
     }
+    for (auto& value : row.columns) {
+        if (value.has_string_value &&
+            (value.type == ColumnType::SYMBOL || value.type == ColumnType::STRING) &&
+            !symbol_dict_.ensure_code(value.u32, value.string_value)) {
+            return false;
+        }
+    }
 
     Partition& partition = partition_mgr_.get_or_create(
         row.table_id, row.symbol_id, row.timestamp);
     auto partition_write = partition.lock_for_write();
+    const bool new_partition = partition.columns().empty();
 
     for (const auto& schema_column : table_schema->columns) {
         if (const auto* column = partition.get_column(schema_column.name)) {
@@ -369,6 +377,14 @@ bool ZeptoPipeline::ingest_typed_row(TypedRowMessage row) {
                 return false;
             }
         }
+    }
+
+    if (new_partition) {
+        std::lock_guard<std::mutex> lk(partition_index_mu_);
+        const uint64_t k = (static_cast<uint64_t>(row.table_id) << 32)
+                         | static_cast<uint32_t>(row.symbol_id);
+        partition_index_[k].push_back(&partition);
+        stats_.partitions_created.fetch_add(1, std::memory_order_relaxed);
     }
 
     std::vector<std::pair<ColumnVector*, size_t>> touched;

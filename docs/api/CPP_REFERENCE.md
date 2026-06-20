@@ -364,6 +364,8 @@ struct QueryResultSet {
     std::vector<std::string>          column_names;
     std::vector<ColumnType>           column_types;
     std::vector<std::vector<int64_t>> rows;        // all values as int64
+    std::vector<std::string>          string_rows; // row-major decoded strings
+    const storage::StringDictionary*  symbol_dict = nullptr;
 
     double      execution_time_us = 0.0;
     size_t      rows_scanned      = 0;
@@ -927,12 +929,22 @@ if (!pipeline.ingest_typed_row(std::move(row))) {
 }
 ```
 
-`ingest_typed_row()` requires `table_id != 0`, `symbol_id != 0`, and at least
-one column. The target table must exist in `SchemaRegistry`; row columns must
-exist in that schema with matching types. All declared table columns are
-materialized in the partition, and columns omitted from an individual row are
-default-filled. `SchemaRegistry::get(uint16_t table_id)` returns a schema copy
-by stable table id for connector code that resolves names once.
+`ingest_typed_row()` requires `table_id != 0` and at least one column.
+`symbol_id` is the table-scoped partition key and may be `0` for operational
+tables that do not expose a natural symbol. The target table must exist in
+`SchemaRegistry`; row columns must exist in that schema with matching types.
+All declared table columns are materialized in the partition, and columns
+omitted from an individual row are default-filled.
+`SchemaRegistry::get(uint16_t table_id)` returns a schema copy by stable table
+id for connector code that resolves names once.
+
+For distributed typed-row ingest, `TypedColumnValue` can also carry
+`has_string_value=true` plus `string_value` for `SYMBOL`/`STRING` columns.
+`TcpRpcClient::ingest_typed_row()` serializes that optional text payload so the
+remote owner binds the same dictionary code before storage. Most callers get
+this automatically through SQL `INSERT` materialization; connector code that
+constructs typed rows directly should set the fields when a string code was
+derived from text.
 
 ### Feed handlers
 
@@ -1260,7 +1272,9 @@ semantics for now.
 Typed rows use the same owner selection. `TcpRpcClient::ingest_typed_row()`
 serializes `zeptodb::core::TypedRowMessage` over `TYPED_ROW_INGEST` and the
 remote server applies it through the local pipeline's
-`ZeptoPipeline::ingest_typed_row()`.
+`ZeptoPipeline::ingest_typed_row()`. The RPC payload preserves optional
+`SYMBOL`/`STRING` text values so distributed SELECT results can decode string
+columns without relying on the coordinator's local dictionary.
 
 A table-aware routing accessor is available for callers that build their
 own ingest path:

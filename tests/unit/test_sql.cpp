@@ -4415,6 +4415,185 @@ TEST(CatalogSQL, ShowTablesRowCountAfterInsert) {
     EXPECT_GE(r.rows[0][0], 2);  // at least 2 rows inserted
 }
 
+TEST(ActionOutcomeSQLReplay, GenericInsertProjectionMaterializesDeclaredColumns) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE action_outcome_projection ("
+        "query_id STRING, "
+        "action_class STRING, "
+        "top_action INT64, "
+        "score_micros INT64, "
+        "timestamp_ns INT64)"
+    ).ok());
+
+    auto empty = ex.execute("SELECT count(*) FROM action_outcome_projection");
+    ASSERT_TRUE(empty.ok()) << empty.error;
+    ASSERT_EQ(empty.rows.size(), 1u);
+    EXPECT_EQ(empty.rows[0][0], 0);
+
+    auto inserted = ex.execute(
+        "INSERT INTO action_outcome_projection "
+        "(query_id, action_class, top_action, score_micros, timestamp_ns) "
+        "VALUES ('aoe_payment_002', 'traffic_drain', 1, 670031, "
+        "1781748536000000000)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+    ASSERT_EQ(inserted.rows.size(), 1u);
+    EXPECT_EQ(inserted.rows[0][0], 1);
+
+    auto count = ex.execute("SELECT count(*) FROM action_outcome_projection");
+    ASSERT_TRUE(count.ok()) << count.error;
+    ASSERT_EQ(count.rows.size(), 1u);
+    EXPECT_EQ(count.rows[0][0], 1);
+
+    auto replay = ex.execute(
+        "SELECT score_micros "
+        "FROM action_outcome_projection "
+        "WHERE top_action = 1");
+    ASSERT_TRUE(replay.ok()) << replay.error;
+    ASSERT_EQ(replay.rows.size(), 1u);
+    ASSERT_EQ(replay.rows[0].size(), 1u);
+    EXPECT_EQ(replay.rows[0][0], 670031);
+}
+
+TEST(ActionOutcomeSQLReplay, StringKeyHashJoinPreservesDecodedStringColumns) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE action_outcome_recs_join ("
+        "query_id STRING, "
+        "action_class STRING, "
+        "top_action INT64, "
+        "timestamp_ns TIMESTAMP_NS)"
+    ).ok());
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE action_outcome_episode_join ("
+        "episode_id STRING, "
+        "human_outcome STRING, "
+        "timestamp_ns TIMESTAMP_NS)"
+    ).ok());
+
+    ASSERT_TRUE(ex.execute(
+        "INSERT INTO action_outcome_recs_join "
+        "(query_id, action_class, top_action, timestamp_ns) VALUES "
+        "('aoe_payment_002', 'traffic_drain', 1, 1781748536000000000)"
+    ).ok());
+    ASSERT_TRUE(ex.execute(
+        "INSERT INTO action_outcome_recs_join "
+        "(query_id, action_class, top_action, timestamp_ns) VALUES "
+        "('aoe_search_003', 'rollback', 0, 1781748536000000001)"
+    ).ok());
+    ASSERT_TRUE(ex.execute(
+        "INSERT INTO action_outcome_recs_join "
+        "(query_id, action_class, top_action, timestamp_ns) VALUES "
+        "('aoe_cache_002', 'cache_purge', 1, 1781748536000000002)"
+    ).ok());
+    ASSERT_TRUE(ex.execute(
+        "INSERT INTO action_outcome_episode_join "
+        "(episode_id, human_outcome, timestamp_ns) VALUES "
+        "('aoe_payment_002', 'failure', 1781748536000000000)"
+    ).ok());
+    ASSERT_TRUE(ex.execute(
+        "INSERT INTO action_outcome_episode_join "
+        "(episode_id, human_outcome, timestamp_ns) VALUES "
+        "('aoe_search_003', 'failure', 1781748536000000001)"
+    ).ok());
+    ASSERT_TRUE(ex.execute(
+        "INSERT INTO action_outcome_episode_join "
+        "(episode_id, human_outcome, timestamp_ns) VALUES "
+        "('aoe_cache_002', 'success', 1781748536000000002)"
+    ).ok());
+
+    auto joined = ex.execute(
+        "SELECT r.query_id, r.action_class, e.human_outcome "
+        "FROM action_outcome_recs_join r "
+        "JOIN action_outcome_episode_join e ON r.query_id = e.episode_id "
+        "WHERE r.top_action = 1 AND e.human_outcome = 'failure' "
+        "ORDER BY r.query_id");
+    ASSERT_TRUE(joined.ok()) << joined.error;
+    ASSERT_EQ(joined.rows.size(), 1u);
+    ASSERT_EQ(joined.rows[0].size(), 3u);
+    ASSERT_EQ(joined.column_types.size(), 3u);
+    EXPECT_EQ(joined.column_types[0], ColumnType::STRING);
+    EXPECT_EQ(joined.column_types[1], ColumnType::STRING);
+    EXPECT_EQ(joined.column_types[2], ColumnType::STRING);
+    ASSERT_NE(joined.symbol_dict, nullptr);
+    EXPECT_EQ(joined.symbol_dict->lookup(static_cast<uint32_t>(joined.rows[0][0])),
+              "aoe_payment_002");
+    EXPECT_EQ(joined.symbol_dict->lookup(static_cast<uint32_t>(joined.rows[0][1])),
+              "traffic_drain");
+    EXPECT_EQ(joined.symbol_dict->lookup(static_cast<uint32_t>(joined.rows[0][2])),
+              "failure");
+}
+
+TEST(GenericInsertSQL, SchemaOrderMaterializesStringsFloatsAndBool) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE generic_events ("
+        "event_name STRING, "
+        "score FLOAT64, "
+        "ok BOOL, "
+        "timestamp TIMESTAMP_NS)"
+    ).ok());
+
+    auto inserted = ex.execute(
+        "INSERT INTO generic_events VALUES "
+        "('alpha', 12.5, 1, 0)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+    ASSERT_EQ(inserted.rows.size(), 1u);
+    EXPECT_EQ(inserted.rows[0][0], 1);
+
+    auto selected = ex.execute(
+        "SELECT event_name, score, ok "
+        "FROM generic_events "
+        "WHERE ok = 1");
+    ASSERT_TRUE(selected.ok()) << selected.error;
+    ASSERT_EQ(selected.rows.size(), 1u);
+    ASSERT_EQ(selected.rows[0].size(), 3u);
+    ASSERT_EQ(selected.column_types.size(), 3u);
+    EXPECT_EQ(selected.column_types[0], ColumnType::STRING);
+    EXPECT_EQ(selected.column_types[1], ColumnType::FLOAT64);
+    EXPECT_EQ(selected.column_types[2], ColumnType::BOOL);
+    ASSERT_NE(selected.symbol_dict, nullptr);
+    EXPECT_EQ(selected.symbol_dict->lookup(static_cast<uint32_t>(selected.rows[0][0])),
+              "alpha");
+    ASSERT_EQ(selected.typed_rows.size(), 1u);
+    ASSERT_EQ(selected.typed_rows[0].size(), 3u);
+    EXPECT_DOUBLE_EQ(selected.typed_rows[0][1].f, 12.5);
+    EXPECT_EQ(selected.typed_rows[0][2].i, 1);
+}
+
+TEST(GenericInsertSQL, RejectsInt32OverflowWithoutPartialInsert) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE narrow_events (value INT32, timestamp TIMESTAMP_NS)"
+    ).ok());
+
+    auto rejected = ex.execute(
+        "INSERT INTO narrow_events VALUES (2147483648, 0)");
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_NE(rejected.error.find("INT32 value out of range"), std::string::npos);
+
+    auto count = ex.execute("SELECT count(*) FROM narrow_events");
+    ASSERT_TRUE(count.ok()) << count.error;
+    ASSERT_EQ(count.rows.size(), 1u);
+    EXPECT_EQ(count.rows[0][0], 0);
+}
+
 // ============================================================================
 // OFFSET tests
 // ============================================================================

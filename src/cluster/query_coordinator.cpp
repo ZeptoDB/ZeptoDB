@@ -8,11 +8,14 @@
 #include "zeptodb/common/logger.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <future>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 namespace zeptodb::cluster {
 
@@ -617,6 +620,273 @@ uint16_t QueryCoordinator::resolve_routing_table_id_locked(
     return 0;
 }
 
+static std::string lower_ascii(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+static bool is_string_encoded_type(zeptodb::storage::ColumnType type) {
+    return type == zeptodb::storage::ColumnType::SYMBOL ||
+           type == zeptodb::storage::ColumnType::STRING;
+}
+
+static double result_cell_as_f64(const zeptodb::sql::QueryResultSet& result,
+                                 size_t row_idx,
+                                 size_t col_idx)
+{
+    if (row_idx < result.typed_rows.size() &&
+        col_idx < result.typed_rows[row_idx].size()) {
+        return result.typed_rows[row_idx][col_idx].f;
+    }
+    if (row_idx >= result.rows.size() || col_idx >= result.rows[row_idx].size()) {
+        return 0.0;
+    }
+    return std::bit_cast<double>(result.rows[row_idx][col_idx]);
+}
+
+static std::optional<std::string> decoded_string_cell(
+    const zeptodb::sql::QueryResultSet& result,
+    size_t row_idx,
+    size_t col_idx)
+{
+    if (col_idx >= result.column_types.size() ||
+        !is_string_encoded_type(result.column_types[col_idx])) {
+        return std::nullopt;
+    }
+
+    size_t strings_per_row = 0;
+    size_t string_pos_in_row = 0;
+    bool found = false;
+    for (size_t ci = 0; ci < result.column_types.size(); ++ci) {
+        if (!is_string_encoded_type(result.column_types[ci])) continue;
+        if (ci == col_idx) {
+            string_pos_in_row = strings_per_row;
+            found = true;
+        }
+        ++strings_per_row;
+    }
+    if (!found || strings_per_row == 0) return std::nullopt;
+
+    const size_t offset = row_idx * strings_per_row + string_pos_in_row;
+    if (offset >= result.string_rows.size()) return std::nullopt;
+    return result.string_rows[offset];
+}
+
+static std::optional<zeptodb::storage::TableSchema> infer_schema_from_result(
+    const std::string& table_name,
+    const zeptodb::sql::QueryResultSet& result)
+{
+    if (table_name.empty() || result.column_names.empty()) return std::nullopt;
+    zeptodb::storage::TableSchema schema;
+    schema.table_name = table_name;
+    schema.columns.reserve(result.column_names.size());
+    for (size_t ci = 0; ci < result.column_names.size(); ++ci) {
+        zeptodb::storage::ColumnDef col;
+        col.name = result.column_names[ci];
+        col.type = ci < result.column_types.size()
+            ? result.column_types[ci]
+            : zeptodb::storage::ColumnType::INT64;
+        schema.columns.push_back(std::move(col));
+    }
+    schema.table_id = zeptodb::storage::SchemaRegistry::stable_table_id(table_name);
+    return schema;
+}
+
+static int find_timestamp_sort_column(const zeptodb::sql::QueryResultSet& result) {
+    for (size_t ci = 0; ci < result.column_names.size(); ++ci) {
+        if (lower_ascii(result.column_names[ci]) == "timestamp") {
+            return static_cast<int>(ci);
+        }
+    }
+    for (size_t ci = 0; ci < result.column_names.size(); ++ci) {
+        if (lower_ascii(result.column_names[ci]) == "timestamp_ns") {
+            return static_cast<int>(ci);
+        }
+    }
+    for (size_t ci = 0; ci < result.column_types.size(); ++ci) {
+        if (result.column_types[ci] == zeptodb::storage::ColumnType::TIMESTAMP_NS) {
+            return static_cast<int>(ci);
+        }
+    }
+    return -1;
+}
+
+static void sort_result_by_column(zeptodb::sql::QueryResultSet& result,
+                                  size_t sort_col)
+{
+    if (result.rows.size() < 2) return;
+
+    std::vector<size_t> order(result.rows.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+        [&](size_t lhs, size_t rhs) {
+            const int64_t lv = sort_col < result.rows[lhs].size()
+                ? result.rows[lhs][sort_col]
+                : 0;
+            const int64_t rv = sort_col < result.rows[rhs].size()
+                ? result.rows[rhs][sort_col]
+                : 0;
+            return lv < rv;
+        });
+
+    auto old_rows = std::move(result.rows);
+    result.rows.reserve(old_rows.size());
+    for (size_t idx : order) result.rows.push_back(std::move(old_rows[idx]));
+
+    if (result.typed_rows.size() == order.size()) {
+        auto old_typed_rows = std::move(result.typed_rows);
+        result.typed_rows.reserve(old_typed_rows.size());
+        for (size_t idx : order) {
+            result.typed_rows.push_back(std::move(old_typed_rows[idx]));
+        }
+    }
+
+    const size_t strings_per_row = static_cast<size_t>(
+        std::count_if(result.column_types.begin(), result.column_types.end(),
+            [](zeptodb::storage::ColumnType type) {
+                return type == zeptodb::storage::ColumnType::SYMBOL ||
+                       type == zeptodb::storage::ColumnType::STRING;
+            }));
+    if (strings_per_row > 0 &&
+        result.string_rows.size() >= order.size() * strings_per_row) {
+        auto old_string_rows = std::move(result.string_rows);
+        result.string_rows.reserve(old_string_rows.size());
+        for (size_t idx : order) {
+            const size_t base = idx * strings_per_row;
+            for (size_t si = 0; si < strings_per_row; ++si) {
+                result.string_rows.push_back(std::move(old_string_rows[base + si]));
+            }
+        }
+    }
+}
+
+static bool materialize_result_into_typed_table(
+    zeptodb::core::ZeptoPipeline& tmp,
+    const zeptodb::storage::TableSchema& schema,
+    const zeptodb::sql::QueryResultSet& result,
+    std::string& error)
+{
+    if (schema.table_name.empty() || schema.columns.empty()) return false;
+
+    if (!tmp.schema_registry().exists(schema.table_name) &&
+        !tmp.schema_registry().create(schema.table_name, schema.columns)) {
+        error = "failed to create temporary table '" + schema.table_name + "'";
+        return false;
+    }
+    const uint16_t table_id = tmp.schema_registry().get_table_id(schema.table_name);
+    if (table_id == 0) {
+        error = "temporary table '" + schema.table_name + "' has no table id";
+        return false;
+    }
+
+    std::unordered_map<std::string, size_t> source_cols;
+    source_cols.reserve(result.column_names.size());
+    for (size_t ci = 0; ci < result.column_names.size(); ++ci) {
+        source_cols.emplace(lower_ascii(result.column_names[ci]), ci);
+    }
+
+    std::vector<int> source_index;
+    source_index.reserve(schema.columns.size());
+    for (const auto& col : schema.columns) {
+        const auto it = source_cols.find(lower_ascii(col.name));
+        source_index.push_back(it == source_cols.end()
+            ? -1
+            : static_cast<int>(it->second));
+    }
+
+    for (size_t ri = 0; ri < result.rows.size(); ++ri) {
+        zeptodb::core::TypedRowMessage row;
+        row.table_id = table_id;
+        row.timestamp = 0;
+        row.symbol_id = 0;
+        row.columns.reserve(schema.columns.size());
+
+        bool has_timestamp = false;
+        for (size_t ci = 0; ci < schema.columns.size(); ++ci) {
+            const auto& schema_col = schema.columns[ci];
+            const int src_idx = source_index[ci];
+            const int64_t raw = (src_idx >= 0 &&
+                                 static_cast<size_t>(src_idx) < result.rows[ri].size())
+                ? result.rows[ri][static_cast<size_t>(src_idx)]
+                : 0;
+
+            zeptodb::core::TypedColumnValue value;
+            value.name = schema_col.name;
+            value.type = schema_col.type;
+
+            switch (schema_col.type) {
+                case zeptodb::storage::ColumnType::INT32:
+                case zeptodb::storage::ColumnType::INT64:
+                case zeptodb::storage::ColumnType::TIMESTAMP_NS:
+                    value.i64 = raw;
+                    break;
+                case zeptodb::storage::ColumnType::FLOAT32:
+                case zeptodb::storage::ColumnType::FLOAT64:
+                    value.f64 = src_idx >= 0
+                        ? result_cell_as_f64(result, ri, static_cast<size_t>(src_idx))
+                        : 0.0;
+                    break;
+                case zeptodb::storage::ColumnType::SYMBOL:
+                case zeptodb::storage::ColumnType::STRING:
+                    if (raw < 0 ||
+                        raw > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                        error = "temporary table string code out of range for column '" +
+                                schema_col.name + "'";
+                        return false;
+                    }
+                    value.u32 = static_cast<uint32_t>(raw);
+                    if (src_idx >= 0) {
+                        auto decoded = decoded_string_cell(
+                            result, ri, static_cast<size_t>(src_idx));
+                        if (decoded) {
+                            value.has_string_value = true;
+                            value.string_value = std::move(*decoded);
+                        }
+                    }
+                    break;
+                case zeptodb::storage::ColumnType::BOOL:
+                    value.u8 = raw == 0 ? uint8_t{0} : uint8_t{1};
+                    break;
+            }
+
+            const std::string lower_name = lower_ascii(schema_col.name);
+            if (lower_name == "symbol") {
+                int64_t sym = raw;
+                if (schema_col.type == zeptodb::storage::ColumnType::SYMBOL ||
+                    schema_col.type == zeptodb::storage::ColumnType::STRING) {
+                    sym = static_cast<int64_t>(value.u32);
+                }
+                if (sym >= 0 &&
+                    sym <= static_cast<int64_t>(
+                        std::numeric_limits<zeptodb::SymbolId>::max())) {
+                    row.symbol_id = static_cast<zeptodb::SymbolId>(sym);
+                }
+            }
+            if (lower_name == "timestamp" || lower_name == "timestamp_ns" ||
+                (!has_timestamp &&
+                 schema_col.type == zeptodb::storage::ColumnType::TIMESTAMP_NS)) {
+                row.timestamp = raw;
+                has_timestamp = true;
+            }
+
+            row.columns.push_back(std::move(value));
+        }
+
+        if (!tmp.ingest_typed_row(std::move(row))) {
+            error = "failed to materialize row " + std::to_string(ri) +
+                    " into temporary table '" + schema.table_name + "'";
+            return false;
+        }
+    }
+
+    if (!result.rows.empty()) {
+        tmp.schema_registry().mark_has_data(table_id);
+    }
+    return true;
+}
+
 // ============================================================================
 // Public execute_sql
 // ============================================================================
@@ -867,6 +1137,16 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                 std::string real_table = wstmt.from_table;
                 if (!wstmt.cte_defs.empty() || wstmt.from_subquery)
                     real_table = "trades";
+                std::optional<zeptodb::storage::TableSchema> schema_snapshot;
+                {
+                    std::shared_lock lock(mutex_);
+                    for (const auto& ep : endpoints_) {
+                        if (!ep->is_local || ep->pipeline == nullptr) continue;
+                        schema_snapshot =
+                            ep->pipeline->schema_registry().get(real_table);
+                        if (schema_snapshot) break;
+                    }
+                }
                 std::string base_q = "SELECT * FROM " + real_table;
                 if (wstmt.where) {
                     // Re-extract WHERE from original SQL
@@ -896,36 +1176,64 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                 auto base_merged = merge_concat_results(base_results);
                 if (!base_merged.ok()) return base_merged;
 
+                bool needs_timestamp_order = false;
+                for (const auto& col : wstmt.columns) {
+                    if (col.agg == zeptodb::sql::AggFunc::FIRST ||
+                        col.agg == zeptodb::sql::AggFunc::LAST) {
+                        needs_timestamp_order = true;
+                        break;
+                    }
+                }
+                if (needs_timestamp_order) {
+                    const int ts_col = find_timestamp_sort_column(base_merged);
+                    if (ts_col >= 0) {
+                        sort_result_by_column(base_merged,
+                            static_cast<size_t>(ts_col));
+                    }
+                }
+
                 // Ingest into a temporary local pipeline
                 zeptodb::core::PipelineConfig tcfg;
                 tcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
                 zeptodb::core::ZeptoPipeline tmp(tcfg);
                 tmp.start();
 
-                // Map columns: find symbol/price/volume/timestamp indices
-                int ci_sym = -1, ci_price = -1, ci_vol = -1, ci_ts = -1;
-                for (size_t i = 0; i < base_merged.column_names.size(); ++i) {
-                    const auto& n = base_merged.column_names[i];
-                    if (n == "symbol")    ci_sym   = static_cast<int>(i);
-                    if (n == "price")     ci_price = static_cast<int>(i);
-                    if (n == "volume")    ci_vol   = static_cast<int>(i);
-                    if (n == "timestamp") ci_ts    = static_cast<int>(i);
-                }
-                // Sort by timestamp for correct FIRST/LAST ordering
-                if (ci_ts >= 0) {
-                    std::sort(base_merged.rows.begin(), base_merged.rows.end(),
-                        [ci_ts](const std::vector<int64_t>& a,
-                                const std::vector<int64_t>& b) {
-                            return a[ci_ts] < b[ci_ts];
-                        });
-                }
-                for (auto& row : base_merged.rows) {
-                    zeptodb::ingestion::TickMessage msg{};
-                    if (ci_sym >= 0)   msg.symbol_id = static_cast<uint32_t>(row[ci_sym]);
-                    if (ci_price >= 0) msg.price     = row[ci_price];
-                    if (ci_vol >= 0)   msg.volume    = row[ci_vol];
-                    if (ci_ts >= 0)    msg.recv_ts   = row[ci_ts];
-                    tmp.store_tick_direct(msg);
+                std::optional<zeptodb::storage::TableSchema> replay_schema =
+                    schema_snapshot
+                        ? schema_snapshot
+                        : infer_schema_from_result(real_table, base_merged);
+
+                if (replay_schema) {
+                    std::string replay_error;
+                    if (!materialize_result_into_typed_table(
+                            tmp, *replay_schema, base_merged, replay_error)) {
+                        tmp.stop();
+                        zeptodb::sql::QueryResultSet err;
+                        err.error = replay_error.empty()
+                            ? "failed to materialize temporary table '" +
+                              replay_schema->table_name + "'"
+                            : replay_error;
+                        return err;
+                    }
+                } else {
+                    // Legacy fallback for pre-DDL tick-shaped data.
+                    // Map columns: find symbol/price/volume/timestamp indices.
+                    int ci_sym = -1, ci_price = -1, ci_vol = -1, ci_ts = -1;
+                    for (size_t i = 0; i < base_merged.column_names.size(); ++i) {
+                        const auto& n = base_merged.column_names[i];
+                        if (n == "symbol")    ci_sym   = static_cast<int>(i);
+                        if (n == "price")     ci_price = static_cast<int>(i);
+                        if (n == "volume")    ci_vol   = static_cast<int>(i);
+                        if (n == "timestamp") ci_ts    = static_cast<int>(i);
+                    }
+                    for (auto& row : base_merged.rows) {
+                        zeptodb::ingestion::TickMessage msg{};
+                        if (ci_sym >= 0)   msg.symbol_id = static_cast<uint32_t>(row[ci_sym]);
+                        if (ci_price >= 0) msg.price     = row[ci_price];
+                        if (ci_vol >= 0)   msg.volume    = row[ci_vol];
+                        if (ci_ts >= 0)    msg.recv_ts   = row[ci_ts];
+                        tmp.store_tick_direct(msg);
+                    }
                 }
 
                 // Execute original SQL on the complete local dataset

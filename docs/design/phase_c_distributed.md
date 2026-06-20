@@ -276,12 +276,13 @@ directly to whichever pod received the request. **Devlog 103** added
 `QueryExecutor::cluster_node_` and the routing branch in `exec_insert`;
 **devlog 111** wired the adapter into the production `zepto_http_server`
 binary. `QueryExecutor` holds an optional `zeptodb::cluster::ClusterNodeBase*`,
-set once at startup via `set_cluster_node()`. When non-null, `exec_insert()`
-dispatches through `ClusterNodeBase::ingest_tick` (routed to the partition
-owner via the same `PartitionRouter`); when null, it falls back to direct
-local `pipeline_.ingest_tick()` — preserving single-node behaviour. The
-same `ingest_routed_()` pattern covers the three Python `PyPipeline` call
-sites (single ingest, int batch, float batch).
+set once at startup via `set_cluster_node()`. When non-null, legacy tick-shaped
+`INSERT` dispatches through `ClusterNodeBase::ingest_tick`, while declared-schema
+`INSERT ... VALUES` dispatches through `ClusterNodeBase::ingest_typed_row`.
+Both paths use the same `PartitionRouter` table-aware owner key. When the
+pointer is null, the executor falls back to direct local pipeline ingest,
+preserving single-node behaviour. The same `ingest_routed_()` pattern covers
+the three Python `PyPipeline` call sites (single ingest, int batch, float batch).
 
 In `zepto_http_server` cluster mode:
 
@@ -293,13 +294,17 @@ In `zepto_http_server` cluster mode:
    (rather than a separate `rebalance_router`), so every ring change is
    visible to the adapter's next `route()` call under the same
    `shared_mutex`.
-3. A peer `TcpRpcServer` listens on `port + 100` for
-   `TICK_INGEST` RPCs from other pods; the callback writes directly to
-   the local pipeline (owner path), marks the target schema as containing
-   data, and drains single-tick RPCs before returning success. Batch RPCs
-   drain after the accepted batch. This keeps the HTTP caller's ACK semantics
-   aligned with local `INSERT`: once the forwarding pod reports success, a
-   table-aware `SELECT` routed to the owner can see the row.
+3. A peer `TcpRpcServer` listens on `port + 100` for `TICK_INGEST` and
+   `TYPED_ROW_INGEST` RPCs from other pods; callbacks write directly to the
+   local pipeline (owner path). Tick callbacks mark the target schema as
+   containing data and drain before returning success. Typed-row callbacks are
+   synchronous because `ZeptoPipeline::ingest_typed_row()` writes directly to
+   storage and updates table visibility itself. For `STRING`/`SYMBOL`
+   values, typed-row RPC carries an optional string-value tail so the owner
+   can bind the sender's dictionary code to the original text. This keeps the
+   HTTP caller's ACK semantics aligned with local `INSERT`: once the
+   forwarding pod reports success, a table-aware `SELECT` routed to the owner
+   can see the row and return decoded strings through coordinator queries.
 4. `zepto_data_node` is a leaf binary and does NOT wire the adapter —
    it accepts only coordinator-forwarded RPC, so wiring would
    double-route. Documented in-code.
@@ -451,6 +456,18 @@ Future work that deepens the MPP side lives in P8/P10: RDMA remote scans,
 RDMA WAL replication, replica-aware reads, cost-based distributed planning,
 broadcast or replicated dimension tables, and pluggable partition strategies.
 
+**Experiment 011 boundary (2026-06-20):** the Action-Outcome distributed vendor
+SQL replay shows the current line more precisely for operational generic
+tables. Two-node row counts, routed ingest, and co-located vendor JOINs pass.
+The suppression JOIN remains a true cross-node hash JOIN gap because
+`action_outcome_vendor_suppressions_010` and
+`action_outcome_vendor_recommendations_010` are owned by different nodes under
+the 1/8 ring. Cluster-mode ROW_NUMBER/LAG over the recommendation table now
+preserves declared generic-table values through schema-aware temporary
+materialization in the coordinator fetch-and-compute path. The next planner
+step is a small-table broadcast/replicated JOIN path before broader
+distributed SQL planning.
+
 ---
 
 ## 5. Scaling Scenarios
@@ -564,12 +581,20 @@ HPA replica increase trigger Karpenter node provisioning normally.
   - Tier B: scatter-gather to all nodes → partial aggregation merge
 - `TcpRpcServer` / `TcpRpcClient` — POSIX socket transport
   - 24-byte `RpcHeader` (magic, type, request_id, payload_len, epoch)
-  - Binary `QueryResultSet` wire format (error, column names/types, packed int64 rows)
+  - Binary `QueryResultSet` wire format (error, column names/types, packed int64 rows,
+    plus an optional decoded string tail for `SYMBOL`/`STRING` columns so
+    node-local dictionary codes do not leak through distributed concat merge)
+  - Binary `TypedRowMessage` write format for `TYPED_ROW_INGEST`, with a
+    backwards-compatible optional tail carrying original `SYMBOL`/`STRING`
+    text by column index; receivers reject inconsistent dictionary code/text
+    bindings instead of silently corrupting semantic values
   - Connection pooling (acquire/release, MSG_PEEK liveness, max 4 idle)
 - `partial_agg.h` — merge strategies:
   - `SCALAR_AGG`: SQL-AST-driven per-column merge (SUM/COUNT=add, MIN=min, MAX=max, AVG=SUM/COUNT rewrite)
   - `MERGE_GROUP_BY`: re-aggregate same key buckets across nodes (xbar time bars)
-  - `CONCAT`: plain rows or GROUP BY with symbol affinity (no key overlap)
+  - `CONCAT`: plain rows or GROUP BY with symbol affinity (no key overlap);
+    preserves decoded `SYMBOL`/`STRING` strings from local dictionaries and
+    remote RPC string tails
   - Strategy detected from SQL AST (not column names — executor returns raw names)
 - 25 tests: RpcProtocol (5), PartialAgg (11), TcpRpc (4), QueryCoordinator (5)
 
@@ -633,7 +658,7 @@ and split-brain scenarios had incomplete protection.
 |-----|--------|-------|
 | HAVING distributed | TODO | Apply after GROUP BY merge at coordinator |
 | DISTINCT distributed | TODO | Dedup at coordinator after concat |
-| Window functions distributed | TODO | Requires full dataset; fetch-and-compute |
+| Window functions distributed | Implemented for fetch-and-compute | Coordinator fetches all rows, materializes declared tables through typed rows, then executes locally |
 | FIRST/LAST distributed | TODO | Timestamp comparison across nodes |
 | COUNT(DISTINCT) distributed | TODO | HyperLogLog or exact dedup |
 | Subquery/CTE distributed | TODO | Cross-node CTE reference |
