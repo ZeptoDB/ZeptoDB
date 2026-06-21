@@ -150,9 +150,10 @@ public:
     }
 
     /// Enable cluster-aware INSERT routing. When set, exec_insert() routes
-    /// via the cluster ring (ClusterNodeBase::ingest_tick) instead of writing
-    /// to the local pipeline directly. Set once at startup; null = single-node
-    /// fallback (original behaviour). See devlog 103.
+    /// tick-shaped rows through ClusterNodeBase::ingest_tick and schema-aware
+    /// rows through ClusterNodeBase::ingest_typed_row instead of writing to the
+    /// local pipeline directly. Set once at startup; null = single-node
+    /// fallback. See devlogs 103 and 186.
     void set_cluster_node(zeptodb::cluster::ClusterNodeBase* node) {
         cluster_node_ = node;
     }

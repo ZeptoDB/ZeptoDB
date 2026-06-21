@@ -23,6 +23,7 @@ add_executable(zepto_tests
     unit/test_kafka.cpp
     unit/test_kinesis.cpp
     unit/test_mqtt.cpp
+    unit/test_pulsar.cpp
     unit/test_opcua.cpp
     unit/test_opcua_integration.cpp
     unit/test_ros2.cpp
@@ -74,6 +75,7 @@ target_link_libraries(zepto_tests PRIVATE
     zepto_kafka
     zepto_kinesis
     zepto_mqtt
+    zepto_pulsar
     zepto_opcua
     zepto_ros2
     zepto_flight

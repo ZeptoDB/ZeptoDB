@@ -63,6 +63,24 @@ public:
         return it->second->ingest_tick(msg);
     }
 
+    /// Route a schema-aware typed row to its owner using the same
+    /// table-aware hash key as tick ingest.
+    bool ingest_typed_row(const zeptodb::core::TypedRowMessage& row) override {
+        NodeId owner;
+        {
+            std::shared_lock<std::shared_mutex> lk(*router_mu_);
+            owner = router_->route(row.table_id, row.symbol_id);
+        }
+        if (owner == self_id_) {
+            return local_->ingest_typed_row(row);
+        }
+        auto it = remote_->find(owner);
+        if (it == remote_->end()) {
+            return false;
+        }
+        return it->second->ingest_typed_row(row);
+    }
+
 private:
     PartitionRouter*              router_;
     std::shared_mutex*            router_mu_;

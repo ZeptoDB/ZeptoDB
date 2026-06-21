@@ -167,7 +167,30 @@ because it is a cloud/IoT streaming connector rather than a Kafka-compatible
 enterprise bus. Metrics are exposed through `KinesisConsumer::format_prometheus`
 and can be appended to `/metrics` with `HttpServer::add_metrics_provider()`.
 
-Last updated: 2026-06-12 (AWS Kinesis consumer — devlog 175)
+## Apache Pulsar consumer (devlog 180)
+
+`PulsarConsumer` adds a Pulsar topic/subscription ingress path for teams that
+standardize on Pulsar instead of Kafka. It follows the same feed-layer contract
+as Kafka, MQTT, and Kinesis: raw broker payloads are decoded through the shared
+`MessageFormat` contract (`JSON`, `BINARY`, or `JSON_HUMAN`) and the resulting
+`TickMessage` is dispatched through table-aware single-node or cluster routing.
+
+Default/no-SDK builds compile config validation, decode, routing, metrics, and
+table-aware ingest while returning `false` from `start()`. Live broker polling
+is enabled with `-DZEPTO_USE_PULSAR=ON` when the Apache Pulsar C++ client is
+installed. The live path subscribes with `service_url`, `topic`, and
+`subscription_name`, supports `Shared`, `Exclusive`, `Failover`, and
+`KeyShared` subscription modes, receives up to
+`PulsarConfig::max_messages_per_poll` messages per wake, acknowledges only
+after successful ingest, and sends negative acknowledgements when decode or
+ingest fails.
+
+Pulsar is gated by `Feature::IOT_CONNECTORS`, matching MQTT, OPC-UA, ROS 2, and
+Kinesis because it is a cloud/IoT streaming connector. Metrics are exposed
+through `PulsarConsumer::format_prometheus` and can be appended to `/metrics`
+with `HttpServer::add_metrics_provider()`.
+
+Last updated: 2026-06-13 (Apache Pulsar consumer - devlog 180)
 
 ## Table-aware ingest (Stage B — devlog 084)
 
@@ -183,6 +206,7 @@ table_id is resolved once (at `set_pipeline()` or on the first call) via
 | `zepto_py.from_pandas / from_polars / from_arrow` | `table_name=...` kwarg | threaded through to C++ | `ValueError` |
 | `KafkaConfig::table_name` | set at construction | cached at `set_pipeline()` | log ERROR, increment `ingest_failures`, drop message |
 | `MqttConfig::table_name` | set at construction | cached at `set_pipeline()` | same as Kafka |
+| `PulsarConfig::table_name` | set at construction | cached at `set_pipeline()` | same as Kafka |
 | `FIXParser::set_table_id/name` | manual | write-only setter | caller responsibility |
 | `NASDAQITCHParser::set_table_id/name` | manual | write-only setter | caller responsibility |
 | `BinanceFeedHandler::set_table_id/name` | manual | write-only setter | caller responsibility |

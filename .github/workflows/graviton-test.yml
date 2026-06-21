@@ -3,17 +3,34 @@ name: Graviton ARM64 Build & Test
 on:
   push:
     branches: [dev, main]
-    paths-ignore: ['docs/**', 'web/**', '*.md']
+    paths-ignore:
+      - 'docs/**'
+      - 'web/**'
+      - 'deploy/**'
+      - '.github/**'
+      - '*.md'
+      - '.dockerignore'
   pull_request:
     branches: [dev, main]
-    paths-ignore: ['docs/**', 'web/**', '*.md']
+    paths-ignore:
+      - 'docs/**'
+      - 'web/**'
+      - 'deploy/**'
+      - '.github/**'
+      - '*.md'
+      - '.dockerignore'
   workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: graviton-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: [self-hosted, linux, ARM64]
     timeout-minutes: 30
 

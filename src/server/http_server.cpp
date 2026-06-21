@@ -5481,7 +5481,7 @@ std::string HttpServer::build_json_response(
     }
     // ── String-result path (SHOW TABLES / DESCRIBE) ──
     // When string_rows is populated and rows exist, interleave string values
-    // with integer values based on column_types (SYMBOL → string, else int).
+    // with integer values based on column_types (SYMBOL/STRING → string).
     if (!result.string_rows.empty() && !result.rows.empty()) {
         size_t str_idx = 0;
         for (size_t r = 0; r < result.rows.size(); ++r) {
@@ -5491,7 +5491,8 @@ std::string HttpServer::build_json_response(
             for (size_t c = 0; c < result.column_names.size(); ++c) {
                 if (c > 0) os << ",";
                 if (c < result.column_types.size() &&
-                    result.column_types[c] == storage::ColumnType::SYMBOL &&
+                    (result.column_types[c] == storage::ColumnType::SYMBOL ||
+                     result.column_types[c] == storage::ColumnType::STRING) &&
                     str_idx < result.string_rows.size()) {
                     // JSON-escape the string
                     os << "\"";

@@ -200,6 +200,13 @@ private:
     std::vector<zeptodb::sql::QueryResultSet> scatter_to(
         const std::string& sql, const std::unordered_set<size_t>& node_indices);
 
+    /// Execute a bounded coordinator-local hash JOIN by fetching both small
+    /// operational tables, materializing them into a temporary typed pipeline,
+    /// and delegating the actual JOIN semantics to the SQL executor.
+    zeptodb::sql::QueryResultSet execute_small_table_hash_join(
+        const std::string& sql,
+        const zeptodb::sql::SelectStmt& stmt);
+
     /// Try to extract a single symbol ID from "WHERE symbol = <literal>".
     std::optional<SymbolId> extract_symbol_filter(const std::string& sql) const;
 
@@ -210,6 +217,10 @@ private:
     /// table. Returns 0 for legacy/no-CREATE-table paths.
     uint16_t resolve_routing_table_id_locked(
         const std::optional<std::string>& table_name) const;
+
+    /// Snapshot a local schema registry entry while mutex_ is already held.
+    std::optional<zeptodb::storage::TableSchema> schema_snapshot_locked(
+        const std::string& table_name) const;
 
     mutable std::shared_mutex                        mutex_;
     std::vector<std::shared_ptr<NodeEndpoint>>       endpoints_;

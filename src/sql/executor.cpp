@@ -25,6 +25,7 @@
 #include <bit>
 #include <chrono>
 #include <climits>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -469,6 +470,181 @@ static QueryResultSet ddl_ok(const std::string& msg) {
     return r;
 }
 
+static std::string lower_identifier(std::string value) {
+    for (auto& c : value) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return value;
+}
+
+static int64_t current_time_ns() {
+    return static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+static const char* column_type_name(ColumnType type) {
+    switch (type) {
+        case ColumnType::INT32:        return "INT32";
+        case ColumnType::INT64:        return "INT64";
+        case ColumnType::FLOAT32:      return "FLOAT32";
+        case ColumnType::FLOAT64:      return "FLOAT64";
+        case ColumnType::TIMESTAMP_NS: return "TIMESTAMP_NS";
+        case ColumnType::SYMBOL:       return "SYMBOL";
+        case ColumnType::BOOL:         return "BOOL";
+        case ColumnType::STRING:       return "STRING";
+    }
+    return "UNKNOWN";
+}
+
+static bool insert_value_as_i64(const InsertValue& value, int64_t& out) {
+    if (value.type == InsertValue::STRING) return false;
+    out = value.type == InsertValue::FLOAT
+        ? static_cast<int64_t>(value.f)
+        : value.i;
+    return true;
+}
+
+static bool insert_value_as_f64(const InsertValue& value, double& out) {
+    if (value.type == InsertValue::STRING) return false;
+    out = value.type == InsertValue::FLOAT
+        ? value.f
+        : static_cast<double>(value.i);
+    return true;
+}
+
+static bool parse_bool_string(const std::string& value, uint8_t& out) {
+    const std::string lower = lower_identifier(value);
+    if (lower == "true" || lower == "t" || lower == "1") {
+        out = 1;
+        return true;
+    }
+    if (lower == "false" || lower == "f" || lower == "0") {
+        out = 0;
+        return true;
+    }
+    return false;
+}
+
+static bool materialize_insert_value(
+    const ColumnDef& column,
+    const InsertValue& value,
+    StringDictionary& dict,
+    TypedColumnValue& out,
+    std::string& error)
+{
+    out = {};
+    out.name = column.name;
+    out.type = column.type;
+
+    int64_t i64 = 0;
+    double f64 = 0.0;
+    switch (column.type) {
+        case ColumnType::INT32:
+            if (!insert_value_as_i64(value, i64)) {
+                error = "STRING value cannot be inserted into INT32 column '" + column.name + "'";
+                return false;
+            }
+            if (i64 < std::numeric_limits<int32_t>::min() ||
+                i64 > std::numeric_limits<int32_t>::max()) {
+                error = "INT32 value out of range for column '" + column.name + "'";
+                return false;
+            }
+            out.i64 = i64;
+            return true;
+
+        case ColumnType::INT64:
+        case ColumnType::TIMESTAMP_NS:
+            if (!insert_value_as_i64(value, i64)) {
+                error = "STRING value cannot be inserted into " +
+                        std::string(column_type_name(column.type)) +
+                        " column '" + column.name + "'";
+                return false;
+            }
+            out.i64 = i64;
+            return true;
+
+        case ColumnType::FLOAT32:
+        case ColumnType::FLOAT64:
+            if (!insert_value_as_f64(value, f64)) {
+                error = "STRING value cannot be inserted into " +
+                        std::string(column_type_name(column.type)) +
+                        " column '" + column.name + "'";
+                return false;
+            }
+            out.f64 = f64;
+            return true;
+
+        case ColumnType::SYMBOL:
+            if (value.type == InsertValue::STRING) {
+                out.u32 = dict.intern(value.s);
+                out.has_string_value = true;
+                out.string_value = value.s;
+            } else {
+                if (!insert_value_as_i64(value, i64) || i64 < 0 ||
+                    i64 > std::numeric_limits<uint32_t>::max()) {
+                    error = "SYMBOL id out of range for column '" + column.name + "'";
+                    return false;
+                }
+                out.u32 = static_cast<uint32_t>(i64);
+            }
+            return true;
+
+        case ColumnType::STRING:
+            if (value.type != InsertValue::STRING) {
+                error = "Non-string value cannot be inserted into STRING column '" + column.name + "'";
+                return false;
+            }
+            out.u32 = dict.intern(value.s);
+            out.has_string_value = true;
+            out.string_value = value.s;
+            return true;
+
+        case ColumnType::BOOL:
+            if (value.type == InsertValue::STRING) {
+                if (!parse_bool_string(value.s, out.u8)) {
+                    error = "Invalid BOOL string for column '" + column.name + "'";
+                    return false;
+                }
+            } else {
+                if (!insert_value_as_i64(value, i64)) {
+                    error = "Invalid BOOL value for column '" + column.name + "'";
+                    return false;
+                }
+                out.u8 = i64 == 0 ? 0 : 1;
+            }
+            return true;
+    }
+    error = "Unsupported column type for column '" + column.name + "'";
+    return false;
+}
+
+static int64_t typed_value_as_i64(const TypedColumnValue& value) {
+    switch (value.type) {
+        case ColumnType::INT32:
+        case ColumnType::INT64:
+        case ColumnType::TIMESTAMP_NS:
+            return value.i64;
+        case ColumnType::FLOAT32:
+        case ColumnType::FLOAT64:
+            return static_cast<int64_t>(value.f64);
+        case ColumnType::SYMBOL:
+        case ColumnType::STRING:
+            return static_cast<int64_t>(value.u32);
+        case ColumnType::BOOL:
+            return static_cast<int64_t>(value.u8);
+    }
+    return 0;
+}
+
+static QueryResultSet insert_count_result(size_t inserted) {
+    QueryResultSet result;
+    result.column_names = {"inserted"};
+    result.column_types = {storage::ColumnType::INT64};
+    result.rows = {{static_cast<int64_t>(inserted)}};
+    return result;
+}
+
 // ============================================================================
 // exec_create_table
 // ============================================================================
@@ -682,10 +858,136 @@ QueryResultSet QueryExecutor::exec_drop_mv(const DropMVStmt& stmt) {
 
 // ============================================================================
 // exec_insert — INSERT INTO table VALUES (...)
-// Maps column values to TickMessage fields and calls pipeline_.ingest_tick().
-// Default column order: symbol, price, volume, timestamp
+// Schema-defined tables use typed row materialization. Tables without CREATE
+// TABLE keep the legacy TickMessage path and default column order:
+// symbol, price, volume, timestamp.
 // ============================================================================
 QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
+    if (auto schema = pipeline_.schema_registry().get(stmt.table_name)) {
+        std::vector<std::string> cols = stmt.columns;
+        if (cols.empty()) {
+            cols.reserve(schema->columns.size());
+            for (const auto& column : schema->columns) {
+                cols.push_back(column.name);
+            }
+        }
+
+        std::unordered_map<std::string, const ColumnDef*> schema_columns;
+        schema_columns.reserve(schema->columns.size());
+        for (const auto& column : schema->columns) {
+            schema_columns.emplace(lower_identifier(column.name), &column);
+        }
+
+        std::vector<const ColumnDef*> ordered_columns;
+        ordered_columns.reserve(cols.size());
+        std::unordered_set<std::string> seen_columns;
+        seen_columns.reserve(cols.size());
+        for (const auto& col : cols) {
+            const std::string lower = lower_identifier(col);
+            if (!seen_columns.emplace(lower).second) {
+                QueryResultSet err;
+                err.error = "Duplicate INSERT column '" + col + "'";
+                return err;
+            }
+            const auto schema_it = schema_columns.find(lower);
+            if (schema_it == schema_columns.end()) {
+                QueryResultSet err;
+                err.error = "Column '" + col + "' does not exist in table '" +
+                            stmt.table_name + "'";
+                return err;
+            }
+            ordered_columns.push_back(schema_it->second);
+        }
+
+        size_t inserted = 0;
+        size_t failed = 0;
+        for (const auto& row : stmt.value_rows) {
+            if (row.size() != ordered_columns.size()) {
+                QueryResultSet err;
+                err.error = "Column count mismatch: expected " +
+                            std::to_string(ordered_columns.size()) + ", got " +
+                            std::to_string(row.size());
+                return err;
+            }
+
+            TypedRowMessage msg{};
+            msg.table_id = schema->table_id;
+            msg.timestamp = current_time_ns();
+            msg.columns.reserve(row.size());
+
+            int64_t named_timestamp = 0;
+            int64_t typed_timestamp = 0;
+            bool has_named_timestamp = false;
+            bool has_typed_timestamp = false;
+
+            for (size_t i = 0; i < row.size(); ++i) {
+                const ColumnDef& column = *ordered_columns[i];
+                TypedColumnValue value;
+                std::string error;
+                if (!materialize_insert_value(
+                        column, row[i], pipeline_.symbol_dict(), value, error)) {
+                    QueryResultSet err;
+                    err.error = error;
+                    return err;
+                }
+
+                const std::string lower = lower_identifier(column.name);
+                if (lower == "symbol") {
+                    const int64_t symbol_value = typed_value_as_i64(value);
+                    if (symbol_value < 0 ||
+                        symbol_value > std::numeric_limits<zeptodb::SymbolId>::max()) {
+                        QueryResultSet err;
+                        err.error = "Symbol value out of range for column '" +
+                                    column.name + "'";
+                        return err;
+                    }
+                    msg.symbol_id = static_cast<zeptodb::SymbolId>(symbol_value);
+                }
+                if (lower == "timestamp" || lower == "timestamp_ns") {
+                    named_timestamp = typed_value_as_i64(value);
+                    has_named_timestamp = true;
+                } else if (!has_typed_timestamp &&
+                           column.type == ColumnType::TIMESTAMP_NS) {
+                    typed_timestamp = typed_value_as_i64(value);
+                    has_typed_timestamp = true;
+                }
+
+                msg.columns.push_back(value);
+            }
+
+            if (has_named_timestamp) {
+                msg.timestamp = named_timestamp;
+            } else if (has_typed_timestamp) {
+                msg.timestamp = typed_timestamp;
+            }
+
+            bool ok = false;
+            if (cluster_node_) {
+                ok = cluster_node_->ingest_typed_row(msg);
+            } else {
+                ok = pipeline_.ingest_typed_row(std::move(msg));
+            }
+            if (ok) {
+                ++inserted;
+            } else {
+                ++failed;
+            }
+        }
+
+        if (inserted > 0) {
+            pipeline_.schema_registry().mark_has_data(schema->table_id);
+        }
+
+        if (failed > 0) {
+            QueryResultSet err;
+            err.error = "Failed to ingest " + std::to_string(failed) +
+                        " of " + std::to_string(stmt.value_rows.size()) + " rows";
+            return err;
+        }
+
+        return insert_count_result(inserted);
+    }
+
     // Resolve column order: explicit columns or default
     std::vector<std::string> cols = stmt.columns;
     if (cols.empty()) {
@@ -735,9 +1037,7 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
             msg.price_is_float = 0;
         }
         msg.volume    = get_i("volume", 0);
-        msg.recv_ts   = get_i("timestamp", static_cast<int64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count()));
+        msg.recv_ts   = get_i("timestamp", current_time_ns());
         msg.seq_num   = static_cast<uint64_t>(pipeline_.stats().ticks_ingested.load());
         msg.msg_type  = 0;  // Trade
         msg.table_id  = pipeline_.schema_registry().get_table_id(stmt.table_name);
@@ -768,11 +1068,7 @@ QueryResultSet QueryExecutor::exec_insert(const InsertStmt& stmt) {
         return err;
     }
 
-    QueryResultSet result;
-    result.column_names = {"inserted"};
-    result.column_types = {storage::ColumnType::INT64};
-    result.rows = {{static_cast<int64_t>(inserted)}};
-    return result;
+    return insert_count_result(inserted);
 }
 
 zeptodb::SymbolId QueryExecutor::intern_symbol_for_ingest(const std::string& symbol) {
@@ -4278,22 +4574,22 @@ QueryResultSet QueryExecutor::exec_hash_join(
 
     for (size_t pi = 0; pi < left_parts.size(); ++pi) {
         auto* part = left_parts[pi];
-        const int64_t* kd = get_col_data(*part, l_key_col);
+        const ColumnVector* key_col = part->get_column(l_key_col);
         size_t n = part->num_rows();
         rows_scanned += n;
         for (size_t i = 0; i < n; ++i) {
-            l_keys_flat.push_back(kd ? kd[i] : 0);
+            l_keys_flat.push_back(key_col ? read_column_as_i64(*key_col, i) : 0);
             l_refs.push_back({pi, i});
         }
     }
 
     for (size_t pi = 0; pi < right_parts.size(); ++pi) {
         auto* part = right_parts[pi];
-        const int64_t* kd = get_col_data(*part, r_key_col);
+        const ColumnVector* key_col = part->get_column(r_key_col);
         size_t n = part->num_rows();
         rows_scanned += n;
         for (size_t i = 0; i < n; ++i) {
-            r_keys_flat.push_back(kd ? kd[i] : 0);
+            r_keys_flat.push_back(key_col ? read_column_as_i64(*key_col, i) : 0);
             r_refs.push_back({pi, i});
         }
     }
@@ -4421,8 +4717,54 @@ QueryResultSet QueryExecutor::exec_hash_join(
         }
         std::string col_name = sel.alias.empty() ? sel.column : sel.alias;
         result.column_names.push_back(col_name);
-        result.column_types.push_back(ColumnType::INT64);
+        const bool is_right = (!sel.table_alias.empty() && sel.table_alias == r_alias);
+        const auto& source_parts = is_right ? right_parts : left_parts;
+        const ColumnVector* cv = source_parts.empty()
+            ? nullptr
+            : source_parts[0]->get_column(sel.column);
+        result.column_types.push_back(cv ? cv->type() : ColumnType::INT64);
     }
+
+    struct JoinCell {
+        bool exists = false;
+        bool is_null = true;
+        ColumnType type = ColumnType::INT64;
+        int64_t i = JOIN_NULL;
+        double f = 0.0;
+    };
+
+    auto compare_string = [](std::string_view lhs, CompareOp op,
+                             std::string_view rhs) {
+        const int cmp = lhs.compare(rhs);
+        switch (op) {
+            case CompareOp::EQ: return cmp == 0;
+            case CompareOp::NE: return cmp != 0;
+            case CompareOp::GT: return cmp > 0;
+            case CompareOp::LT: return cmp < 0;
+            case CompareOp::GE: return cmp >= 0;
+            case CompareOp::LE: return cmp <= 0;
+        }
+        return false;
+    };
+
+    auto like_match = [](const std::string& s, const std::string& pat) {
+        const size_t m = s.size();
+        const size_t n = pat.size();
+        std::vector<std::vector<bool>> dp(m + 1, std::vector<bool>(n + 1, false));
+        dp[0][0] = true;
+        for (size_t j = 1; j <= n; ++j)
+            dp[0][j] = dp[0][j - 1] && pat[j - 1] == '%';
+        for (size_t i = 1; i <= m; ++i) {
+            for (size_t j = 1; j <= n; ++j) {
+                if (pat[j - 1] == '%') {
+                    dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
+                } else if (pat[j - 1] == '_' || pat[j - 1] == s[i - 1]) {
+                    dp[i][j] = dp[i - 1][j - 1];
+                }
+            }
+        }
+        return dp[m][n];
+    };
 
     // ── 결과 행 조립 ──
     size_t limit = stmt.limit.value_or(INT64_MAX);
@@ -4436,6 +4778,132 @@ QueryResultSet QueryExecutor::exec_hash_join(
         if (!left_null)  lr = l_refs[matched_l[m]];
         if (!right_null) { rr = r_refs[matched_r[m]]; rp = right_parts[rr.part_idx]; }
 
+        auto read_cell = [&](const std::string& alias,
+                             const std::string& column) -> JoinCell {
+            auto from_side = [&](const Partition* part,
+                                 const RowRef& ref,
+                                 bool side_null) -> JoinCell {
+                if (side_null || !part) return {};
+                if (column == "symbol") {
+                    const int64_t sym = static_cast<int64_t>(part->key().symbol_id);
+                    return {true, false, ColumnType::SYMBOL, sym, static_cast<double>(sym)};
+                }
+                const ColumnVector* cv = part->get_column(column);
+                if (!cv) return {};
+                JoinCell cell;
+                cell.exists = true;
+                cell.type = cv->type();
+                cell.i = read_column_as_i64(*cv, ref.local_idx);
+                cell.f = read_column_as_f64(*cv, ref.local_idx);
+                cell.is_null = (cell.i == JOIN_NULL);
+                return cell;
+            };
+
+            const bool names_left =
+                alias.empty() || alias == l_alias || alias == stmt.from_table;
+            const bool names_right =
+                alias == r_alias || alias == stmt.join->table;
+
+            if (names_right && !alias.empty())
+                return from_side(rp, rr, right_null);
+            if (names_left && !alias.empty())
+                return from_side(lp, lr, left_null);
+            if (!alias.empty())
+                return {};
+
+            // Unqualified WHERE columns follow the existing left-first style,
+            // but still allow right-only columns in joined queries.
+            if (lp && (column == "symbol" || lp->get_column(column)))
+                return from_side(lp, lr, left_null);
+            if (rp && (column == "symbol" || rp->get_column(column)))
+                return from_side(rp, rr, right_null);
+            return {};
+        };
+
+        auto cell_as_string = [&](const JoinCell& cell) -> std::string {
+            if (!cell.exists || cell.is_null) return "";
+            if (cell.type == ColumnType::STRING || cell.type == ColumnType::SYMBOL) {
+                return std::string(
+                    pipeline_.symbol_dict().lookup(static_cast<uint32_t>(cell.i)));
+            }
+            if (cell.type == ColumnType::FLOAT32 || cell.type == ColumnType::FLOAT64)
+                return std::to_string(cell.f);
+            return std::to_string(cell.i);
+        };
+
+        std::function<bool(const std::shared_ptr<Expr>&)> eval_join_expr =
+            [&](const std::shared_ptr<Expr>& expr) -> bool {
+            if (!expr) return true;
+            switch (expr->kind) {
+                case Expr::Kind::AND:
+                    return eval_join_expr(expr->left) && eval_join_expr(expr->right);
+                case Expr::Kind::OR:
+                    return eval_join_expr(expr->left) || eval_join_expr(expr->right);
+                case Expr::Kind::NOT:
+                    return !eval_join_expr(expr->left);
+                case Expr::Kind::COMPARE: {
+                    if (expr->lhs_expr) return false;
+                    const JoinCell cell = read_cell(expr->table_alias, expr->column);
+                    if (!cell.exists || cell.is_null) return false;
+                    if (expr->is_string) {
+                        return compare_string(cell_as_string(cell), expr->op,
+                                              expr->value_str);
+                    }
+                    if (expr->is_float ||
+                        cell.type == ColumnType::FLOAT32 ||
+                        cell.type == ColumnType::FLOAT64) {
+                        const double cmp = expr->is_float
+                            ? expr->value_f
+                            : static_cast<double>(expr->value);
+                        return compare_val(cell.f, expr->op, cmp);
+                    }
+                    return compare_val(cell.i, expr->op, expr->value);
+                }
+                case Expr::Kind::BETWEEN: {
+                    if (expr->lhs_expr) return false;
+                    const JoinCell cell = read_cell(expr->table_alias, expr->column);
+                    if (!cell.exists || cell.is_null) return false;
+                    if (cell.type == ColumnType::FLOAT32 ||
+                        cell.type == ColumnType::FLOAT64) {
+                        return cell.f >= static_cast<double>(expr->lo) &&
+                               cell.f <= static_cast<double>(expr->hi);
+                    }
+                    return cell.i >= expr->lo && cell.i <= expr->hi;
+                }
+                case Expr::Kind::IN: {
+                    const JoinCell cell = read_cell(expr->table_alias, expr->column);
+                    if (!cell.exists || cell.is_null) return false;
+                    bool found = false;
+                    for (int64_t value : expr->in_values) {
+                        if (cell.i == value) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    return found != expr->negated;
+                }
+                case Expr::Kind::IS_NULL: {
+                    const JoinCell cell = read_cell(expr->table_alias, expr->column);
+                    const bool is_null = !cell.exists || cell.is_null;
+                    return expr->negated ? !is_null : is_null;
+                }
+                case Expr::Kind::LIKE: {
+                    const JoinCell cell = read_cell(expr->table_alias, expr->column);
+                    if (!cell.exists || cell.is_null) return false;
+                    const bool matched = like_match(cell_as_string(cell),
+                                                   expr->like_pattern);
+                    return expr->negated ? !matched : matched;
+                }
+                case Expr::Kind::SCALAR_SUBQUERY:
+                case Expr::Kind::IN_SUBQUERY:
+                    return false;
+            }
+            return false;
+        };
+
+        if (stmt.where && !eval_join_expr(stmt.where->expr))
+            continue;
+
         std::vector<int64_t> row;
         for (const auto& sel : stmt.columns) {
             if (sel.is_star) {
@@ -4444,8 +4912,7 @@ QueryResultSet QueryExecutor::exec_hash_join(
                 if (star_part) {
                     for (const auto& cv : star_part->columns()) {
                         if (left_null) { row.push_back(JOIN_NULL); continue; }
-                        const int64_t* d = static_cast<const int64_t*>(cv->raw_data());
-                        row.push_back(d ? d[lr.local_idx] : 0);
+                        row.push_back(read_column_as_i64(*cv, lr.local_idx));
                     }
                 }
                 continue;
@@ -4455,15 +4922,15 @@ QueryResultSet QueryExecutor::exec_hash_join(
                 if (right_null || !rp) {
                     row.push_back(JOIN_NULL); // NULL sentinel (INT64_MIN)
                 } else {
-                    const int64_t* d = get_col_data(*rp, sel.column);
-                    row.push_back(d ? d[rr.local_idx] : 0);
+                    const ColumnVector* cv = rp->get_column(sel.column);
+                    row.push_back(cv ? read_column_as_i64(*cv, rr.local_idx) : 0);
                 }
             } else {
                 if (left_null || !lp) {
                     row.push_back(JOIN_NULL); // NULL sentinel (INT64_MIN)
                 } else {
-                    const int64_t* d = get_col_data(*lp, sel.column);
-                    row.push_back(d ? d[lr.local_idx] : 0);
+                    const ColumnVector* cv = lp->get_column(sel.column);
+                    row.push_back(cv ? read_column_as_i64(*cv, lr.local_idx) : 0);
                 }
             }
         }
@@ -4471,6 +4938,7 @@ QueryResultSet QueryExecutor::exec_hash_join(
     }
 
     result.rows_scanned = rows_scanned;
+    result.symbol_dict = &pipeline_.symbol_dict();
     return result;
 }
 

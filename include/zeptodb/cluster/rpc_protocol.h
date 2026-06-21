@@ -151,6 +151,11 @@ inline int64_t proto_read_i64(const uint8_t* p) {
 // ============================================================================
 // Serialize QueryResultSet → SQL_RESULT payload bytes
 // ============================================================================
+inline bool rpc_is_string_encoded_type(zeptodb::storage::ColumnType type) {
+    return type == zeptodb::storage::ColumnType::SYMBOL ||
+           type == zeptodb::storage::ColumnType::STRING;
+}
+
 inline std::vector<uint8_t> serialize_result(const zeptodb::sql::QueryResultSet& r) {
     std::vector<uint8_t> buf;
     buf.reserve(64 + r.rows.size() * (r.column_names.size() + 1) * 8);
@@ -173,6 +178,24 @@ inline std::vector<uint8_t> serialize_result(const zeptodb::sql::QueryResultSet&
         for (int64_t v : row) {
             proto_write_i64(buf, v);
         }
+    }
+
+    std::vector<std::string> decoded_strings = r.string_rows;
+    if (decoded_strings.empty() && r.symbol_dict != nullptr) {
+        for (const auto& row : r.rows) {
+            for (uint32_t ci = 0; ci < ncols && ci < row.size(); ++ci) {
+                if (ci < r.column_types.size() &&
+                    rpc_is_string_encoded_type(r.column_types[ci])) {
+                    decoded_strings.push_back(
+                        std::string(
+                            r.symbol_dict->lookup(static_cast<uint32_t>(row[ci]))));
+                }
+            }
+        }
+    }
+    proto_write_u32(buf, static_cast<uint32_t>(decoded_strings.size()));
+    for (const auto& s : decoded_strings) {
+        proto_write_str(buf, s);
     }
 
     return buf;
@@ -220,6 +243,21 @@ inline zeptodb::sql::QueryResultSet deserialize_result(const uint8_t* data, size
             if (!need(8)) { r.error = "proto: truncated(value)"; return r; }
             r.rows[ri][ci] = proto_read_i64(p);
             p += 8;
+        }
+    }
+
+    // Optional v2 tail: decoded string cells for SYMBOL/STRING columns. Older peers
+    // end immediately after numeric rows, so absence of this tail is valid.
+    if (p < end) {
+        if (!need(4)) { r.error = "proto: truncated(string_count)"; return r; }
+        uint32_t string_count = proto_read_u32(p); p += 4;
+        r.string_rows.reserve(string_count);
+        for (uint32_t i = 0; i < string_count; ++i) {
+            if (!need(4)) { r.error = "proto: truncated(string_len)"; return r; }
+            uint32_t slen = proto_read_u32(p); p += 4;
+            if (!need(slen)) { r.error = "proto: truncated(string_value)"; return r; }
+            r.string_rows.emplace_back(reinterpret_cast<const char*>(p), slen);
+            p += slen;
         }
     }
 
@@ -284,6 +322,18 @@ inline std::vector<uint8_t> serialize_typed_row(
         proto_write_u32(buf, col.u32);
         proto_write_u8(buf, col.u8);
     }
+    uint32_t string_count = 0;
+    for (const auto& col : row.columns) {
+        if (col.has_string_value) ++string_count;
+    }
+    if (string_count == 0) return buf;
+    proto_write_u32(buf, string_count);
+    for (uint32_t i = 0; i < row.columns.size(); ++i) {
+        const auto& col = row.columns[i];
+        if (!col.has_string_value) continue;
+        proto_write_u32(buf, i);
+        proto_write_str(buf, col.string_value);
+    }
     return buf;
 }
 
@@ -328,6 +378,22 @@ inline bool deserialize_typed_row(const uint8_t* data, size_t len,
         col.u32 = read_u32();
         col.u8 = data[off++];
         out.columns.push_back(std::move(col));
+    }
+    if (off == len) return true;
+    if (!need(4)) return false;
+    const uint32_t string_count = read_u32();
+    for (uint32_t i = 0; i < string_count; ++i) {
+        if (!need(4)) return false;
+        const uint32_t column_index = read_u32();
+        if (column_index >= out.columns.size()) return false;
+        if (!need(4)) return false;
+        const uint32_t value_len = read_u32();
+        if (!need(value_len)) return false;
+        auto& col = out.columns[column_index];
+        col.string_value.assign(
+            reinterpret_cast<const char*>(data + off), value_len);
+        col.has_string_value = true;
+        off += value_len;
     }
     return off == len;
 }

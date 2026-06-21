@@ -1,16 +1,111 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | 1442 C++ tests run
-> (1441 passed, 1 live S3 upload skipped)
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full local C++ suite:
+> 1509 tests run (1508 passed, 1 live S3 opt-in skipped; 3 disabled)
 >
-> Last cleaned: 2026-06-09
+> Last cleaned: 2026-06-13
 >
-> Devlog: last `172_p3_agent_memory_ann_maintenance_footprint_ivf.md` → next `173_*.md`
+> Devlog: last `195_small_table_distributed_hash_join.md` → next `196_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 small-table distributed hash JOIN for operational tables**
+  (devlog 195) — added a bounded coordinator-local hash JOIN path for small
+  operational tables. Experiment 011 now reports `suppression_join` as pass
+  across node 1 and node 8, and strict full distributed SQL/JOIN/window replay
+  succeeds.
+- ✅ **P3 cluster-mode window value materialization** (devlog 194) —
+  fixed the distributed full-data window replay path for declared operational
+  tables. `ROW_NUMBER` and `LAG` over
+  `action_outcome_vendor_recommendations_010` now preserve `group_id`,
+  `recommendation_rank`, and `score_micros` values in two-node cluster mode.
+- ✅ **P3 Action-Outcome distributed vendor SQL replay classification**
+  (devlog 193) — added Experiment 011, a two-node replay that materializes
+  Experiment 010 through the distributed HTTP/RPC path. It verifies seed and
+  vendor row counts, distributed ingest, co-located JOINs, and records current
+  distributed planner gaps.
+- ✅ **P3 Action-Outcome vendor SQL/JOIN/window replay** (devlog 192) —
+  implemented alias-aware hash JOIN `WHERE` predicate handling and added a
+  live Experiment 010 SQL replay. The run materializes vendor baseline query,
+  recommendation, retrieval, and suppression tables, then validates
+  failed-repeat JOIN, context top-action JOIN, suppression JOIN, misleading
+  retrieval JOIN, ROW_NUMBER, and LAG checks as pass.
+- ✅ **P3 Action-Outcome vendor baseline experiment** (devlog 191) —
+  added Experiment 010, comparing similar-incident retrieval,
+  runbook/action-prior recommendation, reflection-only memory, and
+  context-gated Action-Outcome Memory on the noisy AIOps fixture. The
+  context-gated variant preserved Top-3 hit rate at 1.00 and improved
+  failed-action avoidance to 1.00 while recording 21 context suppressions.
+- ✅ **P3 string-key hash JOIN materialization** (devlog 190) —
+  added a C++ regression for declared `STRING` key hash JOIN and fixed the
+  executor to read JOIN keys and joined result cells through type-aware
+  `ColumnVector` access. Experiment 009 now reports native string JOIN as pass.
+- ✅ **P3 Action-Outcome JOIN/window replay acceptance** (devlog 189) —
+  added Experiment 009, which validates native string-window rank ordering and
+  numeric SQL JOIN/ROW_NUMBER/LAG acceptance over Action-Outcome replay
+  recommendations.
+- ✅ **P3 Action-Outcome distributed replay C++ regression** (devlog 188) —
+  added a CI-sized two-pipeline TCP RPC regression for Action-Outcome
+  schema-aware `STRING` rows, and hardened typed-row RPC so remote owners bind
+  sender dictionary codes to original `STRING`/`SYMBOL` text before storage.
+- ✅ **P3 Action-Outcome distributed two-node live replay** (devlog 187) —
+  the Action-Outcome SQL seed now passes through a real two-node HTTP/RPC
+  topology. Schema-aware typed-row INSERT routes through the
+  `CoordinatorRoutingAdapter`, remote `TYPED_ROW_INGEST` lands in owner
+  pipelines, distributed concat SELECT preserves decoded `STRING`/`SYMBOL`
+  values, and Experiment 008 records node-local deltas of 140 rows on node 1
+  and 58 rows on node 8.
+- ✅ **P2 replication-vs-MPP cluster design doc** (devlog 181) —
+  `docs/design/phase_c_distributed.md` now formalises ZeptoDB's distributed
+  positioning: replication is the HA/durability layer, while shard ownership,
+  routed writes, and scatter-gather query paths are the MPP scale-out layer.
+  The section includes a comparison table, current implementation status, and
+  honest non-goals so launch collateral can say "scale beyond a single
+  DuckDB-style node" without overstating the distributed SQL planner.
+- ✅ **P5 Apache Pulsar consumer** (devlog 180) —
+  `PulsarConsumer` adds a Pulsar topic/subscription ingress path with shared
+  JSON/BINARY/JSON_HUMAN decoders, table-aware routing, backpressure retries,
+  Prometheus metrics, subscription type controls, and optional live broker
+  polling behind `-DZEPTO_USE_PULSAR=ON`.
+- ✅ **Physical AI Agent Memory demo** (devlog 179) —
+  `examples/agent_memory/physical_ai_agent_demo.py` now loads realistic AGV,
+  ROS odometry/LaserScan replay, and cold-chain telemetry rows; seeds scoped
+  Agent Memory with route, sensor, and quality-policy knowledge; retrieves
+  context for Physical AI decisions; and records AgentOps context trace/replay
+  rows.
+- ✅ **Release pipeline parallel Docker cache** (devlog 178) —
+  the tag-triggered release workflow now warms Docker BuildKit cache in
+  parallel with the amd64/arm64 binary matrix, then performs the Docker Hub
+  push only after both binary builds and cache warm-up succeed. This overlaps
+  the v0.1.2 19m22s Docker build with the 24m31s slowest binary leg without
+  publishing Docker tags for failed binary releases.
+- ✅ **CI pipeline speedups** (devlog 177) —
+  release binary builds now use per-architecture ccache restore keys,
+  `.dockerignore` cuts Docker context upload to low single-digit MB, and
+  Graviton checks skip docs/web/deploy/workflow-only changes plus generated
+  `chore(release): vX.Y.Z` version commits.
+- ✅ **Dev branch and main release pipeline** (devlog 176) —
+  `dev` is now the integration branch and `main` is the promotion-only release
+  branch. `Version Main Release` synchronizes project versions, commits
+  `chore(release): vX.Y.Z`, creates the protected `v*` tag, and dispatches
+  binary, Docker, GitHub Release, PyPI, and Homebrew publishing.
+- ✅ **P5 AWS Kinesis consumer** (devlog 175) —
+  `KinesisConsumer` adds AWS-native stream polling behind
+  `-DZEPTO_USE_KINESIS=ON`, while default builds keep shared
+  JSON/BINARY/JSON_HUMAN decode, table-aware routing, backpressure retries,
+  Prometheus metrics, and no-SDK fallback testable.
+- ✅ **P4 MessagePack columnar ingest endpoint** (devlog 174) —
+  `POST /insert/msgpack` accepts dependency-light map-of-column-arrays payloads
+  with configurable symbol, price, volume, timestamp, and message-type columns,
+  sharing Arrow IPC ingest's table-aware batch path, ACL checks, tenant checks,
+  cluster routing, and synchronous drain semantics.
+- ✅ **Graviton Arrow IPC / Flight verification** (devlog 173) —
+  the fast cross-arch harness now reconfigures stale Graviton CMake caches when
+  `ZEPTO_USE_FLIGHT=ON` is missing, and Graviton verification confirmed Arrow
+  IPC unit tests, live S3, standalone HTTP Arrow ingest, and multi-node
+  rebalance smoke with Arrow compiled in.
 - ✅ **P3 Agent Memory ANN maintenance, footprint, and IVF** (devlog 172) —
   sparse-projection, HNSW, and IVF ANN indexes now support incremental
   update/delete maintenance for clean indexes, including tombstone accounting
@@ -226,7 +321,6 @@
 | Task | Effort | Notes |
 |------|--------|-------|
 | **YouTube / Loom demo video** | S | Unblocked by devlog 115: `/solutions` is a 5-vertical script-ready walkthrough (Physical AI, Finance, Game, IoT, Observability). Multi-industry messaging foundation is live. |
-| **Replication-cluster vs MPP-cluster design doc** | S | New section in `docs/design/phase_c_distributed.md` formalising the architectural diff vs Arc/MotherDuck/DuckDB-replicas (HA + write-sharding vs true scatter-gather). Doubles as an enterprise-sales artefact ("scale beyond a single DuckDB") and an internal design north star. From Arc competitive analysis (2026-05-13). |
 
 Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `docs/community/`.
 
@@ -237,6 +331,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
+| **Symbol-less operational table shard-key policy** | Experiment 008 showed that symbol-less generic tables route by `(stable_table_id, symbol_id=0)`, so small table sets can accidentally land on one node for some node-id pairs. Define an explicit shard-key or table-level distribution policy for operational/Action-Outcome tables before promoting distributed replay beyond research. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.
@@ -258,9 +353,8 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Kafka Connect Sink** | Enterprise pipeline standard | M |
 | **CDC connector (Debezium)** | PostgreSQL/MySQL → real-time sync | M |
-| **Apache Pulsar consumer** | Kafka alternative | S |
+| **Kafka Connect Sink** | Enterprise pipeline standard | M |
 
 > ✅ Done: MQTT consumer (devlog 081) — QoS 0/1/2, topic wildcards,
 > shared Kafka JSON/BINARY/JSON_HUMAN decoders, Paho optional-dep pattern.
@@ -270,7 +364,9 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 > `outputs.execd` line-protocol stdin → ZeptoDB HTTP SQL INSERT writer.
 > AWS Kinesis consumer (devlog 175) — shard polling surface with shared
 > JSON/BINARY/JSON_HUMAN decoders, table-aware routing, metrics, and no-SDK
-> fallback.
+> fallback. Apache Pulsar consumer (devlog 180) — topic/subscription polling
+> with Shared/Exclusive/Failover/KeyShared subscription modes, shared decoders,
+> table-aware routing, metrics, and no-SDK fallback.
 
 ---
 
@@ -363,18 +459,18 @@ No open P9 backlog items remain.
 
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
-| **P2** | Visibility & Launch | 2 + 4 manual | Demo video → replication-vs-MPP design doc → Show HN → Reddit |
+| **P2** | Visibility & Launch | 1 + 4 manual | Demo video → Show HN → Reddit |
 | **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
-| **P5** | Data Pipelines | 3 | Apache Pulsar consumer (S) → CDC connector (M) → Kafka Connect Sink (M) |
+| **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 37 items + 4 manual tasks**
+**Total open: 32 items + 4 manual tasks**
 
-**Critical path: P5 cloud/streaming connectors → P2 launch collateral**
+**Critical path: P5 CDC connector → P2 demo video / launch collateral**
 
-> **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) our MPP-cluster vs replication-cluster distinction is a sales differentiator that deserves a formal design-doc section. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.
+> **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) the MPP-cluster vs replication-cluster distinction is now captured in `docs/design/phase_c_distributed.md` (devlog 181) as a launch and enterprise-sales artefact. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

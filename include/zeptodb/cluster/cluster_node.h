@@ -312,6 +312,30 @@ public:
         return false;
     }
 
+    /// Route schema-aware typed row ingest to the owning node.
+    bool ingest_typed_row(const zeptodb::core::TypedRowMessage& row) override {
+        auto mig = router_.migration_target(row.symbol_id);
+        if (mig) {
+            auto [from, to] = *mig;
+            const bool ok_from = send_typed_to_node(from, row);
+            const bool ok_to = send_typed_to_node(to, row);
+            if (ok_from != ok_to) {
+                ZEPTO_WARN("Typed dual-write partial failure: symbol={}, from_ok={}, to_ok={}",
+                           row.symbol_id, ok_from, ok_to);
+            }
+            return ok_from || ok_to;
+        }
+
+        const NodeId owner = route(row.table_id, row.symbol_id);
+        if (owner == config_.self.id) {
+            return local_pipeline_.ingest_typed_row(row);
+        }
+        if (config_.enable_remote_ingest) {
+            return remote_typed_ingest(owner, row);
+        }
+        return false;
+    }
+
     /// 로컬 파이프라인에 직접 ingest (라우팅 없이)
     bool ingest_local(TickMessage msg) {
         return local_pipeline_.ingest_tick(msg);
@@ -439,36 +463,56 @@ private:
         return false;
     }
 
-    /// 원격 노드로 틱 전송 — TCP RPC TICK_INGEST
-    bool remote_ingest(NodeId target, const TickMessage& msg) {
-        TcpRpcClient* client = nullptr;
+    /// Send typed row to a specific node (local or remote).
+    bool send_typed_to_node(NodeId target, const zeptodb::core::TypedRowMessage& row) {
+        if (target == config_.self.id) {
+            return local_pipeline_.ingest_typed_row(row);
+        }
+        if (config_.enable_remote_ingest) {
+            return remote_typed_ingest(target, row);
+        }
+        return false;
+    }
+
+    TcpRpcClient* rpc_client_for(NodeId target) {
         {
             std::shared_lock lock(peer_rpc_mutex_);
             auto it = peer_rpc_clients_.find(target);
             if (it != peer_rpc_clients_.end()) {
-                client = it->second.get();
+                return it->second.get();
             }
         }
 
-        if (!client) {
-            // Peer not yet known; try to create client lazily
-            auto addr_it = peer_addresses_.find(target);
-            if (addr_it == peer_addresses_.end()) return false;
+        auto addr_it = peer_addresses_.find(target);
+        if (addr_it == peer_addresses_.end()) return nullptr;
 
-            uint16_t peer_rpc_port = static_cast<uint16_t>(addr_it->second.port + 100);
-            auto rpc = std::make_unique<TcpRpcClient>(
-                addr_it->second.host, peer_rpc_port, 2000);
-            if (config_.rpc_security.enabled) {
-                rpc->set_security(config_.rpc_security);
-            }
-            client = rpc.get();
-            {
-                std::unique_lock lock(peer_rpc_mutex_);
-                auto [ins, inserted] = peer_rpc_clients_.emplace(target, std::move(rpc));
-                if (!inserted) client = ins->second.get();  // another thread beat us
-            }
+        const uint16_t peer_rpc_port = static_cast<uint16_t>(addr_it->second.port + 100);
+        auto rpc = std::make_unique<TcpRpcClient>(
+            addr_it->second.host, peer_rpc_port, 2000);
+        if (config_.rpc_security.enabled) {
+            rpc->set_security(config_.rpc_security);
         }
+        TcpRpcClient* client = rpc.get();
+        {
+            std::unique_lock lock(peer_rpc_mutex_);
+            auto [ins, inserted] = peer_rpc_clients_.emplace(target, std::move(rpc));
+            if (!inserted) client = ins->second.get();
+        }
+        return client;
+    }
+
+    /// Send a tick to a remote node through TCP RPC TICK_INGEST.
+    bool remote_ingest(NodeId target, const TickMessage& msg) {
+        TcpRpcClient* client = rpc_client_for(target);
+        if (!client) return false;
         return client->ingest_tick(msg);
+    }
+
+    /// Send a typed row to a remote node through TCP RPC TYPED_ROW_INGEST.
+    bool remote_typed_ingest(NodeId target, const zeptodb::core::TypedRowMessage& row) {
+        TcpRpcClient* client = rpc_client_for(target);
+        if (!client) return false;
+        return client->ingest_typed_row(row);
     }
 
     /// 원격 VWAP 쿼리 (stub — 실제는 gRPC)

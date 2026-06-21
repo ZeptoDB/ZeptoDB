@@ -276,12 +276,13 @@ directly to whichever pod received the request. **Devlog 103** added
 `QueryExecutor::cluster_node_` and the routing branch in `exec_insert`;
 **devlog 111** wired the adapter into the production `zepto_http_server`
 binary. `QueryExecutor` holds an optional `zeptodb::cluster::ClusterNodeBase*`,
-set once at startup via `set_cluster_node()`. When non-null, `exec_insert()`
-dispatches through `ClusterNodeBase::ingest_tick` (routed to the partition
-owner via the same `PartitionRouter`); when null, it falls back to direct
-local `pipeline_.ingest_tick()` — preserving single-node behaviour. The
-same `ingest_routed_()` pattern covers the three Python `PyPipeline` call
-sites (single ingest, int batch, float batch).
+set once at startup via `set_cluster_node()`. When non-null, legacy tick-shaped
+`INSERT` dispatches through `ClusterNodeBase::ingest_tick`, while declared-schema
+`INSERT ... VALUES` dispatches through `ClusterNodeBase::ingest_typed_row`.
+Both paths use the same `PartitionRouter` table-aware owner key. When the
+pointer is null, the executor falls back to direct local pipeline ingest,
+preserving single-node behaviour. The same `ingest_routed_()` pattern covers
+the three Python `PyPipeline` call sites (single ingest, int batch, float batch).
 
 In `zepto_http_server` cluster mode:
 
@@ -293,13 +294,17 @@ In `zepto_http_server` cluster mode:
    (rather than a separate `rebalance_router`), so every ring change is
    visible to the adapter's next `route()` call under the same
    `shared_mutex`.
-3. A peer `TcpRpcServer` listens on `port + 100` for
-   `TICK_INGEST` RPCs from other pods; the callback writes directly to
-   the local pipeline (owner path), marks the target schema as containing
-   data, and drains single-tick RPCs before returning success. Batch RPCs
-   drain after the accepted batch. This keeps the HTTP caller's ACK semantics
-   aligned with local `INSERT`: once the forwarding pod reports success, a
-   table-aware `SELECT` routed to the owner can see the row.
+3. A peer `TcpRpcServer` listens on `port + 100` for `TICK_INGEST` and
+   `TYPED_ROW_INGEST` RPCs from other pods; callbacks write directly to the
+   local pipeline (owner path). Tick callbacks mark the target schema as
+   containing data and drain before returning success. Typed-row callbacks are
+   synchronous because `ZeptoPipeline::ingest_typed_row()` writes directly to
+   storage and updates table visibility itself. For `STRING`/`SYMBOL`
+   values, typed-row RPC carries an optional string-value tail so the owner
+   can bind the sender's dictionary code to the original text. This keeps the
+   HTTP caller's ACK semantics aligned with local `INSERT`: once the
+   forwarding pod reports success, a table-aware `SELECT` routed to the owner
+   can see the row and return decoded strings through coordinator queries.
 4. `zepto_data_node` is a leaf binary and does NOT wire the adapter —
    it accepts only coordinator-forwarded RPC, so wiring would
    double-route. Documented in-code.
@@ -351,6 +356,116 @@ Client Query(VWAP, symbol=AAPL, range=24h)
     → Collect partial results (partial VWAP: Σpv, Σv)
     → Final aggregation at client
 ```
+
+### 4-D. Replication Cluster vs MPP Cluster
+
+This section is the product and engineering line between a replicated
+single-node OLAP deployment and a ZeptoDB distributed cluster. The short
+version:
+
+- **Replication cluster**: copy the same logical database or partition log to
+  one or more replicas for high availability, failover, and read redundancy.
+- **MPP cluster**: split ownership of data across nodes, route writes to the
+  owning shard, push query fragments to the relevant nodes, and merge partial
+  results at a coordinator.
+- **ZeptoDB uses both layers**: replication protects each owned shard, while
+  MPP-style placement and scatter-gather let the cluster scale beyond the
+  memory, ingest, and CPU limits of one machine.
+
+Replication-only architectures are valuable when the primary problem is
+availability or read fan-out. They do not by themselves remove the single-node
+write owner, memory ceiling, or hot-partition CPU ceiling: each hot stream still
+lands on one logical owner before it is copied elsewhere. This is the key
+difference from embedded-DuckDB replica patterns, cloud-attached DuckDB
+services, and Arc-style replicated OLAP deployments. Those systems can make one
+database easier to serve or share, but the core scaling unit is still a
+replicated database or file set.
+
+ZeptoDB's distributed design instead makes shard ownership explicit. The
+cluster routes a tick by `(table_id, symbol_id, hour_epoch)` to a partition
+owner through `PartitionRouter`; that owner commits into the hot in-memory
+store and WAL, and replicas receive WAL entries according to the configured
+replication mode. Queries either route directly to the owner for single-shard
+work or scatter to multiple nodes and merge partial results for cross-shard
+work.
+
+| Capability | Replication cluster | MPP cluster | ZeptoDB target |
+|------------|---------------------|-------------|----------------|
+| Primary purpose | HA, failover, read redundancy | Horizontal write, storage, and compute scale | Both: RF-based HA plus shard-aware scale-out |
+| Data ownership | One logical owner copied to replicas | Partitions owned by different nodes | `PartitionRouter` owns table/symbol/time placement |
+| Write scaling | Limited by primary owner or replicated log leader | Scales with number of partition owners | HTTP/SQL/Python/feed ingest route to partition owners |
+| Query scaling | Read replicas help repeated local queries | Query fragments run near owned data | Direct routing for affinity queries, scatter-gather for cross-node queries |
+| Failure behavior | Promote or read from replica | Reassign partitions and re-replicate | WAL replication, fencing, failover manager, live rebalancing |
+| Sales message | "More available single database" | "Scale beyond one database node" | "Low-latency hot time-series shards with HA and distributed reads" |
+
+#### Current ZeptoDB status
+
+Implemented today:
+
+1. `PartitionRouter` and consistent hashing provide explicit node placement.
+2. Feed, HTTP/SQL, and Python ingest paths can route writes through
+   `ClusterNodeBase::ingest_tick` / `ingest_tick_batch`.
+3. `WalReplicator` supports async, sync, and quorum replication modes for HA.
+4. `QueryCoordinator` supports direct routing and scatter-gather for supported
+   distributed SELECT shapes, including partial aggregate merging.
+5. Fencing tokens, coordinator HA, K8s lease support, and ring broadcasts
+   protect split-brain-sensitive write paths.
+6. Live rebalancing migrates partitions with dual-write during movement.
+7. DDL replication is fire-and-forget for benchmark and operational
+   convenience; strongly consistent schema logs remain out of scope today.
+
+Not yet a full general-purpose MPP SQL engine:
+
+1. The distributed planner is rule-based, not cost-based.
+2. Arbitrary cross-node joins, distributed windows, DISTINCT, and full
+   subquery/CTE plans still have documented gaps in Section 7.
+3. Replica reads are not yet a primary query-placement policy; owners remain
+   the default read target.
+4. RDMA/CXL data-plane paths are architectural targets; the production-safe
+   TCP/RPC path remains the current portable implementation for many flows.
+5. Global transactions across shards are not part of the design. The hot path
+   is per-partition durable ingest, not distributed OLTP.
+
+#### Design north star
+
+ZeptoDB should keep replication as a durability and availability layer, not as
+the main scale-out story. The scale-out story is owned placement:
+
+```
+Client / feed
+  -> route(table_id, symbol_id, hour_epoch)
+  -> partition owner writes hot column store + WAL
+  -> replicas receive WAL for HA
+  -> query coordinator routes direct or scatter-gather reads
+```
+
+This matters most for Physical AI, IoT, market data, and observability streams:
+the hard problem is continuous high-rate ingest into hot, immediately queryable
+time-series partitions. Replicating one saturated node does not create more hot
+write capacity; adding owners does.
+
+The public positioning should therefore be precise:
+
+- ZeptoDB is **not** "DuckDB with replicas".
+- ZeptoDB is **not yet** a fully general distributed SQL optimizer.
+- ZeptoDB **is** a shard-owned, low-latency time-series cluster with HA,
+  write-sharding, selected MPP-style query paths, and a roadmap toward deeper
+  distributed planning.
+
+Future work that deepens the MPP side lives in P8/P10: RDMA remote scans,
+RDMA WAL replication, replica-aware reads, cost-based distributed planning,
+broadcast or replicated dimension tables, and pluggable partition strategies.
+
+**Experiment 011 boundary (updated 2026-06-21):** the Action-Outcome
+distributed vendor SQL replay now passes the full strict SQL/JOIN/window
+surface on a two-node 1/8 ring. Two-node row counts, routed ingest,
+co-located vendor JOINs, the cross-node suppression JOIN, and cluster-mode
+ROW_NUMBER/LAG all pass. The suppression table is owned by node 1 while
+recommendations are owned by node 8; the coordinator handles that bounded
+operational-table case by fetching both sides under a row cap, materializing
+declared schemas into a temporary typed pipeline, and executing the original
+hash JOIN locally. This is not a full distributed SQL optimizer: large
+cross-node hash JOINs still belong to future cost-based planning.
 
 ---
 
@@ -465,12 +580,20 @@ HPA replica increase trigger Karpenter node provisioning normally.
   - Tier B: scatter-gather to all nodes → partial aggregation merge
 - `TcpRpcServer` / `TcpRpcClient` — POSIX socket transport
   - 24-byte `RpcHeader` (magic, type, request_id, payload_len, epoch)
-  - Binary `QueryResultSet` wire format (error, column names/types, packed int64 rows)
+  - Binary `QueryResultSet` wire format (error, column names/types, packed int64 rows,
+    plus an optional decoded string tail for `SYMBOL`/`STRING` columns so
+    node-local dictionary codes do not leak through distributed concat merge)
+  - Binary `TypedRowMessage` write format for `TYPED_ROW_INGEST`, with a
+    backwards-compatible optional tail carrying original `SYMBOL`/`STRING`
+    text by column index; receivers reject inconsistent dictionary code/text
+    bindings instead of silently corrupting semantic values
   - Connection pooling (acquire/release, MSG_PEEK liveness, max 4 idle)
 - `partial_agg.h` — merge strategies:
   - `SCALAR_AGG`: SQL-AST-driven per-column merge (SUM/COUNT=add, MIN=min, MAX=max, AVG=SUM/COUNT rewrite)
   - `MERGE_GROUP_BY`: re-aggregate same key buckets across nodes (xbar time bars)
-  - `CONCAT`: plain rows or GROUP BY with symbol affinity (no key overlap)
+  - `CONCAT`: plain rows or GROUP BY with symbol affinity (no key overlap);
+    preserves decoded `SYMBOL`/`STRING` strings from local dictionaries and
+    remote RPC string tails
   - Strategy detected from SQL AST (not column names — executor returns raw names)
 - 25 tests: RpcProtocol (5), PartialAgg (11), TcpRpc (4), QueryCoordinator (5)
 
@@ -534,7 +657,7 @@ and split-brain scenarios had incomplete protection.
 |-----|--------|-------|
 | HAVING distributed | TODO | Apply after GROUP BY merge at coordinator |
 | DISTINCT distributed | TODO | Dedup at coordinator after concat |
-| Window functions distributed | TODO | Requires full dataset; fetch-and-compute |
+| Window functions distributed | Implemented for fetch-and-compute | Coordinator fetches all rows, materializes declared tables through typed rows, then executes locally |
 | FIRST/LAST distributed | TODO | Timestamp comparison across nodes |
 | COUNT(DISTINCT) distributed | TODO | HyperLogLog or exact dedup |
 | Subquery/CTE distributed | TODO | Cross-node CTE reference |

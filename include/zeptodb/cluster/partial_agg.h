@@ -184,7 +184,31 @@ inline zeptodb::sql::QueryResultSet merge_concat_results(
             if (merged.error.empty()) merged.error = r.error;
             continue;
         }
+        if (merged.string_rows.empty() && r.symbol_dict != nullptr) {
+            merged.symbol_dict = r.symbol_dict;
+        }
+        const size_t string_encoded_cols = std::count_if(
+            r.column_types.begin(), r.column_types.end(),
+            [](zeptodb::storage::ColumnType type) {
+                return type == zeptodb::storage::ColumnType::SYMBOL ||
+                       type == zeptodb::storage::ColumnType::STRING;
+            });
         merged.rows.insert(merged.rows.end(), r.rows.begin(), r.rows.end());
+        if (!r.string_rows.empty()) {
+            merged.string_rows.insert(
+                merged.string_rows.end(), r.string_rows.begin(), r.string_rows.end());
+        } else if (r.symbol_dict != nullptr && string_encoded_cols > 0) {
+            for (const auto& row : r.rows) {
+                for (size_t ci = 0; ci < r.column_types.size() && ci < row.size(); ++ci) {
+                    if (r.column_types[ci] == zeptodb::storage::ColumnType::SYMBOL ||
+                        r.column_types[ci] == zeptodb::storage::ColumnType::STRING) {
+                        merged.string_rows.push_back(
+                            std::string(
+                                r.symbol_dict->lookup(static_cast<uint32_t>(row[ci]))));
+                    }
+                }
+            }
+        }
         merged.rows_scanned += r.rows_scanned;
     }
 

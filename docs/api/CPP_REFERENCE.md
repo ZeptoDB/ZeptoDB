@@ -364,6 +364,8 @@ struct QueryResultSet {
     std::vector<std::string>          column_names;
     std::vector<ColumnType>           column_types;
     std::vector<std::vector<int64_t>> rows;        // all values as int64
+    std::vector<std::string>          string_rows; // row-major decoded strings
+    const storage::StringDictionary*  symbol_dict = nullptr;
 
     double      execution_time_us = 0.0;
     size_t      rows_scanned      = 0;
@@ -927,18 +929,28 @@ if (!pipeline.ingest_typed_row(std::move(row))) {
 }
 ```
 
-`ingest_typed_row()` requires `table_id != 0`, `symbol_id != 0`, and at least
-one column. The target table must exist in `SchemaRegistry`; row columns must
-exist in that schema with matching types. All declared table columns are
-materialized in the partition, and columns omitted from an individual row are
-default-filled. `SchemaRegistry::get(uint16_t table_id)` returns a schema copy
-by stable table id for connector code that resolves names once.
+`ingest_typed_row()` requires `table_id != 0` and at least one column.
+`symbol_id` is the table-scoped partition key and may be `0` for operational
+tables that do not expose a natural symbol. The target table must exist in
+`SchemaRegistry`; row columns must exist in that schema with matching types.
+All declared table columns are materialized in the partition, and columns
+omitted from an individual row are default-filled.
+`SchemaRegistry::get(uint16_t table_id)` returns a schema copy by stable table
+id for connector code that resolves names once.
+
+For distributed typed-row ingest, `TypedColumnValue` can also carry
+`has_string_value=true` plus `string_value` for `SYMBOL`/`STRING` columns.
+`TcpRpcClient::ingest_typed_row()` serializes that optional text payload so the
+remote owner binds the same dictionary code before storage. Most callers get
+this automatically through SQL `INSERT` materialization; connector code that
+constructs typed rows directly should set the fields when a string code was
+derived from text.
 
 ### Feed handlers
 
 `KafkaConfig::table_name` / `MqttConfig::table_name` /
-`KinesisConfig::table_name` resolve the id once inside `set_pipeline()` and
-stamp it on every decoded tick automatically:
+`KinesisConfig::table_name` / `PulsarConfig::table_name` resolve the id once
+inside `set_pipeline()` and stamp it on every decoded tick automatically:
 
 ```cpp
 zeptodb::feeds::KafkaConfig cfg;
@@ -970,6 +982,32 @@ kinesis.set_pipeline(&pipeline);
 // Testable without AWS:
 const char* payload = R"({"symbol":"AAPL","price":150.25,"volume":100})";
 kinesis.on_record(payload, std::strlen(payload));
+```
+
+Pulsar uses the same decode formats as Kafka, MQTT, and Kinesis. Default builds
+keep the pure decode/routing path testable; live broker polling requires
+`-DZEPTO_USE_PULSAR=ON` and the Apache Pulsar C++ client:
+
+```cpp
+#include "zeptodb/feeds/pulsar_consumer.h"
+#include <cstring>
+
+zeptodb::feeds::PulsarConfig pcfg;
+pcfg.service_url = "pulsar://localhost:6650";
+pcfg.topic = "persistent://public/default/robot-telemetry";
+pcfg.subscription_name = "zepto-physical-ai";
+pcfg.subscription_type = zeptodb::feeds::PulsarSubscriptionType::Shared;
+pcfg.table_name = "robot_telemetry";
+pcfg.format = zeptodb::feeds::MessageFormat::JSON_HUMAN;
+pcfg.symbol_map = {{"agv_17_lidar_clearance", 17}};
+
+zeptodb::feeds::PulsarConsumer pulsar(pcfg);
+pulsar.set_pipeline(&pipeline);
+
+// Testable without a broker:
+const char* payload =
+    R"({"symbol":"agv_17_lidar_clearance","price":0.72,"volume":1})";
+pulsar.on_message(payload, std::strlen(payload));
 ```
 
 FIX / ITCH / Binance parser classes expose `set_table_id(tid)` and
@@ -1234,7 +1272,9 @@ semantics for now.
 Typed rows use the same owner selection. `TcpRpcClient::ingest_typed_row()`
 serializes `zeptodb::core::TypedRowMessage` over `TYPED_ROW_INGEST` and the
 remote server applies it through the local pipeline's
-`ZeptoPipeline::ingest_typed_row()`.
+`ZeptoPipeline::ingest_typed_row()`. The RPC payload preserves optional
+`SYMBOL`/`STRING` text values so distributed SELECT results can decode string
+columns without relying on the coordinator's local dictionary.
 
 A table-aware routing accessor is available for callers that build their
 own ingest path:

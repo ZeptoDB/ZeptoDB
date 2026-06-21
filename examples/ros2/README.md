@@ -13,3 +13,7 @@ simulation replay, and robot/factory edge operations.
 
 Run these after creating and ingesting the matching tables through the ROS 2
 bridge or rosbag2 import path.
+
+For an end-to-end Agent Memory example that seeds realistic Physical AI rows,
+retrieves operational memory, and records context trace/replay telemetry, see
+`examples/agent_memory/physical_ai_agent_demo.py`.

@@ -23,6 +23,11 @@ from examples.agent_memory.agent_attached_timeseries_demo import (
     run_all_use_cases,
     run_use_case,
 )
+from examples.agent_memory.physical_ai_agent_demo import (
+    PHYSICAL_AI_SCENARIOS,
+    run_all_physical_ai_scenarios,
+    run_physical_ai_scenario,
+)
 from examples.agent_memory.langgraph_memory import run_turn
 from examples.agent_memory.provider_cache import answer_with_cache
 from examples.agent_memory.production_agent_demo import run_production_turn
@@ -86,7 +91,9 @@ class FakeMemory:
         matches = [
             {
                 "content": memory["content"],
+                "record": memory,
                 "score": 1.0,
+                "similarity": 0.95,
             }
             for memory in self.stored
             if memory["tenant_id"] == tenant_id
@@ -123,8 +130,10 @@ class FakeMemory:
         importance=0.0,
         pinned=False,
     ):
+        memory_id = f"mem_{len(self.stored) + 1}"
         self.stored.append(
             {
+                "memory_id": memory_id,
                 "content": content,
                 "namespace": namespace,
                 "tenant_id": tenant_id,
@@ -138,7 +147,7 @@ class FakeMemory:
                 "pinned": pinned,
             }
         )
-        return f"mem_{len(self.stored)}"
+        return memory_id
 
 
 class FakeDb:
@@ -470,3 +479,72 @@ def test_agent_attached_timeseries_demo_handles_empty_rows():
 
 def test_agent_attached_timeseries_demo_keeps_timestamp_zero_valid():
     assert USE_CASES[0].rows[0]["timestamp"] == 0
+
+
+def test_physical_ai_agent_demo_runs_all_scenarios_with_trace_replay():
+    db = FakeDb()
+    results = run_all_physical_ai_scenarios(db)
+
+    assert {result.domain for result in results} == {
+        "physical_ai_logistics",
+        "physical_ai_robotics",
+        "physical_ai_cold_chain",
+    }
+    assert len(results) == len(PHYSICAL_AI_SCENARIOS)
+    assert all(result.inserted_rows > 0 for result in results)
+    assert all(result.context_count >= 1 for result in results)
+    assert all(result.trace_rows >= 1 for result in results)
+    assert all(result.replay_rows == 1 for result in results)
+    assert len(db.queries) == len(PHYSICAL_AI_SCENARIOS)
+    assert any("INSERT INTO agv_pose" in sql for sql in db.sql)
+    assert any("INSERT INTO context_traces" in sql for sql in db.sql)
+    assert any("INSERT INTO context_replay_events" in sql for sql in db.sql)
+    assert all("Retrieved operational memory" in result.prompt for result in results)
+
+
+def test_physical_ai_agent_demo_records_realistic_multitable_metadata():
+    db = FakeDb()
+    result = run_physical_ai_scenario(db, PHYSICAL_AI_SCENARIOS[0])
+
+    assert result.scenario == "warehouse_agv_pallet_timeline"
+    assert result.inserted_rows == 5
+    assert result.memory_ids == ["mem_1", "mem_2"]
+    assert "pallet_10042" in result.prompt
+    assert "ASOF JOIN" in result.query_sql
+    assert any("INSERT INTO pallet_events" in sql for sql in db.sql)
+
+    metadata = db.memory.stored[0]["metadata_json"]
+    assert '"demo": "physical_ai_agent"' in metadata
+    assert '"scenario": "warehouse_agv_pallet_timeline"' in metadata
+    assert '"tables": ["agv_pose", "pallet_events"]' in metadata
+    assert db.memory.stored[0]["pinned"] is True
+
+
+def test_physical_ai_agent_demo_handles_empty_tables_without_query():
+    db = FakeDb()
+    base = PHYSICAL_AI_SCENARIOS[2]
+    empty_tables = tuple(
+        table.__class__(name=table.name, ddl=table.ddl, rows=())
+        for table in base.tables
+    )
+    scenario = base.__class__(
+        **{
+            **base.__dict__,
+            "name": "empty_cold_chain_exception",
+            "tables": empty_tables,
+        }
+    )
+
+    result = run_physical_ai_scenario(db, scenario, execute_query=False)
+
+    assert result.inserted_rows == 0
+    assert result.query_row_count is None
+    assert result.replay_rows == 1
+    assert db.queries == []
+    assert not any(sql.startswith("INSERT INTO cold_chain_events") for sql in db.sql)
+
+
+def test_physical_ai_agent_demo_preserves_epoch_zero_timestamp():
+    agv_rows = PHYSICAL_AI_SCENARIOS[0].tables[0].rows
+
+    assert agv_rows[0]["timestamp"] == 0

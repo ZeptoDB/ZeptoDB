@@ -1,10 +1,115 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-13
+Last updated: 2026-06-21
 
 ---
 
 ## Latest
+
+- [x] **P3 small-table distributed hash JOIN for operational tables**
+  (devlog 195) — Added a bounded coordinator-local hash JOIN path for small
+  operational tables. The coordinator gathers both JOIN sides under a row cap,
+  materializes declared schemas through typed rows, preserves decoded
+  `STRING`/`SYMBOL` cells, and delegates JOIN semantics to the local SQL
+  executor. Experiment 011 now reports `suppression_join` as pass and strict
+  full distributed SQL/JOIN/window replay succeeds.
+
+- [x] **P3 cluster-mode window value materialization** (devlog 194) —
+  Fixed the distributed window fetch-and-compute path for declared operational
+  tables. The coordinator now materializes temporary full-data tables through
+  schema-aware typed rows, preserving generic value columns and decoded
+  `STRING`/`SYMBOL` cells before running ROW_NUMBER/LAG locally. Experiment
+  011 now reports `row_number_window` and `lag_window` as pass.
+
+- [x] **P3 Action-Outcome distributed vendor SQL replay classification**
+  (devlog 193) — Added Experiment 011, a two-node replay harness that loads
+  the Action-Outcome seed and Experiment 010 vendor tables through the
+  distributed HTTP/RPC path. It verifies row counts, distributed ingest, and
+  co-located JOINs as pass, then records distributed planner gaps such as the
+  cross-node suppression JOIN.
+
+- [x] **P3 Action-Outcome vendor SQL/JOIN/window replay** (devlog 192) —
+  Implemented alias-aware hash JOIN `WHERE` predicate handling and added a live
+  Experiment 010 SQL replay. The replay materializes six query rows, 72
+  recommendation rows, 72 retrieval rows, and 21 suppression rows, then checks
+  failed-repeat JOIN, context top-action JOIN, suppression JOIN, misleading
+  retrieval JOIN, ROW_NUMBER, and LAG acceptance with native ZeptoDB SQL.
+
+- [x] **P3 Action-Outcome vendor baseline experiment** (devlog 191) —
+  Added Experiment 010, comparing similar-incident retrieval,
+  runbook/action-prior recommendation, reflection-only memory, and
+  context-gated Action-Outcome Memory on the noisy AIOps fixture. The
+  context-gated variant preserved Top-3 hit rate at 1.00 and improved
+  failed-action avoidance to 1.00 while recording 21 context suppressions.
+
+- [x] **P3 string-key hash JOIN materialization** (devlog 190) —
+  Added a C++ regression for declared `STRING` key hash JOIN and fixed the SQL
+  executor to read hash JOIN keys and joined result cells through type-aware
+  `ColumnVector` access. Experiment 009 now reports native string JOIN as pass
+  over the original Action-Outcome research schema.
+
+- [x] **P3 Action-Outcome JOIN/window replay acceptance** (devlog 189) —
+  Added Experiment 009 and a live validator that checks native string-window
+  rank ordering plus numeric SQL JOIN/ROW_NUMBER/LAG acceptance over
+  Action-Outcome replay recommendations.
+
+- [x] **P3 Action-Outcome distributed replay C++ regression** (devlog 188) —
+  Added a CI-sized two-pipeline TCP RPC regression for schema-aware
+  Action-Outcome `STRING` rows routed through `CoordinatorRoutingAdapter`.
+  Typed-row RPC now preserves original `STRING`/`SYMBOL` text payloads so
+  remote owners bind dictionary codes before storage and coordinator SELECT
+  returns semantic strings without relying on local dictionary state.
+
+- [x] **P3 Action-Outcome distributed two-node live replay** (devlog 187) —
+  Two-node live replay now loads the Action-Outcome SQL seed through one HTTP
+  endpoint, routes schema-aware typed rows across two owners, verifies
+  node-local ingest deltas, and returns decoded semantic top-action results
+  through cluster SELECT. The distributed run loaded 203/203 statements with
+  node-local deltas of 140 rows on node 1 and 58 rows on node 8.
+
+- [x] **P3 Action-Outcome generic SQL INSERT materialization** (devlog 186) —
+  SQL `INSERT ... VALUES` now materializes declared `CREATE TABLE` columns
+  through the schema-aware typed-row path, including `STRING`, float, bool,
+  integer, and timestamp columns. Legacy tick-shaped INSERT remains available
+  for tables without registered schemas. The Action-Outcome live SQL replay
+  acceptance report now loads 203/203 statements, verifies row counts, returns
+  six expected top-action rows, and confirms six failed-action avoidance rows.
+  Closes BACKLOG P3 "Action-Outcome generic SQL INSERT replay".
+
+- [x] **P2 replication-vs-MPP cluster design doc** (devlog 181) —
+  `docs/design/phase_c_distributed.md` now includes the formal comparison
+  between replication clusters and MPP clusters. It defines replication as
+  ZeptoDB's durability/HA layer, MPP-style shard ownership as the write and
+  query scale-out layer, and clearly marks current capabilities versus
+  non-goals: no full cost-based distributed SQL optimizer yet, no arbitrary
+  cross-node joins/windows/DISTINCT yet, and no global cross-shard
+  transactions. Closes BACKLOG P2 "Replication-cluster vs MPP-cluster design
+  doc".
+
+- [x] **P5 Apache Pulsar consumer** (devlog 180) —
+  `PulsarConsumer` now mirrors the Kafka/MQTT/Kinesis feed pattern for Pulsar:
+  shared JSON/BINARY/JSON_HUMAN decoders, table-aware `TickMessage` stamping,
+  single-node and cluster routing, backpressure retries, Prometheus metric
+  formatting, config validation, and optional live broker polling behind
+  `-DZEPTO_USE_PULSAR=ON`. Default builds keep decode/routing tests available
+  and return false from `start()` when the Pulsar C++ client is absent. Closes
+  BACKLOG P5 "Apache Pulsar consumer".
+
+- [x] **Physical AI Agent Memory demo** (devlog 179) —
+  `examples/agent_memory/physical_ai_agent_demo.py` now loads realistic AGV,
+  ROS odometry/LaserScan replay, and cold-chain telemetry rows; seeds scoped
+  Agent Memory with route, sensor, and quality-policy knowledge; retrieves
+  context for Physical AI decisions; and records AgentOps context trace/replay
+  rows. Pytest coverage exercises multi-table inserts, memory metadata,
+  trace/replay SQL, empty rows, and epoch-zero timestamps.
+
+- [x] **Release pipeline speedups** (devlogs 177-178) —
+  release binary builds now use per-architecture ccache, Docker context upload
+  is trimmed through `.dockerignore`, non-code Graviton runs are skipped, and
+  Docker release builds warm the BuildKit cache in parallel with amd64/arm64
+  binary builds while the final Docker Hub push remains gated behind successful
+  binaries. The backlog header and recent-completion index are refreshed
+  through devlog 178.
 
 - [x] **Dev branch and main release pipeline** (devlog 176) —
   development now targets `dev`, while `main` is treated as the release branch.

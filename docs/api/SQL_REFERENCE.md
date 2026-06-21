@@ -1,6 +1,6 @@
 # ZeptoDB SQL Reference
 
-*Last updated: 2026-04-16*
+*Last updated: 2026-06-20*
 *32 SQL functions · 9 JOIN types · DDL/DML · s#/g#/p# indexes · Distributed query support · Statistical functions · Table functions*
 
 ZeptoDB uses a recursive descent SQL parser with nanosecond timestamp semantics.
@@ -776,6 +776,21 @@ FROM trades t
 JOIN risk_factors r ON t.symbol = r.symbol
 ```
 
+Declared `STRING` and `SYMBOL` columns are valid hash JOIN keys and result
+columns. Joined string columns are returned as semantic strings through the
+query result dictionary, not raw dictionary codes.
+
+Hash JOIN `WHERE` predicates may reference aliased columns from either joined
+side. Supported post-join predicates include comparison operators, `BETWEEN`,
+`IN`, `IS NULL`, `LIKE`, `AND`, `OR`, and `NOT`.
+
+```sql
+SELECT r.query_id, r.action_class, e.human_outcome
+FROM action_outcome_replay_recommendations r
+JOIN action_outcome_episodes e ON r.query_id = e.episode_id
+WHERE r.top_action = 1 AND e.human_outcome = 'failure'
+```
+
 ### LEFT JOIN
 
 Returns all left-side rows; unmatched right-side columns are NULL (INT64_MIN).
@@ -1044,7 +1059,7 @@ CREATE TABLE orders (
 )
 ```
 
-Supported types: `INT64`, `INT32`, `FLOAT64`, `FLOAT32`, `TIMESTAMP_NS`, `SYMBOL`, `BOOL`
+Supported types: `INT64`, `INT32`, `FLOAT64`, `FLOAT32`, `TIMESTAMP_NS`, `SYMBOL`, `STRING`, `BOOL`
 
 **Table-scoped partitioning & strict fallback (devlog 082, 083, 084, 085):**
 Once at least one `CREATE TABLE` has succeeded (i.e. `SchemaRegistry::table_count() > 0`), the executor switches to *strict* mode — a query referencing an unknown table name returns **zero rows** instead of falling back to a global partition scan. This ensures `SELECT * FROM empty_table` and `SELECT * FROM does_not_exist` both see 0 rows even when other tables contain data. Tables with no `CREATE TABLE` ever issued keep using the legacy per-symbol path (`table_id = 0`). In a distributed cluster this works on scatter-gather SELECTs too — each data node resolves `FROM <table>` via its own durable `_schema.json`, so the strict behavior is identical on every node.
@@ -1092,7 +1107,36 @@ INSERT INTO trades VALUES
 
 -- Column list (timestamp auto-generated)
 INSERT INTO trades (symbol, price, volume) VALUES (1, 15100, 150)
+
+-- Generic declared-schema row
+CREATE TABLE action_outcome_replay_recommendations (
+    query_id STRING,
+    action_class STRING,
+    top_action INT64,
+    score_micros INT64,
+    timestamp_ns TIMESTAMP_NS
+);
+
+INSERT INTO action_outcome_replay_recommendations
+    (query_id, action_class, top_action, score_micros, timestamp_ns)
+VALUES
+    ('aoe_payment_002', 'traffic_drain', 1, 670031, 1781748536000000000);
 ```
+
+For tables registered with `CREATE TABLE`, `INSERT ... VALUES` materializes
+declared schema columns directly. If no column list is supplied, values follow
+the declared table column order. If a column list is supplied, omitted declared
+columns are appended with type defaults (`0`, `0.0`, false, or dictionary code
+0 for `STRING`/`SYMBOL`).
+
+Partition routing uses the inserted `symbol` column when present, otherwise
+symbol `0`. Timestamp routing uses an inserted `timestamp` or `timestamp_ns`
+column first, then the first declared `TIMESTAMP_NS` column, and finally the
+current system time if no timestamp column is supplied.
+
+For legacy tables without a matching `CREATE TABLE`, INSERT keeps the original
+tick-shaped materialization path with default order `symbol`, `price`, `volume`,
+`timestamp`.
 
 ### UPDATE
 
@@ -1223,6 +1267,7 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | **A** | `WHERE symbol = X` | Direct routing to the owning node (zero scatter overhead) |
 | **A-1** | `WHERE symbol IN (1,2,3)` | Scatter to all nodes, each filters locally, merge results |
 | **A-2** | ASOF/WINDOW JOIN + symbol filter | Route to symbol's node (both tables co-located) |
+| **A-3** | Small-table equi hash JOIN | Fetch both operational tables under a row cap, materialize typed temp tables, execute locally |
 | **B** | No symbol filter | Scatter-gather to all nodes, merge with appropriate strategy |
 
 ### Merge strategies
@@ -1247,7 +1292,8 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | `VWAP` | ✅ Full | Rewritten to SUM(price×vol)+SUM(vol), reconstructed |
 | `FIRST/LAST` | ✅ Full | Fetches all data, sorts by timestamp, executes locally |
 | `COUNT(DISTINCT)` | ✅ Full | Fetches all data, executes locally |
-| Window functions | ✅ Full | Fetches all data, executes locally |
+| Window functions | ✅ Full | Fetches all data, materializes declared tables with typed rows, executes locally |
+| Small-table hash JOIN | ✅ Bounded | INNER/LEFT/RIGHT/FULL equi JOIN over declared operational tables; both sides must fit the coordinator row cap |
 | CTE / Subquery | ✅ Full | Fetches all data, executes locally |
 | `STDDEV/VARIANCE/MEDIAN/PERCENTILE` | ✅ Full | Fetches all data, executes locally |
 | `SHOW TABLES` | ✅ Full | Scatter to all nodes, sum row counts |
@@ -1276,6 +1322,7 @@ The path is relative to the server's working directory. Supports any SQL clauses
 |---------|--------|
 | Correlated subqueries (`WHERE col = (SELECT ...)`) | Not planned |
 | Subqueries in SELECT/WHERE expressions | Not planned |
+| Large arbitrary cross-node hash JOIN | Planned |
 | JOINs on CTE/subquery virtual tables | Planned |
 | Window functions on virtual tables | Planned |
 | Float columns (native double storage) | Planned |

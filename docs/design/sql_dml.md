@@ -1,6 +1,6 @@
 # ZeptoDB SQL DML Design
 
-Last updated: 2026-03-24
+Last updated: 2026-06-18
 
 ---
 
@@ -15,7 +15,7 @@ Client                    ZeptoDB
   │ ───────────────────────>│
   │                         │  Tokenizer → Parser → AST
   │                         │  Executor dispatch by Kind
-  │                         │  INSERT: ingest_tick() + drain_sync()
+  │                         │  INSERT: schema-aware typed row or legacy tick
   │                         │  UPDATE: in-place span write
   │                         │  DELETE: compact + set_size()
   │  {"inserted": 3}        │
@@ -38,6 +38,20 @@ INSERT INTO trades VALUES (1, 15050, 200, 1711234568000000000),
 
 -- Column list (timestamp auto-generated if omitted)
 INSERT INTO trades (symbol, price, volume) VALUES (1, 15100, 150)
+
+-- Declared schema materialization
+CREATE TABLE recommendations (
+    query_id STRING,
+    action_class STRING,
+    top_action INT64,
+    score_micros INT64,
+    timestamp_ns TIMESTAMP_NS
+);
+
+INSERT INTO recommendations
+    (query_id, action_class, top_action, score_micros, timestamp_ns)
+VALUES
+    ('aoe_payment_002', 'traffic_drain', 1, 670031, 1781748536000000000);
 ```
 
 **Response:** `{"columns":["inserted"],"rows":[[3]]}`
@@ -88,7 +102,8 @@ SQL String
 │ Executor │  Dispatch by ParsedStatement::Kind
 └────┬─────┘
      │
-     ├── INSERT → pipeline_.ingest_tick() + drain_sync()
+     ├── INSERT → schema exists? ingest_typed_row()
+     │            else ingest_tick() + drain_sync()
      ├── UPDATE → find_partitions() → eval_where() → span[idx] = val
      └── DELETE → find_partitions() → eval_where() → compact + set_size()
 ```
@@ -100,7 +115,14 @@ SQL String
 struct InsertStmt {
     std::string              table_name;
     std::vector<std::string> columns;              // optional
-    std::vector<std::vector<int64_t>> value_rows;  // each row
+    std::vector<std::vector<InsertValue>> value_rows;
+};
+
+struct InsertValue {
+    int64_t     i = 0;
+    double      f = 0.0;
+    std::string s;
+    enum Type : uint8_t { INT, FLOAT, STRING } type = INT;
 };
 
 // UPDATE
@@ -127,13 +149,23 @@ struct DeleteStmt {
 
 ### INSERT
 
-1. Parse column list (optional) or use default order: `symbol, price, volume, timestamp`
-2. For each value row, construct a `TickMessage`:
-   - Map column names to TickMessage fields
-   - If `timestamp` is omitted, use `std::chrono::system_clock::now()` in nanoseconds
-3. Call `pipeline_.ingest_tick(msg)` for each row
-4. Call `pipeline_.drain_sync()` to ensure data is stored before returning
-5. Return count of inserted rows
+1. Resolve the table name against `SchemaRegistry`.
+2. If the table has a declared schema:
+   - Use the explicit column list or the declared schema order.
+   - Validate duplicate, unknown, and count-mismatched columns before ingest.
+   - Convert every `InsertValue` to a `TypedColumnValue` using the declared
+     `ColumnType`.
+   - Use a supplied `symbol` column for partition routing; otherwise route to
+     symbol `0`.
+   - Use `timestamp`, `timestamp_ns`, or the first declared `TIMESTAMP_NS`
+     column for time routing; otherwise use the current system nanoseconds.
+   - Route through `ClusterNodeBase::ingest_typed_row()` when cluster routing
+     is enabled, or `ZeptoPipeline::ingest_typed_row()` in single-node mode.
+3. If the table has no declared schema, keep the legacy tick path:
+   - Default order is `symbol, price, volume, timestamp`.
+   - Values map into `TickMessage`, then `pipeline_.ingest_tick(msg)`.
+   - `pipeline_.drain_sync()` makes queued ticks visible before returning.
+4. Return count of inserted rows.
 
 ### UPDATE (In-Place Modification)
 
@@ -223,8 +255,8 @@ When QueryCoordinator receives a DML statement, it processes it through a differ
 ```
 QueryCoordinator.execute_sql(sql)
     │
-    ├── INSERT → extract symbol → route to owning node
-    │            (no symbol → first node)
+    ├── INSERT → materialize row → route(table_id, symbol_id)
+    │            (no symbol → symbol_id 0)
     │
     ├── UPDATE/DELETE → extract symbol → route to owning node
     │                   (no symbol → broadcast all nodes, sum results)
@@ -236,6 +268,7 @@ QueryCoordinator.execute_sql(sql)
 
 This ensures:
 - Prevents the bug where INSERT duplicates data across all nodes
+- Schema-aware INSERT and legacy tick INSERT use the same owner/migration route
 - UPDATE/DELETE is applied only to the correct node based on symbol
 - DDL (CREATE TABLE, MATERIALIZED VIEW, etc.) is applied consistently across all nodes
 
@@ -245,7 +278,9 @@ This ensures:
 
 | Limitation | Reason | Workaround |
 |-----------|--------|------------|
-| Integer values only | ColumnVector stores int64_t | Use fixed-point (price × 10000) |
+| No NULL literal in INSERT | Parser supports INT, FLOAT, and quoted STRING values | Use type defaults or omit nullable-like columns |
+| No expression/default clauses in VALUES | INSERT materializes literals only | Precompute values client-side |
+| No INSERT INTO ... SELECT | Not implemented | Run SELECT client-side then INSERT VALUES / Arrow / MessagePack |
 | No RETURNING clause | Not implemented | Follow with SELECT |
 | DELETE doesn't free arena memory | Append-only arena allocator | Partition reclaim on flush/eviction |
 | No transaction / rollback | Single-threaded DML execution | Application-level retry |

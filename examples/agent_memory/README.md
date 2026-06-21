@@ -137,3 +137,21 @@ Then run:
 ```bash
 python -m examples.agent_memory.agent_attached_timeseries_demo
 ```
+
+## Physical AI Agent Demo
+
+`physical_ai_agent_demo.py` focuses on Physical AI operations with concrete
+sample rows:
+
+- warehouse AGV pose plus pallet handoff timelines.
+- ROS odometry plus LaserScan replay for navigation triage.
+- cold-chain shipment exception audit telemetry.
+
+Each scenario creates ordinary time-series tables, inserts realistic rows,
+seeds scoped Agent Memory records, retrieves context for an agent decision,
+and writes AgentOps context trace/replay rows that explain what memory was
+used with which time-series query.
+
+```bash
+python -m examples.agent_memory.physical_ai_agent_demo
+```

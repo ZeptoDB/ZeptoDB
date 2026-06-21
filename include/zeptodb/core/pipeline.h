@@ -97,6 +97,8 @@ struct ZEPTO_CACHE_ALIGNED PipelineStats {
 // ============================================================================
 // Used by connector paths that already decoded data into a table schema and
 // should not force every value through TickMessage::price/volume.
+// For SYMBOL/STRING values crossing RPC boundaries, has_string_value preserves
+// the original text so the receiver can bind the same dictionary code.
 struct TypedColumnValue {
     std::string name;
     ColumnType  type = ColumnType::INT64;
@@ -104,6 +106,8 @@ struct TypedColumnValue {
     double      f64  = 0.0;
     uint32_t    u32  = 0;
     uint8_t     u8   = 0;
+    bool        has_string_value = false;
+    std::string string_value;
 
     static TypedColumnValue int64(std::string name, int64_t value) {
         TypedColumnValue out;

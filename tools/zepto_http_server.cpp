@@ -37,6 +37,7 @@
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 
 #ifdef __linux__
 #include <cstring>
@@ -810,6 +811,10 @@ int main(int argc, char* argv[]) {
             rpc_srv->set_agent_memory_replica_append_callback(
                 [&server](const uint8_t* data, size_t len) {
                     return server.handle_agent_memory_replica_append_rpc(data, len);
+                });
+            rpc_srv->set_typed_row_ingest_callback(
+                [&pipeline](zeptodb::core::TypedRowMessage row) {
+                    return pipeline.ingest_typed_row(std::move(row));
                 });
             rpc_srv->start(
                 static_cast<uint16_t>(port + 100),
