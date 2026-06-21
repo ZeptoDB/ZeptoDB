@@ -280,16 +280,44 @@ def render_report(
             "cluster-mode window evaluation/merge for declared operational tables.",
         ]
     )
-    next_step_lines = (
+    suppression_pass = classifications["suppression_join"]["status"] == "pass"
+    suppression_lines = (
         [
+            "The suppression table is owned by node 1 while recommendations are",
+            "owned by node 8. The bounded small-table hash JOIN path now gathers",
+            "both operational tables under the coordinator row cap, replays them",
+            "into a temporary typed pipeline, and executes the original hash JOIN",
+            "locally. This turns the former cross-node suppression JOIN boundary",
+            "into a passing check without requiring a full distributed SQL",
+            "optimizer.",
+        ]
+        if suppression_pass
+        else [
+            "The suppression table is owned by node 1 while recommendations are owned by",
+            "node 8. The suppression JOIN therefore records the expected current gap:",
+            "ZeptoDB can scatter-gather supported SELECT and window shapes, but it does",
+            "not yet execute arbitrary cross-node hash JOINs by shipping one side or",
+            "broadcasting small dimension tables.",
+        ]
+    )
+    if windows_pass and suppression_pass:
+        next_step_lines = [
+            "Define an explicit shard-key or table-level distribution policy for",
+            "symbol-less operational tables. The small-table JOIN path proves",
+            "correctness for bounded control tables; production promotion now needs",
+            "placement policy, row-cap telemetry, and a larger cost-based JOIN",
+            "planner only for tables that exceed the small-table boundary.",
+        ]
+    elif windows_pass:
+        next_step_lines = [
             "Implement a narrow distributed hash JOIN strategy for small",
             "operational tables. The JOIN work can start with",
             "broadcast/replicated dimension-table joins, which would turn the",
             "suppression JOIN from `expected_gap_cross_node_join` into `pass`",
             "without requiring a full cost-based distributed SQL optimizer.",
         ]
-        if windows_pass
-        else [
+    else:
+        next_step_lines = [
             "First fix cluster-mode window value materialization for declared",
             "operational tables, then implement a narrow distributed hash JOIN strategy",
             "for small operational tables. The JOIN work can start with",
@@ -297,7 +325,6 @@ def render_report(
             "suppression JOIN from `expected_gap_cross_node_join` into `pass` without",
             "requiring a full cost-based distributed SQL optimizer.",
         ]
-    )
 
     lines += [
         "",
@@ -309,11 +336,7 @@ def render_report(
         "8, so failed-repeat JOIN, context top-action JOIN, and misleading",
         "retrieval JOIN all pass through the coordinator.",
         "",
-        "The suppression table is owned by node 1 while recommendations are owned by",
-        "node 8. The suppression JOIN therefore records the expected current gap:",
-        "ZeptoDB can scatter-gather supported SELECT and window shapes, but it does",
-        "not yet execute arbitrary cross-node hash JOINs by shipping one side or",
-        "broadcasting small dimension tables.",
+        *suppression_lines,
         "",
         *window_lines,
         "",

@@ -6,8 +6,9 @@ Date: 2026-06-20
 
 Experiment 010 proved the vendor baseline comparison on a single ZeptoDB SQL
 endpoint. Experiment 011 runs the same vendor replay through a two-node
-ZeptoDB HTTP/RPC topology and classifies each SQL/JOIN/window check as either
-distributed-safe today or blocked by a current distributed planner boundary.
+ZeptoDB HTTP/RPC topology and verifies that co-located JOINs, bounded
+cross-node small-table hash JOINs, and cluster-mode window replay all match
+the single-node/vendor baseline.
 
 This experiment is intentionally not a paper exercise: it loads the seed and
 vendor tables through one coordinator endpoint, routes rows to physical owners,
@@ -51,7 +52,8 @@ python3 docs/research/tools/action_outcome_distributed_vendor_sql_replay.py \
   --extra-fixture docs/research/fixtures/action_outcome_distractor_episodes.json \
   --quality-labels docs/research/fixtures/action_outcome_retrieval_quality_labels.json \
   --output docs/research/results/action_outcome_distributed_vendor_sql_replay_011.md \
-  --timeout 10
+  --timeout 10 \
+  --strict-full-sql
 ```
 
 ## Results
@@ -68,7 +70,7 @@ Summary:
 | Vendor table row counts | pass |
 | Distributed ingest | pass |
 | Boundary classification | pass |
-| Full distributed SQL/JOIN/window | partial |
+| Full distributed SQL/JOIN/window | pass |
 
 Node-local stats delta:
 
@@ -84,29 +86,26 @@ Node-local stats delta:
 | Failed-repeat JOIN | pass | Recommendations and query controls are co-located on node 8. |
 | Context top-action JOIN | pass | Same co-location; context-gated top actions remain safe. |
 | Misleading retrieval JOIN | pass | Retrieval evidence and query controls are co-located on node 8. |
-| Suppression JOIN | expected_gap_cross_node_join | Suppressions are owned by node 1 while recommendations are owned by node 8. |
+| Suppression JOIN | pass | Suppressions are owned by node 1 while recommendations are owned by node 8; the bounded small-table hash JOIN path gathers both sides and executes the original JOIN locally. |
 | ROW_NUMBER | pass | Cluster-mode full-data materialization preserves declared recommendation-table values. |
 | LAG | pass | Same schema-aware materialization path; values match the single-node/vendor baseline. |
 
 ## Interpretation
 
-Experiment 011 gives a sharper distributed roadmap than a generic "JOIN/window
-does not work" label. The distributed write and row-count surfaces are solid:
-both nodes ingest data, and every seed/vendor table returns the expected
-cluster-visible row count.
+Experiment 011 now closes the research harness' last SQL replay boundary. The
+distributed write and row-count surfaces are solid: both nodes ingest data,
+and every seed/vendor table returns the expected cluster-visible row count.
+Co-located vendor JOINs pass, the node 1 to node 8 suppression JOIN passes
+through the bounded small-table hash JOIN path, and cluster-mode ROW_NUMBER/LAG
+over declared operational tables pass through schema-aware typed temporary
+materialization.
 
-The current gap is narrow:
-
-1. Cross-node hash JOIN needs a small-table strategy, likely broadcast or
-   replicated operational tables first.
-
-Cluster-mode ROW_NUMBER/LAG over declared operational tables now pass. The
-coordinator fetch-and-compute path materializes the temporary full-data table
-through schema-aware typed rows instead of replaying everything through the
-legacy tick-shaped `symbol/price/volume/timestamp` path.
+This is still intentionally narrower than a fully general distributed SQL
+optimizer. The completed path is for bounded operational control tables; large
+cross-node hash JOINs should move to a cost-based distributed planner.
 
 ## Next Best Step
 
-Implement small-table distributed hash JOIN for the suppression table. With
-ROW_NUMBER/LAG passing, the remaining Experiment 011 failure is purely
-cross-node JOIN planning.
+Define symbol-less operational table placement policy and add row-cap
+observability for the small-table JOIN path before promoting it beyond the
+research harness.

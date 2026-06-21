@@ -19,6 +19,14 @@
 
 namespace zeptodb::cluster {
 
+static constexpr size_t kSmallTableBroadcastJoinRowLimit = 4096;
+
+static zeptodb::sql::QueryResultSet make_query_error(std::string error) {
+    zeptodb::sql::QueryResultSet result;
+    result.error = std::move(error);
+    return result;
+}
+
 // ============================================================================
 // Node registration
 // ============================================================================
@@ -611,13 +619,20 @@ uint16_t QueryCoordinator::resolve_routing_table_id_locked(
     const std::optional<std::string>& table_name) const
 {
     if (!table_name || table_name->empty()) return 0;
+    auto schema = schema_snapshot_locked(*table_name);
+    return schema ? schema->table_id : 0;
+}
+
+std::optional<zeptodb::storage::TableSchema>
+QueryCoordinator::schema_snapshot_locked(const std::string& table_name) const
+{
+    if (table_name.empty()) return std::nullopt;
     for (const auto& ep : endpoints_) {
-        if (ep->is_local && ep->pipeline != nullptr &&
-            ep->pipeline->schema_registry().exists(*table_name)) {
-            return ep->pipeline->schema_registry().get_table_id(*table_name);
-        }
+        if (!ep->is_local || ep->pipeline == nullptr) continue;
+        auto schema = ep->pipeline->schema_registry().get(table_name);
+        if (schema) return schema;
     }
-    return 0;
+    return std::nullopt;
 }
 
 static std::string lower_ascii(std::string s) {
@@ -670,8 +685,52 @@ static std::optional<std::string> decoded_string_cell(
     if (!found || strings_per_row == 0) return std::nullopt;
 
     const size_t offset = row_idx * strings_per_row + string_pos_in_row;
-    if (offset >= result.string_rows.size()) return std::nullopt;
-    return result.string_rows[offset];
+    if (offset < result.string_rows.size()) return result.string_rows[offset];
+
+    if (result.symbol_dict != nullptr &&
+        row_idx < result.rows.size() &&
+        col_idx < result.rows[row_idx].size()) {
+        const int64_t raw = result.rows[row_idx][col_idx];
+        if (raw >= 0 &&
+            raw <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+            return std::string(
+                result.symbol_dict->lookup(static_cast<uint32_t>(raw)));
+        }
+    }
+    return std::nullopt;
+}
+
+static void snapshot_decoded_string_rows(zeptodb::sql::QueryResultSet& result) {
+    if (!result.string_rows.empty()) {
+        result.symbol_dict = nullptr;
+        return;
+    }
+    if (result.symbol_dict == nullptr) return;
+
+    size_t strings_per_row = 0;
+    for (const auto type : result.column_types) {
+        if (is_string_encoded_type(type)) ++strings_per_row;
+    }
+    if (strings_per_row == 0) {
+        result.symbol_dict = nullptr;
+        return;
+    }
+
+    result.string_rows.reserve(result.rows.size() * strings_per_row);
+    for (const auto& row : result.rows) {
+        for (size_t ci = 0; ci < result.column_types.size() && ci < row.size(); ++ci) {
+            if (!is_string_encoded_type(result.column_types[ci])) continue;
+            const int64_t raw = row[ci];
+            if (raw < 0 ||
+                raw > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                result.string_rows.emplace_back();
+                continue;
+            }
+            result.string_rows.emplace_back(
+                result.symbol_dict->lookup(static_cast<uint32_t>(raw)));
+        }
+    }
+    result.symbol_dict = nullptr;
 }
 
 static std::optional<zeptodb::storage::TableSchema> infer_schema_from_result(
@@ -887,6 +946,34 @@ static bool materialize_result_into_typed_table(
     return true;
 }
 
+static bool is_small_table_hash_join_candidate(
+    const zeptodb::sql::SelectStmt& stmt)
+{
+    if (!stmt.join || stmt.from_table.empty() || stmt.join->table.empty()) {
+        return false;
+    }
+    if (stmt.from_subquery || !stmt.cte_defs.empty() ||
+        stmt.set_op != zeptodb::sql::SelectStmt::SetOp::NONE || stmt.rhs) {
+        return false;
+    }
+
+    const auto join_type = stmt.join->type;
+    const bool hash_join_type =
+        join_type == zeptodb::sql::JoinClause::Type::INNER ||
+        join_type == zeptodb::sql::JoinClause::Type::LEFT ||
+        join_type == zeptodb::sql::JoinClause::Type::RIGHT ||
+        join_type == zeptodb::sql::JoinClause::Type::FULL;
+    if (!hash_join_type) return false;
+
+    for (const auto& cond : stmt.join->on_conditions) {
+        if (cond.op == zeptodb::sql::CompareOp::EQ &&
+            !cond.left_col.empty() && !cond.right_col.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ============================================================================
 // Public execute_sql
 // ============================================================================
@@ -920,6 +1007,88 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql_for_symbol(
         return err;
     }
     return exec_on(*target, sql);
+}
+
+zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
+    const std::string& sql,
+    const zeptodb::sql::SelectStmt& stmt)
+{
+    auto fetch_small_table = [this](const std::string& table_name) {
+        const std::string fetch_sql = "SELECT * FROM " + table_name +
+            " LIMIT " + std::to_string(kSmallTableBroadcastJoinRowLimit + 1);
+        auto results = scatter(fetch_sql);
+        auto merged = merge_concat_results(results);
+        if (!merged.ok()) return merged;
+        if (merged.rows.size() > kSmallTableBroadcastJoinRowLimit) {
+            return make_query_error(
+                "small-table broadcast JOIN row limit exceeded for table '" +
+                table_name + "' (limit " +
+                std::to_string(kSmallTableBroadcastJoinRowLimit) + ")");
+        }
+        return merged;
+    };
+
+    std::optional<zeptodb::storage::TableSchema> left_schema;
+    std::optional<zeptodb::storage::TableSchema> right_schema;
+    {
+        std::shared_lock lock(mutex_);
+        left_schema = schema_snapshot_locked(stmt.from_table);
+        right_schema = schema_snapshot_locked(stmt.join->table);
+    }
+
+    auto left_rows = fetch_small_table(stmt.from_table);
+    if (!left_rows.ok()) return left_rows;
+    auto right_rows = stmt.join->table == stmt.from_table
+        ? left_rows
+        : fetch_small_table(stmt.join->table);
+    if (!right_rows.ok()) return right_rows;
+
+    if (!left_schema) {
+        left_schema = infer_schema_from_result(stmt.from_table, left_rows);
+    }
+    if (!right_schema) {
+        right_schema = infer_schema_from_result(stmt.join->table, right_rows);
+    }
+    if (!left_schema) {
+        return make_query_error(
+            "small-table broadcast JOIN could not resolve schema for table '" +
+            stmt.from_table + "'");
+    }
+    if (!right_schema) {
+        return make_query_error(
+            "small-table broadcast JOIN could not resolve schema for table '" +
+            stmt.join->table + "'");
+    }
+
+    zeptodb::core::PipelineConfig tcfg;
+    tcfg.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    zeptodb::core::ZeptoPipeline tmp(tcfg);
+    tmp.start();
+
+    std::string replay_error;
+    if (!materialize_result_into_typed_table(
+            tmp, *left_schema, left_rows, replay_error)) {
+        tmp.stop();
+        return make_query_error(
+            replay_error.empty()
+                ? "failed to materialize small-table broadcast JOIN left side"
+                : replay_error);
+    }
+    if (stmt.join->table != stmt.from_table &&
+        !materialize_result_into_typed_table(
+            tmp, *right_schema, right_rows, replay_error)) {
+        tmp.stop();
+        return make_query_error(
+            replay_error.empty()
+                ? "failed to materialize small-table broadcast JOIN right side"
+                : replay_error);
+    }
+
+    zeptodb::sql::QueryExecutor local_ex(tmp);
+    auto result = local_ex.execute(sql);
+    snapshot_decoded_string_rows(result);
+    tmp.stop();
+    return result;
 }
 
 zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sql) {
@@ -1101,6 +1270,23 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                 // concat results (each node only has its own symbols' data)
                 auto results = scatter(sql);
                 return merge_concat_results(results);
+            }
+        } catch (...) {}
+    }
+
+    // Tier A-3: bounded small-table hash JOIN.
+    // Operational control tables (runbooks, recommendations, suppressions)
+    // are usually tiny compared with hot time-series partitions.  For simple
+    // equi hash JOINs, gather both sides under a strict row cap, materialize
+    // them into a coordinator-local typed pipeline, then reuse local hash JOIN
+    // semantics.  Broader cost-based distributed JOIN planning remains future
+    // work.
+    {
+        try {
+            zeptodb::sql::Parser parser;
+            auto stmt = parser.parse(sql);
+            if (is_small_table_hash_join_candidate(stmt)) {
+                return execute_small_table_hash_join(sql, stmt);
             }
         } catch (...) {}
     }

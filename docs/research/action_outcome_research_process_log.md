@@ -1861,3 +1861,113 @@ Implement small-table distributed hash JOIN for operational tables. Start with
 broadcast/replicated dimension-table joins so
 `action_outcome_vendor_suppressions_010` on node 1 can join
 `action_outcome_vendor_recommendations_010` on node 8.
+
+---
+
+## 2026-06-21 — Small-Table Distributed Hash JOIN
+
+### Request
+
+Implement a narrow small-table broadcast hash JOIN path for distributed
+operational tables, so Experiment 011 `suppression_join` changes from
+`expected_gap_cross_node_join` to `pass`.
+
+### Completed Work
+
+1. Added a failing C++ regression for the Experiment 011 boundary.
+   - `DistributedInsert.SmallTableBroadcastJoinMaterializesCrossNodeOperationalTables`
+   - Uses `action_outcome_vendor_suppressions_010` and
+     `action_outcome_vendor_recommendations_010`.
+   - Asserts suppressions route to node 1 and recommendations route to node 8
+     under the 1/8 ring.
+   - Verifies a coordinator JOIN returns the expected suppression row and
+     decoded string columns.
+
+2. Implemented bounded coordinator-local hash JOIN for small operational
+   tables.
+   - Candidate shape: declared-table `INNER`, `LEFT`, `RIGHT`, or `FULL`
+     equi hash JOIN.
+   - Fetches both base tables with `SELECT * ... LIMIT row_cap + 1`.
+   - Rejects tables beyond the small-table row cap.
+   - Materializes both sides into a temporary typed `ZeptoPipeline`.
+   - Executes the original JOIN SQL locally so existing hash JOIN semantics,
+     alias-aware `WHERE`, and `ORDER BY` logic are reused.
+
+3. Preserved string semantics across the temp pipeline boundary.
+   - Local scatter results can carry a live `symbol_dict` without populated
+     `string_rows`; remote RPC results usually carry decoded `string_rows`.
+   - The coordinator now decodes local `STRING`/`SYMBOL` cells before typed
+     materialization and snapshots decoded temp-pipeline result strings before
+     returning.
+
+4. Re-ran Experiment 011 in strict full SQL mode.
+   - `suppression_join`: pass, 21/21 rows.
+   - `row_number_window`: pass, 72/72 rows.
+   - `lag_window`: pass, 72/72 rows.
+   - Full distributed SQL/JOIN/window status: pass.
+
+5. Updated docs and backlog.
+   - `docs/devlog/195_small_table_distributed_hash_join.md`
+   - `docs/BACKLOG.md`
+   - `docs/COMPLETED.md`
+   - `docs/design/phase_c_distributed.md`
+   - `docs/api/SQL_REFERENCE.md`
+   - `docs/research/action_outcome_distributed_vendor_sql_replay_experiment_011.md`
+   - `docs/research/results/action_outcome_distributed_vendor_sql_replay_011.md`
+
+### Verification Commands
+
+```bash
+ninja -C build -j$(nproc) zepto_tests
+
+./build/tests/zepto_tests \
+  --gtest_filter='QueryCoordinator.TwoNodeRemote_DistributedWindowFunction:QueryCoordinator.TwoNodeRemote_DistributedFirstLast:QueryCoordinator.TwoNodeRemote_DistributedDistinct:QueryCoordinator.TwoNodeRemote_DistributedAvg_Correct:QueryCoordinator.TwoNodeRemote_DistributedAvg_MixedAggs:QueryCoordinator.TwoNodeRemote_GroupBy_CrossNode_XbarMerge:QueryCoordinator.TwoNodeRemote_DistributedVwap:QueryCoordinator.TwoNodeRemote_OrderByLimit:QueryCoordinator.TwoNodeRemote_DistributedHaving:QueryCoordinator.TwoNodeRemote_MultiColumnOrderBy:DistributedInsert.ClusterWindowMaterializesGenericTableValues:DistributedInsert.SmallTableBroadcastJoinMaterializesCrossNodeOperationalTables:DistributedInsert.SmallTableBroadcastJoinRejectsRowsOverLimit'
+
+ninja -C build -j$(nproc) zepto_http_server
+
+python3 docs/research/tools/action_outcome_distributed_vendor_sql_replay.py \
+  --coordinator-url http://127.0.0.1:19241/ \
+  --node-a-id 1 \
+  --node-b-id 8 \
+  --node-a-stats-url http://127.0.0.1:19241/stats \
+  --node-b-stats-url http://127.0.0.1:19242/stats \
+  --extra-fixture docs/research/fixtures/action_outcome_distractor_episodes.json \
+  --quality-labels docs/research/fixtures/action_outcome_retrieval_quality_labels.json \
+  --output docs/research/results/action_outcome_distributed_vendor_sql_replay_011.md \
+  --timeout 10 \
+  --strict-full-sql
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Focused C++ regression set | 13/13 pass |
+| Seed statements | 203/203 succeeded |
+| Seed row counts | pass |
+| Vendor table counts | pass |
+| Distributed ingest | pass |
+| Failed-repeat JOIN | pass |
+| Context top-action JOIN | pass |
+| Suppression JOIN | pass |
+| Misleading retrieval JOIN | pass |
+| ROW_NUMBER | pass |
+| LAG | pass |
+| Strict full distributed SQL/JOIN/window | pass |
+
+### Interpretation
+
+This closes Experiment 011's last research harness boundary. The result is
+commercially meaningful for Action-Outcome Memory because operational control
+tables are naturally small: recommendations, suppressions, runbook priors, and
+query controls can be joined across owners without waiting for a full
+distributed SQL optimizer.
+
+The path is deliberately bounded. It should not be treated as the final answer
+for large cross-node hash JOINs over high-cardinality time-series fact tables.
+
+### Next Best Step
+
+Define symbol-less operational table shard-key policy and add row-cap
+observability for the small-table JOIN path. This will make placement explicit
+instead of depending on stable table id plus `symbol_id=0`.

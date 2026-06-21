@@ -1,18 +1,25 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-20
+Last updated: 2026-06-21
 
 ---
 
 ## Latest
+
+- [x] **P3 small-table distributed hash JOIN for operational tables**
+  (devlog 195) — Added a bounded coordinator-local hash JOIN path for small
+  operational tables. The coordinator gathers both JOIN sides under a row cap,
+  materializes declared schemas through typed rows, preserves decoded
+  `STRING`/`SYMBOL` cells, and delegates JOIN semantics to the local SQL
+  executor. Experiment 011 now reports `suppression_join` as pass and strict
+  full distributed SQL/JOIN/window replay succeeds.
 
 - [x] **P3 cluster-mode window value materialization** (devlog 194) —
   Fixed the distributed window fetch-and-compute path for declared operational
   tables. The coordinator now materializes temporary full-data tables through
   schema-aware typed rows, preserving generic value columns and decoded
   `STRING`/`SYMBOL` cells before running ROW_NUMBER/LAG locally. Experiment
-  011 now reports `row_number_window` and `lag_window` as pass; the remaining
-  boundary is the cross-node suppression hash JOIN.
+  011 now reports `row_number_window` and `lag_window` as pass.
 
 - [x] **P3 Action-Outcome distributed vendor SQL replay classification**
   (devlog 193) — Added Experiment 011, a two-node replay harness that loads

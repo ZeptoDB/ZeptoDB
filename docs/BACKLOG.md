@@ -5,19 +5,22 @@
 >
 > Last cleaned: 2026-06-13
 >
-> Devlog: last `194_cluster_window_typed_materialization.md` → next `195_*.md`
+> Devlog: last `195_small_table_distributed_hash_join.md` → next `196_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 small-table distributed hash JOIN for operational tables**
+  (devlog 195) — added a bounded coordinator-local hash JOIN path for small
+  operational tables. Experiment 011 now reports `suppression_join` as pass
+  across node 1 and node 8, and strict full distributed SQL/JOIN/window replay
+  succeeds.
 - ✅ **P3 cluster-mode window value materialization** (devlog 194) —
   fixed the distributed full-data window replay path for declared operational
   tables. `ROW_NUMBER` and `LAG` over
   `action_outcome_vendor_recommendations_010` now preserve `group_id`,
-  `recommendation_rank`, and `score_micros` values in two-node cluster mode;
-  Experiment 011 now leaves only the cross-node suppression JOIN as an expected
-  distributed planner gap.
+  `recommendation_rank`, and `score_micros` values in two-node cluster mode.
 - ✅ **P3 Action-Outcome distributed vendor SQL replay classification**
   (devlog 193) — added Experiment 011, a two-node replay that materializes
   Experiment 010 through the distributed HTTP/RPC path. It verifies seed and
@@ -329,7 +332,6 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 |------|-----|--------|
 | **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
 | **Symbol-less operational table shard-key policy** | Experiment 008 showed that symbol-less generic tables route by `(stable_table_id, symbol_id=0)`, so small table sets can accidentally land on one node for some node-id pairs. Define an explicit shard-key or table-level distribution policy for operational/Action-Outcome tables before promoting distributed replay beyond research. | M |
-| **Small-table distributed hash JOIN for operational tables** | Experiment 011 shows co-located vendor JOINs pass, but `action_outcome_vendor_suppressions_010` on node 1 cannot JOIN recommendations on node 8. Start with broadcast/replicated dimension-table hash JOIN for small operational tables before broader cost-based distributed JOIN planning. | L |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.

@@ -1,6 +1,6 @@
 # ActionOutcomeReplay Experiment 011 Distributed SQL/JOIN/Window Replay Results
 
-Generated at: 2026-06-20T02:21:32Z
+Generated at: 2026-06-21T02:54:17Z
 Coordinator endpoint: `http://127.0.0.1:19241/`
 SQL seed: `docs/research/results/action_outcome_sql_replay_006.sql`
 Node IDs: `1`, `8`
@@ -13,7 +13,7 @@ Node IDs: `1`, `8`
 - Seed row-count status: pass
 - Vendor table row-count status: pass
 - Distributed ingest status: pass
-- Full distributed SQL/JOIN/window status: partial
+- Full distributed SQL/JOIN/window status: pass
 - Boundary classification status: pass
 
 ## Node-Local Stats Delta
@@ -64,7 +64,7 @@ Node IDs: `1`, `8`
 | --- | --- | --- | ---: | ---: | --- |
 | `failed_repeat_join` | `action_outcome_vendor_recommendations_010` -> 8 | `action_outcome_vendor_queries_010` -> 8 | 5 | 5 | `pass` |
 | `context_top_action_join` | `action_outcome_vendor_recommendations_010` -> 8 | `action_outcome_vendor_queries_010` -> 8 | 6 | 6 | `pass` |
-| `suppression_join` | `action_outcome_vendor_suppressions_010` -> 1 | `action_outcome_vendor_recommendations_010` -> 8 | 0 | 21 | `expected_gap_cross_node_join` |
+| `suppression_join` | `action_outcome_vendor_suppressions_010` -> 1 | `action_outcome_vendor_recommendations_010` -> 8 | 21 | 21 | `pass` |
 | `misleading_retrieval_join` | `action_outcome_vendor_retrieval_010` -> 8 | `action_outcome_vendor_queries_010` -> 8 | 23 | 23 | `pass` |
 | `row_number_window` | `action_outcome_vendor_recommendations_010` -> 8 | n/a | 72 | 72 | `pass` |
 | `lag_window` | `action_outcome_vendor_recommendations_010` -> 8 | n/a | 72 | 72 | `pass` |
@@ -77,11 +77,13 @@ query, recommendation, and retrieval vendor tables are co-located on node
 8, so failed-repeat JOIN, context top-action JOIN, and misleading
 retrieval JOIN all pass through the coordinator.
 
-The suppression table is owned by node 1 while recommendations are owned by
-node 8. The suppression JOIN therefore records the expected current gap:
-ZeptoDB can scatter-gather supported SELECT and window shapes, but it does
-not yet execute arbitrary cross-node hash JOINs by shipping one side or
-broadcasting small dimension tables.
+The suppression table is owned by node 1 while recommendations are
+owned by node 8. The bounded small-table hash JOIN path now gathers
+both operational tables under the coordinator row cap, replays them
+into a temporary typed pipeline, and executes the original hash JOIN
+locally. This turns the former cross-node suppression JOIN boundary
+into a passing check without requiring a full distributed SQL
+optimizer.
 
 The window checks now pass in cluster mode. The coordinator
 fetch-and-compute path preserves declared operational-table values
@@ -90,8 +92,8 @@ and LAG match the single-node/vendor baseline.
 
 ## Next Best Step
 
-Implement a narrow distributed hash JOIN strategy for small
-operational tables. The JOIN work can start with
-broadcast/replicated dimension-table joins, which would turn the
-suppression JOIN from `expected_gap_cross_node_join` into `pass`
-without requiring a full cost-based distributed SQL optimizer.
+Define an explicit shard-key or table-level distribution policy for
+symbol-less operational tables. The small-table JOIN path proves
+correctness for bounded control tables; production promotion now needs
+placement policy, row-cap telemetry, and a larger cost-based JOIN
+planner only for tables that exceed the small-table boundary.

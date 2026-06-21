@@ -456,17 +456,16 @@ Future work that deepens the MPP side lives in P8/P10: RDMA remote scans,
 RDMA WAL replication, replica-aware reads, cost-based distributed planning,
 broadcast or replicated dimension tables, and pluggable partition strategies.
 
-**Experiment 011 boundary (2026-06-20):** the Action-Outcome distributed vendor
-SQL replay shows the current line more precisely for operational generic
-tables. Two-node row counts, routed ingest, and co-located vendor JOINs pass.
-The suppression JOIN remains a true cross-node hash JOIN gap because
-`action_outcome_vendor_suppressions_010` and
-`action_outcome_vendor_recommendations_010` are owned by different nodes under
-the 1/8 ring. Cluster-mode ROW_NUMBER/LAG over the recommendation table now
-preserves declared generic-table values through schema-aware temporary
-materialization in the coordinator fetch-and-compute path. The next planner
-step is a small-table broadcast/replicated JOIN path before broader
-distributed SQL planning.
+**Experiment 011 boundary (updated 2026-06-21):** the Action-Outcome
+distributed vendor SQL replay now passes the full strict SQL/JOIN/window
+surface on a two-node 1/8 ring. Two-node row counts, routed ingest,
+co-located vendor JOINs, the cross-node suppression JOIN, and cluster-mode
+ROW_NUMBER/LAG all pass. The suppression table is owned by node 1 while
+recommendations are owned by node 8; the coordinator handles that bounded
+operational-table case by fetching both sides under a row cap, materializing
+declared schemas into a temporary typed pipeline, and executing the original
+hash JOIN locally. This is not a full distributed SQL optimizer: large
+cross-node hash JOINs still belong to future cost-based planning.
 
 ---
 

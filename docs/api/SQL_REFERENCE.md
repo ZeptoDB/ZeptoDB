@@ -1267,6 +1267,7 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | **A** | `WHERE symbol = X` | Direct routing to the owning node (zero scatter overhead) |
 | **A-1** | `WHERE symbol IN (1,2,3)` | Scatter to all nodes, each filters locally, merge results |
 | **A-2** | ASOF/WINDOW JOIN + symbol filter | Route to symbol's node (both tables co-located) |
+| **A-3** | Small-table equi hash JOIN | Fetch both operational tables under a row cap, materialize typed temp tables, execute locally |
 | **B** | No symbol filter | Scatter-gather to all nodes, merge with appropriate strategy |
 
 ### Merge strategies
@@ -1292,6 +1293,7 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | `FIRST/LAST` | ✅ Full | Fetches all data, sorts by timestamp, executes locally |
 | `COUNT(DISTINCT)` | ✅ Full | Fetches all data, executes locally |
 | Window functions | ✅ Full | Fetches all data, materializes declared tables with typed rows, executes locally |
+| Small-table hash JOIN | ✅ Bounded | INNER/LEFT/RIGHT/FULL equi JOIN over declared operational tables; both sides must fit the coordinator row cap |
 | CTE / Subquery | ✅ Full | Fetches all data, executes locally |
 | `STDDEV/VARIANCE/MEDIAN/PERCENTILE` | ✅ Full | Fetches all data, executes locally |
 | `SHOW TABLES` | ✅ Full | Scatter to all nodes, sum row counts |
@@ -1320,6 +1322,7 @@ The path is relative to the server's working directory. Supports any SQL clauses
 |---------|--------|
 | Correlated subqueries (`WHERE col = (SELECT ...)`) | Not planned |
 | Subqueries in SELECT/WHERE expressions | Not planned |
+| Large arbitrary cross-node hash JOIN | Planned |
 | JOINs on CTE/subquery virtual tables | Planned |
 | Window functions on virtual tables | Planned |
 | Float columns (native double storage) | Planned |
