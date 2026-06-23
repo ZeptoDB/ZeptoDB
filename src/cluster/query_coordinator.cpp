@@ -116,6 +116,86 @@ void QueryCoordinator::forward_ddl_to_remotes(const std::string& sql) {
     }
 }
 
+bool QueryCoordinator::set_table_placement(const std::string& table_name,
+                                           TablePlacementPolicy policy,
+                                           NodeId node_id,
+                                           std::string* error) {
+    std::optional<zeptodb::storage::TableSchema> schema;
+    {
+        std::shared_lock lock(mutex_);
+        schema = schema_snapshot_locked(table_name);
+    }
+    if (!schema) {
+        if (error) *error = "table '" + table_name + "' is not declared";
+        return false;
+    }
+    try {
+        auto rlock = router_write_lock();
+        if (policy == TablePlacementPolicy::PinnedNode) {
+            const auto nodes = router().all_nodes();
+            if (std::find(nodes.begin(), nodes.end(), node_id) == nodes.end()) {
+                if (error) {
+                    *error = "pinned table placement node " +
+                             std::to_string(node_id) +
+                             " is not registered";
+                }
+                return false;
+            }
+        }
+        router().set_table_placement(schema->table_id, policy, node_id);
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+    return true;
+}
+
+bool QueryCoordinator::clear_table_placement(const std::string& table_name,
+                                             std::string* error) {
+    std::optional<zeptodb::storage::TableSchema> schema;
+    {
+        std::shared_lock lock(mutex_);
+        schema = schema_snapshot_locked(table_name);
+    }
+    if (!schema) {
+        if (error) *error = "table '" + table_name + "' is not declared";
+        return false;
+    }
+    auto rlock = router_write_lock();
+    router().clear_table_placement(schema->table_id);
+    return true;
+}
+
+QueryCoordinator::SmallTableJoinTelemetrySnapshot
+QueryCoordinator::small_table_join_stats() const {
+    SmallTableJoinTelemetrySnapshot snapshot;
+    snapshot.candidates = small_table_join_stats_.candidates.load(
+        std::memory_order_relaxed);
+    snapshot.accepted = small_table_join_stats_.accepted.load(
+        std::memory_order_relaxed);
+    snapshot.rejected_row_cap = small_table_join_stats_.rejected_row_cap.load(
+        std::memory_order_relaxed);
+    snapshot.errors = small_table_join_stats_.errors.load(
+        std::memory_order_relaxed);
+    snapshot.rows_materialized = small_table_join_stats_.rows_materialized.load(
+        std::memory_order_relaxed);
+    snapshot.last_left_rows = small_table_join_stats_.last_left_rows.load(
+        std::memory_order_relaxed);
+    snapshot.last_right_rows = small_table_join_stats_.last_right_rows.load(
+        std::memory_order_relaxed);
+    return snapshot;
+}
+
+void QueryCoordinator::reset_small_table_join_stats() {
+    small_table_join_stats_.candidates.store(0, std::memory_order_relaxed);
+    small_table_join_stats_.accepted.store(0, std::memory_order_relaxed);
+    small_table_join_stats_.rejected_row_cap.store(0, std::memory_order_relaxed);
+    small_table_join_stats_.errors.store(0, std::memory_order_relaxed);
+    small_table_join_stats_.rows_materialized.store(0, std::memory_order_relaxed);
+    small_table_join_stats_.last_left_rows.store(0, std::memory_order_relaxed);
+    small_table_join_stats_.last_right_rows.store(0, std::memory_order_relaxed);
+}
+
 // ============================================================================
 // Execution helpers
 // ============================================================================
@@ -642,6 +722,59 @@ static std::string lower_ascii(std::string s) {
     return s;
 }
 
+static std::optional<SymbolId> insert_routing_symbol(
+    const zeptodb::sql::InsertStmt& stmt,
+    const zeptodb::storage::TableSchema& schema)
+{
+    std::vector<std::string> column_order = stmt.columns;
+    if (column_order.empty()) {
+        column_order.reserve(schema.columns.size());
+        for (const auto& column : schema.columns) {
+            column_order.push_back(column.name);
+        }
+    }
+
+    std::optional<size_t> symbol_col;
+    for (size_t i = 0; i < column_order.size(); ++i) {
+        if (lower_ascii(column_order[i]) == "symbol") {
+            symbol_col = i;
+            break;
+        }
+    }
+
+    if (!symbol_col) {
+        return SymbolId{0};
+    }
+    if (stmt.value_rows.empty()) {
+        return std::nullopt;
+    }
+
+    std::optional<SymbolId> route_symbol;
+    for (const auto& row : stmt.value_rows) {
+        if (*symbol_col >= row.size()) {
+            return std::nullopt;
+        }
+        const auto& value = row[*symbol_col];
+        if (value.type == zeptodb::sql::InsertValue::STRING) {
+            return std::nullopt;
+        }
+        const int64_t raw = value.type == zeptodb::sql::InsertValue::FLOAT
+            ? static_cast<int64_t>(value.f)
+            : value.i;
+        if (raw < 0 ||
+            raw > static_cast<int64_t>(std::numeric_limits<SymbolId>::max())) {
+            return std::nullopt;
+        }
+        const auto symbol = static_cast<SymbolId>(raw);
+        if (!route_symbol) {
+            route_symbol = symbol;
+        } else if (*route_symbol != symbol) {
+            return std::nullopt;
+        }
+    }
+    return route_symbol;
+}
+
 static bool is_string_encoded_type(zeptodb::storage::ColumnType type) {
     return type == zeptodb::storage::ColumnType::SYMBOL ||
            type == zeptodb::storage::ColumnType::STRING;
@@ -1013,13 +1146,20 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
     const std::string& sql,
     const zeptodb::sql::SelectStmt& stmt)
 {
+    small_table_join_stats_.candidates.fetch_add(1, std::memory_order_relaxed);
+
     auto fetch_small_table = [this](const std::string& table_name) {
         const std::string fetch_sql = "SELECT * FROM " + table_name +
             " LIMIT " + std::to_string(kSmallTableBroadcastJoinRowLimit + 1);
         auto results = scatter(fetch_sql);
         auto merged = merge_concat_results(results);
-        if (!merged.ok()) return merged;
+        if (!merged.ok()) {
+            small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
+            return merged;
+        }
         if (merged.rows.size() > kSmallTableBroadcastJoinRowLimit) {
+            small_table_join_stats_.rejected_row_cap.fetch_add(
+                1, std::memory_order_relaxed);
             return make_query_error(
                 "small-table broadcast JOIN row limit exceeded for table '" +
                 table_name + "' (limit " +
@@ -1042,6 +1182,10 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
         ? left_rows
         : fetch_small_table(stmt.join->table);
     if (!right_rows.ok()) return right_rows;
+    small_table_join_stats_.last_left_rows.store(left_rows.rows.size(),
+                                                std::memory_order_relaxed);
+    small_table_join_stats_.last_right_rows.store(right_rows.rows.size(),
+                                                 std::memory_order_relaxed);
 
     if (!left_schema) {
         left_schema = infer_schema_from_result(stmt.from_table, left_rows);
@@ -1050,11 +1194,13 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
         right_schema = infer_schema_from_result(stmt.join->table, right_rows);
     }
     if (!left_schema) {
+        small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
         return make_query_error(
             "small-table broadcast JOIN could not resolve schema for table '" +
             stmt.from_table + "'");
     }
     if (!right_schema) {
+        small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
         return make_query_error(
             "small-table broadcast JOIN could not resolve schema for table '" +
             stmt.join->table + "'");
@@ -1069,6 +1215,7 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
     if (!materialize_result_into_typed_table(
             tmp, *left_schema, left_rows, replay_error)) {
         tmp.stop();
+        small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
         return make_query_error(
             replay_error.empty()
                 ? "failed to materialize small-table broadcast JOIN left side"
@@ -1078,6 +1225,7 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
         !materialize_result_into_typed_table(
             tmp, *right_schema, right_rows, replay_error)) {
         tmp.stop();
+        small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
         return make_query_error(
             replay_error.empty()
                 ? "failed to materialize small-table broadcast JOIN right side"
@@ -1088,6 +1236,14 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
     auto result = local_ex.execute(sql);
     snapshot_decoded_string_rows(result);
     tmp.stop();
+    if (result.ok()) {
+        small_table_join_stats_.accepted.fetch_add(1, std::memory_order_relaxed);
+        small_table_join_stats_.rows_materialized.fetch_add(
+            left_rows.rows.size() + right_rows.rows.size(),
+            std::memory_order_relaxed);
+    } else {
+        small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
+    }
     return result;
 }
 
@@ -1101,6 +1257,27 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
 
         if (upper.rfind("INSERT", 0) == 0) {
             // INSERT: route to the node that owns the symbol
+            try {
+                zeptodb::sql::Parser parser;
+                auto parsed = parser.parse_statement(sql);
+                if (parsed.insert) {
+                    std::optional<zeptodb::storage::TableSchema> schema;
+                    {
+                        std::shared_lock lock(mutex_);
+                        schema = schema_snapshot_locked(parsed.insert->table_name);
+                    }
+                    if (schema) {
+                        auto route_symbol =
+                            insert_routing_symbol(*parsed.insert, *schema);
+                        if (route_symbol) {
+                            return execute_sql_for_symbol(sql, *route_symbol);
+                        }
+                    }
+                }
+            } catch (...) {
+                // Fall through to the legacy route below so the executor
+                // surfaces the parse/materialization error.
+            }
             auto sym = extract_symbol_filter(sql);
             if (sym) return execute_sql_for_symbol(sql, *sym);
             // No symbol filter — execute on first node (single-writer)

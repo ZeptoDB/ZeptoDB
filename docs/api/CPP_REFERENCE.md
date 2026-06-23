@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-06-12*
+*Last updated: 2026-06-23*
 
 ---
 
@@ -11,6 +11,8 @@
 - [PartitionManager & Partition](#partitionmanager--partition)
 - [TickMessage](#tickmessage)
 - [Telegraf Output Helpers](#telegraf-output-helpers)
+- [EdgeFleetFeedConnector Experimental](#edgefleetfeedconnector-experimental)
+- [EdgeFleetConnectorRuntime Experimental](#edgefleetconnectorruntime-experimental)
 - [AgentMemoryStore](#agentmemorystore)
 - [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
@@ -516,6 +518,149 @@ auto batch = build_telegraf_insert_sql({*row}, cfg);
 
 ---
 
+## EdgeFleetFeedConnector Experimental
+
+`#include "zeptodb/feeds/edge_fleet_feed_connector.h"` — Namespace:
+`zeptodb::feeds`
+
+Experimental runtime connector for bounded Physical AI edge-to-fleet
+Action-Outcome evidence transfer. It does not own HTTP/RPC/SQL transport;
+applications provide a sink callback that applies one edge outbox event to the
+fleet side and returns an ACK result.
+
+```cpp
+using namespace zeptodb::feeds;
+
+EdgeFleetFeedConfig cfg;
+cfg.batch_limit = 64;
+cfg.max_inflight = 64;
+cfg.max_retries_per_event = 2;
+cfg.checkpoint_path = "/var/lib/zeptodb/edge-fleet.checkpoint";
+
+EdgeFleetFeedConnector connector(cfg, [](const EdgeFleetFeedEvent& event) {
+    // Apply event to fleet storage, then return the ACK outcome.
+    return EdgeFleetDeliveryResult::Acked;
+});
+
+connector.loadCheckpoint();
+
+std::vector<EdgeFleetFeedEvent> outbox = {
+    {.event_id = "edge-1|decision|42",
+     .stream_seq = 42,
+     .kind = EdgeFleetEventKind::Decision,
+     .ready_ts_ns = 1810000000000000000LL,
+     .query_id = "pai_agv_slip_002",
+     .payload_json = "{}"},
+};
+
+EdgeFleetFeedPassResult pass = connector.processOnce(outbox);
+connector.saveCheckpoint();
+```
+
+### Guarantees And Limits
+
+- Each pass is bounded by `batch_limit` and `max_inflight`.
+- ACKed event ids are skipped as duplicates on later passes.
+- `TransientFailure` leaves an event unacknowledged for retry.
+- `AppliedButAckFailed` leaves an event unacknowledged so an idempotent sink can
+  replay after final-table insert success but ACK persistence failure.
+- `loadCheckpoint()` / `saveCheckpoint()` persist ACK state to an optional local
+  file.
+- The class is not internally synchronized; use one worker thread or external
+  serialization.
+- This API is experimental and may change before product promotion.
+
+### Metrics
+
+```cpp
+std::string metrics = EdgeFleetFeedConnector::formatPrometheus(
+    "edge-robot-17", connector.stats());
+```
+
+The metrics include passes, attempted events, ACKed events, transient failures,
+permanent failures, ACK-boundary failures, duplicate events, late events,
+rejected events, and max in-flight observed.
+
+### Live SQL Replay Harness
+
+Experiment 018 adds `zepto_edge_fleet_replay`, a standalone experimental tool
+that wires the connector to two ZeptoDB HTTP SQL nodes for the Physical AI
+edge/fleet fixture. It validates the concrete SQL/HTTP source-sink adapter path
+but is not a server-managed connector API.
+
+---
+
+## EdgeFleetConnectorRuntime Experimental
+
+`#include "zeptodb/feeds/edge_fleet_connector_runtime.h"` — Namespace:
+`zeptodb::feeds`
+
+Server-owned lifecycle wrapper for the experimental edge/fleet connector. It
+tracks configuration, enabled state, checkpoint start/stop behavior, lifecycle
+counters, worker pass telemetry, status snapshots, and Prometheus metrics.
+The runtime owns a bounded worker loop, but transport is still injected by the
+embedding application through outbox-loader and fleet-sink hooks.
+
+```cpp
+using namespace zeptodb::feeds;
+
+EdgeFleetConnectorRuntimeConfig cfg;
+cfg.name = "edge-robot-17";
+cfg.edge_outbox_table = "physical_ai_edge_feed_outbox_016";
+cfg.fleet_ack_table = "physical_ai_fleet_feed_ack_016";
+cfg.feed.batch_limit = 128;
+cfg.feed.max_inflight = 128;
+cfg.feed.checkpoint_path = "/var/lib/zeptodb/edge-fleet.checkpoint";
+
+EdgeFleetConnectorRuntime runtime;
+EdgeFleetConnectorRuntimeHooks hooks;
+hooks.load_outbox = [] {
+    EdgeFleetOutboxLoadResult out;
+    out.ok = true;
+    out.events = load_edge_outbox_snapshot();
+    return out;
+};
+hooks.sink = [](const EdgeFleetFeedEvent& event) {
+    return apply_to_fleet_sink(event);
+};
+
+std::string error;
+if (!runtime.setWorkerHooks(std::move(hooks), &error)) {
+    // stop before changing hooks on a configured runtime
+}
+if (!runtime.configure(cfg, &error)) {
+    // invalid limits or missing metadata
+}
+if (!runtime.start(&error)) {
+    // checkpoint parse/load failure, missing config, or missing worker hooks
+}
+runtime.runOnce(&error);  // optional manual bounded pass
+
+auto snap = runtime.snapshot();
+std::string metrics = runtime.formatPrometheus();
+runtime.stop();
+```
+
+### Guarantees And Limits
+
+- `configure()`, `start()`, `stop()`, `clear()`, and `snapshot()` are
+  internally synchronized.
+- `setWorkerHooks()` installs the transport-specific outbox loader and fleet
+  sink. Hook changes are rejected while the runtime is enabled.
+- `runOnce()` executes one bounded worker pass using the installed hooks.
+- `worker_enabled=true` starts the background worker at `start()` time and
+  sleeps for `worker_poll_interval_ms` between passes.
+- Missing checkpoint files start with empty ACK state.
+- Existing checkpoint parse/load failures block `start()`.
+- Configuration is process-local and experimental.
+- Built-in SQL/HTTP polling and fleet sink execution are not promoted product
+  APIs yet; embeddings must supply idempotent hooks.
+
+The HTTP server exposes this runtime through
+`/admin/edge-fleet-connector` and appends its metrics to `/metrics`.
+
+---
+
 ## AgentMemoryStore
 
 `#include "zeptodb/ai/agent_memory.h"` — Namespace: `zeptodb::ai`
@@ -945,6 +1090,57 @@ remote owner binds the same dictionary code before storage. Most callers get
 this automatically through SQL `INSERT` materialization; connector code that
 constructs typed rows directly should set the fields when a string code was
 derived from text.
+
+### Experimental operational table placement
+
+Declared tables can use an explicit runtime placement policy through
+`PartitionRouter` or `QueryCoordinator`. This is an experimental runtime
+control-plane path intended for small operational/control tables that do not
+expose a natural symbol column.
+
+Placement updates are not yet persisted in DDL or catalog metadata, and they
+are not a rebalance/failover policy. Treat them as a bounded operational
+override until the product-promotion gates in
+`docs/research/EXPERIMENT_GOVERNANCE.md` are met.
+
+```cpp
+#include "zeptodb/cluster/query_coordinator.h"
+
+zeptodb::cluster::QueryCoordinator coord;
+coord.add_local_node({"127.0.0.1", 8123, 1}, pipeline);
+coord.add_remote_node({"127.0.0.1", 8224, 8});
+
+auto ddl = coord.execute_sql(
+    "CREATE TABLE action_outcome_vendor_suppressions_010 ("
+    "query_id STRING, candidate_id STRING, action_class STRING, "
+    "reasons STRING, timestamp_ns TIMESTAMP_NS)"
+);
+if (!ddl.ok()) throw std::runtime_error(ddl.error);
+
+std::string error;
+if (!coord.set_table_placement(
+        "action_outcome_vendor_suppressions_010",
+        zeptodb::cluster::TablePlacementPolicy::PinnedNode,
+        1,
+        &error)) {
+    throw std::runtime_error(error);
+}
+
+auto join_stats = coord.small_table_join_stats();
+```
+
+`TablePlacementPolicy::HashByTableAndSymbol` is the default table-scoped route.
+`TablePlacementPolicy::HashByTable` ignores the row symbol and routes all rows
+for a table through one table-level hash key. `TablePlacementPolicy::PinnedNode`
+routes all rows for a table to the provided node id. Use
+`clear_table_placement(table_name, &error)` to remove the override.
+
+`SmallTableJoinTelemetrySnapshot` reports bounded coordinator-local JOIN
+activity: candidates, accepted joins, row-cap rejections, non-cap errors,
+materialized rows, and the last left/right row counts. `reset_small_table_join_stats()`
+is intended for focused tests and replay harnesses. The telemetry describes the
+bounded small-table JOIN path only; it does not imply arbitrary distributed JOIN
+support.
 
 ### Feed handlers
 

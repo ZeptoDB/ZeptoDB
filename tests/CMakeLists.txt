@@ -45,6 +45,7 @@ add_executable(zepto_tests
     unit/test_duckdb_engine.cpp
     unit/test_window_join_simd.cpp
     unit/test_table_scoped_partitioning.cpp
+    unit/test_edge_fleet_feed_connector.cpp
     unit/test_feed_table_id.cpp
     unit/test_table_acl_ddl.cpp
     unit/test_distributed_insert.cpp

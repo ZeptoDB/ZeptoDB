@@ -617,6 +617,7 @@ TEST(DistributedInsert, SmallTableBroadcastJoinMaterializesCrossNodeOperationalT
         ASSERT_EQ(coord.router().route(suppression_table_id, 0), 1);
         ASSERT_EQ(coord.router().route(recommendation_table_id, 0), 8);
     }
+    coord.reset_small_table_join_stats();
 
     CoordinatorRoutingAdapter::RpcClientMap remotes;
     remotes.emplace(
@@ -672,6 +673,150 @@ TEST(DistributedInsert, SmallTableBroadcastJoinMaterializesCrossNodeOperationalT
     EXPECT_EQ(joined.string_rows[0], "aoe_payment_002");
     EXPECT_EQ(joined.string_rows[1], "traffic_drain");
     EXPECT_EQ(joined.string_rows[2], "same_context_failed_before");
+
+    const auto join_stats = coord.small_table_join_stats();
+    EXPECT_EQ(join_stats.candidates, 1u);
+    EXPECT_EQ(join_stats.accepted, 1u);
+    EXPECT_EQ(join_stats.rejected_row_cap, 0u);
+    EXPECT_EQ(join_stats.errors, 0u);
+    EXPECT_EQ(join_stats.last_left_rows, 2u);
+    EXPECT_EQ(join_stats.last_right_rows, 2u);
+    EXPECT_EQ(join_stats.rows_materialized, 4u);
+
+    remote_rpc.stop();
+}
+
+TEST(DistributedInsert, OperationalTablePlacementPolicyPinsSymbollessTable) {
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    StartedPipeline local(pc);
+    StartedPipeline remote(pc);
+
+    const uint16_t local_port = zepto_test_util::pick_free_port();
+    uint16_t remote_rpc_port = zepto_test_util::pick_free_port();
+    if (remote_rpc_port == local_port) {
+        remote_rpc_port = static_cast<uint16_t>(remote_rpc_port ^ 1);
+    }
+
+    TcpRpcServer remote_rpc;
+    remote_rpc.set_thread_pool_size(2);
+    remote_rpc.set_typed_row_ingest_callback(
+        [&remote](zeptodb::core::TypedRowMessage row) {
+            return remote.get().ingest_typed_row(std::move(row));
+        });
+    remote_rpc.start(remote_rpc_port, [&remote](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(remote.get());
+        return ex.execute(sql);
+    });
+    ASSERT_TRUE(remote_rpc.is_running()) << "remote typed-row RPC server did not start";
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", local_port, 1}, local.get());
+    coord.add_remote_node({"127.0.0.1", remote_rpc_port, 8});
+
+    const std::string table = "action_outcome_operational_policy_012";
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + table + " ("
+        "episode_id STRING, policy_value INT64, timestamp_ns TIMESTAMP_NS)"
+    ).ok());
+
+    const uint16_t table_id = local.get().schema_registry().get_table_id(table);
+    ASSERT_NE(table_id, 0u);
+    ASSERT_EQ(remote.get().schema_registry().get_table_id(table), table_id);
+
+    std::string policy_error;
+    EXPECT_FALSE(coord.set_table_placement(
+        table, TablePlacementPolicy::PinnedNode, 99, &policy_error));
+    EXPECT_NE(policy_error.find("is not registered"), std::string::npos);
+
+    policy_error.clear();
+    ASSERT_TRUE(coord.set_table_placement(
+        table, TablePlacementPolicy::HashByTable, INVALID_NODE_ID,
+        &policy_error)) << policy_error;
+    {
+        auto lock = coord.router_read_lock();
+        const NodeId owner = coord.router().route(table_id, 0);
+        EXPECT_EQ(coord.router().route(table_id, 1), owner)
+            << "hash_by_table must ignore the row symbol for symbol-less "
+               "operational tables";
+        EXPECT_EQ(coord.router().route(table_id, 999), owner);
+        const NodeId replica = coord.router().route_replica(table_id, 1);
+        EXPECT_EQ(coord.router().route_replica(table_id, 999), replica);
+    }
+
+    ASSERT_TRUE(coord.set_table_placement(
+        table, TablePlacementPolicy::PinnedNode, 8, &policy_error))
+        << policy_error;
+    {
+        auto lock = coord.router_read_lock();
+        EXPECT_EQ(coord.router().route(table_id, 0), 8);
+        EXPECT_EQ(coord.router().route(table_id, 999), 8);
+        EXPECT_EQ(coord.router().route_replica(table_id, 999), 8);
+    }
+
+    CoordinatorRoutingAdapter::RpcClientMap remotes;
+    remotes.emplace(
+        8,
+        std::make_shared<TcpRpcClient>("127.0.0.1", remote_rpc_port, 2000, 2, 5000));
+    CoordinatorRoutingAdapter adapter(
+        &coord.router(), &coord.router_mutex(), &local.get(), 1, &remotes);
+
+    zeptodb::sql::QueryExecutor local_ex(local.get());
+    local_ex.set_cluster_node(&adapter);
+
+    const uint64_t local_before = local.get().stats().ticks_ingested.load();
+    const uint64_t remote_before = remote.get().stats().ticks_ingested.load();
+
+    auto inserted = local_ex.execute(
+        "INSERT INTO " + table +
+        " (episode_id, policy_value, timestamp_ns) VALUES "
+        "('aoe_policy_012', 12, 1781748536000120000)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+
+    for (int i = 0; i < 200; ++i) {
+        if (remote.get().stats().ticks_ingested.load() > remote_before) break;
+        std::this_thread::sleep_for(10ms);
+    }
+
+    EXPECT_EQ(local.get().stats().ticks_ingested.load() - local_before, 0u);
+    EXPECT_EQ(remote.get().stats().ticks_ingested.load() - remote_before, 1u);
+
+    auto selected = coord.execute_sql(
+        "SELECT episode_id, policy_value FROM " + table);
+    ASSERT_TRUE(selected.ok()) << selected.error;
+    ASSERT_EQ(selected.rows.size(), 1u);
+    ASSERT_EQ(selected.rows[0].size(), 2u);
+    EXPECT_EQ(selected.rows[0][1], 12);
+    ASSERT_GE(selected.string_rows.size(), 1u);
+    EXPECT_EQ(selected.string_rows[0], "aoe_policy_012");
+
+    const uint64_t local_before_direct = local.get().stats().ticks_ingested.load();
+    const uint64_t remote_before_direct = remote.get().stats().ticks_ingested.load();
+    auto inserted_direct = coord.execute_sql(
+        "INSERT INTO " + table +
+        " (episode_id, policy_value, timestamp_ns) VALUES "
+        "('aoe_policy_012_direct', 13, 1781748536000120001)");
+    ASSERT_TRUE(inserted_direct.ok()) << inserted_direct.error;
+
+    for (int i = 0; i < 200; ++i) {
+        if (remote.get().stats().ticks_ingested.load() > remote_before_direct) break;
+        std::this_thread::sleep_for(10ms);
+    }
+
+    EXPECT_EQ(local.get().stats().ticks_ingested.load() - local_before_direct, 0u);
+    EXPECT_EQ(remote.get().stats().ticks_ingested.load() - remote_before_direct, 1u);
+
+    auto count = coord.execute_sql("SELECT count(*) FROM " + table);
+    ASSERT_TRUE(count.ok()) << count.error;
+    ASSERT_EQ(count.rows.size(), 1u);
+    ASSERT_EQ(count.rows[0].size(), 1u);
+    EXPECT_EQ(count.rows[0][0], 2);
+
+    ASSERT_TRUE(coord.clear_table_placement(table, &policy_error)) << policy_error;
+    {
+        auto lock = coord.router_read_lock();
+        EXPECT_FALSE(coord.router().table_placement(table_id).has_value());
+    }
 
     remote_rpc.stop();
 }
@@ -736,4 +881,10 @@ TEST(DistributedInsert, SmallTableBroadcastJoinRejectsRowsOverLimit) {
     ASSERT_FALSE(rejected.ok());
     EXPECT_NE(rejected.error.find("small-table broadcast JOIN row limit exceeded"),
               std::string::npos);
+
+    const auto join_stats = coord.small_table_join_stats();
+    EXPECT_EQ(join_stats.candidates, 1u);
+    EXPECT_EQ(join_stats.accepted, 0u);
+    EXPECT_EQ(join_stats.rejected_row_cap, 1u);
+    EXPECT_EQ(join_stats.errors, 0u);
 }

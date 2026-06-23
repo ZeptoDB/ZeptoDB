@@ -52,6 +52,20 @@ When applicable, update:
 
 Use the `doc-update-checklist` skill after code changes.
 
+## Research And Experiment Governance
+
+Research work that changes runtime behavior, APIs, query planning, routing, or
+telemetry must follow `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+- Classify each experiment as `Research-only`, `Experimental runtime path`, or
+  `Promoted product feature`.
+- Do not describe experimental runtime paths as completed product features.
+- For experimental runtime paths, document workload scope, non-goals, limits,
+  telemetry, failure behavior, persistence status, rollback/disable plan, and
+  product-promotion criteria.
+- Mark API surfaces as experimental until the product-promotion gates pass.
+- Keep `docs/BACKLOG.md` populated with remaining promotion blockers.
+
 ## Design Document Routing
 
 Use `design-doc-index` for detailed routing. Common paths:
@@ -143,4 +157,3 @@ there for Codex:
 - `edge-case-catalog`
 - `layer-patterns`
 - `review-checklist-by-layer`
-

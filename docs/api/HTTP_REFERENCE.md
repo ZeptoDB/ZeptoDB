@@ -197,6 +197,9 @@ print(df)
 | `POST` | `/admin/nodes` | admin | Add remote node to cluster |
 | `DELETE` | `/admin/nodes/:id` | admin | Remove node from cluster |
 | `GET` | `/admin/cluster` | admin | Cluster overview |
+| `GET` | `/admin/edge-fleet-connector` | admin | Experimental Physical AI edge/fleet connector lifecycle status |
+| `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the experimental connector |
+| `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the experimental connector config |
 | `GET` | `/admin/metrics/history` | admin | Metrics time-series history |
 | `GET` | `/admin/rebalance/status` | admin | Current rebalance status |
 | `POST` | `/admin/rebalance/start` | admin | Start rebalance (add/remove node) |
@@ -1010,7 +1013,16 @@ curl http://localhost:8123/stats \
   "queries_executed": 12345,
   "total_rows_scanned": 50000000,
   "partitions_created": 10,
-  "last_ingest_latency_ns": 181
+  "last_ingest_latency_ns": 181,
+  "small_table_join": {
+    "candidates": 4,
+    "accepted": 4,
+    "rejected_row_cap": 0,
+    "errors": 0,
+    "rows_materialized": 327,
+    "last_left_rows": 72,
+    "last_right_rows": 6
+  }
 }
 ```
 
@@ -1023,6 +1035,22 @@ curl http://localhost:8123/stats \
 | `total_rows_scanned` | Cumulative rows scanned across all queries |
 | `partitions_created` | Number of partitions allocated |
 | `last_ingest_latency_ns` | Latency of the most recent ingest (nanoseconds) |
+
+When the HTTP server is wired to a `QueryCoordinator`, `/stats` also includes
+experimental bounded small-table JOIN telemetry:
+
+| Field | Description |
+|-------|-------------|
+| `small_table_join.candidates` | Bounded small-table JOIN candidates seen by the coordinator |
+| `small_table_join.accepted` | Candidates accepted and executed through coordinator-local materialization |
+| `small_table_join.rejected_row_cap` | Candidates rejected because a JOIN side exceeded the row cap |
+| `small_table_join.errors` | Non-row-cap failures in the bounded small-table JOIN path |
+| `small_table_join.rows_materialized` | Rows replayed into temporary coordinator-local JOIN tables |
+| `small_table_join.last_left_rows` | Left-side row count from the most recent bounded JOIN attempt |
+| `small_table_join.last_right_rows` | Right-side row count from the most recent bounded JOIN attempt |
+
+These fields describe the narrow coordinator-local small-table JOIN path. They
+are not a signal that arbitrary distributed JOIN planning is supported.
 
 ---
 
@@ -1050,6 +1078,34 @@ zepto_ticks_dropped_total 200
 # HELP zepto_queries_executed_total Total SQL queries executed
 # TYPE zepto_queries_executed_total counter
 zepto_queries_executed_total 12345
+
+# HELP zepto_small_table_join_candidates_total Bounded small-table JOIN candidates seen by the coordinator
+# TYPE zepto_small_table_join_candidates_total counter
+zepto_small_table_join_candidates_total 4
+
+# HELP zepto_small_table_join_accepted_total Bounded small-table JOINs accepted and executed by the coordinator
+# TYPE zepto_small_table_join_accepted_total counter
+zepto_small_table_join_accepted_total 4
+
+# HELP zepto_small_table_join_row_cap_rejections_total Bounded small-table JOINs rejected because a side exceeded the row cap
+# TYPE zepto_small_table_join_row_cap_rejections_total counter
+zepto_small_table_join_row_cap_rejections_total 0
+
+# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside row-cap rejection
+# TYPE zepto_small_table_join_errors_total counter
+zepto_small_table_join_errors_total 0
+
+# HELP zepto_small_table_join_rows_materialized_total Rows materialized into coordinator-local temporary tables for bounded small-table JOINs
+# TYPE zepto_small_table_join_rows_materialized_total counter
+zepto_small_table_join_rows_materialized_total 327
+
+# HELP zepto_small_table_join_last_left_rows Last bounded small-table JOIN left-side row count
+# TYPE zepto_small_table_join_last_left_rows gauge
+zepto_small_table_join_last_left_rows 72
+
+# HELP zepto_small_table_join_last_right_rows Last bounded small-table JOIN right-side row count
+# TYPE zepto_small_table_join_last_right_rows gauge
+zepto_small_table_join_last_right_rows 6
 
 # HELP zepto_rows_scanned_total Total rows scanned
 # TYPE zepto_rows_scanned_total counter
@@ -1567,6 +1623,134 @@ curl -X POST http://localhost:8123/admin/nodes \
 ```
 
 Requires cluster mode (`set_coordinator()` must be called). Idempotent — adding an existing node ID is a no-op.
+
+#### `POST /admin/table-placement` — Set experimental declared table placement
+
+Sets or clears an experimental runtime placement policy for a declared table in
+cluster mode. This is intended for small operational/control tables whose rows
+often use `symbol_id=0`.
+
+```bash
+curl -X POST http://localhost:8123/admin/table-placement \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"table":"action_outcome_vendor_suppressions_010","policy":"pinned_node","node_id":1}'
+```
+
+```json
+{"ok": true, "table": "action_outcome_vendor_suppressions_010", "policy": "pinned_node", "node_id": 1}
+```
+
+Supported `policy` values:
+
+| Policy | Behavior |
+| --- | --- |
+| `hash_by_table_and_symbol` | Default table-scoped routing: table id and row symbol both contribute to owner selection |
+| `hash_by_table` | All rows for the table route through the same table-level hash key |
+| `pinned_node` | All rows for the table route to `node_id`; `node_id` is required |
+| `clear` | Remove the override and return to default routing |
+
+The table must already exist in the local schema registry. Placement updates are
+admin-only runtime control-plane state; they are not yet persisted in DDL or the
+catalog, are not replayed automatically after restart, and are not a
+rebalance/failover policy. Promote this endpoint only after the product gates in
+`docs/research/EXPERIMENT_GOVERNANCE.md` are met.
+
+#### `GET /admin/edge-fleet-connector` — Experimental connector lifecycle status
+
+Returns server-owned lifecycle state for the experimental Physical AI
+edge/fleet connector.
+
+```bash
+curl http://localhost:8123/admin/edge-fleet-connector \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "configured": true,
+  "enabled": true,
+  "name": "physical_ai_edge_fleet",
+  "edge_outbox_table": "physical_ai_edge_feed_outbox_016",
+  "fleet_ack_table": "physical_ai_fleet_feed_ack_016",
+  "checkpoint_path": "/var/lib/zeptodb/edge-fleet.checkpoint",
+  "batch_limit": 128,
+  "max_inflight": 128,
+  "max_retries_per_event": 1,
+  "allow_late_events": true,
+  "worker_enabled": true,
+  "worker_hooks_configured": true,
+  "worker_running": true,
+  "worker_poll_interval_ms": 1000,
+  "acked_count": 0,
+  "highest_acked_stream_seq": 0,
+  "configure_total": 1,
+  "start_total": 1,
+  "stop_total": 0,
+  "start_failures_total": 0,
+  "stop_failures_total": 0,
+  "worker_start_total": 1,
+  "worker_passes_total": 12,
+  "worker_load_errors_total": 0,
+  "worker_observer_errors_total": 0,
+  "last_pass": {
+    "outbox_events_seen": 52,
+    "batch_event_count": 12,
+    "attempted_count": 12,
+    "acked_count": 12,
+    "transient_failure_count": 0,
+    "permanent_failure_count": 0,
+    "duplicate_count": 0,
+    "late_count": 0,
+    "rejected_count": 0
+  },
+  "last_error": ""
+}
+```
+
+#### `POST /admin/edge-fleet-connector` — Configure and optionally enable
+
+```bash
+curl -X POST http://localhost:8123/admin/edge-fleet-connector \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "physical_ai_edge_fleet",
+    "enabled": true,
+    "edge_outbox_table": "physical_ai_edge_feed_outbox_016",
+    "fleet_ack_table": "physical_ai_fleet_feed_ack_016",
+    "checkpoint_path": "/var/lib/zeptodb/edge-fleet.checkpoint",
+    "batch_limit": 128,
+    "max_inflight": 128,
+    "max_retries_per_event": 1,
+    "allow_late_events": true,
+    "worker_enabled": false,
+    "worker_poll_interval_ms": 1000
+  }'
+```
+
+`batch_limit`, `max_inflight`, `max_retries_per_event`, and
+`worker_poll_interval_ms` must be positive. If `enabled` is omitted, the server
+enables the configured connector. If `worker_enabled=true`, the embedding
+application must have installed `EdgeFleetConnectorRuntimeHooks`; otherwise
+`start()` fails with HTTP 400.
+
+#### `DELETE /admin/edge-fleet-connector` — Disable and clear config
+
+```bash
+curl -X DELETE http://localhost:8123/admin/edge-fleet-connector \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+This endpoint stops the connector when enabled, saves checkpoint state when a
+checkpoint path is configured, and clears the process-local runtime config.
+
+This lifecycle surface is experimental. The server runtime can run a bounded
+worker when embedding code installs outbox-loader and fleet-sink hooks, but the
+HTTP endpoint does not yet create a built-in SQL/HTTP adapter by itself.
+Connector configuration is not catalog-persisted and should not be described as
+a supported replication feature until the promotion gates in
+`docs/research/EXPERIMENT_GOVERNANCE.md` pass.
 
 #### `DELETE /admin/nodes/:id` — Remove node from cluster
 

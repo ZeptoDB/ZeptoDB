@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import action_outcome_live_sql_replay as live
 import action_outcome_replay as replay
@@ -204,8 +204,11 @@ def materialize_results(
     timeout: float,
     results: list[dict[str, Any]],
     query_ids: list[str],
+    after_create_tables: Callable[[], None] | None = None,
 ) -> ExpectedRows:
     create_vendor_tables(url, timeout)
+    if after_create_tables is not None:
+        after_create_tables()
     query_seq_by_id = {query_id: idx for idx, query_id in enumerate(query_ids, start=1)}
     true_action_by_id: dict[str, str] = {}
     recommendation_rows: list[tuple[str, int, str, int, int, int, str, int, int, int, int]] = []

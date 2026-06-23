@@ -24,6 +24,7 @@
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/sql/executor.h"
+#include <atomic>
 #include <future>
 #include <memory>
 #include <optional>
@@ -39,6 +40,16 @@ namespace zeptodb::cluster {
 // ============================================================================
 class QueryCoordinator {
 public:
+    struct SmallTableJoinTelemetrySnapshot {
+        uint64_t candidates = 0;
+        uint64_t accepted = 0;
+        uint64_t rejected_row_cap = 0;
+        uint64_t errors = 0;
+        uint64_t rows_materialized = 0;
+        uint64_t last_left_rows = 0;
+        uint64_t last_right_rows = 0;
+    };
+
     QueryCoordinator()  = default;
     ~QueryCoordinator() = default;
 
@@ -156,6 +167,25 @@ public:
     /// Per-node failures are logged as warnings and never thrown.
     void forward_ddl_to_remotes(const std::string& sql);
 
+    /// Set table-level placement for a declared table. This is a cold-path
+    /// operational control used by symbol-less Action-Outcome/control tables
+    /// so placement is explicit instead of an accidental stable table-id hash.
+    bool set_table_placement(const std::string& table_name,
+                             TablePlacementPolicy policy,
+                             NodeId node_id = INVALID_NODE_ID,
+                             std::string* error = nullptr);
+
+    /// Remove a table-level placement override for a declared table.
+    bool clear_table_placement(const std::string& table_name,
+                               std::string* error = nullptr);
+
+    /// Snapshot bounded small-table JOIN telemetry.
+    [[nodiscard]] SmallTableJoinTelemetrySnapshot small_table_join_stats() const;
+
+    /// Reset bounded small-table JOIN telemetry. Intended for tests and
+    /// benchmark/replay harnesses that measure deltas explicitly.
+    void reset_small_table_join_stats();
+
     // ----------------------------------------------------------------
     // Router access (internal or shared)
     // ----------------------------------------------------------------
@@ -222,6 +252,16 @@ private:
     std::optional<zeptodb::storage::TableSchema> schema_snapshot_locked(
         const std::string& table_name) const;
 
+    struct SmallTableJoinTelemetry {
+        std::atomic<uint64_t> candidates{0};
+        std::atomic<uint64_t> accepted{0};
+        std::atomic<uint64_t> rejected_row_cap{0};
+        std::atomic<uint64_t> errors{0};
+        std::atomic<uint64_t> rows_materialized{0};
+        std::atomic<uint64_t> last_left_rows{0};
+        std::atomic<uint64_t> last_right_rows{0};
+    };
+
     mutable std::shared_mutex                        mutex_;
     std::vector<std::shared_ptr<NodeEndpoint>>       endpoints_;
 
@@ -230,6 +270,7 @@ private:
     mutable std::shared_mutex                        router_mu_;
     PartitionRouter*                                 external_router_ = nullptr;
     std::shared_mutex*                               external_router_mu_ = nullptr;
+    SmallTableJoinTelemetry                          small_table_join_stats_;
 };
 
 } // namespace zeptodb::cluster

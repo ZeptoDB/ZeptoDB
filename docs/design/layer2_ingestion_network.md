@@ -190,7 +190,53 @@ Kinesis because it is a cloud/IoT streaming connector. Metrics are exposed
 through `PulsarConsumer::format_prometheus` and can be appended to `/metrics`
 with `HttpServer::add_metrics_provider()`.
 
-Last updated: 2026-06-13 (Apache Pulsar consumer - devlog 180)
+## Experimental Physical AI edge/fleet connector (devlogs 202-205)
+
+`EdgeFleetFeedConnector` adds an experimental runtime state machine for bounded
+Physical AI edge-to-fleet Action-Outcome evidence transfer. It is deliberately
+transport-neutral: an embedding application supplies a sink callback that
+applies one edge outbox event to the fleet side and returns an ACK result.
+
+The connector handles the semantics validated by Experiments 016 and 017:
+
+- bounded passes with `batch_limit` and `max_inflight`,
+- per-event retry accounting for transient failures,
+- duplicate ACK suppression by event id,
+- late-event detection by stream sequence,
+- optional local checkpoint file for restart ACK reload,
+- `AppliedButAckFailed` handling for the non-transactional boundary where the
+  fleet final row was applied but ACK persistence failed,
+- Prometheus/OpenMetrics formatting for connector stats.
+
+Devlog 203 adds `zepto_edge_fleet_replay`, a standalone experimental SQL/HTTP
+adapter harness for the Experiment 016 Physical AI tables. It reads the edge
+outbox through native SQL, materializes fleet inbox/final/ACK/telemetry rows
+through SQL inserts, and validates live two-node outage, dropped, duplicate,
+late, restart, recovery JOIN, and suppression audit JOIN behavior.
+
+Devlog 204 adds server-owned lifecycle state through
+`EdgeFleetConnectorRuntime` and admin endpoints at
+`/admin/edge-fleet-connector`. The server can now configure, enable, inspect,
+disable, clear, and emit metrics for the experimental connector. The lifecycle
+surface is admin-gated and process-local.
+
+Devlog 205 adds a bounded server-managed worker foundation to
+`EdgeFleetConnectorRuntime`. Embedding code installs an outbox-loader callback
+and a fleet-sink callback; the runtime can then execute manual `runOnce()`
+passes or a background worker loop controlled by `worker_enabled` and
+`worker_poll_interval_ms`. Status snapshots and Prometheus metrics expose
+worker hook readiness, worker running state, worker pass counts, loader errors,
+observer errors, and the last bounded pass result.
+
+This is not yet a promoted ZeptoDB replication feature. The validated SQL/HTTP
+adapter is available as a standalone experiment tool, while the server runtime
+currently exposes a transport-neutral worker hook contract. Product promotion
+still requires a built-in SQL/HTTP adapter, catalog or documented runtime
+persistence for feed config and ACK/cursor state, long-running operational
+tests, cross-architecture verification, and user-facing docs for idempotent
+sink requirements.
+
+Last updated: 2026-06-23 (Physical AI edge/fleet worker runtime - devlog 205)
 
 ## Table-aware ingest (Stage B — devlog 084)
 
