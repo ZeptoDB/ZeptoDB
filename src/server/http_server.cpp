@@ -37,11 +37,11 @@
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <limits>
 #include <random>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
-#include <limits>
 #include <iterator>
 #include <unordered_map>
 #include <unordered_set>
@@ -256,6 +256,54 @@ static bool json_bool_field(const std::string& body,
     if (body.compare(pos, 4, "true") == 0) return true;
     if (body.compare(pos, 5, "false") == 0) return false;
     return fallback;
+}
+
+static std::string edge_fleet_connector_status_json(
+    const zeptodb::feeds::EdgeFleetConnectorRuntimeSnapshot& snap) {
+    std::ostringstream os;
+    os << "{\"configured\":" << (snap.configured ? "true" : "false")
+       << ",\"enabled\":" << (snap.enabled ? "true" : "false")
+       << ",\"name\":" << json_quote(snap.name)
+       << ",\"edge_outbox_table\":" << json_quote(snap.edge_outbox_table)
+       << ",\"fleet_ack_table\":" << json_quote(snap.fleet_ack_table)
+       << ",\"checkpoint_path\":" << json_quote(snap.checkpoint_path)
+       << ",\"batch_limit\":" << snap.batch_limit
+       << ",\"max_inflight\":" << snap.max_inflight
+       << ",\"max_retries_per_event\":" << snap.max_retries_per_event
+       << ",\"allow_late_events\":" << (snap.allow_late_events ? "true" : "false")
+       << ",\"worker_enabled\":" << (snap.worker_enabled ? "true" : "false")
+       << ",\"worker_hooks_configured\":"
+       << (snap.worker_hooks_configured ? "true" : "false")
+       << ",\"worker_running\":" << (snap.worker_running ? "true" : "false")
+       << ",\"worker_poll_interval_ms\":" << snap.worker_poll_interval_ms
+       << ",\"acked_count\":" << snap.acked_count
+       << ",\"highest_acked_stream_seq\":" << snap.highest_acked_stream_seq
+       << ",\"configure_total\":" << snap.configure_total
+       << ",\"start_total\":" << snap.start_total
+       << ",\"stop_total\":" << snap.stop_total
+       << ",\"start_failures_total\":" << snap.start_failures_total
+       << ",\"stop_failures_total\":" << snap.stop_failures_total
+       << ",\"worker_start_total\":" << snap.worker_start_total
+       << ",\"worker_passes_total\":" << snap.worker_passes_total
+       << ",\"worker_load_errors_total\":" << snap.worker_load_errors_total
+       << ",\"worker_observer_errors_total\":"
+       << snap.worker_observer_errors_total
+       << ",\"last_pass\":{\"outbox_events_seen\":"
+       << snap.last_pass.outbox_events_seen
+       << ",\"batch_event_count\":" << snap.last_pass.batch_event_count
+       << ",\"attempted_count\":" << snap.last_pass.attempted_count
+       << ",\"acked_count\":" << snap.last_pass.acked_count
+       << ",\"transient_failure_count\":"
+       << snap.last_pass.transient_failure_count
+       << ",\"permanent_failure_count\":"
+       << snap.last_pass.permanent_failure_count
+       << ",\"duplicate_count\":" << snap.last_pass.duplicate_count
+       << ",\"late_count\":" << snap.last_pass.late_count
+       << ",\"rejected_count\":" << snap.last_pass.rejected_count
+       << "}"
+       << ",\"last_error\":" << json_quote(snap.last_error)
+       << "}";
+    return os.str();
 }
 
 static bool json_float_array_field(const std::string& body,
@@ -1033,6 +1081,12 @@ HttpServer::~HttpServer() {
 
 zeptodb::ai::AgentMemoryStore& HttpServer::agent_memory_store() {
     return *agent_memory_;
+}
+
+bool HttpServer::set_edge_fleet_connector_runtime_hooks(
+    zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks,
+    std::string* error) {
+    return edge_fleet_connector_runtime_.setWorkerHooks(std::move(hooks), error);
 }
 
 bool HttpServer::set_agent_memory_persistence(const std::string& directory,
@@ -2964,6 +3018,23 @@ void HttpServer::setup_routes() {
     svr_->Get("/stats", [this](const httplib::Request& /*req*/,
                                 httplib::Response& res) {
         auto json = build_stats_json(executor_.stats());
+        if (coordinator_ && json.size() >= 1 && json.back() == '}') {
+            const auto st = coordinator_->small_table_join_stats();
+            json.pop_back();
+            json += ",\"small_table_join\":{";
+            json += "\"candidates\":" + std::to_string(st.candidates);
+            json += ",\"accepted\":" + std::to_string(st.accepted);
+            json += ",\"rejected_row_cap\":" +
+                    std::to_string(st.rejected_row_cap);
+            json += ",\"errors\":" + std::to_string(st.errors);
+            json += ",\"rows_materialized\":" +
+                    std::to_string(st.rows_materialized);
+            json += ",\"last_left_rows\":" +
+                    std::to_string(st.last_left_rows);
+            json += ",\"last_right_rows\":" +
+                    std::to_string(st.last_right_rows);
+            json += "}}";
+        }
         res.set_content(json, "application/json");
     });
 
@@ -4482,6 +4553,206 @@ void HttpServer::setup_admin_routes() {
     });
 
     // -------------------------------------------------------------------------
+    // POST /admin/table-placement — set explicit table placement policy
+    // Body: {"table":"T","policy":"hash_by_table"|"pinned_node"|"clear","node_id":1}
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/table-placement", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        if (!coordinator_) {
+            res.status = 400;
+            res.set_content(build_error_json("Cluster coordinator is not enabled"),
+                            "application/json");
+            return;
+        }
+
+        const std::string table = json_string_field(req.body, "table");
+        const std::string policy = json_string_field(req.body, "policy");
+        const int64_t node_id_raw = json_i64_field(req.body, "node_id", 0);
+        if (table.empty()) {
+            res.status = 400;
+            res.set_content(build_error_json("table is required"),
+                            "application/json");
+            return;
+        }
+        if (policy.empty()) {
+            res.status = 400;
+            res.set_content(build_error_json("policy is required"),
+                            "application/json");
+            return;
+        }
+
+        bool ok = false;
+        std::string error;
+        if (policy == "clear") {
+            ok = coordinator_->clear_table_placement(table, &error);
+        } else {
+            zeptodb::cluster::TablePlacementPolicy placement =
+                zeptodb::cluster::TablePlacementPolicy::HashByTableAndSymbol;
+            zeptodb::cluster::NodeId node_id =
+                zeptodb::cluster::INVALID_NODE_ID;
+            if (policy == "hash_by_table") {
+                placement = zeptodb::cluster::TablePlacementPolicy::HashByTable;
+            } else if (policy == "hash_by_table_and_symbol") {
+                placement =
+                    zeptodb::cluster::TablePlacementPolicy::HashByTableAndSymbol;
+            } else if (policy == "pinned_node") {
+                if (node_id_raw <= 0 ||
+                    node_id_raw > std::numeric_limits<uint32_t>::max()) {
+                    res.status = 400;
+                    res.set_content(
+                        build_error_json("pinned_node policy requires node_id"),
+                        "application/json");
+                    return;
+                }
+                placement = zeptodb::cluster::TablePlacementPolicy::PinnedNode;
+                node_id = static_cast<zeptodb::cluster::NodeId>(node_id_raw);
+            } else {
+                res.status = 400;
+                res.set_content(
+                    build_error_json(
+                        "policy must be hash_by_table, "
+                        "hash_by_table_and_symbol, pinned_node, or clear"),
+                    "application/json");
+                return;
+            }
+            ok = coordinator_->set_table_placement(table, placement, node_id,
+                                                   &error);
+        }
+        if (!ok) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "table placement update failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        std::ostringstream os;
+        os << "{\"ok\":true,\"table\":" << json_quote(table)
+           << ",\"policy\":" << json_quote(policy);
+        if (node_id_raw > 0) {
+            os << ",\"node_id\":" << node_id_raw;
+        }
+        os << "}";
+        res.set_content(os.str(), "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // GET /admin/edge-fleet-connector — experimental connector lifecycle status
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/edge-fleet-connector", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        res.set_content(
+            edge_fleet_connector_status_json(edge_fleet_connector_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/edge-fleet-connector — configure and optionally enable
+    // Body: {"name":"physical_ai_edge_fleet","enabled":true,
+    //        "edge_outbox_table":"...","fleet_ack_table":"...",
+    //        "checkpoint_path":"/var/lib/zeptodb/edge-fleet.checkpoint",
+    //        "batch_limit":128,"max_inflight":128,
+    //        "max_retries_per_event":1,"allow_late_events":true,
+    //        "worker_enabled":false,"worker_poll_interval_ms":1000}
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/edge-fleet-connector", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+
+        zeptodb::feeds::EdgeFleetConnectorRuntimeConfig config;
+        config.name = json_string_field(req.body, "name", config.name);
+        config.edge_outbox_table = json_string_field(
+            req.body, "edge_outbox_table", config.edge_outbox_table);
+        config.fleet_ack_table = json_string_field(
+            req.body, "fleet_ack_table", config.fleet_ack_table);
+        config.feed.checkpoint_path = json_string_field(req.body, "checkpoint_path");
+        config.feed.allow_late_events = json_bool_field(
+            req.body, "allow_late_events", config.feed.allow_late_events);
+        config.worker_enabled = json_bool_field(
+            req.body, "worker_enabled", config.worker_enabled);
+
+        const int64_t batch_limit = json_i64_field(
+            req.body, "batch_limit", static_cast<int64_t>(config.feed.batch_limit));
+        const int64_t max_inflight = json_i64_field(
+            req.body, "max_inflight", static_cast<int64_t>(config.feed.max_inflight));
+        const int64_t max_retries = json_i64_field(
+            req.body, "max_retries_per_event",
+            static_cast<int64_t>(config.feed.max_retries_per_event));
+        const int64_t worker_poll_interval_ms = json_i64_field(
+            req.body,
+            "worker_poll_interval_ms",
+            static_cast<int64_t>(config.worker_poll_interval_ms));
+        if (batch_limit <= 0 || max_inflight <= 0 || max_retries <= 0 ||
+            worker_poll_interval_ms <= 0 ||
+            max_retries > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+            res.status = 400;
+            res.set_content(
+                build_error_json(
+                    "batch_limit, max_inflight, max_retries_per_event, and worker_poll_interval_ms must be positive"),
+                "application/json");
+            return;
+        }
+        config.feed.batch_limit = static_cast<size_t>(batch_limit);
+        config.feed.max_inflight = static_cast<size_t>(max_inflight);
+        config.feed.max_retries_per_event = static_cast<uint32_t>(max_retries);
+        config.worker_poll_interval_ms =
+            static_cast<uint64_t>(worker_poll_interval_ms);
+
+        std::string error;
+        if (!edge_fleet_connector_runtime_.configure(std::move(config), &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "edge/fleet connector configuration failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        const bool enabled = json_bool_field(req.body, "enabled", true);
+        if (enabled && !edge_fleet_connector_runtime_.start(&error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "edge/fleet connector start failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        res.set_content(
+            edge_fleet_connector_status_json(edge_fleet_connector_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // DELETE /admin/edge-fleet-connector — disable and clear experimental config
+    // -------------------------------------------------------------------------
+    svr_->Delete("/admin/edge-fleet-connector", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        std::string error;
+        const auto before = edge_fleet_connector_runtime_.snapshot();
+        if (before.enabled && !edge_fleet_connector_runtime_.stop(&error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "edge/fleet connector stop failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+        (void)edge_fleet_connector_runtime_.clear(&error);
+        res.set_content(
+            edge_fleet_connector_status_json(edge_fleet_connector_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
     // DELETE /admin/nodes/:id — remove a node from the cluster
     // -------------------------------------------------------------------------
     svr_->Delete(R"(/admin/nodes/(\d+))", [this, require_admin, require_feature](
@@ -5633,6 +5904,44 @@ std::string HttpServer::build_prometheus_metrics() const {
     os << "# TYPE zepto_queries_executed_total counter\n";
     os << "zepto_queries_executed_total " << stats.queries_executed.load() << "\n\n";
 
+    if (coordinator_) {
+        const auto join_stats = coordinator_->small_table_join_stats();
+        os << "# HELP zepto_small_table_join_candidates_total Bounded small-table JOIN candidates seen by the coordinator\n";
+        os << "# TYPE zepto_small_table_join_candidates_total counter\n";
+        os << "zepto_small_table_join_candidates_total "
+           << join_stats.candidates << "\n\n";
+
+        os << "# HELP zepto_small_table_join_accepted_total Bounded small-table JOINs accepted and executed by the coordinator\n";
+        os << "# TYPE zepto_small_table_join_accepted_total counter\n";
+        os << "zepto_small_table_join_accepted_total "
+           << join_stats.accepted << "\n\n";
+
+        os << "# HELP zepto_small_table_join_row_cap_rejections_total Bounded small-table JOINs rejected because a side exceeded the row cap\n";
+        os << "# TYPE zepto_small_table_join_row_cap_rejections_total counter\n";
+        os << "zepto_small_table_join_row_cap_rejections_total "
+           << join_stats.rejected_row_cap << "\n\n";
+
+        os << "# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside row-cap rejection\n";
+        os << "# TYPE zepto_small_table_join_errors_total counter\n";
+        os << "zepto_small_table_join_errors_total "
+           << join_stats.errors << "\n\n";
+
+        os << "# HELP zepto_small_table_join_rows_materialized_total Rows materialized into coordinator-local temporary tables for bounded small-table JOINs\n";
+        os << "# TYPE zepto_small_table_join_rows_materialized_total counter\n";
+        os << "zepto_small_table_join_rows_materialized_total "
+           << join_stats.rows_materialized << "\n\n";
+
+        os << "# HELP zepto_small_table_join_last_left_rows Last bounded small-table JOIN left-side row count\n";
+        os << "# TYPE zepto_small_table_join_last_left_rows gauge\n";
+        os << "zepto_small_table_join_last_left_rows "
+           << join_stats.last_left_rows << "\n\n";
+
+        os << "# HELP zepto_small_table_join_last_right_rows Last bounded small-table JOIN right-side row count\n";
+        os << "# TYPE zepto_small_table_join_last_right_rows gauge\n";
+        os << "zepto_small_table_join_last_right_rows "
+           << join_stats.last_right_rows << "\n\n";
+    }
+
     os << "# HELP zepto_rows_scanned_total Total number of rows scanned\n";
     os << "# TYPE zepto_rows_scanned_total counter\n";
     os << "zepto_rows_scanned_total " << stats.total_rows_scanned.load() << "\n\n";
@@ -5754,6 +6063,8 @@ std::string HttpServer::build_prometheus_metrics() const {
         os << "zepto_agent_memory_ann_fallbacks_total "
            << memory_stats.ann_fallback_count << "\n";
     }
+
+    os << "\n" << edge_fleet_connector_runtime_.formatPrometheus();
 
     // Append output from registered metrics providers (e.g. Kafka consumers).
     {

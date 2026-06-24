@@ -1,25 +1,128 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-21
+Last updated: 2026-06-23
 
 ---
 
 ## Latest
 
-- [x] **P3 small-table distributed hash JOIN for operational tables**
+- [x] **P3 Physical AI edge/fleet worker runtime foundation**
+  (devlog 205) — Extended `EdgeFleetConnectorRuntime` with an injected
+  outbox-loader/fleet-sink hook contract, manual `runOnce()`, bounded
+  background worker mode, worker lifecycle counters, last-pass telemetry,
+  Prometheus worker metrics, and HTTP status fields. Focused tests pass for
+  bounded worker passes, background convergence across batches, loader outage
+  recovery, missing-hook rejection, HTTP admin lifecycle with installed hooks,
+  and worker metrics. This remains experimental until the built-in SQL/HTTP
+  adapter, persisted config, soak/fault tests, and cross-architecture
+  verification are complete.
+
+- [x] **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
+  Added `EdgeFleetConnectorRuntime`, plus admin endpoints for
+  `GET`/`POST`/`DELETE /admin/edge-fleet-connector`. The server now owns
+  experimental connector configuration, enabled/disabled lifecycle state,
+  local checkpoint start/stop handling, lifecycle counters, and Prometheus
+  metrics. Focused tests pass for runtime start/stop/clear behavior, invalid
+  limits, missing checkpoint startup, endpoint lifecycle, and 401/403/admin
+  authorization. Devlog 205 adds the worker foundation; this entry remains
+  experimental because the built-in SQL/HTTP adapter and promotion hardening
+  are not attached yet.
+
+- [x] **P3 Physical AI edge/fleet C++ connector replay** (devlog 203) —
+  Added `zepto_edge_fleet_replay`, a standalone experimental runtime tool that
+  wires `EdgeFleetFeedConnector` to two live ZeptoDB HTTP SQL nodes. The tool
+  applies the Physical AI edge/fleet SQL fixture, reads the edge outbox through
+  native SQL, materializes fleet inbox, decision, retrieval, suppression, ACK,
+  and telemetry rows through SQL inserts, and writes Experiment 018 results.
+  Live validation passed with 52/52 fleet ACK rows, 5 recovery JOIN rows, 32
+  suppression audit JOIN rows, and telemetry evidence for outage, duplicate,
+  late, and restart reload cases. This remains experimental, not a promoted
+  server-managed connector.
+
+- [x] **P3 Physical AI edge/fleet runtime connector** (devlog 202) —
+  Added `EdgeFleetFeedConnector`, an experimental C++ runtime connector for
+  bounded Physical AI edge-to-fleet Action-Outcome evidence transfer. The
+  connector owns bounded passes, duplicate/late handling, transient retry
+  accounting, optional ACK checkpoint reload, `AppliedButAckFailed` behavior
+  for final-table success followed by ACK failure, and Prometheus formatting.
+  Focused C++ tests pass for bounded processing, dropped/outage-style retry,
+  duplicate handling, late delivery, restart reload, malformed input,
+  ACK-boundary failure, and metrics. This is experimental and still needs
+  concrete SQL/HTTP source/sink adapters before product promotion.
+
+- [x] **P3 Physical AI bounded edge/fleet feed replay** (devlog 201) —
+  Added Experiment 016, a research-only explicit edge-to-fleet feed replay.
+  The edge node materializes incident, state, decision, suppression, and
+  outbox rows; the fleet node receives edge-generated decision, retrieval, and
+  suppression events through bounded feed passes, inbox attempts, ACK rows, and
+  feed telemetry. Native SQL validation passes for edge immediate recovery,
+  risky-action suppression, 52-event ACK convergence, duplicate delivery, late
+  delivery, outage retry, restart ACK reload, bounded batches, fleet recovery
+  JOIN, suppression audit JOIN, and ACK `ROW_NUMBER`/`LAG` checks.
+
+- [x] **P3 Physical AI edge/fleet Action-Outcome replay** (devlog 200) —
+  Added Experiment 015, a research-only two-endpoint replay that separates
+  edge-local immediate unsafe-action suppression from fleet-global delayed
+  consolidation and audit. The edge node materializes incidents, robot state,
+  sensor summaries, decisions, and suppressions; the fleet node materializes
+  historical action outcomes, delayed edge decisions, retrieval evidence, and
+  audit rows. Native SQL validation passes for edge recovery, risky-action
+  suppression, robot/sensor ASOF, fleet consolidated recovery, suppression
+  audit JOIN, consolidation lag, `ROW_NUMBER`, and `LAG`.
+
+- [x] **P3 Physical AI Action-Outcome SQL replay** (devlog 199) —
+  Added Experiment 014, a research-only live ZeptoDB SQL replay for the
+  Physical AI fixture. The replay materializes robot incidents, expected
+  recovery actions, historical action outcomes, robot state telemetry, sensor
+  summaries, poses, recommendations, retrieval evidence, and suppressions. It
+  validates row counts, failed-repeat JOIN, context top-action JOIN,
+  suppression audit JOIN, action/outcome JOIN, robot state ASOF JOIN, sensor
+  ASOF JOIN, `ROW_NUMBER`, `LAG`, and `ST_Within` as pass.
+
+- [x] **P3 Physical AI Action-Outcome baseline experiment**
+  (devlog 198) — Added Experiment 013, a research-only comparison of similar
+  robot incident retrieval, runbook/action-prior recommendation,
+  reflection-only memory, and context-gated Physical AI Action-Outcome Memory.
+  The synthetic fixture covers AGV dock slip, LiDAR occlusion, robot arm torque
+  spike, cold-chain temperature excursion, and drone GPS drift. Hard
+  distractors make the non-gated baselines repeat unsafe top actions, while the
+  context-gated variant reaches 1.00 recovery Top-1 hit rate, 1.00 risky-repeat
+  avoidance, and 0.00 hazardous top-action rate.
+
+- [x] **P3 research experiment governance policy** (devlog 197) —
+  Added `docs/research/EXPERIMENT_GOVERNANCE.md` and linked it from
+  `AGENTS.md`. Future research must classify work as research-only,
+  experimental runtime path, or promoted product feature before API or
+  completed-feature docs describe it.
+
+- [x] **P3 Experiment 012 operational placement validation and telemetry**
+  (devlog 196) — Validated an experimental runtime placement path for declared
+  operational tables, exposed it through admin-only
+  `POST /admin/table-placement`, and added `/stats` plus Prometheus telemetry
+  for bounded small-table JOIN candidates, accepted JOINs, row-cap rejections,
+  errors, and materialized rows. Experiment 012 pins Action-Outcome
+  query/recommendation/retrieval tables to node 8 and suppressions to node 1,
+  then verifies strict SQL/JOIN/window replay with telemetry status pass. This
+  is not yet a promoted product placement feature because placement is not
+  persisted in DDL/catalog metadata.
+
+- [x] **P3 experimental small-table distributed hash JOIN validation**
   (devlog 195) — Added a bounded coordinator-local hash JOIN path for small
   operational tables. The coordinator gathers both JOIN sides under a row cap,
   materializes declared schemas through typed rows, preserves decoded
   `STRING`/`SYMBOL` cells, and delegates JOIN semantics to the local SQL
   executor. Experiment 011 now reports `suppression_join` as pass and strict
-  full distributed SQL/JOIN/window replay succeeds.
+  full distributed SQL/JOIN/window replay succeeds. This remains a bounded
+  experimental runtime path, not a general distributed JOIN optimizer.
 
-- [x] **P3 cluster-mode window value materialization** (devlog 194) —
-  Fixed the distributed window fetch-and-compute path for declared operational
-  tables. The coordinator now materializes temporary full-data tables through
-  schema-aware typed rows, preserving generic value columns and decoded
-  `STRING`/`SYMBOL` cells before running ROW_NUMBER/LAG locally. Experiment
-  011 now reports `row_number_window` and `lag_window` as pass.
+- [x] **P3 experimental cluster-mode window value materialization**
+  (devlog 194) — Fixed the distributed window fetch-and-compute path for the
+  validated declared operational-table replay shape. The coordinator now
+  materializes temporary full-data tables through schema-aware typed rows,
+  preserving generic value columns and decoded `STRING`/`SYMBOL` cells before
+  running ROW_NUMBER/LAG locally. Experiment 011 now reports
+  `row_number_window` and `lag_window` as pass. Product promotion still needs
+  explicit limits and telemetry for large tables.
 
 - [x] **P3 Action-Outcome distributed vendor SQL replay classification**
   (devlog 193) — Added Experiment 011, a two-node replay harness that loads

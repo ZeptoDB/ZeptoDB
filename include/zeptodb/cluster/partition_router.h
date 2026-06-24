@@ -32,6 +32,17 @@
 
 namespace zeptodb::cluster {
 
+enum class TablePlacementPolicy : uint8_t {
+    HashByTableAndSymbol = 0,
+    HashByTable          = 1,
+    PinnedNode           = 2,
+};
+
+struct TablePlacement {
+    TablePlacementPolicy policy = TablePlacementPolicy::HashByTableAndSymbol;
+    NodeId node_id = INVALID_NODE_ID;
+};
+
 // ============================================================================
 // PartitionRouter: 일관 해시 링 기반 심볼 → 노드 라우팅
 // ============================================================================
@@ -48,17 +59,38 @@ public:
         std::shared_lock lock(other.ring_mutex_);
         ring_     = other.ring_;
         node_set_ = other.node_set_;
+        std::lock_guard<std::mutex> cache_lock(other.cache_mutex_);
+        pinned_ = other.pinned_;
+        table_placements_ = other.table_placements_;
     }
 
     PartitionRouter& operator=(const PartitionRouter& other) {
         if (this != &other) {
-            std::unique_lock lock1(ring_mutex_, std::defer_lock);
-            std::shared_lock lock2(other.ring_mutex_, std::defer_lock);
-            std::lock(lock1, lock2);
-            ring_      = other.ring_;
-            node_set_  = other.node_set_;
-            std::lock_guard<std::mutex> cache_lock(cache_mutex_);
-            cache_.clear();
+            std::map<uint64_t, NodeId> ring_copy;
+            std::set<NodeId> node_set_copy;
+            std::unordered_map<SymbolId, NodeId> pinned_copy;
+            std::unordered_map<uint16_t, TablePlacement> table_placements_copy;
+            {
+                std::shared_lock lock(other.ring_mutex_);
+                ring_copy = other.ring_;
+                node_set_copy = other.node_set_;
+            }
+            {
+                std::lock_guard<std::mutex> lock(other.cache_mutex_);
+                pinned_copy = other.pinned_;
+                table_placements_copy = other.table_placements_;
+            }
+            {
+                std::unique_lock lock(ring_mutex_);
+                ring_ = std::move(ring_copy);
+                node_set_ = std::move(node_set_copy);
+            }
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex_);
+                pinned_ = std::move(pinned_copy);
+                table_placements_ = std::move(table_placements_copy);
+                cache_.clear();
+            }
         }
         return *this;
     }
@@ -160,9 +192,66 @@ public:
     /// Table-scoped overload: combines (table_id, symbol_id) into the routing hash.
     /// Preserves backward compat — `route(SymbolId)` == `route(0, SymbolId)`.
     NodeId route(uint16_t table_id, SymbolId symbol) const {
-        return route(static_cast<SymbolId>(
+        if (table_id != 0) {
+            const auto placement = table_placement(table_id);
+            if (placement) {
+                if (placement->policy == TablePlacementPolicy::PinnedNode) {
+                    if (placement->node_id == INVALID_NODE_ID) {
+                        throw std::runtime_error(
+                            "PartitionRouter: pinned table placement has no node");
+                    }
+                    return placement->node_id;
+                }
+                if (placement->policy == TablePlacementPolicy::HashByTable) {
+                    return route(table_route_key(table_id, 0));
+                }
+            }
+        }
+        return route(table_route_key(table_id, symbol));
+    }
+
+    /// Stable route key used for table-scoped routing. Exposed so tests and
+    /// placement tools can reason about the exact key without duplicating the
+    /// bit packing.
+    [[nodiscard]] static SymbolId table_route_key(uint16_t table_id,
+                                                  SymbolId symbol) noexcept {
+        return static_cast<SymbolId>(
             static_cast<uint32_t>(symbol) ^
-            static_cast<uint32_t>(static_cast<uint64_t>(table_id) << 16)));
+            static_cast<uint32_t>(static_cast<uint64_t>(table_id) << 16));
+    }
+
+    /// Set a table-level placement policy. This is a cold-path control-plane
+    /// knob for operational tables whose rows often use symbol_id=0.
+    void set_table_placement(uint16_t table_id,
+                             TablePlacementPolicy policy,
+                             NodeId node_id = INVALID_NODE_ID) {
+        if (table_id == 0) {
+            throw std::invalid_argument(
+                "PartitionRouter: table placement requires non-zero table_id");
+        }
+        if (policy == TablePlacementPolicy::PinnedNode &&
+            node_id == INVALID_NODE_ID) {
+            throw std::invalid_argument(
+                "PartitionRouter: pinned table placement requires node_id");
+        }
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        table_placements_[table_id] = TablePlacement{policy, node_id};
+        cache_.clear();
+    }
+
+    /// Clear a table-level placement override and return to default hashing.
+    void clear_table_placement(uint16_t table_id) {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        table_placements_.erase(table_id);
+        cache_.clear();
+    }
+
+    [[nodiscard]] std::optional<TablePlacement> table_placement(
+        uint16_t table_id) const {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        auto it = table_placements_.find(table_id);
+        if (it == table_placements_.end()) return std::nullopt;
+        return it->second;
     }
 
     // ----------------------------------------------------------------
@@ -268,9 +357,22 @@ public:
 
     /// Table-scoped replica routing.
     NodeId route_replica(uint16_t table_id, SymbolId symbol) const {
-        return route_replica(static_cast<SymbolId>(
-            static_cast<uint32_t>(symbol) ^
-            static_cast<uint32_t>(static_cast<uint64_t>(table_id) << 16)));
+        if (table_id != 0) {
+            const auto placement = table_placement(table_id);
+            if (placement) {
+                if (placement->policy == TablePlacementPolicy::PinnedNode) {
+                    if (placement->node_id == INVALID_NODE_ID) {
+                        throw std::runtime_error(
+                            "PartitionRouter: pinned table placement has no node");
+                    }
+                    return placement->node_id;
+                }
+                if (placement->policy == TablePlacementPolicy::HashByTable) {
+                    return route_replica(table_route_key(table_id, 0));
+                }
+            }
+        }
+        return route_replica(table_route_key(table_id, symbol));
     }
 
     // ----------------------------------------------------------------
@@ -436,6 +538,7 @@ private:
     mutable std::unordered_map<SymbolId, NodeId> cache_;
     // Hot symbol pin table — symbols pinned to dedicated nodes bypass hash ring
     mutable std::unordered_map<SymbolId, NodeId> pinned_;
+    mutable std::unordered_map<uint16_t, TablePlacement> table_placements_;
 
     // Dual-write during migration: symbol → {from, to} while migration is in progress.
     // Ticks for these symbols should be written to BOTH nodes.

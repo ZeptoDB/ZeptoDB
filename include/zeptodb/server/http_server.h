@@ -50,6 +50,7 @@
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/ptp_clock_detector.h"
+#include "zeptodb/feeds/edge_fleet_connector_runtime.h"
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -194,6 +195,13 @@ public:
 
     /// Access the internal metrics collector (for testing or custom queries).
     MetricsCollector* metrics_collector() { return metrics_collector_.get(); }
+
+    /// Install transport-specific hooks for the experimental Physical AI
+    /// edge/fleet connector worker. The HTTP admin endpoint owns lifecycle and
+    /// config; embeddings supply SQL/HTTP/RPC outbox and fleet sink callbacks.
+    bool set_edge_fleet_connector_runtime_hooks(
+        zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks,
+        std::string* error = nullptr);
 
     /// Access the agent memory store backing /api/ai/* endpoints.
     /// The store lives with the HTTP server and is in-memory for v0.
@@ -437,6 +445,9 @@ private:
 
     // PTP clock detector (null = not configured)
     zeptodb::cluster::PtpClockDetector*                     ptp_detector_ = nullptr;
+
+    // Experimental Physical AI edge/fleet connector lifecycle.
+    zeptodb::feeds::EdgeFleetConnectorRuntime               edge_fleet_connector_runtime_;
 };
 
 } // namespace zeptodb::server

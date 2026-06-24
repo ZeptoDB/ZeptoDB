@@ -983,6 +983,8 @@ target_link_libraries(zepto_scheduler PUBLIC
 
 # --- Feed Handler Adapters ---
 add_library(zepto_feeds STATIC
+    src/feeds/edge_fleet_connector_runtime.cpp
+    src/feeds/edge_fleet_feed_connector.cpp
     src/feeds/fix_parser.cpp
     src/feeds/nasdaq_itch.cpp
     src/feeds/binance_feed.cpp
@@ -1256,6 +1258,20 @@ target_link_libraries(zepto-telegraf-output PRIVATE
 )
 target_compile_options(zepto-telegraf-output PRIVATE -O2)
 
+# Experimental Physical AI edge/fleet replay. It wires the C++ feed connector
+# to two live HTTP SQL nodes and materializes fleet ACK/audit tables.
+add_executable(zepto_edge_fleet_replay
+    tools/zepto_edge_fleet_replay.cpp
+)
+target_include_directories(zepto_edge_fleet_replay PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(zepto_edge_fleet_replay PRIVATE
+    zepto_feeds
+)
+target_compile_options(zepto_edge_fleet_replay PRIVATE -O2)
+
 # Interactive SQL CLI
 add_executable(zepto-cli
     tools/zepto-cli.cpp
@@ -1281,21 +1297,21 @@ add_executable(zepto_data_node tools/zepto_data_node.cpp)
 add_executable(zepto_http_server tools/zepto_http_server.cpp)
 target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_http_server PRIVATE
-    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster)
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
 
 # Stateless ingest node (P8-I3, devlog 113) — HTTP ingest-only pod that
 # forwards every tick to the right storage pod via CoordinatorRoutingAdapter.
 add_executable(zepto_ingest_node tools/zepto_ingest_node.cpp)
 target_include_directories(zepto_ingest_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_ingest_node PRIVATE
-    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster)
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
 
 # Arrow Flight + HTTP server
 add_executable(zepto_flight_server tools/zepto_flight_server.cpp)
 target_include_directories(zepto_flight_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_flight_server PRIVATE
     zepto_flight zepto_server zepto_sql zepto_execution zepto_core
-    zepto_storage zepto_ingestion zepto_cluster)
+    zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
 target_include_directories(zepto_data_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_data_node PRIVATE
     zepto_cluster zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion)

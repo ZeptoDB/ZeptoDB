@@ -5,22 +5,106 @@
 >
 > Last cleaned: 2026-06-13
 >
-> Devlog: last `195_small_table_distributed_hash_join.md` → next `196_*.md`
+> Devlog: last `205_physical_ai_edge_fleet_worker_runtime.md` → next `206_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
-- ✅ **P3 small-table distributed hash JOIN for operational tables**
+- ✅ **P3 Physical AI edge/fleet worker runtime foundation** (devlog 205) —
+  extended `EdgeFleetConnectorRuntime` with a bounded server-managed worker
+  loop, injected outbox-loader/fleet-sink hooks, manual `runOnce()`, worker
+  lifecycle counters, last-pass telemetry, HTTP status fields, Prometheus
+  worker metrics, and admin lifecycle tests with installed hooks. This closes
+  the server-owned worker lifecycle gap, while the remaining product-promotion
+  blockers are the concrete built-in SQL/HTTP adapter, persisted connector
+  config, idempotent sink documentation, long-running soak/fault tests, and
+  cross-architecture verification.
+- ✅ **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
+  added `EdgeFleetConnectorRuntime` and admin endpoints for the experimental
+  connector lifecycle: `GET`, `POST`, and `DELETE`
+  `/admin/edge-fleet-connector`. The server now owns process-local connector
+  config/enabled state, local checkpoint start/stop behavior, lifecycle
+  counters, and `/metrics` output. Tests cover runtime start/stop/clear,
+  missing-checkpoint startup, invalid limits, metrics, and admin-only HTTP
+  access. This narrows the remaining promotion work to the server-managed SQL
+  poll/apply worker and persisted connector configuration.
+- ✅ **P3 Physical AI edge/fleet C++ connector replay** (devlog 203) —
+  added `zepto_edge_fleet_replay`, a standalone experimental runtime tool that
+  connects `EdgeFleetFeedConnector` to two live ZeptoDB HTTP SQL nodes. The
+  tool seeds the Experiment 016 edge/fleet tables, reads the edge outbox
+  through native SQL, materializes fleet inbox/final/ACK/telemetry rows through
+  SQL inserts, and validates outage, dropped, duplicate, late, restart, ACK
+  convergence, recovery JOIN, and suppression audit JOIN behavior. This closes
+  the SQL/HTTP source-sink adapter validation gap, while product promotion
+  still needs server lifecycle hooks, RBAC/admin controls, catalog or documented
+  runtime persistence, and operator docs.
+- ✅ **P3 Physical AI edge/fleet runtime connector** (devlog 202) —
+  promoted the bounded edge-to-fleet feed semantics into an experimental C++
+  runtime connector. `EdgeFleetFeedConnector` now owns bounded passes,
+  duplicate/late handling, transient retry accounting, optional ACK checkpoint
+  reload, `AppliedButAckFailed` behavior, and Prometheus formatting. Focused
+  C++ tests cover bounded processing, dropped/outage-style retry, duplicate
+  handling, late delivery, restart reload, malformed input, ACK-boundary
+  failure, and metrics. Next: wire concrete SQL/HTTP outbox source and fleet
+  sink adapters, then replay Experiment 016 through the runtime connector.
+- ✅ **P3 Physical AI bounded edge/fleet feed replay** (devlog 201) —
+  added Experiment 016, a research-only explicit edge-to-fleet feed replay.
+  The edge node materializes 52 outbox events while preserving immediate
+  risky-action suppression; the bounded feed worker transfers decision,
+  retrieval, and suppression events to fleet through inbox, ACK, and telemetry
+  tables. Live two-node validation passes duplicate, dropped, late, outage,
+  restart reload, bounded batch, fleet recovery JOIN, suppression audit JOIN,
+  and ACK window checks. Next: promote the feed semantics into an experimental
+  runtime connector with persisted cursor state and explicit ACK failure
+  behavior.
+- ✅ **P3 Physical AI edge/fleet Action-Outcome replay** (devlog 200) —
+  added Experiment 015, a research-only two-endpoint replay that separates
+  edge-local immediate unsafe-action suppression from fleet-global delayed
+  consolidation and audit. The edge node stored 82 research rows and passed
+  immediate recovery, risky-action suppression, robot ASOF, and sensor ASOF
+  checks. The fleet node stored 87 research rows and passed consolidated
+  recovery, suppression audit JOIN, consolidation lag, ROW_NUMBER, and LAG
+  checks. Next: explicit bounded edge-to-fleet feed/replication with duplicate,
+  dropped, late, outage, and restart cases.
+- ✅ **P3 Physical AI Action-Outcome SQL replay** (devlog 199) — added
+  Experiment 014, a research-only live ZeptoDB SQL replay for the Physical AI
+  Action-Outcome fixture. The replay materializes robot incidents, expected
+  actions, historical outcomes, robot state, sensor summaries, poses,
+  recommendations, retrievals, and suppressions, then validates row counts,
+  failed-repeat JOIN, context top-action JOIN, suppression audit JOIN,
+  action/outcome JOIN, robot and sensor ASOF JOINs, ROW_NUMBER, LAG, and
+  ST_Within as pass. Next: two-node edge-local versus fleet-global replay.
+- ✅ **P3 Physical AI Action-Outcome baseline experiment** (devlog 198) —
+  added Experiment 013, a research-only comparison of similar robot incident
+  retrieval, runbook/action-prior recommendation, reflection-only memory, and
+  context-gated Physical AI Action-Outcome Memory. Hard robot-safety
+  distractors make the non-gated baselines repeat unsafe top actions, while the
+  context-gated variant reaches 1.00 recovery Top-1 hit rate, 1.00 risky-repeat
+  avoidance, and 0.00 hazardous top-action rate.
+- ✅ **P3 research experiment governance policy** (devlog 197) — added
+  `docs/research/EXPERIMENT_GOVERNANCE.md` and linked it from `AGENTS.md`.
+  Future experiments must be classified as research-only, experimental runtime
+  path, or promoted product feature before docs/API surfaces imply support.
+- ✅ **P3 Experiment 012 operational placement validation and telemetry**
+  (devlog 196) — validated an experimental runtime placement path for declared
+  operational/Action-Outcome tables, exposed admin-only runtime placement
+  through `POST /admin/table-placement`, and surfaced bounded small-table JOIN
+  candidates, accepted joins, row-cap rejections, errors, materialized rows,
+  and last-side row counts through `/stats` and Prometheus. Product promotion
+  still requires persisted catalog/DDL placement and broader operational
+  semantics.
+- ✅ **P3 experimental small-table distributed hash JOIN validation**
   (devlog 195) — added a bounded coordinator-local hash JOIN path for small
   operational tables. Experiment 011 now reports `suppression_join` as pass
   across node 1 and node 8, and strict full distributed SQL/JOIN/window replay
-  succeeds.
-- ✅ **P3 cluster-mode window value materialization** (devlog 194) —
-  fixed the distributed full-data window replay path for declared operational
-  tables. `ROW_NUMBER` and `LAG` over
+  succeeds. This is not a general distributed JOIN optimizer.
+- ✅ **P3 experimental cluster-mode window value materialization**
+  (devlog 194) — fixed the distributed full-data window replay path for the
+  validated declared operational-table shape. `ROW_NUMBER` and `LAG` over
   `action_outcome_vendor_recommendations_010` now preserve `group_id`,
   `recommendation_rank`, and `score_micros` values in two-node cluster mode.
+  Product promotion still needs limits and telemetry for large-table windows.
 - ✅ **P3 Action-Outcome distributed vendor SQL replay classification**
   (devlog 193) — added Experiment 011, a two-node replay that materializes
   Experiment 010 through the distributed HTTP/RPC path. It verifies seed and
@@ -331,7 +415,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
-| **Symbol-less operational table shard-key policy** | Experiment 008 showed that symbol-less generic tables route by `(stable_table_id, symbol_id=0)`, so small table sets can accidentally land on one node for some node-id pairs. Define an explicit shard-key or table-level distribution policy for operational/Action-Outcome tables before promoting distributed replay beyond research. | M |
+| **Persisted operational table placement option** | Devlog 196 validates the experimental runtime control-plane path and Experiment 012 telemetry proof. The next product step is to persist placement in the catalog/DDL layer, e.g. a table option for `hash_by_table`, default table+symbol hashing, or pinned operational tables, instead of relying on an admin-only runtime override. | M |
+| **Productize bounded small-table JOIN policy** | Devlog 195 validates coordinator-local small-table JOIN under a strict row cap. Before promotion, decide whether it stays automatic, becomes a feature flag, or moves behind an optimizer rule with cost checks, and document memory/latency limits for operational/control tables. | M |
+| **Bounded distributed window materialization policy** | Devlog 194 fixes correctness for the validated Action-Outcome window replay shape. Product promotion needs explicit row/memory limits, telemetry for full-data materialization, and fallback/error semantics for large tables. | M |
+| **Built-in Physical AI edge/fleet SQL/HTTP adapter and promotion hardening** | Devlog 205 adds the bounded worker lifecycle and hook contract. Product promotion still needs a built-in SQL/HTTP outbox-loader plus fleet-sink adapter, persisted connector config/catalog metadata, documented idempotent sink requirements, restart/node-replacement tests over real ZeptoDB tables, long-running soak/fault injection, rate/backpressure limits, and cross-architecture verification. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.

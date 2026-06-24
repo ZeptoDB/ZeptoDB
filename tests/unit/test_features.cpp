@@ -21,6 +21,7 @@
 
 // --- Server ---
 #include "zeptodb/server/http_server.h"
+#include "zeptodb/auth/auth_manager.h"
 
 // --- Feeds ---
 #include "zeptodb/feeds/kafka_consumer.h"
@@ -29,8 +30,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include <filesystem>
+#include <functional>
+#include <fstream>
+#include <mutex>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
@@ -88,6 +94,71 @@ static std::string http_get(int port, const std::string& path,
 
     auto pos = raw.find("\r\n\r\n");
     return (pos != std::string::npos) ? raw.substr(pos + 4) : raw;
+}
+
+struct HttpResponse {
+    int status = 0;
+    std::string body;
+};
+
+static HttpResponse http_request(int port,
+                                 const std::string& method,
+                                 const std::string& path,
+                                 const std::string& body = {},
+                                 const std::string& auth = {}) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return {};
+
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(static_cast<uint16_t>(port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+        ::close(fd);
+        return {};
+    }
+
+    std::string req = method + " " + path + " HTTP/1.1\r\n"
+                      "Host: localhost\r\n"
+                      "Connection: close\r\n";
+    if (!auth.empty()) {
+        req += "Authorization: Bearer " + auth + "\r\n";
+    }
+    if (!body.empty()) {
+        req += "Content-Type: application/json\r\n";
+        req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    }
+    req += "\r\n";
+    req += body;
+
+    ::send(fd, req.c_str(), req.size(), 0);
+
+    std::string raw;
+    char buf[4096];
+    ssize_t n;
+    struct timeval tv{ 1, 0 };
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0)
+        raw.append(buf, static_cast<size_t>(n));
+    ::close(fd);
+
+    HttpResponse out;
+    const auto first_space = raw.find(' ');
+    if (first_space != std::string::npos && first_space + 4 <= raw.size()) {
+        out.status = std::atoi(raw.c_str() + first_space + 1);
+    }
+    const auto body_pos = raw.find("\r\n\r\n");
+    out.body = body_pos != std::string::npos ? raw.substr(body_pos + 4) : raw;
+    return out;
+}
+
+static bool wait_until(const std::function<bool()>& predicate) {
+    for (int i = 0; i < 200; ++i) {
+        if (predicate()) return true;
+        std::this_thread::sleep_for(5ms);
+    }
+    return false;
 }
 
 // ============================================================================
@@ -475,6 +546,159 @@ TEST_F(MetricsProviderTest, KafkaStatsProviderIntegration) {
               std::string::npos);
     EXPECT_NE(body.find("zepto_kafka_ingest_failures_total{consumer=\"market-data\"} 0"),
               std::string::npos);
+}
+
+TEST_F(MetricsProviderTest, EdgeFleetConnectorAdminLifecycleAndMetrics) {
+    const std::string initial = http_get(test_port_, "/admin/edge-fleet-connector");
+    EXPECT_NE(initial.find("\"configured\":false"), std::string::npos);
+    EXPECT_NE(initial.find("\"enabled\":false"), std::string::npos);
+    EXPECT_NE(initial.find("\"worker_running\":false"), std::string::npos);
+
+    const auto post = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"test-edge-fleet","enabled":true,"batch_limit":9,"max_inflight":4,"max_retries_per_event":2})");
+    EXPECT_EQ(post.status, 200);
+    EXPECT_NE(post.body.find("\"configured\":true"), std::string::npos);
+    EXPECT_NE(post.body.find("\"enabled\":true"), std::string::npos);
+    EXPECT_NE(post.body.find("\"batch_limit\":9"), std::string::npos);
+    EXPECT_NE(post.body.find("\"max_inflight\":4"), std::string::npos);
+    EXPECT_NE(post.body.find("\"worker_enabled\":false"), std::string::npos);
+
+    const std::string metrics = http_get(test_port_, "/metrics");
+    EXPECT_NE(metrics.find("zepto_edge_fleet_connector_enabled{connector=\"test-edge-fleet\"} 1"),
+              std::string::npos);
+    EXPECT_NE(metrics.find("zepto_edge_fleet_connector_start_total{connector=\"test-edge-fleet\"} 1"),
+              std::string::npos);
+
+    const auto del = http_request(test_port_, "DELETE", "/admin/edge-fleet-connector");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_NE(del.body.find("\"configured\":false"), std::string::npos);
+    EXPECT_NE(del.body.find("\"enabled\":false"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest, EdgeFleetConnectorAdminStartsWorkerWhenHooksInstalled) {
+    std::mutex delivered_mu;
+    std::vector<std::string> delivered;
+
+    zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks;
+    hooks.load_outbox = [] {
+        zeptodb::feeds::EdgeFleetOutboxLoadResult out;
+        out.ok = true;
+        zeptodb::feeds::EdgeFleetFeedEvent first;
+        first.event_id = "http-e1";
+        first.stream_seq = 1;
+        first.kind = zeptodb::feeds::EdgeFleetEventKind::Decision;
+        first.ready_ts_ns = 1810000000000000001LL;
+        zeptodb::feeds::EdgeFleetFeedEvent second = first;
+        second.event_id = "http-e2";
+        second.stream_seq = 2;
+        second.ready_ts_ns = 1810000000000000002LL;
+        out.events = {first, second};
+        return out;
+    };
+    hooks.sink = [&](const zeptodb::feeds::EdgeFleetFeedEvent& item) {
+        std::lock_guard<std::mutex> lock(delivered_mu);
+        delivered.push_back(item.event_id);
+        return zeptodb::feeds::EdgeFleetDeliveryResult::Acked;
+    };
+    std::string hook_error;
+    ASSERT_TRUE(server_->set_edge_fleet_connector_runtime_hooks(
+        std::move(hooks), &hook_error)) << hook_error;
+
+    const auto post = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"test-edge-worker","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1,"max_inflight":1})");
+    EXPECT_EQ(post.status, 200);
+    EXPECT_NE(post.body.find("\"worker_enabled\":true"), std::string::npos);
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status = http_get(test_port_, "/admin/edge-fleet-connector");
+        return status.find("\"acked_count\":2") != std::string::npos;
+    }));
+
+    const std::string status = http_get(test_port_, "/admin/edge-fleet-connector");
+    EXPECT_NE(status.find("\"worker_hooks_configured\":true"), std::string::npos);
+    EXPECT_NE(status.find("\"worker_passes_total\":"), std::string::npos);
+
+    const std::string metrics = http_get(test_port_, "/metrics");
+    EXPECT_NE(metrics.find("zepto_edge_fleet_connector_worker_passes_total{connector=\"test-edge-worker\"}"),
+              std::string::npos);
+
+    const auto del = http_request(test_port_, "DELETE", "/admin/edge-fleet-connector");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_NE(del.body.find("\"worker_running\":false"), std::string::npos);
+
+    std::lock_guard<std::mutex> lock(delivered_mu);
+    EXPECT_GE(delivered.size(), 2u);
+}
+
+TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsInvalidLimits) {
+    const auto post = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"bad-edge-fleet","batch_limit":0})");
+    EXPECT_EQ(post.status, 400);
+    EXPECT_NE(post.body.find("positive"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsWorkerModeWithoutHooks) {
+    const auto post = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"no-hooks","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1})");
+    EXPECT_EQ(post.status, 400);
+    EXPECT_NE(post.body.find("requires outbox loader"), std::string::npos);
+}
+
+TEST(EdgeFleetConnectorAdminAuthTest, RequiresAdminPermission) {
+    const auto key_path =
+        zepto_test_util::unique_test_path("edge_fleet_connector_keys");
+    {
+        std::ofstream file(key_path);
+    }
+
+    zeptodb::auth::AuthManager::Config auth_cfg;
+    auth_cfg.enabled = true;
+    auth_cfg.api_keys_file = key_path.string();
+    auth_cfg.jwt_enabled = false;
+    auth_cfg.rate_limit_enabled = false;
+    auth_cfg.audit_enabled = false;
+    auth_cfg.audit_buffer_enabled = false;
+    auto auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
+    const std::string admin_key =
+        auth->create_api_key("edge-fleet-admin", zeptodb::auth::Role::ADMIN);
+    const std::string writer_key =
+        auth->create_api_key("edge-fleet-writer", zeptodb::auth::Role::WRITER);
+
+    const uint16_t port = zepto_test_util::pick_free_port();
+    auto pipeline = make_pipeline();
+    auto executor = std::make_unique<QueryExecutor>(*pipeline);
+    zeptodb::server::HttpServer server(*executor, port,
+                                       zeptodb::auth::TlsConfig{}, auth);
+    server.start_async();
+    std::this_thread::sleep_for(60ms);
+
+    const auto missing_auth =
+        http_request(port, "GET", "/admin/edge-fleet-connector");
+    EXPECT_EQ(missing_auth.status, 401);
+
+    const auto writer =
+        http_request(port, "GET", "/admin/edge-fleet-connector", {}, writer_key);
+    EXPECT_EQ(writer.status, 403);
+
+    const auto admin =
+        http_request(port, "GET", "/admin/edge-fleet-connector", {}, admin_key);
+    EXPECT_EQ(admin.status, 200);
+    EXPECT_NE(admin.body.find("\"configured\":false"), std::string::npos);
+
+    server.stop();
+    std::filesystem::remove(key_path);
 }
 
 // ============================================================================

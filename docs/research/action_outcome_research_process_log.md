@@ -1971,3 +1971,900 @@ for large cross-node hash JOINs over high-cardinality time-series fact tables.
 Define symbol-less operational table shard-key policy and add row-cap
 observability for the small-table JOIN path. This will make placement explicit
 instead of depending on stable table id plus `symbol_id=0`.
+
+---
+
+## 2026-06-21 — Operational Placement Policy And Telemetry
+
+### Request
+
+Implement Experiment 012: explicit operational table placement policy and
+telemetry for bounded small-table Action-Outcome JOINs.
+
+### Completed Work
+
+1. Added explicit table placement policy to the cluster router.
+   - `HashByTableAndSymbol`: default table+symbol route key.
+   - `HashByTable`: all rows for a table use the same table-level route key.
+   - `PinnedNode`: a declared table is routed to a specified node id.
+   - The policy is keyed by declared table id and applies to
+     `route(table_id, symbol)`.
+
+2. Added coordinator and HTTP control-plane APIs.
+   - `QueryCoordinator::set_table_placement()`
+   - `QueryCoordinator::clear_table_placement()`
+   - `POST /admin/table-placement`
+   - Declared symbol-less coordinator INSERTs now route by `(table_id, 0)`, so
+     runtime policy applies even when the coordinator is used directly.
+
+3. Added bounded small-table JOIN telemetry.
+   - `/stats` includes `small_table_join`.
+   - `/metrics` exposes Prometheus counters/gauges:
+     - `zepto_small_table_join_candidates_total`
+     - `zepto_small_table_join_accepted_total`
+     - `zepto_small_table_join_row_cap_rejections_total`
+     - `zepto_small_table_join_errors_total`
+     - `zepto_small_table_join_rows_materialized_total`
+     - `zepto_small_table_join_last_left_rows`
+     - `zepto_small_table_join_last_right_rows`
+
+4. Added/extended C++ regressions.
+   - `DistributedInsert.OperationalTablePlacementPolicyPinsSymbollessTable`
+   - `DistributedInsert.SmallTableBroadcastJoinMaterializesCrossNodeOperationalTables`
+   - `DistributedInsert.SmallTableBroadcastJoinRejectsRowsOverLimit`
+
+5. Added Experiment 012 live replay tooling and report.
+   - Tool:
+     `docs/research/tools/action_outcome_operational_placement_experiment.py`
+   - Procedure:
+     `docs/research/action_outcome_operational_placement_experiment_012.md`
+   - Result:
+     `docs/research/results/action_outcome_operational_placement_012.md`
+
+### Verification Commands
+
+```bash
+ninja -C build -j$(nproc) zepto_tests zepto_http_server
+
+./build/tests/zepto_tests \
+  --gtest_filter='DistributedInsert.OperationalTablePlacementPolicyPinsSymbollessTable:DistributedInsert.SmallTableBroadcastJoinMaterializesCrossNodeOperationalTables:DistributedInsert.SmallTableBroadcastJoinRejectsRowsOverLimit'
+
+python3 -m py_compile \
+  docs/research/tools/action_outcome_vendor_sql_replay.py \
+  docs/research/tools/action_outcome_operational_placement_experiment.py \
+  docs/research/tools/action_outcome_distributed_vendor_sql_replay.py
+
+python3 docs/research/tools/action_outcome_operational_placement_experiment.py \
+  --coordinator-url http://127.0.0.1:19241/ \
+  --node-a-id 1 \
+  --node-b-id 8 \
+  --node-a-stats-url http://127.0.0.1:19241/stats \
+  --node-b-stats-url http://127.0.0.1:19242/stats \
+  --metrics-url http://127.0.0.1:19241/metrics \
+  --extra-fixture docs/research/fixtures/action_outcome_distractor_episodes.json \
+  --quality-labels docs/research/fixtures/action_outcome_retrieval_quality_labels.json \
+  --output docs/research/results/action_outcome_operational_placement_012.md \
+  --timeout 10
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Focused C++ regression set | 3/3 pass |
+| Explicit placement policy | pass |
+| Seed row counts | pass |
+| Vendor table counts | pass |
+| Distributed ingest | pass |
+| Full SQL/JOIN/window replay | pass |
+| Small-table JOIN telemetry | pass |
+| Prometheus telemetry | pass |
+| Experiment 012 overall | pass |
+
+Experiment 012 pinned query, recommendation, and retrieval vendor tables to
+node 8, while pinning suppressions to node 1. The suppression JOIN therefore
+remained cross-node by design and still passed through the bounded small-table
+JOIN path. Telemetry recorded 4 JOIN candidates, 4 accepted JOINs, 0 row-cap
+rejections, 0 errors, and 327 materialized rows.
+
+### Interpretation
+
+This closes the immediate research question from Experiment 011: Action-Outcome
+operational table placement no longer has to depend on stable table-id hashing.
+The commercial wedge is clearer now: ZeptoDB can offer explicit placement and
+operator-visible bounded JOIN telemetry for agentic operational memory, without
+claiming a full distributed SQL optimizer.
+
+### Next Best Step
+
+Promote runtime table placement overrides to a persisted table option or catalog
+record, then add an operations/alerting example for row-cap rejections.
+
+---
+
+## 2026-06-21 — Research Experiment Governance Policy
+
+### Why
+
+The Action-Outcome research branch intentionally produced useful runtime
+changes for distributed SQL replay. After Experiment 012, the main risk was
+documentation drift: a validated experimental runtime path could look like a
+fully promoted product feature.
+
+### Changes
+
+1. Added `docs/research/EXPERIMENT_GOVERNANCE.md`.
+   - Defines `Research-only`, `Experimental runtime path`, and
+     `Promoted product feature`.
+   - Requires experiment docs to record classification, status, procedure,
+     acceptance criteria, results, interpretation, and next step.
+   - Defines product-promotion gates for runtime/API changes.
+
+2. Linked the policy from `AGENTS.md`.
+   - Future Codex work must apply the policy before documenting or promoting
+     experiment-driven runtime behavior.
+
+3. Reclassified current Action-Outcome runtime changes.
+   - Generic SQL INSERT materialization: promoted product correctness feature.
+   - String-key hash JOIN and alias-aware predicates: promoted product
+     correctness feature.
+   - Cluster full-data window materialization: experimental runtime path.
+   - Bounded small-table distributed hash JOIN: experimental runtime path.
+   - Runtime operational table placement: experimental runtime path.
+
+4. Updated Experiment 012 docs and API references.
+   - Runtime placement is now described as admin-only experimental state.
+   - Bounded small-table JOIN telemetry is explicitly scoped to the narrow
+     coordinator-local path.
+   - Product promotion requires persisted placement, explicit limits, and
+     operator guidance.
+
+### Verification
+
+Documentation-only governance change. No code build was required.
+
+---
+
+## 2026-06-23 — Experiment 013 Physical AI Action-Outcome Baseline
+
+### Goal
+
+Compare similar robot incident retrieval, runbook/action-prior recommendation,
+reflection-only memory, and context-gated Physical AI Action-Outcome Memory.
+The research question is whether a robot/fleet agent can avoid repeating unsafe
+actions and select the right recovery action when past successes only worked in
+different safety contexts.
+
+### Classification
+
+Research-only under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Changes
+
+1. Added `docs/research/fixtures/physical_ai_action_outcome_episodes.json`.
+   - Incident families: AGV dock slip, LiDAR occlusion, robot arm torque spike,
+     cold-chain temperature excursion, and drone GPS drift.
+   - Query episodes carry unsafe failed actions and expected safe recovery
+     actions.
+   - Hard distractors make the unsafe action look attractive because it
+     succeeded in training/supervised/simulated/no-human contexts.
+
+2. Added `docs/research/tools/physical_ai_action_outcome_baseline.py`.
+   - Evaluates `similar_robot_incident`, `runbook_action_prior`,
+     `reflection_only_memory`, and
+     `context_gated_physical_ai_action_outcome`.
+   - Reports Top-3 safe hit, recovery Top-1 hit, risky-repeat avoidance,
+     hazardous top-action rate, retrieval quality, and suppressions.
+
+3. Added experiment docs and generated result:
+   - `docs/research/physical_ai_action_outcome_experiment_013.md`
+   - `docs/research/results/physical_ai_action_outcome_013.md`
+
+### Verification Commands
+
+```bash
+python3 -m json.tool docs/research/fixtures/physical_ai_action_outcome_episodes.json >/tmp/physical_ai_action_outcome_episodes.pretty.json
+
+python3 -m py_compile \
+  docs/research/tools/physical_ai_action_outcome_baseline.py
+
+python3 docs/research/tools/physical_ai_action_outcome_baseline.py \
+  --fixture docs/research/fixtures/physical_ai_action_outcome_episodes.json \
+  --output docs/research/results/physical_ai_action_outcome_013.md
+```
+
+### Result Summary
+
+| Variant | Recovery Top-1 Hit | Risky Repeat Avoidance | Hazardous Top Action |
+| --- | ---: | ---: | ---: |
+| `similar_robot_incident` | 0.00 | 0.00 | 1.00 |
+| `runbook_action_prior` | 0.00 | 0.00 | 1.00 |
+| `reflection_only_memory` | 0.00 | 0.00 | 1.00 |
+| `context_gated_physical_ai_action_outcome` | 1.00 | 1.00 | 0.00 |
+
+### Interpretation
+
+The hard distractor fixture makes the Physical AI difference concrete: generic
+retrieval, runbook priors, and reflection memory can all retrieve useful
+evidence in the Top-3 while still selecting the hazardous action as Top-1.
+
+The context-gated variant keeps those misleading incidents visible for audit,
+but suppresses their outcome reuse before action aggregation. This is the same
+core Action-Outcome claim translated from AIOps into robot/fleet safety:
+do not ask only whether a prior incident is similar; ask whether the prior
+outcome is safe to reuse in this temporal and physical context.
+
+### Next Best Step
+
+Replay Experiment 013 through native ZeptoDB SQL tables with ROS-style telemetry
+windows, ASOF JOINs, action/outcome JOINs, recommendation ranking, and
+suppression audit tables.
+
+---
+
+## 2026-06-23 — Experiment 014 Physical AI Native SQL Replay
+
+### Goal
+
+Validate the Physical AI Action-Outcome comparison through live ZeptoDB native
+SQL, using robot-operation-shaped tables rather than only the Python baseline
+harness.
+
+### Classification
+
+Research-only under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Completed Work
+
+1. Added `docs/research/tools/physical_ai_sql_replay.py`.
+   - Loads the Experiment 013 fixture.
+   - Recomputes the four comparison variants.
+   - Creates native SQL tables for incidents, expected actions, historical
+     outcomes, robot state, sensor summaries, poses, recommendations,
+     retrievals, and suppressions.
+   - Emits the exact SQL replay file used for validation.
+
+2. Added Experiment 014 documentation and generated outputs.
+   - Procedure:
+     `docs/research/physical_ai_action_outcome_sql_replay_experiment_014.md`
+   - Result:
+     `docs/research/results/physical_ai_action_outcome_sql_replay_014.md`
+   - SQL:
+     `docs/research/results/physical_ai_action_outcome_sql_replay_014.sql`
+
+3. Updated repository tracking docs.
+   - `docs/devlog/199_physical_ai_sql_replay.md`
+   - `docs/COMPLETED.md`
+   - `docs/BACKLOG.md`
+
+### Verification Commands
+
+```bash
+ninja -C build -j$(nproc) zepto_http_server
+
+python3 -m py_compile \
+  docs/research/tools/physical_ai_action_outcome_baseline.py \
+  docs/research/tools/physical_ai_sql_replay.py
+
+python3 -m json.tool docs/research/fixtures/physical_ai_action_outcome_episodes.json >/tmp/physical_ai_action_outcome_episodes.pretty.json
+
+./build/zepto_http_server --port 19341 --no-auth --storage-mode pure
+
+python3 docs/research/tools/physical_ai_sql_replay.py \
+  --url http://127.0.0.1:19341/ \
+  --fixture docs/research/fixtures/physical_ai_action_outcome_episodes.json \
+  --output docs/research/results/physical_ai_action_outcome_sql_replay_014.md \
+  --sql-output docs/research/results/physical_ai_action_outcome_sql_replay_014.sql \
+  --timeout 10
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Row counts | pass |
+| Failed-repeat JOIN | pass |
+| Context top-action JOIN | pass |
+| Suppression audit JOIN | pass |
+| Action/outcome JOIN | pass |
+| Robot state ASOF JOIN | pass |
+| Sensor ASOF JOIN | pass |
+| ROW_NUMBER window | pass |
+| LAG window | pass |
+| ST_Within geofence | pass |
+| Overall SQL replay | pass |
+
+The replay inserted 227 research rows across nine Physical AI tables and found
+15 unsafe Top-1 recommendations from the three non-gated baselines. The
+context-gated variant selected all five expected recovery actions and exposed
+five misleading hard distractors through the suppression audit JOIN.
+
+### Interpretation
+
+Experiment 014 turns the Physical AI memory claim into replayable SQL evidence:
+robot incidents, event-time telemetry, action outcomes, ranked recommendations,
+retrieval evidence, suppressions, and pose/geofence checks can be recorded and
+audited inside ZeptoDB.
+
+The experiment remains research-only. It intentionally uses materialized
+composite keys for multi-field operational relationships and numeric ASOF
+projection codes because the current native ASOF projection path is
+integer-oriented.
+
+### Next Best Step
+
+Port the replay into a two-node live topology that separates:
+
+- edge-local robot memory for immediate unsafe-action suppression,
+- fleet-global memory for slower cross-robot consolidation and audit.
+
+---
+
+## 2026-06-23 — Experiment 015 Physical AI Edge/Fleet Replay
+
+### Goal
+
+Validate a two-node Physical AI memory shape where edge-local memory suppresses
+unsafe robot actions immediately, while fleet-global memory receives delayed
+consolidation rows for audit and cross-robot learning.
+
+### Classification
+
+Research-only under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Completed Work
+
+1. Added `docs/research/tools/physical_ai_edge_fleet_replay.py`.
+   - Uses the Experiment 013 fixture and Experiment 014 helper functions.
+   - Writes edge-local SQL to one live ZeptoDB endpoint.
+   - Writes fleet-global SQL to a second live ZeptoDB endpoint.
+   - Validates edge immediate recovery, risky-action suppression, robot ASOF,
+     and sensor ASOF.
+   - Validates fleet delayed consolidation, suppression audit JOIN,
+     retrieval ROW_NUMBER, and consolidation-lag LAG.
+
+2. Added Experiment 015 documentation and generated outputs.
+   - Procedure:
+     `docs/research/physical_ai_edge_fleet_replay_experiment_015.md`
+   - Result:
+     `docs/research/results/physical_ai_edge_fleet_replay_015.md`
+   - Edge SQL:
+     `docs/research/results/physical_ai_edge_fleet_replay_015_edge.sql`
+   - Fleet SQL:
+     `docs/research/results/physical_ai_edge_fleet_replay_015_fleet.sql`
+
+3. Updated repository tracking docs.
+   - `docs/devlog/200_physical_ai_edge_fleet_replay.md`
+   - `docs/COMPLETED.md`
+   - `docs/BACKLOG.md`
+
+### Verification Commands
+
+```bash
+python3 -m py_compile \
+  docs/research/tools/physical_ai_action_outcome_baseline.py \
+  docs/research/tools/physical_ai_sql_replay.py \
+  docs/research/tools/physical_ai_edge_fleet_replay.py
+
+python3 -m json.tool docs/research/fixtures/physical_ai_action_outcome_episodes.json >/tmp/physical_ai_action_outcome_episodes.pretty.json
+
+./build/zepto_http_server --port 19441 --node-id 1 --no-auth --storage-mode pure
+
+./build/zepto_http_server --port 19442 --node-id 8 --no-auth --storage-mode pure
+
+python3 docs/research/tools/physical_ai_edge_fleet_replay.py \
+  --edge-url http://127.0.0.1:19441/ \
+  --fleet-url http://127.0.0.1:19442/ \
+  --edge-stats-url http://127.0.0.1:19441/stats \
+  --fleet-stats-url http://127.0.0.1:19442/stats \
+  --fixture docs/research/fixtures/physical_ai_action_outcome_episodes.json \
+  --output docs/research/results/physical_ai_edge_fleet_replay_015.md \
+  --edge-sql-output docs/research/results/physical_ai_edge_fleet_replay_015_edge.sql \
+  --fleet-sql-output docs/research/results/physical_ai_edge_fleet_replay_015_fleet.sql \
+  --timeout 10
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Edge row counts | pass |
+| Fleet row counts | pass |
+| Edge immediate recovery | pass |
+| Edge risky-action suppression | pass |
+| Edge robot ASOF | pass |
+| Edge sensor ASOF | pass |
+| Fleet consolidated recovery | pass |
+| Fleet suppression audit JOIN | pass |
+| Fleet consolidation lag | pass |
+| Fleet ROW_NUMBER | pass |
+| Fleet LAG | pass |
+| Overall edge/fleet replay | pass |
+
+The edge node stored 82 research rows and the fleet node stored 87 research
+rows. Edge-local SQL selected all five expected recovery actions and suppressed
+all five unsafe query actions before consolidation. Fleet-global SQL received
+five delayed decisions and exposed all five misleading hard distractors through
+the suppression audit JOIN.
+
+### Interpretation
+
+The experiment validates the target memory separation: immediate robot safety
+belongs at the edge, while slower cross-robot learning and audit belong at the
+fleet layer.
+
+The transfer is still harness-driven SQL copy, not product replication. This
+keeps the result honest while making the next engineering boundary clear.
+
+### Next Best Step
+
+Replace harness-driven consolidation with an explicit bounded edge-to-fleet feed
+or replication path, then test duplicate, dropped, late, outage, and restart
+cases.
+
+## 2026-06-23 — Experiment 016 Physical AI Edge/Fleet Feed Replay
+
+### Goal
+
+Replace the Experiment 015 direct fleet-row copy with an explicit bounded
+edge-to-fleet feed path and validate dropped, duplicated, late, outage, and
+restart behavior while preserving immediate edge-local robot safety.
+
+### Classification
+
+Research-only under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Work Completed
+
+1. Added `docs/research/tools/physical_ai_edge_fleet_feed_replay.py`.
+   - Writes edge-local incidents, expected actions, robot state, sensor
+     summaries, decisions, suppressions, and a 52-row edge outbox.
+   - Seeds fleet-global historical action outcomes and expected safe actions.
+   - Transfers only edge-generated `decision`, `retrieval`, and `suppression`
+     events through a bounded feed worker.
+   - Records fleet inbox attempts, persistent ACK rows, and feed telemetry.
+   - Injects outage, dropped-event retry, duplicate attempt, late delivery, and
+     restart ACK reload phases.
+
+2. Added Experiment 016 docs and generated outputs.
+   - Procedure:
+     `docs/research/physical_ai_edge_fleet_feed_replay_experiment_016.md`
+   - Result:
+     `docs/research/results/physical_ai_edge_fleet_feed_replay_016.md`
+   - Edge SQL:
+     `docs/research/results/physical_ai_edge_fleet_feed_replay_016_edge.sql`
+   - Fleet SQL:
+     `docs/research/results/physical_ai_edge_fleet_feed_replay_016_fleet.sql`
+
+3. Updated repository tracking docs.
+   - `docs/devlog/201_physical_ai_edge_fleet_feed_replay.md`
+   - `docs/COMPLETED.md`
+   - `docs/BACKLOG.md`
+   - `docs/research/physical_ai_edge_fleet_replay_experiment_015.md`
+
+### Verification Commands
+
+```bash
+python3 -m py_compile docs/research/tools/physical_ai_edge_fleet_feed_replay.py
+
+python3 -m json.tool docs/research/fixtures/physical_ai_action_outcome_episodes.json >/tmp/physical_ai_action_outcome_episodes.pretty.json
+
+./build/zepto_http_server --port 19441 --node-id 1 --no-auth --storage-mode pure
+
+./build/zepto_http_server --port 19442 --node-id 8 --no-auth --storage-mode pure
+
+python3 docs/research/tools/physical_ai_edge_fleet_feed_replay.py \
+  --edge-url http://127.0.0.1:19441/ \
+  --fleet-url http://127.0.0.1:19442/ \
+  --outage-url http://127.0.0.1:1/ \
+  --edge-stats-url http://127.0.0.1:19441/stats \
+  --fleet-stats-url http://127.0.0.1:19442/stats \
+  --fixture docs/research/fixtures/physical_ai_action_outcome_episodes.json \
+  --output docs/research/results/physical_ai_edge_fleet_feed_replay_016.md \
+  --edge-sql-output docs/research/results/physical_ai_edge_fleet_feed_replay_016_edge.sql \
+  --fleet-sql-output docs/research/results/physical_ai_edge_fleet_feed_replay_016_fleet.sql \
+  --timeout 10 \
+  --batch-limit 12 \
+  --max-inflight 12
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Edge row counts | pass |
+| Edge immediate recovery | pass |
+| Edge risky-action suppression | pass |
+| Feed ACK convergence | pass |
+| Feed event-kind accounting | pass |
+| Duplicate delivery handling | pass |
+| Late delivery handling | pass |
+| Outage retry | pass |
+| Restart ACK reload | pass |
+| Bounded batch limit | pass |
+| Fleet final row counts | pass |
+| Fleet recovery JOIN | pass |
+| Fleet suppression audit JOIN | pass |
+| Fleet ACK ROW_NUMBER/LAG | pass |
+| Overall bounded feed replay | pass |
+
+The edge node stored 134 research rows and the fleet node stored 198 research
+rows. Edge-local memory still selected all five expected recovery actions and
+suppressed all five unsafe query actions immediately. Fleet-global memory
+eventually ACKed all 52 edge outbox events after one duplicate attempt, two
+late attempts, an outage probe, and a feed-worker restart that reloaded prior
+ACK state.
+
+### Interpretation
+
+Experiment 016 validates a stronger Physical AI memory architecture: edge-local
+memory owns immediate suppression, while fleet-global memory can be slower,
+auditable, and eventually consistent through bounded feed semantics.
+
+The result is not product replication yet. It proves the semantics that an
+experimental runtime connector must preserve: bounded batches, idempotent
+delivery, late/outage/restart convergence, and visible feed telemetry.
+
+### Next Best Step
+
+Promote the research feed semantics into an experimental runtime connector with
+persisted cursor/checkpoint state, operator-visible metrics, and documented
+behavior for final-table insert success followed by ACK failure.
+
+## 2026-06-23 — Experiment 017 Physical AI Edge/Fleet Runtime Connector
+
+### Goal
+
+Promote Experiment 016 bounded edge-to-fleet feed semantics from a Python
+research harness into a reusable C++ experimental runtime connector.
+
+### Classification
+
+Experimental runtime path under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Work Completed
+
+1. Added `EdgeFleetFeedConnector`.
+   - Header: `include/zeptodb/feeds/edge_fleet_feed_connector.h`
+   - Implementation: `src/feeds/edge_fleet_feed_connector.cpp`
+   - Library wiring: `zepto_feeds`
+
+2. Added runtime semantics.
+   - Bounded passes with `batch_limit` and `max_inflight`.
+   - ACKed event-id duplicate suppression.
+   - Late-event detection by stream sequence.
+   - Transient retry accounting.
+   - Optional local checkpoint load/save for restart ACK reload.
+   - `AppliedButAckFailed` handling for final-table success followed by ACK
+     persistence failure.
+   - Prometheus/OpenMetrics formatting for connector stats.
+
+3. Added focused C++ tests.
+   - `tests/unit/test_edge_fleet_feed_connector.cpp`
+   - Covers config validation, bounded batch, checkpoint persistence,
+     dropped/outage-style transient retry, duplicate handling, late delivery,
+     restart reload, malformed input, ACK-boundary failure, and metrics.
+
+4. Updated documentation and governance.
+   - `docs/devlog/202_physical_ai_edge_fleet_runtime_connector.md`
+   - `docs/research/physical_ai_edge_fleet_runtime_connector_experiment_017.md`
+   - `docs/api/CPP_REFERENCE.md`
+   - `docs/design/layer2_ingestion_network.md`
+   - `docs/research/EXPERIMENT_GOVERNANCE.md`
+   - `docs/COMPLETED.md`
+   - `docs/BACKLOG.md`
+
+### Verification Commands
+
+```bash
+cd build && ninja -j$(nproc) zepto_tests
+
+./build/tests/zepto_tests --gtest_filter='EdgeFleetFeedConnectorTest.*'
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| `zepto_tests` build | pass |
+| `EdgeFleetFeedConnectorTest.ConfigDefaultsAndValidation` | pass |
+| `EdgeFleetFeedConnectorTest.ProcessesBoundedBatchAndPersistsAcks` | pass |
+| `EdgeFleetFeedConnectorTest.RetriesDroppedEventAndAcceptsLateDelivery` | pass |
+| `EdgeFleetFeedConnectorTest.ReloadsCheckpointAfterRestart` | pass |
+| `EdgeFleetFeedConnectorTest.KeepsEventUnackedOnAckBoundaryFailure` | pass |
+| `EdgeFleetFeedConnectorTest.RejectsMalformedEventsAndCanBlockLateEvents` | pass |
+| `EdgeFleetFeedConnectorTest.RetriesTransientFailureWithinPass` | pass |
+| `EdgeFleetFeedConnectorTest.FormatsPrometheusCounters` | pass |
+
+### Interpretation
+
+The core edge-to-fleet memory transport semantics are now in runtime C++ code,
+not just the research harness. This narrows product risk: the remaining work is
+adapter and operations integration, not the feed state machine itself.
+
+This is still not a promoted product feature. The connector is transport
+neutral and requires a concrete SQL/HTTP source/sink adapter, live two-node
+runtime replay, lifecycle controls, and admin/security docs before promotion.
+
+### Next Best Step
+
+Build the ZeptoDB SQL/HTTP source/sink adapter for Experiment 016 tables, then
+rerun the two-node Physical AI replay through `EdgeFleetFeedConnector` instead
+of the Python feed worker.
+
+## 2026-06-23 — Experiment 018 Physical AI Edge/Fleet C++ Connector Replay
+
+### Goal
+
+Connect `EdgeFleetFeedConnector` to two live ZeptoDB HTTP SQL nodes and prove
+that it can replace the Python feed worker for the bounded Physical AI
+edge-to-fleet replay.
+
+### Classification
+
+Experimental runtime path under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Work Completed
+
+1. Added a standalone C++ live replay tool.
+   - Tool: `tools/zepto_edge_fleet_replay.cpp`
+   - Target: `zepto_edge_fleet_replay`
+   - Result report:
+     `docs/research/results/physical_ai_edge_fleet_cpp_connector_replay_018.md`
+
+2. Wired concrete SQL/HTTP source and sink behavior.
+   - Applies the Experiment 016 edge SQL fixture to an edge node.
+   - Applies only fleet DDL/base seed statements to a fleet node.
+   - Reads `physical_ai_edge_feed_outbox_016` through native SQL.
+   - Converts rows to `EdgeFleetFeedEvent`.
+   - Materializes fleet inbox, decision, retrieval, suppression, ACK, and
+     telemetry rows through SQL inserts.
+
+3. Validated failure and convergence phases.
+   - Outage probe.
+   - Bounded recovery with one dropped event and one duplicate event.
+   - Restart checkpoint reload with late delivery.
+   - Final bounded drain to 52/52 ACK rows.
+
+4. Updated documentation and governance.
+   - `docs/devlog/203_physical_ai_edge_fleet_cpp_connector_replay.md`
+   - `docs/research/physical_ai_edge_fleet_cpp_connector_replay_experiment_018.md`
+   - `docs/design/layer2_ingestion_network.md`
+   - `docs/api/CPP_REFERENCE.md`
+   - `docs/research/EXPERIMENT_GOVERNANCE.md`
+   - `docs/COMPLETED.md`
+   - `docs/BACKLOG.md`
+
+### Verification Commands
+
+```bash
+cd build && ninja -j$(nproc) zepto_edge_fleet_replay zepto_tests
+
+./build/tests/zepto_tests --gtest_filter='EdgeFleetFeedConnectorTest.*'
+
+./build/zepto_edge_fleet_replay \
+  --edge-url http://127.0.0.1:19441 \
+  --fleet-url http://127.0.0.1:19442 \
+  --outage-url http://127.0.0.1:1 \
+  --edge-sql docs/research/results/physical_ai_edge_fleet_feed_replay_016_edge.sql \
+  --fleet-seed-sql docs/research/results/physical_ai_edge_fleet_feed_replay_016_fleet.sql \
+  --output docs/research/results/physical_ai_edge_fleet_cpp_connector_replay_018.md \
+  --checkpoint /tmp/zeptodb_edge_fleet_cpp_connector_018.checkpoint \
+  --batch-limit 12 \
+  --max-inflight 12
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| `zepto_edge_fleet_replay` build | pass |
+| `EdgeFleetFeedConnectorTest.*` | pass, 8/8 |
+| Live C++ connector replay | pass |
+| Fleet ACK convergence | 52/52 |
+| Fleet decision rows | 5 |
+| Fleet retrieval rows | 15 |
+| Fleet suppression rows | 32 |
+| Outage telemetry | pass |
+| Duplicate telemetry | pass |
+| Late telemetry | pass |
+| Restart reload telemetry | pass |
+| Recovery JOIN | 5 rows |
+| Suppression audit JOIN | 32 rows |
+
+### Interpretation
+
+Experiment 018 closes the adapter validation gap from Experiment 017. The
+runtime connector now has a concrete live SQL/HTTP replay path over two ZeptoDB
+nodes, and the fleet audit converges after outage, dropped, duplicate, late,
+and restart phases.
+
+This remains experimental. The adapter is a standalone replay tool, not a
+server-managed connector. Product promotion still requires lifecycle controls,
+RBAC/admin policy, persisted feed configuration and ACK/cursor state, and
+long-running operational tests.
+
+### Next Best Step
+
+Design the product lifecycle for this connector: how it is enabled, where ACK
+state lives, which admin role controls it, and how metrics are exposed without
+running the standalone experiment tool.
+
+## 2026-06-23 — Experiment 019 Physical AI Edge/Fleet Server Lifecycle
+
+### Goal
+
+Move the Physical AI edge/fleet connector from standalone replay-tool ownership
+toward server-managed lifecycle ownership.
+
+### Classification
+
+Experimental runtime path under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Work Completed
+
+1. Added `EdgeFleetConnectorRuntime`.
+   - Header: `include/zeptodb/feeds/edge_fleet_connector_runtime.h`
+   - Implementation: `src/feeds/edge_fleet_connector_runtime.cpp`
+   - Owns process-local connector config, enabled state, checkpoint
+     start/stop behavior, lifecycle counters, snapshots, and Prometheus text.
+
+2. Added server admin lifecycle endpoints.
+   - `GET /admin/edge-fleet-connector`
+   - `POST /admin/edge-fleet-connector`
+   - `DELETE /admin/edge-fleet-connector`
+
+3. Added metrics exposure.
+   - `/metrics` now includes lifecycle gauges/counters and the underlying
+     `EdgeFleetFeedConnector` counters.
+
+4. Added focused tests.
+   - Runtime manager start/stop/clear.
+   - Invalid bounded limits.
+   - Missing checkpoint startup.
+   - HTTP configure/enable/delete lifecycle.
+   - HTTP invalid limit rejection.
+   - HTTP 401 without credentials, 403 with writer credentials, and 200 with
+     admin credentials.
+
+5. Updated documentation and governance.
+   - `docs/devlog/204_physical_ai_edge_fleet_server_lifecycle.md`
+   - `docs/research/physical_ai_edge_fleet_lifecycle_experiment_019.md`
+   - `docs/api/CPP_REFERENCE.md`
+   - `docs/api/HTTP_REFERENCE.md`
+   - `docs/design/layer2_ingestion_network.md`
+   - `docs/research/EXPERIMENT_GOVERNANCE.md`
+   - `docs/COMPLETED.md`
+   - `docs/BACKLOG.md`
+
+### Verification Commands
+
+```bash
+cd build && ninja -j$(nproc) zepto_tests zepto_http_server zepto_edge_fleet_replay
+
+./build/tests/zepto_tests \
+  --gtest_filter='EdgeFleetFeedConnectorTest.*:EdgeFleetConnectorRuntimeTest.*'
+
+./build/tests/zepto_tests \
+  --gtest_filter='MetricsProviderTest.EdgeFleetConnector*:EdgeFleetConnectorAdminAuthTest.*'
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Build | pass |
+| Connector/runtime focused tests | pass, 12/12 |
+| HTTP lifecycle/admin tests | pass, 3/3 |
+| Runtime metrics | pass |
+| HTTP invalid limits | pass |
+| HTTP admin authorization | pass |
+
+### Interpretation
+
+Experiment 019 creates the server control plane for the connector. This removes
+one major product blocker from Experiment 018: operators no longer need a
+standalone replay tool to own connector lifecycle state and metrics.
+
+This is still experimental. At the time of Experiment 019 the server did not
+yet run a worker. Experiment 020 adds the generic worker hook/loop; the built-in
+SQL outbox adapter and fleet sink execution remain open. Connector config is
+process-local and not catalog-persisted.
+
+### Next Best Step
+
+Experiment 020 supersedes the generic worker portion of this step. The next
+remaining step is the built-in SQL/HTTP adapter that reads the configured edge
+outbox table, applies fleet sink rows, updates ACK state, exposes pass
+telemetry, and survives restart without relying on `zepto_edge_fleet_replay`.
+
+## 2026-06-23 — Experiment 020 Physical AI Edge/Fleet Worker Runtime
+
+### Goal
+
+Add the bounded server-managed worker foundation required to move the
+Physical AI edge/fleet connector from lifecycle-only control toward a
+production candidate.
+
+### Classification
+
+Experimental runtime path under `docs/research/EXPERIMENT_GOVERNANCE.md`.
+
+### Work Completed
+
+1. Extended `EdgeFleetConnectorRuntime`.
+   - Added `EdgeFleetConnectorRuntimeHooks`.
+   - Added `setWorkerHooks()`.
+   - Added manual `runOnce()`.
+   - Added background worker mode via `worker_enabled` and
+     `worker_poll_interval_ms`.
+
+2. Added worker telemetry.
+   - Worker hook readiness.
+   - Worker running state.
+   - Worker start/pass/load-error/observer-error counters.
+   - Last bounded pass result in the runtime snapshot.
+   - Prometheus worker metrics.
+
+3. Extended HTTP server integration.
+   - `HttpServer::set_edge_fleet_connector_runtime_hooks()`.
+   - `GET /admin/edge-fleet-connector` now reports worker fields.
+   - `POST /admin/edge-fleet-connector` accepts `worker_enabled` and
+     `worker_poll_interval_ms`.
+
+4. Added focused tests.
+   - Manual bounded worker pass.
+   - Background convergence across multiple bounded batches.
+   - Loader outage/error accounting and recovery.
+   - Missing-hook rejection.
+   - HTTP admin lifecycle with installed hooks.
+   - HTTP worker metrics.
+
+5. Added production-readiness planning.
+   - `docs/research/physical_ai_edge_fleet_production_readiness_plan.md`
+   - `docs/research/physical_ai_edge_fleet_worker_experiment_020.md`
+   - `docs/devlog/205_physical_ai_edge_fleet_worker_runtime.md`
+
+### Verification Commands
+
+```bash
+cd build && ninja -j$(nproc) zepto_tests zepto_http_server zepto_edge_fleet_replay
+
+./build/tests/zepto_tests \
+  --gtest_filter='EdgeFleetFeedConnectorTest.*:EdgeFleetConnectorRuntimeTest.*'
+
+./build/tests/zepto_tests \
+  --gtest_filter='MetricsProviderTest.EdgeFleetConnector*:EdgeFleetConnectorAdminAuthTest.*'
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Build | pass |
+| Connector/runtime focused tests | pass, 16/16 |
+| HTTP lifecycle/admin tests | pass, 5/5 |
+| Manual bounded worker pass | pass |
+| Background worker convergence | pass |
+| Loader outage recovery | pass |
+| Missing-hook rejection | pass |
+| Worker metrics | pass |
+
+### Interpretation
+
+Experiment 020 closes the worker-lifecycle gap from Experiment 019. The runtime
+now owns bounded pass execution and worker telemetry rather than only storing
+configuration and lifecycle state.
+
+This is still experimental. The server runtime exposes a hook contract, but it
+does not yet include a built-in SQL/HTTP adapter that reads the configured edge
+outbox table and materializes fleet rows. Connector configuration also remains
+process-local.
+
+### Next Best Step
+
+Build the concrete SQL/HTTP adapter into the server runtime by extracting the
+reusable outbox loading and fleet sink materialization logic from
+`zepto_edge_fleet_replay`, then validate the same dropped, duplicated, late,
+outage, restart, recovery JOIN, and suppression audit cases through the
+server-managed worker path.

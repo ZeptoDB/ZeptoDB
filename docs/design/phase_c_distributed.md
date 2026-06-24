@@ -456,7 +456,7 @@ Future work that deepens the MPP side lives in P8/P10: RDMA remote scans,
 RDMA WAL replication, replica-aware reads, cost-based distributed planning,
 broadcast or replicated dimension tables, and pluggable partition strategies.
 
-**Experiment 011 boundary (updated 2026-06-21):** the Action-Outcome
+**Experiment 011 experimental boundary (updated 2026-06-21):** the Action-Outcome
 distributed vendor SQL replay now passes the full strict SQL/JOIN/window
 surface on a two-node 1/8 ring. Two-node row counts, routed ingest,
 co-located vendor JOINs, the cross-node suppression JOIN, and cluster-mode
@@ -466,6 +466,27 @@ operational-table case by fetching both sides under a row cap, materializing
 declared schemas into a temporary typed pipeline, and executing the original
 hash JOIN locally. This is not a full distributed SQL optimizer: large
 cross-node hash JOINs still belong to future cost-based planning.
+
+**Experiment 012 experimental boundary (updated 2026-06-21):** symbol-less
+operational tables can use explicit table-level runtime placement instead of
+depending on `(stable_table_id, symbol_id=0)` ownership. `PartitionRouter`
+supports default table+symbol hashing, table-only hashing, and pinned-node
+placement. `POST /admin/table-placement` applies the runtime policy through
+`QueryCoordinator`, while `/stats` and Prometheus expose bounded small-table
+JOIN telemetry: candidates, accepted joins, row-cap rejections, non-cap
+errors, rows materialized, and the last left/right row counts. Experiment 012
+pins Action-Outcome query/recommendation/retrieval tables to node 8 and the
+suppression table to node 1, then verifies full distributed SQL/JOIN/window
+replay with zero row-cap rejections and zero small-table JOIN errors. This is
+an experimental runtime path: placement is not yet persisted in the schema
+catalog, is not a rebalance/failover policy, and does not promote broad
+distributed JOIN/window support.
+
+Research-to-product promotion follows
+`docs/research/EXPERIMENT_GOVERNANCE.md`. Current promotion blockers are:
+persisted placement metadata, product limits for bounded small-table JOIN,
+telemetry and limits for full-data window materialization, and an explicit
+optimizer/cost rule before any larger cross-node JOIN claim.
 
 ---
 
