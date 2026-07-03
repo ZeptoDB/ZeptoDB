@@ -50,6 +50,7 @@
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/ptp_clock_detector.h"
+#include "zeptodb/feeds/action_outcome_supervisor_runtime.h"
 #include "zeptodb/feeds/edge_fleet_connector_runtime.h"
 #include <cstdint>
 #include <functional>
@@ -201,6 +202,13 @@ public:
     /// config; embeddings supply SQL/HTTP/RPC outbox and fleet sink callbacks.
     bool set_edge_fleet_connector_runtime_hooks(
         zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks,
+        std::string* error = nullptr);
+
+    /// Install hooks for the experimental Physical AI Action-Outcome
+    /// supervisor worker. The HTTP admin endpoint owns lifecycle and config;
+    /// embeddings supply proposal source, decision, and decision sink callbacks.
+    bool set_action_outcome_supervisor_runtime_hooks(
+        zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks,
         std::string* error = nullptr);
 
     /// Access the agent memory store backing /api/ai/* endpoints.
@@ -448,6 +456,9 @@ private:
 
     // Experimental Physical AI edge/fleet connector lifecycle.
     zeptodb::feeds::EdgeFleetConnectorRuntime               edge_fleet_connector_runtime_;
+
+    // Experimental Physical AI Action-Outcome supervisor lifecycle.
+    zeptodb::feeds::ActionOutcomeSupervisorRuntime          action_outcome_supervisor_runtime_;
 };
 
 } // namespace zeptodb::server

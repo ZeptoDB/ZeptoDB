@@ -983,6 +983,7 @@ target_link_libraries(zepto_scheduler PUBLIC
 
 # --- Feed Handler Adapters ---
 add_library(zepto_feeds STATIC
+    src/feeds/action_outcome_supervisor_runtime.cpp
     src/feeds/edge_fleet_connector_runtime.cpp
     src/feeds/edge_fleet_feed_connector.cpp
     src/feeds/fix_parser.cpp

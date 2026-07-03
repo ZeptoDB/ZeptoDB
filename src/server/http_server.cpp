@@ -306,6 +306,71 @@ static std::string edge_fleet_connector_status_json(
     return os.str();
 }
 
+static std::string action_outcome_supervisor_status_json(
+    const zeptodb::feeds::ActionOutcomeSupervisorRuntimeSnapshot& snap) {
+    std::ostringstream os;
+    os << "{\"configured\":" << (snap.configured ? "true" : "false")
+       << ",\"enabled\":" << (snap.enabled ? "true" : "false")
+       << ",\"worker_running\":" << (snap.worker_running ? "true" : "false")
+       << ",\"worker_hooks_configured\":"
+       << (snap.worker_hooks_configured ? "true" : "false")
+       << ",\"failure_budget_exhausted\":"
+       << (snap.failure_budget_exhausted ? "true" : "false")
+       << ",\"name\":" << json_quote(snap.name)
+       << ",\"mode\":" << json_quote(snap.mode)
+       << ",\"history_table\":" << json_quote(snap.history_table)
+       << ",\"proposal_table\":" << json_quote(snap.proposal_table)
+       << ",\"decision_table\":" << json_quote(snap.decision_table)
+       << ",\"evidence_table\":" << json_quote(snap.evidence_table)
+       << ",\"fail_closed_action\":" << json_quote(snap.fail_closed_action)
+       << ",\"worker_poll_interval_ms\":" << snap.worker_poll_interval_ms
+       << ",\"batch_limit\":" << snap.batch_limit
+       << ",\"max_consecutive_failures\":"
+       << snap.max_consecutive_failures
+       << ",\"consecutive_failures\":" << snap.consecutive_failures
+       << ",\"configure_total\":" << snap.configure_total
+       << ",\"start_total\":" << snap.start_total
+       << ",\"stop_total\":" << snap.stop_total
+       << ",\"start_failures_total\":" << snap.start_failures_total
+       << ",\"stop_failures_total\":" << snap.stop_failures_total
+       << ",\"worker_start_total\":" << snap.worker_start_total
+       << ",\"worker_wakeups_total\":" << snap.worker_wakeups_total
+       << ",\"worker_passes_total\":" << snap.worker_passes_total
+       << ",\"worker_idle_passes_total\":" << snap.worker_idle_passes_total
+       << ",\"worker_failures_total\":" << snap.worker_failures_total
+       << ",\"proposals_processed_total\":"
+       << snap.proposals_processed_total
+       << ",\"proposals_duplicate_total\":"
+       << snap.proposals_duplicate_total
+       << ",\"proposals_rejected_total\":"
+       << snap.proposals_rejected_total
+       << ",\"decisions_allow_total\":" << snap.decisions_allow_total
+       << ",\"decisions_suppress_total\":"
+       << snap.decisions_suppress_total
+       << ",\"fail_closed_total\":" << snap.fail_closed_total
+       << ",\"evidence_rows_written_total\":"
+       << snap.evidence_rows_written_total
+       << ",\"last_pass\":{\"proposals_seen\":"
+       << snap.last_pass.proposals_seen
+       << ",\"batch_proposals\":" << snap.last_pass.batch_proposals
+       << ",\"processed_count\":" << snap.last_pass.processed_count
+       << ",\"duplicate_count\":" << snap.last_pass.duplicate_count
+       << ",\"rejected_count\":" << snap.last_pass.rejected_count
+       << ",\"decision_error_count\":"
+       << snap.last_pass.decision_error_count
+       << ",\"sink_error_count\":" << snap.last_pass.sink_error_count
+       << ",\"allow_count\":" << snap.last_pass.allow_count
+       << ",\"suppress_count\":" << snap.last_pass.suppress_count
+       << ",\"fail_closed_count\":" << snap.last_pass.fail_closed_count
+       << ",\"evidence_rows_written\":"
+       << snap.last_pass.evidence_rows_written
+       << ",\"latency_us\":" << snap.last_pass.latency_us
+       << "}"
+       << ",\"last_error\":" << json_quote(snap.last_error)
+       << "}";
+    return os.str();
+}
+
 static bool json_float_array_field(const std::string& body,
                                    const std::string& key,
                                    std::vector<float>* out,
@@ -1087,6 +1152,12 @@ bool HttpServer::set_edge_fleet_connector_runtime_hooks(
     zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks,
     std::string* error) {
     return edge_fleet_connector_runtime_.setWorkerHooks(std::move(hooks), error);
+}
+
+bool HttpServer::set_action_outcome_supervisor_runtime_hooks(
+    zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks,
+    std::string* error) {
+    return action_outcome_supervisor_runtime_.setWorkerHooks(std::move(hooks), error);
 }
 
 bool HttpServer::set_agent_memory_persistence(const std::string& directory,
@@ -4753,6 +4824,126 @@ void HttpServer::setup_admin_routes() {
     });
 
     // -------------------------------------------------------------------------
+    // GET /admin/action-outcome-supervisor - experimental supervisor status
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/action-outcome-supervisor", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        res.set_content(
+            action_outcome_supervisor_status_json(
+                action_outcome_supervisor_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/action-outcome-supervisor - configure and optionally enable
+    // Body: {"name":"physical_ai_action_outcome","enabled":true,
+    //        "mode":"shadow","history_table":"...",
+    //        "proposal_table":"...","decision_table":"...",
+    //        "evidence_table":"...","fail_closed_action":"manual_review",
+    //        "worker_enabled":false,"worker_poll_interval_ms":1000,
+    //        "batch_limit":128,"max_consecutive_failures":3}
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/action-outcome-supervisor", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+
+        zeptodb::feeds::ActionOutcomeSupervisorRuntimeConfig config;
+        config.name = json_string_field(req.body, "name", config.name);
+        config.mode = json_string_field(req.body, "mode", config.mode);
+        config.history_table = json_string_field(
+            req.body, "history_table", config.history_table);
+        config.proposal_table = json_string_field(
+            req.body, "proposal_table", config.proposal_table);
+        config.decision_table = json_string_field(
+            req.body, "decision_table", config.decision_table);
+        config.evidence_table = json_string_field(
+            req.body, "evidence_table", config.evidence_table);
+        config.fail_closed_action = json_string_field(
+            req.body, "fail_closed_action", config.fail_closed_action);
+        config.worker_enabled = json_bool_field(
+            req.body, "worker_enabled", config.worker_enabled);
+
+        const int64_t batch_limit = json_i64_field(
+            req.body, "batch_limit", static_cast<int64_t>(config.batch_limit));
+        const int64_t worker_poll_interval_ms = json_i64_field(
+            req.body,
+            "worker_poll_interval_ms",
+            static_cast<int64_t>(config.worker_poll_interval_ms));
+        const int64_t max_consecutive_failures = json_i64_field(
+            req.body,
+            "max_consecutive_failures",
+            static_cast<int64_t>(config.max_consecutive_failures));
+        if (batch_limit <= 0 || worker_poll_interval_ms <= 0 ||
+            max_consecutive_failures <= 0 ||
+            max_consecutive_failures >
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+            res.status = 400;
+            res.set_content(
+                build_error_json(
+                    "batch_limit, worker_poll_interval_ms, and max_consecutive_failures must be positive"),
+                "application/json");
+            return;
+        }
+        config.batch_limit = static_cast<size_t>(batch_limit);
+        config.worker_poll_interval_ms =
+            static_cast<uint64_t>(worker_poll_interval_ms);
+        config.max_consecutive_failures =
+            static_cast<uint32_t>(max_consecutive_failures);
+
+        std::string error;
+        if (!action_outcome_supervisor_runtime_.configure(std::move(config), &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor configuration failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        const bool enabled = json_bool_field(req.body, "enabled", true);
+        if (enabled && !action_outcome_supervisor_runtime_.start(&error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor start failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        res.set_content(
+            action_outcome_supervisor_status_json(
+                action_outcome_supervisor_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // DELETE /admin/action-outcome-supervisor - disable and clear config
+    // -------------------------------------------------------------------------
+    svr_->Delete("/admin/action-outcome-supervisor", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        std::string error;
+        const auto before = action_outcome_supervisor_runtime_.snapshot();
+        if (before.enabled && !action_outcome_supervisor_runtime_.stop(&error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor stop failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+        (void)action_outcome_supervisor_runtime_.clear(&error);
+        res.set_content(
+            action_outcome_supervisor_status_json(
+                action_outcome_supervisor_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
     // DELETE /admin/nodes/:id — remove a node from the cluster
     // -------------------------------------------------------------------------
     svr_->Delete(R"(/admin/nodes/(\d+))", [this, require_admin, require_feature](
@@ -6065,6 +6256,7 @@ std::string HttpServer::build_prometheus_metrics() const {
     }
 
     os << "\n" << edge_fleet_connector_runtime_.formatPrometheus();
+    os << "\n" << action_outcome_supervisor_runtime_.formatPrometheus();
 
     // Append output from registered metrics providers (e.g. Kafka consumers).
     {

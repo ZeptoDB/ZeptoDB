@@ -41,6 +41,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <thread>
+#include <unordered_set>
 #include <unistd.h>
 
 using namespace zeptodb::storage;
@@ -656,6 +657,125 @@ TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsWorkerModeWithoutHooks) {
     EXPECT_NE(post.body.find("requires outbox loader"), std::string::npos);
 }
 
+TEST_F(MetricsProviderTest, ActionOutcomeSupervisorAdminLifecycleAndMetrics) {
+    const std::string initial = http_get(test_port_, "/admin/action-outcome-supervisor");
+    EXPECT_NE(initial.find("\"configured\":false"), std::string::npos);
+    EXPECT_NE(initial.find("\"enabled\":false"), std::string::npos);
+    EXPECT_NE(initial.find("\"worker_running\":false"), std::string::npos);
+
+    const auto post = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"test-action-outcome","enabled":true,"mode":"shadow","batch_limit":9,"worker_enabled":false})");
+    EXPECT_EQ(post.status, 200);
+    EXPECT_NE(post.body.find("\"configured\":true"), std::string::npos);
+    EXPECT_NE(post.body.find("\"enabled\":true"), std::string::npos);
+    EXPECT_NE(post.body.find("\"mode\":\"shadow\""), std::string::npos);
+    EXPECT_NE(post.body.find("\"batch_limit\":9"), std::string::npos);
+
+    const std::string metrics = http_get(test_port_, "/metrics");
+    EXPECT_NE(metrics.find("zepto_action_outcome_supervisor_enabled{supervisor=\"test-action-outcome\"} 1"),
+              std::string::npos);
+    EXPECT_NE(metrics.find("zepto_action_outcome_proposals_processed_total{supervisor=\"test-action-outcome\"} 0"),
+              std::string::npos);
+
+    const auto del = http_request(test_port_, "DELETE", "/admin/action-outcome-supervisor");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_NE(del.body.find("\"configured\":false"), std::string::npos);
+    EXPECT_NE(del.body.find("\"enabled\":false"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest, ActionOutcomeSupervisorAdminStartsWorkerWhenHooksInstalled) {
+    std::mutex decided_mu;
+    std::unordered_set<std::string> decided;
+
+    zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks;
+    hooks.load_proposals = [] {
+        zeptodb::feeds::ActionOutcomeProposalLoadResult out;
+        out.ok = true;
+        zeptodb::feeds::ActionOutcomeProposal first;
+        first.proposal_id = "p1";
+        first.source_type = "ros2_bag";
+        first.proposed_action = "continue_route";
+        first.source_ts_ns = 1;
+        zeptodb::feeds::ActionOutcomeProposal second = first;
+        second.proposal_id = "p2";
+        second.source_ts_ns = 2;
+        out.proposals = {first, second};
+        return out;
+    };
+    hooks.already_decided = [&](const std::string& id) {
+        std::lock_guard<std::mutex> lock(decided_mu);
+        return decided.find(id) != decided.end();
+    };
+    hooks.decide = [](const zeptodb::feeds::ActionOutcomeProposal& item) {
+        zeptodb::feeds::ActionOutcomeDecisionResult out;
+        out.ok = true;
+        out.decision.proposal_id = item.proposal_id;
+        out.decision.decision = "allow";
+        out.decision.final_action = item.proposed_action;
+        out.decision.reason = "positive_action_outcome_pressure";
+        out.decision.evidence_count = 3;
+        return out;
+    };
+    hooks.sink_decision = [&](const zeptodb::feeds::ActionOutcomeDecision& decision,
+                              std::string*) {
+        std::lock_guard<std::mutex> lock(decided_mu);
+        decided.insert(decision.proposal_id);
+        return true;
+    };
+
+    std::string hook_error;
+    ASSERT_TRUE(server_->set_action_outcome_supervisor_runtime_hooks(
+        std::move(hooks), &hook_error)) << hook_error;
+
+    const auto post = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"test-action-worker","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":2})");
+    EXPECT_EQ(post.status, 200);
+    EXPECT_NE(post.body.find("\"worker_hooks_configured\":true"), std::string::npos);
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status = http_get(test_port_, "/admin/action-outcome-supervisor");
+        return status.find("\"proposals_processed_total\":2") != std::string::npos;
+    }));
+
+    const std::string status = http_get(test_port_, "/admin/action-outcome-supervisor");
+    EXPECT_NE(status.find("\"worker_passes_total\":"), std::string::npos);
+    EXPECT_NE(status.find("\"evidence_rows_written_total\":6"), std::string::npos);
+
+    const std::string metrics = http_get(test_port_, "/metrics");
+    EXPECT_NE(metrics.find("zepto_action_outcome_supervisor_worker_passes_total{supervisor=\"test-action-worker\"}"),
+              std::string::npos);
+    EXPECT_NE(metrics.find("zepto_action_outcome_evidence_rows_written_total{supervisor=\"test-action-worker\"} 6"),
+              std::string::npos);
+
+    const auto del = http_request(test_port_, "DELETE", "/admin/action-outcome-supervisor");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_NE(del.body.find("\"worker_running\":false"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest, ActionOutcomeSupervisorRejectsInvalidModeAndMissingHooks) {
+    const auto bad_mode = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"bad-mode","mode":"advisory"})");
+    EXPECT_EQ(bad_mode.status, 400);
+    EXPECT_NE(bad_mode.body.find("shadow"), std::string::npos);
+
+    const auto no_hooks = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"no-hooks","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1})");
+    EXPECT_EQ(no_hooks.status, 400);
+    EXPECT_NE(no_hooks.body.find("requires proposal loader"), std::string::npos);
+}
+
 TEST(EdgeFleetConnectorAdminAuthTest, RequiresAdminPermission) {
     const auto key_path =
         zepto_test_util::unique_test_path("edge_fleet_connector_keys");
@@ -696,6 +816,19 @@ TEST(EdgeFleetConnectorAdminAuthTest, RequiresAdminPermission) {
         http_request(port, "GET", "/admin/edge-fleet-connector", {}, admin_key);
     EXPECT_EQ(admin.status, 200);
     EXPECT_NE(admin.body.find("\"configured\":false"), std::string::npos);
+
+    const auto action_missing_auth =
+        http_request(port, "GET", "/admin/action-outcome-supervisor");
+    EXPECT_EQ(action_missing_auth.status, 401);
+
+    const auto action_writer =
+        http_request(port, "GET", "/admin/action-outcome-supervisor", {}, writer_key);
+    EXPECT_EQ(action_writer.status, 403);
+
+    const auto action_admin =
+        http_request(port, "GET", "/admin/action-outcome-supervisor", {}, admin_key);
+    EXPECT_EQ(action_admin.status, 200);
+    EXPECT_NE(action_admin.body.find("\"configured\":false"), std::string::npos);
 
     server.stop();
     std::filesystem::remove(key_path);

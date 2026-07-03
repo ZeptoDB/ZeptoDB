@@ -236,7 +236,43 @@ persistence for feed config and ACK/cursor state, long-running operational
 tests, cross-architecture verification, and user-facing docs for idempotent
 sink requirements.
 
-Last updated: 2026-06-23 (Physical AI edge/fleet worker runtime - devlog 205)
+## Experimental Physical AI Action-Outcome supervisor (devlog 206)
+
+`ActionOutcomeSupervisorRuntime` adds a shadow-only runtime lifecycle around the
+Action-Outcome supervision idea validated in the Physical AI research replays.
+The runtime is deliberately source-neutral: embedding code supplies hooks that
+load pending action proposals, check whether a proposal has already been
+decided, compute an advisory decision, and sink the decision/evidence record.
+
+The runtime handles the first production-shaped safety loop:
+
+- bounded proposal batches with `batch_limit`,
+- stable timestamp/id ordering before each bounded pass,
+- optional idempotency skips through `already_decided`,
+- invalid-proposal rejection for empty proposal ids or actions,
+- decision-provider failures converted to fail-closed
+  `suppress_no_evidence` decisions,
+- `manual_review` as the default fail-closed final action,
+- sink failure accounting and worker failure budgets,
+- optional background worker pacing through `worker_enabled` and
+  `worker_poll_interval_ms`,
+- status snapshots and Prometheus metrics for lifecycle, proposals, decisions,
+  fail-closed counts, evidence rows, worker failures, and pass latency.
+
+The HTTP server owns admin-gated process-local lifecycle state through
+`GET`/`POST`/`DELETE /admin/action-outcome-supervisor`. The runtime is not a
+robot-control or actuator-enforcement API. It records advisory decisions in
+shadow mode so operators can validate whether historical action-outcome memory
+would have suppressed unsafe or low-evidence actions.
+
+Product promotion still requires built-in SQL-backed proposal, decision, and
+evidence adapters; durable config/catalog state; broader RBAC/auth tests for
+mutating controls; production table schema docs; restart and node-replacement
+idempotency checks; long-running similar-but-different scenario and
+fault-injection soak tests; rate/backpressure limits; and cross-architecture
+verification.
+
+Last updated: 2026-07-03 (Physical AI Action-Outcome supervisor runtime - devlog 206)
 
 ## Table-aware ingest (Stage B — devlog 084)
 

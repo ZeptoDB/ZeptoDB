@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-06-23*
+*Last updated: 2026-07-03*
 
 ---
 
@@ -13,6 +13,7 @@
 - [Telegraf Output Helpers](#telegraf-output-helpers)
 - [EdgeFleetFeedConnector Experimental](#edgefleetfeedconnector-experimental)
 - [EdgeFleetConnectorRuntime Experimental](#edgefleetconnectorruntime-experimental)
+- [ActionOutcomeSupervisorRuntime Experimental](#actionoutcomesupervisorruntime-experimental)
 - [AgentMemoryStore](#agentmemorystore)
 - [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
@@ -658,6 +659,98 @@ runtime.stop();
 
 The HTTP server exposes this runtime through
 `/admin/edge-fleet-connector` and appends its metrics to `/metrics`.
+
+---
+
+## ActionOutcomeSupervisorRuntime Experimental
+
+`#include "zeptodb/feeds/action_outcome_supervisor_runtime.h"` — Namespace:
+`zeptodb::feeds`
+
+Server-owned lifecycle wrapper for the experimental Physical AI Action-Outcome
+supervisor. It is shadow-only: the runtime loads action proposals, checks
+idempotency, computes advisory decisions, fail-closes decision errors to manual
+review, writes decisions/evidence through an injected sink, and emits status
+plus Prometheus metrics. It does not publish actuator commands.
+
+```cpp
+using namespace zeptodb::feeds;
+
+ActionOutcomeSupervisorRuntimeConfig cfg;
+cfg.name = "physical_ai_action_outcome";
+cfg.mode = "shadow";
+cfg.history_table = "physical_ai_action_history";
+cfg.proposal_table = "physical_ai_action_proposals";
+cfg.decision_table = "physical_ai_supervision_decisions";
+cfg.evidence_table = "physical_ai_supervision_evidence";
+cfg.batch_limit = 128;
+cfg.worker_enabled = true;
+cfg.worker_poll_interval_ms = 1000;
+
+ActionOutcomeSupervisorRuntime runtime;
+ActionOutcomeSupervisorRuntimeHooks hooks;
+hooks.load_proposals = [] {
+    ActionOutcomeProposalLoadResult out;
+    out.ok = true;
+    out.proposals = load_pending_action_proposals();
+    return out;
+};
+hooks.already_decided = [](const std::string& proposal_id) {
+    return decision_exists(proposal_id);
+};
+hooks.decide = [](const ActionOutcomeProposal& proposal) {
+    ActionOutcomeDecisionResult out;
+    out.ok = true;
+    out.decision.proposal_id = proposal.proposal_id;
+    out.decision.decision = "allow";
+    out.decision.final_action = proposal.proposed_action;
+    out.decision.reason = "positive_action_outcome_pressure";
+    out.decision.evidence_count = 3;
+    return out;
+};
+hooks.sink_decision = [](const ActionOutcomeDecision& decision,
+                         std::string* error) {
+    return write_supervision_decision(decision, error);
+};
+
+std::string error;
+if (!runtime.setWorkerHooks(std::move(hooks), &error)) {
+    // stop before changing hooks on an enabled runtime
+}
+if (!runtime.configure(cfg, &error)) {
+    // invalid mode, missing table names, or invalid limits
+}
+if (!runtime.start(&error)) {
+    // missing config or missing worker hooks for worker mode
+}
+runtime.runOnce(&error);  // optional manual bounded pass
+
+auto snap = runtime.snapshot();
+std::string metrics = runtime.formatPrometheus();
+runtime.stop();
+```
+
+### Guarantees And Limits
+
+- `configure()`, `setWorkerHooks()`, `start()`, `stop()`, `clear()`,
+  `runOnce()`, and `snapshot()` are internally synchronized.
+- Only `mode="shadow"` is accepted.
+- Each worker pass sorts proposals by `source_ts_ns` and `proposal_id`, then
+  caps work at `batch_limit`.
+- Empty proposal ids or empty proposed actions are rejected.
+- `already_decided` is optional; when installed it should check the durable
+  decision sink for the proposal id.
+- Decision-provider errors produce a fail-closed `suppress_no_evidence`
+  decision with `fail_closed_action` as the final action.
+- Sink failures are counted as worker failures and preserve the last error.
+- `worker_enabled=true` starts a background worker at `start()` time and sleeps
+  for `worker_poll_interval_ms` between passes.
+- Configuration and counters are process-local and experimental.
+- Built-in SQL proposal loaders and decision/evidence sinks are follow-up work;
+  embeddings must provide idempotent hooks.
+
+The HTTP server exposes this runtime through
+`/admin/action-outcome-supervisor` and appends its metrics to `/metrics`.
 
 ---
 

@@ -1,10 +1,26 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-06-23
+Last updated: 2026-07-03
 
 ---
 
 ## Latest
+
+- [x] **P0 Physical AI Action-Outcome supervisor runtime foundation**
+  (devlog 206) — Added `ActionOutcomeSupervisorRuntime`, an experimental
+  shadow-only lifecycle manager for proposal/outcome supervision. The runtime
+  owns admin-gated configuration, optional background worker pacing, hook-based
+  proposal loading, idempotency checks, advisory decision generation,
+  fail-closed fallback to `manual_review`, decision sink calls, status
+  snapshots, and Prometheus metrics. HTTP admin endpoints expose
+  `GET`/`POST`/`DELETE /admin/action-outcome-supervisor`, and focused tests
+  cover lifecycle, invalid limits, duplicate skips, fail-closed decision
+  errors, missing-hook rejection, worker failure budgets, HTTP lifecycle, and
+  worker metrics, plus admin-only status access. This remains experimental
+  until built-in SQL-backed source/sink adapters, persistent config/catalog
+  state, broader RBAC coverage for mutating controls,
+  long-running fault/soak tests, and cross-architecture verification are
+  complete.
 
 - [x] **P3 Physical AI edge/fleet worker runtime foundation**
   (devlog 205) — Extended `EdgeFleetConnectorRuntime` with an injected

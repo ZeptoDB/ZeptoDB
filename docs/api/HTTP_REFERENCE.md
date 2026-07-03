@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-06-11*
+*Last updated: 2026-07-03*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -200,6 +200,9 @@ print(df)
 | `GET` | `/admin/edge-fleet-connector` | admin | Experimental Physical AI edge/fleet connector lifecycle status |
 | `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the experimental connector |
 | `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the experimental connector config |
+| `GET` | `/admin/action-outcome-supervisor` | admin | Experimental Physical AI Action-Outcome supervisor lifecycle status |
+| `POST` | `/admin/action-outcome-supervisor` | admin | Configure and optionally enable the experimental supervisor |
+| `DELETE` | `/admin/action-outcome-supervisor` | admin | Disable and clear the experimental supervisor config |
 | `GET` | `/admin/metrics/history` | admin | Metrics time-series history |
 | `GET` | `/admin/rebalance/status` | admin | Current rebalance status |
 | `POST` | `/admin/rebalance/start` | admin | Start rebalance (add/remove node) |
@@ -1751,6 +1754,114 @@ HTTP endpoint does not yet create a built-in SQL/HTTP adapter by itself.
 Connector configuration is not catalog-persisted and should not be described as
 a supported replication feature until the promotion gates in
 `docs/research/EXPERIMENT_GOVERNANCE.md` pass.
+
+#### `GET /admin/action-outcome-supervisor` - Experimental supervisor lifecycle status
+
+Returns server-owned lifecycle state for the experimental Physical AI
+Action-Outcome supervisor. The surface is shadow-only and does not publish
+actuator commands.
+
+```bash
+curl http://localhost:8123/admin/action-outcome-supervisor \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "configured": true,
+  "enabled": true,
+  "worker_running": true,
+  "worker_hooks_configured": true,
+  "failure_budget_exhausted": false,
+  "name": "physical_ai_action_outcome",
+  "mode": "shadow",
+  "history_table": "physical_ai_action_history",
+  "proposal_table": "physical_ai_action_proposals",
+  "decision_table": "physical_ai_supervision_decisions",
+  "evidence_table": "physical_ai_supervision_evidence",
+  "fail_closed_action": "manual_review",
+  "worker_poll_interval_ms": 1000,
+  "batch_limit": 128,
+  "max_consecutive_failures": 3,
+  "consecutive_failures": 0,
+  "configure_total": 1,
+  "start_total": 1,
+  "stop_total": 0,
+  "start_failures_total": 0,
+  "stop_failures_total": 0,
+  "worker_start_total": 1,
+  "worker_wakeups_total": 12,
+  "worker_passes_total": 12,
+  "worker_idle_passes_total": 5,
+  "worker_failures_total": 0,
+  "proposals_processed_total": 42,
+  "proposals_duplicate_total": 4,
+  "proposals_rejected_total": 1,
+  "decisions_allow_total": 30,
+  "decisions_suppress_total": 12,
+  "fail_closed_total": 2,
+  "evidence_rows_written_total": 126,
+  "last_pass": {
+    "proposals_seen": 10,
+    "batch_proposals": 10,
+    "processed_count": 8,
+    "duplicate_count": 1,
+    "rejected_count": 1,
+    "decision_error_count": 0,
+    "sink_error_count": 0,
+    "allow_count": 6,
+    "suppress_count": 2,
+    "fail_closed_count": 0,
+    "evidence_rows_written": 24,
+    "latency_us": 512
+  },
+  "last_error": ""
+}
+```
+
+#### `POST /admin/action-outcome-supervisor` - Configure and optionally enable
+
+```bash
+curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "physical_ai_action_outcome",
+    "enabled": true,
+    "mode": "shadow",
+    "history_table": "physical_ai_action_history",
+    "proposal_table": "physical_ai_action_proposals",
+    "decision_table": "physical_ai_supervision_decisions",
+    "evidence_table": "physical_ai_supervision_evidence",
+    "fail_closed_action": "manual_review",
+    "worker_enabled": false,
+    "worker_poll_interval_ms": 1000,
+    "batch_limit": 128,
+    "max_consecutive_failures": 3
+  }'
+```
+
+Only `mode="shadow"` is accepted. `batch_limit`,
+`worker_poll_interval_ms`, and `max_consecutive_failures` must be positive.
+If `enabled` is omitted, the server enables the configured supervisor. If
+`worker_enabled=true`, the embedding application must have installed
+`ActionOutcomeSupervisorRuntimeHooks`; otherwise `start()` fails with HTTP 400.
+
+#### `DELETE /admin/action-outcome-supervisor` - Disable and clear config
+
+```bash
+curl -X DELETE http://localhost:8123/admin/action-outcome-supervisor \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+This endpoint stops the worker when enabled and clears the process-local
+runtime config.
+
+This lifecycle surface is experimental. The HTTP endpoint does not yet create a
+built-in SQL-backed proposal loader or decision/evidence sink by itself.
+Supervisor configuration is not catalog-persisted, decisions are advisory, and
+the runtime must not be described as actuator enforcement until the promotion
+gates in `docs/research/EXPERIMENT_GOVERNANCE.md` pass.
 
 #### `DELETE /admin/nodes/:id` — Remove node from cluster
 

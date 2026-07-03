@@ -1,16 +1,31 @@
 # ZeptoDB Backlog
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full local C++ suite:
-> 1509 tests run (1508 passed, 1 live S3 opt-in skipped; 3 disabled)
+> 1546 tests run (1544 passed, 1 live S3 opt-in skipped,
+> 1 `HttpCluster.DynamicMode_StandaloneToCluster` failure; isolated repeat
+> 3/3 passed; 3 disabled)
 >
-> Last cleaned: 2026-06-13
+> Last cleaned: 2026-07-03
 >
-> Devlog: last `205_physical_ai_edge_fleet_worker_runtime.md` → next `206_*.md`
+> Devlog: last `206_physical_ai_action_outcome_supervisor_runtime.md` -> next `207_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P0 Physical AI Action-Outcome supervisor runtime foundation**
+  (devlog 206) — added an experimental, shadow-only
+  `ActionOutcomeSupervisorRuntime` plus
+  `GET`/`POST`/`DELETE /admin/action-outcome-supervisor`. The runtime can run
+  one bounded pass or a background worker when embeddings install proposal
+  loader, already-decided, decision provider, and decision sink hooks. It
+  records proposal, duplicate, rejection, allow/suppress, fail-closed,
+  evidence-row, worker, and latency metrics. This closes the main-safe runtime
+  lifecycle foundation while product promotion still needs built-in SQL source
+  and sink adapters, durable config/catalog state, broader RBAC/auth tests for
+  mutating controls, production schema docs, restart/node-replacement
+  validation, soak/fault tests, rate/backpressure limits, and
+  cross-architecture verification.
 - ✅ **P3 Physical AI edge/fleet worker runtime foundation** (devlog 205) —
   extended `EdgeFleetConnectorRuntime` with a bounded server-managed worker
   loop, injected outbox-loader/fleet-sink hooks, manual `runOnce()`, worker
@@ -419,6 +434,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **Productize bounded small-table JOIN policy** | Devlog 195 validates coordinator-local small-table JOIN under a strict row cap. Before promotion, decide whether it stays automatic, becomes a feature flag, or moves behind an optimizer rule with cost checks, and document memory/latency limits for operational/control tables. | M |
 | **Bounded distributed window materialization policy** | Devlog 194 fixes correctness for the validated Action-Outcome window replay shape. Product promotion needs explicit row/memory limits, telemetry for full-data materialization, and fallback/error semantics for large tables. | M |
 | **Built-in Physical AI edge/fleet SQL/HTTP adapter and promotion hardening** | Devlog 205 adds the bounded worker lifecycle and hook contract. Product promotion still needs a built-in SQL/HTTP outbox-loader plus fleet-sink adapter, persisted connector config/catalog metadata, documented idempotent sink requirements, restart/node-replacement tests over real ZeptoDB tables, long-running soak/fault injection, rate/backpressure limits, and cross-architecture verification. | M |
+| **Productize Physical AI Action-Outcome supervisor** | Devlog 206 adds the admin-gated shadow runtime and hook contract. Product promotion needs built-in SQL-backed proposal/outcome/evidence adapters, durable config/catalog state, explicit production table schema docs, broader RBAC/auth tests for mutating controls, restart/node-replacement idempotency validation, long-running similar-but-different scenario fault tests, rate/backpressure limits, and cross-architecture verification. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.
