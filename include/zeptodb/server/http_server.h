@@ -46,6 +46,7 @@
 #include "zeptodb/auth/query_tracker.h"
 #include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/server/metrics_collector.h"
+#include "zeptodb/server/action_outcome_sql_adapter.h"
 #include "zeptodb/ai/agent_memory_router.h"
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/rebalance_manager.h"
@@ -209,6 +210,13 @@ public:
     /// embeddings supply proposal source, decision, and decision sink callbacks.
     bool set_action_outcome_supervisor_runtime_hooks(
         zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks,
+        std::string* error = nullptr);
+
+    /// Install SQL-backed hooks for the experimental Action-Outcome
+    /// supervisor using this server's QueryExecutor.
+    bool set_action_outcome_supervisor_sql_adapter(
+        ActionOutcomeSqlAdapterConfig config,
+        bool create_tables_if_missing,
         std::string* error = nullptr);
 
     /// Access the agent memory store backing /api/ai/* endpoints.

@@ -1,10 +1,24 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 ---
 
 ## Latest
+
+- [x] **P0 Physical AI Action-Outcome SQL adapter** (devlog 207) —
+  Added `ActionOutcomeSqlAdapterConfig`,
+  `makeActionOutcomeSqlRuntimeHooks()`, default SQL contract table creation,
+  and `HttpServer::set_action_outcome_supervisor_sql_adapter()`. The
+  experimental supervisor can now run against ZeptoDB SQL tables: load bounded
+  proposals, check duplicate decisions by `proposal_id`, compute a
+  deterministic historical-outcome policy, and write evidence summary plus
+  decision rows. `POST /admin/action-outcome-supervisor` can install this
+  adapter with `sql_adapter_enabled` and optionally create default tables for
+  demos and controlled pilots. This remains experimental until config
+  persistence, cluster-safe worker ownership, transactional or idempotent
+  evidence writes, long-running fault/soak tests, and cross-architecture
+  verification are complete.
 
 - [x] **P0 Physical AI Action-Outcome supervisor runtime foundation**
   (devlog 206) — Added `ActionOutcomeSupervisorRuntime`, an experimental
@@ -17,10 +31,9 @@ Last updated: 2026-07-03
   cover lifecycle, invalid limits, duplicate skips, fail-closed decision
   errors, missing-hook rejection, worker failure budgets, HTTP lifecycle, and
   worker metrics, plus admin-only status access. This remains experimental
-  until built-in SQL-backed source/sink adapters, persistent config/catalog
-  state, broader RBAC coverage for mutating controls,
-  long-running fault/soak tests, and cross-architecture verification are
-  complete.
+  until persistent config/catalog state, broader RBAC coverage for mutating
+  controls, long-running fault/soak tests, and cross-architecture verification
+  are complete. Devlog 207 adds the first SQL-backed adapter.
 
 - [x] **P3 Physical AI edge/fleet worker runtime foundation**
   (devlog 205) — Extended `EdgeFleetConnectorRuntime` with an injected

@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
+#include <exception>
 #include <iterator>
 #include <unordered_map>
 #include <unordered_set>
@@ -1158,6 +1159,26 @@ bool HttpServer::set_action_outcome_supervisor_runtime_hooks(
     zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks,
     std::string* error) {
     return action_outcome_supervisor_runtime_.setWorkerHooks(std::move(hooks), error);
+}
+
+bool HttpServer::set_action_outcome_supervisor_sql_adapter(
+    ActionOutcomeSqlAdapterConfig config,
+    bool create_tables_if_missing,
+    std::string* error) {
+    if (!validateActionOutcomeSqlAdapterConfig(config, error)) {
+        return false;
+    }
+    if (create_tables_if_missing &&
+        !ensureActionOutcomeSqlTables(executor_, config, error)) {
+        return false;
+    }
+    try {
+        return action_outcome_supervisor_runtime_.setWorkerHooks(
+            makeActionOutcomeSqlRuntimeHooks(executor_, std::move(config)), error);
+    } catch (const std::exception& ex) {
+        if (error) *error = ex.what();
+        return false;
+    }
 }
 
 bool HttpServer::set_agent_memory_persistence(const std::string& directory,
@@ -4843,13 +4864,16 @@ void HttpServer::setup_admin_routes() {
     //        "proposal_table":"...","decision_table":"...",
     //        "evidence_table":"...","fail_closed_action":"manual_review",
     //        "worker_enabled":false,"worker_poll_interval_ms":1000,
-    //        "batch_limit":128,"max_consecutive_failures":3}
+    //        "batch_limit":128,"max_consecutive_failures":3,
+    //        "sql_adapter_enabled":false,
+    //        "sql_adapter_create_tables":false}
     // -------------------------------------------------------------------------
     svr_->Post("/admin/action-outcome-supervisor", [this, require_admin](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
 
+        std::string error;
         zeptodb::feeds::ActionOutcomeSupervisorRuntimeConfig config;
         config.name = json_string_field(req.body, "name", config.name);
         config.mode = json_string_field(req.body, "mode", config.mode);
@@ -4893,11 +4917,88 @@ void HttpServer::setup_admin_routes() {
         config.max_consecutive_failures =
             static_cast<uint32_t>(max_consecutive_failures);
 
-        std::string error;
-        if (!action_outcome_supervisor_runtime_.configure(std::move(config), &error)) {
+        ActionOutcomeSqlAdapterConfig sql_adapter_config;
+        sql_adapter_config.runtime = config;
+        sql_adapter_config.proposal_id_column = json_string_field(
+            req.body, "proposal_id_column",
+            sql_adapter_config.proposal_id_column);
+        sql_adapter_config.proposal_source_type_column = json_string_field(
+            req.body, "proposal_source_type_column",
+            sql_adapter_config.proposal_source_type_column);
+        sql_adapter_config.proposal_action_column = json_string_field(
+            req.body, "proposal_action_column",
+            sql_adapter_config.proposal_action_column);
+        sql_adapter_config.proposal_ts_column = json_string_field(
+            req.body, "proposal_ts_column",
+            sql_adapter_config.proposal_ts_column);
+        sql_adapter_config.history_action_column = json_string_field(
+            req.body, "history_action_column",
+            sql_adapter_config.history_action_column);
+        sql_adapter_config.history_outcome_score_column = json_string_field(
+            req.body, "history_outcome_score_column",
+            sql_adapter_config.history_outcome_score_column);
+
+        const int64_t proposal_query_limit = json_i64_field(
+            req.body,
+            "proposal_query_limit",
+            static_cast<int64_t>(sql_adapter_config.proposal_query_limit));
+        const int64_t history_evidence_limit = json_i64_field(
+            req.body,
+            "history_evidence_limit",
+            static_cast<int64_t>(sql_adapter_config.history_evidence_limit));
+        const int64_t suppress_min_failure_count = json_i64_field(
+            req.body,
+            "suppress_min_failure_count",
+            static_cast<int64_t>(sql_adapter_config.suppress_min_failure_count));
+        sql_adapter_config.suppress_outcome_score_below = json_i64_field(
+            req.body,
+            "suppress_outcome_score_below",
+            sql_adapter_config.suppress_outcome_score_below);
+        if (proposal_query_limit < 0 || history_evidence_limit <= 0 ||
+            suppress_min_failure_count <= 0) {
+            res.status = 400;
+            res.set_content(
+                build_error_json(
+                    "proposal_query_limit must be non-negative; history_evidence_limit and suppress_min_failure_count must be positive"),
+                "application/json");
+            return;
+        }
+        sql_adapter_config.proposal_query_limit =
+            static_cast<size_t>(proposal_query_limit);
+        sql_adapter_config.history_evidence_limit =
+            static_cast<size_t>(history_evidence_limit);
+        sql_adapter_config.suppress_min_failure_count =
+            static_cast<uint64_t>(suppress_min_failure_count);
+
+        const bool sql_adapter_enabled = json_bool_field(
+            req.body, "sql_adapter_enabled", false);
+        const bool sql_adapter_create_tables = json_bool_field(
+            req.body, "sql_adapter_create_tables", false);
+        if (sql_adapter_enabled &&
+            !validateActionOutcomeSqlAdapterConfig(sql_adapter_config, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome SQL adapter configuration failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        if (!action_outcome_supervisor_runtime_.configure(config, &error)) {
             res.status = 400;
             res.set_content(build_error_json(error.empty()
                                 ? "action-outcome supervisor configuration failed"
+                                : error),
+                            "application/json");
+            return;
+        }
+
+        if (sql_adapter_enabled &&
+            !set_action_outcome_supervisor_sql_adapter(
+                std::move(sql_adapter_config), sql_adapter_create_tables, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome SQL adapter install failed"
                                 : error),
                             "application/json");
             return;

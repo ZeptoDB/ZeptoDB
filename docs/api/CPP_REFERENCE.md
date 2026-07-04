@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-07-03*
+*Last updated: 2026-07-04*
 
 ---
 
@@ -14,6 +14,7 @@
 - [EdgeFleetFeedConnector Experimental](#edgefleetfeedconnector-experimental)
 - [EdgeFleetConnectorRuntime Experimental](#edgefleetconnectorruntime-experimental)
 - [ActionOutcomeSupervisorRuntime Experimental](#actionoutcomesupervisorruntime-experimental)
+- [ActionOutcome SQL Adapter Experimental](#actionoutcome-sql-adapter-experimental)
 - [AgentMemoryStore](#agentmemorystore)
 - [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
@@ -746,11 +747,73 @@ runtime.stop();
 - `worker_enabled=true` starts a background worker at `start()` time and sleeps
   for `worker_poll_interval_ms` between passes.
 - Configuration and counters are process-local and experimental.
-- Built-in SQL proposal loaders and decision/evidence sinks are follow-up work;
-  embeddings must provide idempotent hooks.
+- Embeddings can still provide custom hooks. For ZeptoDB-backed demos and
+  controlled pilots, use the SQL adapter below.
 
 The HTTP server exposes this runtime through
 `/admin/action-outcome-supervisor` and appends its metrics to `/metrics`.
+
+---
+
+## ActionOutcome SQL Adapter Experimental
+
+`#include "zeptodb/server/action_outcome_sql_adapter.h"` — Namespace:
+`zeptodb::server`
+
+SQL-backed hook factory for the experimental Action-Outcome supervisor. The
+adapter validates table/column identifiers, optionally creates the default SQL
+contract tables, then builds runtime hooks that read proposals, check duplicate
+decisions, compute a deterministic historical-outcome policy, and write
+evidence summary plus decision rows.
+
+```cpp
+#include "zeptodb/server/action_outcome_sql_adapter.h"
+
+zeptodb::server::ActionOutcomeSqlAdapterConfig adapter;
+adapter.runtime.batch_limit = 128;
+adapter.runtime.worker_enabled = true;
+adapter.history_evidence_limit = 64;
+adapter.suppress_outcome_score_below = 0;
+adapter.suppress_min_failure_count = 1;
+
+std::string error;
+if (!zeptodb::server::ensureActionOutcomeSqlTables(
+        executor, adapter, &error)) {
+    // creates proposal/history/decision/evidence tables when missing
+}
+
+auto hooks = zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+    executor, adapter);
+runtime.setWorkerHooks(std::move(hooks), &error);
+```
+
+The HTTP server can install the same hooks against its own `QueryExecutor`:
+
+```cpp
+server.set_action_outcome_supervisor_sql_adapter(
+    adapter,
+    /*create_tables_if_missing=*/true,
+    &error);
+```
+
+Default SQL contract:
+
+| Table | Columns |
+| --- | --- |
+| `physical_ai_action_proposals` | `proposal_id STRING`, `source_type STRING`, `proposed_action STRING`, `source_ts_ns TIMESTAMP_NS` |
+| `physical_ai_action_history` | `action STRING`, `outcome_score INT64`, `source_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervision_decisions` | `proposal_id STRING`, `decision STRING`, `final_action STRING`, `reason STRING`, `evidence_count INT64`, `fail_closed BOOL`, `decided_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervision_evidence` | `proposal_id STRING`, `evidence_count INT64`, `reason STRING`, `written_ts_ns TIMESTAMP_NS` |
+
+Limits:
+
+- Still experimental and shadow-only.
+- The sink writes evidence summary first and decision second. The decision row
+  is the duplicate-suppression boundary; without a transaction, decision insert
+  failure after evidence insert can leave duplicate evidence summaries on
+  retry.
+- Runtime and adapter config are process-local until product-promotion gates
+  add catalog/config persistence.
 
 ---
 

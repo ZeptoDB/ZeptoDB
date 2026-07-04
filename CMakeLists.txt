@@ -866,6 +866,7 @@ if(ZEPTO_HAS_FLIGHT)
 endif()
 
 add_library(zepto_server STATIC
+    src/server/action_outcome_sql_adapter.cpp
     src/server/http_server.cpp
     src/server/msgpack_ingest.cpp
 )

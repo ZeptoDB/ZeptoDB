@@ -259,20 +259,38 @@ The runtime handles the first production-shaped safety loop:
 - status snapshots and Prometheus metrics for lifecycle, proposals, decisions,
   fail-closed counts, evidence rows, worker failures, and pass latency.
 
+Devlog 207 adds the first built-in ZeptoDB SQL adapter for this runtime in the
+server layer. `ActionOutcomeSqlAdapterConfig` validates the proposal, history,
+decision, and evidence table/column contract, can create the default demo
+tables, and builds runtime hooks that:
+
+- load bounded proposals from `physical_ai_action_proposals`,
+- check duplicate decisions in `physical_ai_supervision_decisions`,
+- compute a deterministic historical-outcome policy from
+  `physical_ai_action_history`,
+- write one evidence summary row to
+  `physical_ai_supervision_evidence`,
+- write the decision row as the idempotency boundary.
+
+The adapter remains experimental. It is process-local, shadow-only, and not a
+transactional sink; product promotion still requires persisted config,
+cluster-safe worker ownership, idempotent evidence keys or transactional
+decision/evidence writes, soak/fault testing, and cross-architecture
+verification.
+
 The HTTP server owns admin-gated process-local lifecycle state through
 `GET`/`POST`/`DELETE /admin/action-outcome-supervisor`. The runtime is not a
 robot-control or actuator-enforcement API. It records advisory decisions in
 shadow mode so operators can validate whether historical action-outcome memory
 would have suppressed unsafe or low-evidence actions.
 
-Product promotion still requires built-in SQL-backed proposal, decision, and
-evidence adapters; durable config/catalog state; broader RBAC/auth tests for
-mutating controls; production table schema docs; restart and node-replacement
-idempotency checks; long-running similar-but-different scenario and
-fault-injection soak tests; rate/backpressure limits; and cross-architecture
-verification.
+Product promotion still requires transactional or idempotent evidence writes,
+durable config/catalog state, cluster-safe worker ownership, broader RBAC/auth
+tests for mutating controls, restart and node-replacement idempotency checks,
+long-running similar-but-different scenario and fault-injection soak tests,
+rate/backpressure limits, and cross-architecture verification.
 
-Last updated: 2026-07-03 (Physical AI Action-Outcome supervisor runtime - devlog 206)
+Last updated: 2026-07-04 (Physical AI Action-Outcome SQL adapter - devlog 207)
 
 ## Table-aware ingest (Stage B — devlog 084)
 

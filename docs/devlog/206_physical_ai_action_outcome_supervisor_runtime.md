@@ -78,8 +78,8 @@ Results:
 
 ## Follow-ups
 
-- Build the concrete SQL-backed proposal loader and decision/evidence sink
-  adapters.
+- Concrete SQL-backed proposal loader and decision/evidence sink adapters were
+  added in devlog 207; remaining work is promotion hardening.
 - Persist supervisor config/catalog state across restart.
 - Add broader RBAC/auth regression coverage for mutating supervisor controls.
 - Document production table schemas, idempotency keys, and sink transaction

@@ -758,6 +758,63 @@ TEST_F(MetricsProviderTest, ActionOutcomeSupervisorAdminStartsWorkerWhenHooksIns
     EXPECT_NE(del.body.find("\"worker_running\":false"), std::string::npos);
 }
 
+TEST_F(MetricsProviderTest, ActionOutcomeSupervisorAdminInstallsSqlAdapter) {
+    pipeline_->start();
+
+    const auto configure = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"test-action-sql-worker","enabled":false,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1,"sql_adapter_enabled":true,"sql_adapter_create_tables":true})");
+    ASSERT_EQ(configure.status, 200) << configure.body;
+    EXPECT_NE(configure.body.find("\"configured\":true"), std::string::npos);
+    EXPECT_NE(configure.body.find("\"enabled\":false"), std::string::npos);
+    EXPECT_NE(configure.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+
+    auto inserted = executor_->execute(
+        "INSERT INTO physical_ai_action_proposals "
+        "(proposal_id, source_type, proposed_action, source_ts_ns) VALUES "
+        "('http_sql_p1', 'vla_log', 'continue_route', 10)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+    inserted = executor_->execute(
+        "INSERT INTO physical_ai_action_history "
+        "(action, outcome_score, source_ts_ns) VALUES "
+        "('continue_route', 7, 1)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+
+    const auto enable = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"test-action-sql-worker","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1,"sql_adapter_enabled":true})");
+    ASSERT_EQ(enable.status, 200) << enable.body;
+    EXPECT_NE(enable.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status = http_get(test_port_, "/admin/action-outcome-supervisor");
+        return status.find("\"proposals_processed_total\":1") != std::string::npos;
+    }));
+
+    const auto decisions = executor_->execute(
+        "SELECT proposal_id, decision, evidence_count "
+        "FROM physical_ai_supervision_decisions");
+    ASSERT_TRUE(decisions.ok()) << decisions.error;
+    ASSERT_EQ(decisions.rows.size(), 1u);
+    ASSERT_NE(decisions.symbol_dict, nullptr);
+    EXPECT_EQ(decisions.symbol_dict->lookup(
+                  static_cast<uint32_t>(decisions.rows[0][0])),
+              "http_sql_p1");
+    EXPECT_EQ(decisions.symbol_dict->lookup(
+                  static_cast<uint32_t>(decisions.rows[0][1])),
+              "allow");
+    EXPECT_EQ(decisions.rows[0][2], 1);
+
+    const auto del = http_request(test_port_, "DELETE", "/admin/action-outcome-supervisor");
+    EXPECT_EQ(del.status, 200);
+}
+
 TEST_F(MetricsProviderTest, ActionOutcomeSupervisorRejectsInvalidModeAndMissingHooks) {
     const auto bad_mode = http_request(
         test_port_,

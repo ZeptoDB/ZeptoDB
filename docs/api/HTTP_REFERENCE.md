@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-07-03*
+*Last updated: 2026-07-04*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -1837,7 +1837,12 @@ curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
     "worker_enabled": false,
     "worker_poll_interval_ms": 1000,
     "batch_limit": 128,
-    "max_consecutive_failures": 3
+    "max_consecutive_failures": 3,
+    "sql_adapter_enabled": true,
+    "sql_adapter_create_tables": true,
+    "history_evidence_limit": 64,
+    "suppress_min_failure_count": 1,
+    "suppress_outcome_score_below": 0
   }'
 ```
 
@@ -1846,6 +1851,67 @@ Only `mode="shadow"` is accepted. `batch_limit`,
 If `enabled` is omitted, the server enables the configured supervisor. If
 `worker_enabled=true`, the embedding application must have installed
 `ActionOutcomeSupervisorRuntimeHooks`; otherwise `start()` fails with HTTP 400.
+
+Set `sql_adapter_enabled=true` to install server-owned ZeptoDB SQL hooks
+instead of custom embedding hooks. Set `sql_adapter_create_tables=true` to
+create the default contract tables when they are missing; production
+deployments should still manage schemas through normal migrations.
+
+SQL adapter fields:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `sql_adapter_enabled` | `false` | Install SQL-backed proposal/history/decision/evidence hooks. |
+| `sql_adapter_create_tables` | `false` | Create default contract tables with `CREATE TABLE IF NOT EXISTS`. |
+| `proposal_query_limit` | `0` | Proposal query bound; `0` uses `batch_limit`. |
+| `history_evidence_limit` | `64` | Maximum matching history rows scanned per proposal. |
+| `suppress_min_failure_count` | `1` | Suppress when at least this many history rows are below threshold. |
+| `suppress_outcome_score_below` | `0` | Outcome scores below this value count as failures. |
+| `proposal_id_column` | `proposal_id` | Proposal idempotency key column. |
+| `proposal_source_type_column` | `source_type` | Proposal source type column. |
+| `proposal_action_column` | `proposed_action` | Proposed action column. |
+| `proposal_ts_column` | `source_ts_ns` | Proposal timestamp column. |
+| `history_action_column` | `action` | Historical action column. |
+| `history_outcome_score_column` | `outcome_score` | Historical outcome score column. |
+
+Default SQL contract:
+
+```sql
+CREATE TABLE IF NOT EXISTS physical_ai_action_proposals (
+  proposal_id STRING,
+  source_type STRING,
+  proposed_action STRING,
+  source_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_action_history (
+  action STRING,
+  outcome_score INT64,
+  source_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_supervision_decisions (
+  proposal_id STRING,
+  decision STRING,
+  final_action STRING,
+  reason STRING,
+  evidence_count INT64,
+  fail_closed BOOL,
+  decided_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_supervision_evidence (
+  proposal_id STRING,
+  evidence_count INT64,
+  reason STRING,
+  written_ts_ns TIMESTAMP_NS
+);
+```
+
+The SQL adapter writes one evidence summary row first, then the decision row.
+The decision row is the duplicate-suppression boundary. This is not yet a
+transactional product contract; a decision insert failure after evidence insert
+can leave duplicate evidence summaries on retry.
 
 #### `DELETE /admin/action-outcome-supervisor` - Disable and clear config
 
@@ -1857,11 +1923,10 @@ curl -X DELETE http://localhost:8123/admin/action-outcome-supervisor \
 This endpoint stops the worker when enabled and clears the process-local
 runtime config.
 
-This lifecycle surface is experimental. The HTTP endpoint does not yet create a
-built-in SQL-backed proposal loader or decision/evidence sink by itself.
-Supervisor configuration is not catalog-persisted, decisions are advisory, and
-the runtime must not be described as actuator enforcement until the promotion
-gates in `docs/research/EXPERIMENT_GOVERNANCE.md` pass.
+This lifecycle surface is experimental. Supervisor configuration is not
+catalog-persisted, SQL adapter ownership is process-local, decisions are
+advisory, and the runtime must not be described as actuator enforcement until
+the promotion gates in `docs/research/EXPERIMENT_GOVERNANCE.md` pass.
 
 #### `DELETE /admin/nodes/:id` — Remove node from cluster
 
