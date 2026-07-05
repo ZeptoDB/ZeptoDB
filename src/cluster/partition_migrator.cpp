@@ -96,13 +96,13 @@ void PartitionMigrator::execute_move(MoveStatus& ms, PartitionRouter& router) {
         ms.state = MoveState::COMMITTED;
         ms.rows_migrated = rows;
         ms.error.clear();
-        router.end_migration(ms.move.symbol);
+        router.commit_migration(ms.move.symbol, ms.move.to);
     } else {
         // Rollback: delete partial data from dest
         rollback_move(ms.move.symbol, ms.move.to);
         ms.state = MoveState::FAILED;
         ms.error = "migrate_symbol failed (attempt " + std::to_string(ms.attempts) + ")";
-        router.end_migration(ms.move.symbol);
+        router.abort_migration(ms.move.symbol);
         ZEPTO_WARN("PartitionMigrator: move symbol={} {}→{} failed, rolled back (attempt {})",
                    ms.move.symbol, ms.move.from, ms.move.to, ms.attempts);
     }

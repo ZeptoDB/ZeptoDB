@@ -1,10 +1,59 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
 ---
 
 ## Latest
+
+- [x] **P0 Physical AI Action-Outcome supervisor production hardening**
+  (devlog 210) — Added SQL catalog-backed adapter config as a durable source
+  of truth, with startup reload and HTTP restart validation alongside the
+  server-local JSON fallback. Added retry-idempotent SQL evidence summaries,
+  decision/evidence/commit marker repair so partial sink writes converge
+  without duplicate rows, and optional managed SQL worker lease/heartbeat with
+  owner id/epoch fencing and expired-owner takeover. Runtime passes now expose
+  decision and sink error budgets for backpressure/fault containment, and
+  mutating admin controls have focused RBAC, audit, and rate-limit coverage.
+  Added `zepto_action_outcome_soak`, a SQL-backed soak/fault harness that
+  repeatedly injects projection failures after commit, restores the projection
+  schema, and verifies retry repair plus commit uniqueness.
+  This closes the immediate P0 blockers for controlled pilots while keeping the
+  path experimental: the sink uses one atomic commit ledger row plus repairable
+  projections rather than a generic multi-table transaction, and
+  cross-architecture verification now passes with matching x86_64/aarch64 CTest
+  coverage.
+
+- [x] **P0 Physical AI Action-Outcome supervisor config persistence**
+  (devlog 209) — Added server-local durable config for the experimental
+  SQL-backed supervisor adapter through
+  `HttpServer::set_action_outcome_supervisor_config_persistence()`. Successful
+  admin SQL-adapter configuration now writes a versioned JSON config, startup
+  can reload it, reinstall SQL hooks, recreate default tables idempotently, and
+  restart the supervisor when the persisted config was enabled. A live HTTP
+  restart regression stops the server object, recreates it on the same port and
+  executor, verifies `worker_hooks_configured=true` from the persisted file,
+  then enables the supervisor without reposting `sql_adapter_enabled` and
+  processes a proposal. Devlog 210 extends this with SQL catalog-backed
+  config, retry-idempotent evidence summaries, commit marker repair, managed
+  SQL leases, admin RBAC/audit/rate-limit coverage, and cross-architecture
+  validation. This remains experimental pending broader operational
+  node-replacement validation.
+
+- [x] **P0 Physical AI shadow supervisor A/B and durability evidence**
+  (devlog 208) — Added Experiment 021 plus a focused SQL adapter durability
+  regression. The research harness converts Experiment 013 baseline outputs
+  into 20 shadow proposals: 15 hazardous proposals from non-gated baselines and
+  5 safe proposals from the context-gated Action-Outcome variant. The
+  supervisor policy suppresses 15/15 hazardous proposals, allows 5/5 safe
+  proposals, and a simulated restart replay skips 20/20 proposals as duplicate
+  decisions while writing 0 new evidence rows. The C++ regression verifies that
+  a fresh `ActionOutcomeSupervisorRuntime` using the same SQL tables skips
+  proposals with persisted decision rows. This remains experimental evidence;
+  devlog 209 completes server-local adapter config persistence and live HTTP
+  restart validation; devlog 210 adds catalog-backed config, retry-idempotent
+  sink repair, managed SQL leases, admin-control hardening, a SQL-backed
+  soak/fault harness, and cross-architecture verification.
 
 - [x] **P0 Physical AI Action-Outcome SQL adapter** (devlog 207) —
   Added `ActionOutcomeSqlAdapterConfig`,
@@ -15,10 +64,12 @@ Last updated: 2026-07-04
   deterministic historical-outcome policy, and write evidence summary plus
   decision rows. `POST /admin/action-outcome-supervisor` can install this
   adapter with `sql_adapter_enabled` and optionally create default tables for
-  demos and controlled pilots. This remains experimental until config
-  persistence, cluster-safe worker ownership, transactional or idempotent
-  evidence writes, long-running fault/soak tests, and cross-architecture
-  verification are complete.
+  demos and controlled pilots. Devlogs 209-210 add server-local config
+  persistence, retry-idempotent evidence summaries, and owner id/epoch
+  fencing. Devlog 210 extends this with catalog-backed config, managed SQL
+  leases, commit marker repair, admin-control hardening, and
+  cross-architecture verification. This remains experimental until broader
+  operational node-replacement validation completes.
 
 - [x] **P0 Physical AI Action-Outcome supervisor runtime foundation**
   (devlog 206) — Added `ActionOutcomeSupervisorRuntime`, an experimental
@@ -30,10 +81,11 @@ Last updated: 2026-07-04
   `GET`/`POST`/`DELETE /admin/action-outcome-supervisor`, and focused tests
   cover lifecycle, invalid limits, duplicate skips, fail-closed decision
   errors, missing-hook rejection, worker failure budgets, HTTP lifecycle, and
-  worker metrics, plus admin-only status access. This remains experimental
-  until persistent config/catalog state, broader RBAC coverage for mutating
-  controls, long-running fault/soak tests, and cross-architecture verification
-  are complete. Devlog 207 adds the first SQL-backed adapter.
+  worker metrics, plus admin-only status access. Devlogs 207-210 add the
+  SQL-backed adapter, durable config, catalog-backed config, sink repair,
+  managed SQL leases, admin-control hardening, and cross-architecture
+  verification. This remains experimental until broader operational
+  node-replacement validation completes.
 
 - [x] **P3 Physical AI edge/fleet worker runtime foundation**
   (devlog 205) — Extended `EdgeFleetConnectorRuntime` with an injected

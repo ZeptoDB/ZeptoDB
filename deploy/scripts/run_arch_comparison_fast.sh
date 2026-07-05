@@ -167,8 +167,8 @@ sudo install -d -o "$(id -u)" -g "$(id -g)" /var/log/zeptodb 2>/dev/null || mkdi
 cd ~/zeptodb && mkdir -p build && cd build
 if [ ! -f CMakeCache.txt ] || \
    ! grep -q 'ZEPTO_BUILD_BENCH:BOOL=ON' CMakeCache.txt || \
-   ! grep -q 'ZEPTO_USE_FLIGHT:BOOL=ON' CMakeCache.txt; then
-  cmake -DZEPTO_BUILD_BENCH=ON -DZEPTO_USE_FLIGHT=ON .. >/dev/null
+   ! grep -q 'ZEPTO_USE_FLIGHT:BOOL=OFF' CMakeCache.txt; then
+  cmake -DZEPTO_BUILD_BENCH=ON -DZEPTO_USE_FLIGHT=OFF .. >/dev/null
 fi
 ninja -j"$(nproc)" zepto_tests zepto_http_server zepto_data_node bench_rebalance
 ./tests/zepto_tests --gtest_brief=1
@@ -382,9 +382,25 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 3 — Parallel Helm install
 # ═══════════════════════════════════════════════════════════════════════════
+wait_for_pods() {
+  local ns="$1" selector="$2" timeout="${3:-180}" count
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    count=$(kubectl get pod -n "$ns" -l "$selector" --no-headers 2>/dev/null | wc -l || echo 0)
+    if [[ "$count" -gt 0 ]]; then
+      return 0
+    fi
+    sleep 5
+  done
+  kubectl get all -n "$ns" -o wide >&2 || true
+  err "No pods matched selector '$selector' in namespace $ns after ${timeout}s"
+  return 1
+}
+
 helm_install() {
   local arch="$1" ns="zeptodb-$1" tag="bench-$1"
   [[ "$arch" == "x86" ]] && tag="bench-x86" || tag="bench-arm64"
+  local selector="app.kubernetes.io/name=zeptodb,app.kubernetes.io/instance=zeptodb-${arch}"
 
   local license_args=()
   if [[ -r "$BENCH_LICENSE_FILE" ]]; then
@@ -416,7 +432,9 @@ helm_install() {
     --set podDisruptionBudget.enabled=false \
     "${license_args[@]}" \
     >/dev/null
-  kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=zeptodb -n "$ns" --timeout=300s
+  wait_for_pods "$ns" "$selector" 180
+  kubectl rollout status "statefulset/zeptodb-${arch}" -n "$ns" --timeout=300s
+  kubectl wait --for=condition=Ready pod -l "$selector" -n "$ns" --timeout=300s
 }
 
 step "Stage 3: Parallel Helm install"

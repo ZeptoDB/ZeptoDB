@@ -42,6 +42,34 @@ struct ActionOutcomeSqlAdapterConfig {
     std::string evidence_reason_column = "reason";
     std::string evidence_ts_column = "written_ts_ns";
 
+    std::string commit_table = "physical_ai_supervision_commits";
+    std::string commit_proposal_id_column = "proposal_id";
+    std::string commit_decision_column = "decision";
+    std::string commit_final_action_column = "final_action";
+    std::string commit_reason_column = "reason";
+    std::string commit_evidence_count_column = "evidence_count";
+    std::string commit_fail_closed_column = "fail_closed";
+    std::string commit_decision_written_column = "decision_written";
+    std::string commit_evidence_written_column = "evidence_written";
+    std::string commit_ts_column = "committed_ts_ns";
+
+    /// Optional owner/fencing guard. When enabled, proposal loading returns no
+    /// work unless `ownership_table` contains this supervisor name with the
+    /// matching owner id and epoch. When `manage_worker_lease` is also enabled,
+    /// the SQL adapter acquires/renews an expiring SQL lease and heartbeat row
+    /// before loading proposals. Thread-safety: value config copied into hooks.
+    bool require_worker_ownership = false;
+    bool manage_worker_lease = false;
+    std::string worker_owner_id;
+    uint64_t worker_owner_epoch = 0;
+    uint64_t worker_lease_ttl_ms = 15000;
+    std::string ownership_table = "physical_ai_supervisor_ownership";
+    std::string ownership_supervisor_column = "supervisor_name";
+    std::string ownership_owner_id_column = "owner_id";
+    std::string ownership_epoch_column = "owner_epoch";
+    std::string ownership_lease_expires_at_column = "lease_expires_at_ns";
+    std::string ownership_heartbeat_ts_column = "heartbeat_ts_ns";
+
     /// Proposal query bound. Zero means `runtime.batch_limit`.
     size_t proposal_query_limit = 0;
 
@@ -73,9 +101,10 @@ struct ActionOutcomeSqlAdapterConfig {
 /// Build runtime hooks backed by ZeptoDB SQL tables.
 ///
 /// The proposal loader reads pending proposals from `runtime.proposal_table`,
-/// idempotency checks `runtime.decision_table`, the decision provider computes
+/// idempotency checks the atomic commit ledger, the decision provider computes
 /// a simple historical-outcome policy over `runtime.history_table`, and the
-/// sink writes evidence summary then decision rows.
+/// sink writes one atomic commit row before repairing decision/evidence
+/// projections.
 [[nodiscard]] zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks
 makeActionOutcomeSqlRuntimeHooks(
     zeptodb::sql::QueryExecutor& executor,

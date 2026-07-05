@@ -1,18 +1,47 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full local C++ suite:
-> 1546 tests run (1544 passed, 1 live S3 opt-in skipped,
-> 1 `HttpCluster.DynamicMode_StandaloneToCluster` failure; isolated repeat
-> 3/3 passed; 3 disabled)
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full C++ gate:
+> x86_64 1710/1710 passed and aarch64 1710/1710 passed
+> (`ctest -E "Benchmark\.|K8s"`); both skipped the live S3 opt-in test and
+> left 3 perf tests disabled. Live S3 opt-in smoke passed separately, 2/2.
 >
-> Last cleaned: 2026-07-04
+> Last cleaned: 2026-07-05
 >
-> Devlog: last `207_physical_ai_action_outcome_sql_adapter.md` -> next `208_*.md`
+> Devlog: last `210_action_outcome_supervisor_p0_hardening.md` -> next `211_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P0 Physical AI Action-Outcome supervisor production hardening**
+  (devlog 210) — added SQL catalog-backed adapter config with startup reload,
+  retry-idempotent evidence summaries, decision/evidence/commit marker repair,
+  managed SQL worker leases with heartbeat/expiry, owner id/epoch fencing,
+  per-pass decision/sink error budgets, and focused RBAC/audit/rate-limit
+  coverage for mutating admin controls. It also adds a SQL-backed soak/fault
+  harness that injects post-commit projection failures and verifies repair
+  convergence. Cross-architecture verification now passes with matching
+  x86_64/aarch64 CTest counts; remaining promotion work is broader operational
+  node-replacement validation and a future decision on whether the commit-ledger
+  sink contract is sufficient or should be replaced by generic multi-table
+  transactions.
+- ✅ **P0 Physical AI Action-Outcome supervisor config persistence**
+  (devlog 209) — added server-local durable JSON config for the experimental
+  SQL-backed supervisor adapter. A real HTTP restart regression now stores the
+  adapter config, stops and recreates the server on the same port/executor,
+  verifies hooks are automatically reinstalled from the persisted file, then
+  enables the supervisor without reposting `sql_adapter_enabled` and processes
+  a proposal. Devlog 210 adds catalog-backed config, retry-idempotent sink
+  repair, managed SQL leases, and admin-control hardening.
+- ✅ **P0 Physical AI shadow supervisor A/B and durability evidence**
+  (devlog 208) — added Experiment 021 plus a focused SQL adapter durability
+  regression. The research harness turns Experiment 013 outputs into 20 shadow
+  proposals, suppresses 15/15 hazardous non-gated baseline proposals, allows
+  5/5 context-gated safe proposals, and verifies that replay after a simulated
+  restart skips 20/20 proposals as already decided with 0 new evidence writes.
+  The C++ regression verifies that a fresh runtime object backed by the same SQL
+  tables skips proposals with persisted decision rows. Devlog 209 completes the
+  server-local adapter config persistence and live HTTP restart check.
 - ✅ **P0 Physical AI Action-Outcome SQL adapter**
   (devlog 207) — added a SQL-backed source/sink adapter for the experimental
   `ActionOutcomeSupervisorRuntime`. The server can now install hooks that load
@@ -20,9 +49,9 @@
   `proposal_id`, compute a deterministic historical-outcome policy, and write
   evidence summary plus decision rows. `POST /admin/action-outcome-supervisor`
   supports `sql_adapter_enabled` and optional default table creation for demos
-  and controlled pilots. Product promotion still needs transactional or
-  idempotent evidence writes, persisted config/catalog state, cluster-safe
-  worker ownership, broader fault/soak tests, and cross-architecture
+  and controlled pilots. Devlogs 209-210 add server-local durable config,
+  catalog-backed config, retry-idempotent sink repair, managed SQL leases,
+  commit marker repair, admin-control hardening, and cross-architecture
   verification.
 - ✅ **P0 Physical AI Action-Outcome supervisor runtime foundation**
   (devlog 206) — added an experimental, shadow-only
@@ -32,11 +61,10 @@
   loader, already-decided, decision provider, and decision sink hooks. It
   records proposal, duplicate, rejection, allow/suppress, fail-closed,
   evidence-row, worker, and latency metrics. Devlog 207 adds the first
-  SQL-backed source/sink adapter; remaining product-promotion blockers are
-  durable config/catalog state, transactional or idempotent evidence writes,
-  broader RBAC/auth tests for mutating controls, restart/node-replacement
-  validation, soak/fault tests, rate/backpressure limits, and
-  cross-architecture verification.
+  SQL-backed source/sink adapter; devlogs 209-210 add durable config,
+  catalog-backed config, retry-idempotent sink repair, managed SQL leases,
+  admin-control hardening, and cross-architecture verification. The remaining
+  product-promotion blocker is broader operational node-replacement validation.
 - ✅ **P3 Physical AI edge/fleet worker runtime foundation** (devlog 205) —
   extended `EdgeFleetConnectorRuntime` with a bounded server-managed worker
   loop, injected outbox-loader/fleet-sink hooks, manual `runOnce()`, worker
@@ -213,9 +241,9 @@
   cluster routing, and synchronous drain semantics.
 - ✅ **Graviton Arrow IPC / Flight verification** (devlog 173) —
   the fast cross-arch harness now reconfigures stale Graviton CMake caches when
-  `ZEPTO_USE_FLIGHT=ON` is missing, and Graviton verification confirmed Arrow
-  IPC unit tests, live S3, standalone HTTP Arrow ingest, and multi-node
-  rebalance smoke with Arrow compiled in.
+  `ZEPTO_USE_FLIGHT=ON` or `ZEPTO_USE_PARQUET=ON` is missing, and Graviton
+  verification confirmed Arrow IPC unit tests, live S3, standalone HTTP Arrow
+  ingest, and multi-node rebalance smoke with Arrow compiled in.
 - ✅ **P3 Agent Memory ANN maintenance, footprint, and IVF** (devlog 172) —
   sparse-projection, HNSW, and IVF ANN indexes now support incremental
   update/delete maintenance for clean indexes, including tombstone accounting
@@ -445,7 +473,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **Productize bounded small-table JOIN policy** | Devlog 195 validates coordinator-local small-table JOIN under a strict row cap. Before promotion, decide whether it stays automatic, becomes a feature flag, or moves behind an optimizer rule with cost checks, and document memory/latency limits for operational/control tables. | M |
 | **Bounded distributed window materialization policy** | Devlog 194 fixes correctness for the validated Action-Outcome window replay shape. Product promotion needs explicit row/memory limits, telemetry for full-data materialization, and fallback/error semantics for large tables. | M |
 | **Built-in Physical AI edge/fleet SQL/HTTP adapter and promotion hardening** | Devlog 205 adds the bounded worker lifecycle and hook contract. Product promotion still needs a built-in SQL/HTTP outbox-loader plus fleet-sink adapter, persisted connector config/catalog metadata, documented idempotent sink requirements, restart/node-replacement tests over real ZeptoDB tables, long-running soak/fault injection, rate/backpressure limits, and cross-architecture verification. | M |
-| **Productize Physical AI Action-Outcome supervisor** | Devlogs 206-207 add the admin-gated shadow runtime, hook contract, and first SQL-backed proposal/history/decision/evidence adapter. Product promotion still needs transactional or idempotent evidence writes, durable config/catalog state, cluster-safe worker ownership, broader RBAC/auth tests for mutating controls, restart/node-replacement idempotency validation, long-running similar-but-different scenario fault tests, rate/backpressure limits, and cross-architecture verification. | M |
+| **Productize Physical AI Action-Outcome supervisor** | Devlogs 206-210 add the admin-gated shadow runtime, hook contract, SQL-backed proposal/history/decision/evidence adapter, server-local and SQL catalog-backed durable config, live HTTP restart reinstall regressions, atomic commit-ledger sink repair, managed SQL worker lease/heartbeat with owner id/epoch fencing, admin RBAC/audit/rate-limit coverage, per-pass decision/sink error budgets, a SQL-backed soak/fault harness, and matching x86_64/aarch64 CTest verification. Product promotion still needs broader operational node-replacement validation and a product decision on whether to keep the commit-ledger sink contract or replace it with future generic multi-table transactions. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.

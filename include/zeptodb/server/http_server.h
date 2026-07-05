@@ -219,6 +219,25 @@ public:
         bool create_tables_if_missing,
         std::string* error = nullptr);
 
+    /// Enable durable SQL adapter config for the experimental Action-Outcome
+    /// supervisor. If path already exists, the server loads it, reinstalls the
+    /// SQL adapter, and restarts the supervisor when the persisted config was
+    /// enabled.
+    bool set_action_outcome_supervisor_config_persistence(
+        const std::string& path,
+        std::string* error = nullptr);
+
+    /// Enable SQL catalog-backed Action-Outcome supervisor config. If the
+    /// catalog row already exists, the server loads it, reinstalls the SQL
+    /// adapter, and restarts the supervisor when that catalog config was
+    /// enabled. The catalog table is the cluster-owned source of truth for
+    /// this experimental path.
+    bool set_action_outcome_supervisor_catalog_config(
+        const std::string& table = "physical_ai_supervisor_config",
+        const std::string& supervisor_name = "physical_ai_action_outcome",
+        bool create_table_if_missing = true,
+        std::string* error = nullptr);
+
     /// Access the agent memory store backing /api/ai/* endpoints.
     /// The store lives with the HTTP server and is in-memory for v0.
     zeptodb::ai::AgentMemoryStore& agent_memory_store();
@@ -358,6 +377,20 @@ private:
         const std::vector<zeptodb::ai::AgentMemoryEvictionEvent>& evictions,
         std::string* error = nullptr,
         size_t* failed_index = nullptr);
+    bool persist_action_outcome_supervisor_config_(
+        const ActionOutcomeSqlAdapterConfig& config,
+        bool enabled,
+        bool create_tables_if_missing,
+        std::string* error = nullptr);
+    bool persist_action_outcome_supervisor_catalog_config_(
+        const ActionOutcomeSqlAdapterConfig& config,
+        bool enabled,
+        bool create_tables_if_missing,
+        std::string* error = nullptr);
+    bool clear_action_outcome_supervisor_config_persistence_(
+        std::string* error = nullptr);
+    bool clear_action_outcome_supervisor_catalog_config_(
+        std::string* error = nullptr);
     zeptodb::ai::StoreResult put_agent_memory_routed_(
         zeptodb::ai::MemoryRecord record,
         bool* local_write);
@@ -467,6 +500,11 @@ private:
 
     // Experimental Physical AI Action-Outcome supervisor lifecycle.
     zeptodb::feeds::ActionOutcomeSupervisorRuntime          action_outcome_supervisor_runtime_;
+    mutable std::mutex                                      action_outcome_supervisor_config_mu_;
+    std::string                                             action_outcome_supervisor_config_path_;
+    std::string                                             action_outcome_supervisor_catalog_table_;
+    std::string                                             action_outcome_supervisor_catalog_name_;
+    bool                                                     action_outcome_supervisor_catalog_create_tables_ = true;
 };
 
 } // namespace zeptodb::server

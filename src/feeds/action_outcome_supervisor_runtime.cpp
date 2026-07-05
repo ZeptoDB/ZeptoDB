@@ -84,6 +84,13 @@ bool ActionOutcomeSupervisorRuntime::validateConfig(
         if (error) *error = "max_consecutive_failures must be positive";
         return false;
     }
+    if (config.max_decision_errors_per_pass == 0 ||
+        config.max_sink_errors_per_pass == 0) {
+        if (error) {
+            *error = "max_decision_errors_per_pass and max_sink_errors_per_pass must be positive";
+        }
+        return false;
+    }
     return true;
 }
 
@@ -266,15 +273,15 @@ bool ActionOutcomeSupervisorRuntime::runOnce(std::string* error) {
                          }
                          return left.proposal_id < right.proposal_id;
                      });
-    if (loaded.proposals.size() > config.batch_limit) {
-        loaded.proposals.resize(config.batch_limit);
-    }
-    pass.batch_proposals = loaded.proposals.size();
 
     std::string sink_error;
     std::string fatal_error;
     for (const auto& proposal : loaded.proposals) {
         if (proposal.proposal_id.empty() || proposal.proposed_action.empty()) {
+            if (pass.batch_proposals >= config.batch_limit) {
+                break;
+            }
+            ++pass.batch_proposals;
             ++pass.rejected_count;
             continue;
         }
@@ -296,6 +303,10 @@ bool ActionOutcomeSupervisorRuntime::runOnce(std::string* error) {
                 continue;
             }
         }
+        if (pass.batch_proposals >= config.batch_limit) {
+            break;
+        }
+        ++pass.batch_proposals;
 
         ActionOutcomeDecision decision;
         ActionOutcomeDecisionResult decision_result;
@@ -316,6 +327,13 @@ bool ActionOutcomeSupervisorRuntime::runOnce(std::string* error) {
             }
         } else {
             ++pass.decision_error_count;
+            if (pass.decision_error_count >=
+                config.max_decision_errors_per_pass) {
+                fatal_error = decision_result.error.empty()
+                    ? "decision error budget exhausted"
+                    : "decision error budget exhausted:" + decision_result.error;
+                break;
+            }
             decision = failClosedDecision(
                 proposal,
                 config.fail_closed_action,
@@ -334,6 +352,12 @@ bool ActionOutcomeSupervisorRuntime::runOnce(std::string* error) {
         }
         if (!sink_ok) {
             ++pass.sink_error_count;
+            if (pass.sink_error_count >= config.max_sink_errors_per_pass) {
+                fatal_error = sink_error.empty()
+                    ? "decision sink error budget exhausted"
+                    : "decision sink error budget exhausted:" + sink_error;
+                break;
+            }
             continue;
         }
         ++pass.processed_count;
@@ -367,21 +391,21 @@ bool ActionOutcomeSupervisorRuntime::runOnce(std::string* error) {
         fail_closed_total_ += pass.fail_closed_count;
         evidence_rows_written_total_ += pass.evidence_rows_written;
 
-        if (pass.sink_error_count > 0) {
-            ++worker_failures_total_;
-            ++consecutive_failures_;
-            failure_budget_exhausted_ =
-                consecutive_failures_ >= config_.max_consecutive_failures;
-            last_error_ = sink_error.empty() ? "decision sink failed" : sink_error;
-            if (error) *error = last_error_;
-            return false;
-        }
         if (!fatal_error.empty()) {
             ++worker_failures_total_;
             ++consecutive_failures_;
             failure_budget_exhausted_ =
                 consecutive_failures_ >= config_.max_consecutive_failures;
             last_error_ = fatal_error;
+            if (error) *error = last_error_;
+            return false;
+        }
+        if (pass.sink_error_count > 0) {
+            ++worker_failures_total_;
+            ++consecutive_failures_;
+            failure_budget_exhausted_ =
+                consecutive_failures_ >= config_.max_consecutive_failures;
+            last_error_ = sink_error.empty() ? "decision sink failed" : sink_error;
             if (error) *error = last_error_;
             return false;
         }
@@ -411,6 +435,8 @@ ActionOutcomeSupervisorRuntime::snapshot() const {
     snap.worker_poll_interval_ms = config_.worker_poll_interval_ms;
     snap.batch_limit = config_.batch_limit;
     snap.max_consecutive_failures = config_.max_consecutive_failures;
+    snap.max_decision_errors_per_pass = config_.max_decision_errors_per_pass;
+    snap.max_sink_errors_per_pass = config_.max_sink_errors_per_pass;
     snap.consecutive_failures = consecutive_failures_;
     snap.configure_total = configure_total_;
     snap.start_total = start_total_;

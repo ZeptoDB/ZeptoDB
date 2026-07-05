@@ -136,12 +136,14 @@ void RebalanceManager::run_loop() {
         NodeId node;
         size_t completed;
         size_t failed;
+        std::vector<PartitionRouter::Move> moves;
         {
             std::lock_guard lk(mu_);
             act = action_;
             node = action_node_;
             completed = status_.completed_moves;
             failed = status_.failed_moves;
+            moves = plan_.moves;
         }
         if (completed > 0 && failed == 0 && act != RebalanceAction::NONE &&
             state_.load(std::memory_order_acquire) != RebalanceState::CANCELLING) {
@@ -155,6 +157,14 @@ void RebalanceManager::run_loop() {
                           : consensus_->propose_remove(node);
             if (!ok) {
                 ZEPTO_WARN("RebalanceManager: ring broadcast failed for node {}", node);
+            }
+        } else if (completed > 0 && failed == 0 && act == RebalanceAction::NONE &&
+                   state_.load(std::memory_order_acquire) != RebalanceState::CANCELLING) {
+            for (const auto& move : moves) {
+                if (!consensus_->propose_pin(move.symbol, move.to)) {
+                    ZEPTO_WARN("RebalanceManager: pin broadcast failed for symbol {} node {}",
+                               move.symbol, move.to);
+                }
             }
         }
     } else {

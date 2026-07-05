@@ -90,6 +90,8 @@ struct ActionOutcomeSupervisorRuntimeConfig {
     uint64_t worker_poll_interval_ms = 1000;
     size_t batch_limit = 128;
     uint32_t max_consecutive_failures = 3;
+    uint32_t max_decision_errors_per_pass = 16;
+    uint32_t max_sink_errors_per_pass = 16;
 };
 
 /// Per-pass worker result.
@@ -128,6 +130,8 @@ struct ActionOutcomeSupervisorRuntimeSnapshot {
     uint64_t worker_poll_interval_ms = 0;
     size_t batch_limit = 0;
     uint32_t max_consecutive_failures = 0;
+    uint32_t max_decision_errors_per_pass = 0;
+    uint32_t max_sink_errors_per_pass = 0;
     uint32_t consecutive_failures = 0;
     uint64_t configure_total = 0;
     uint64_t start_total = 0;

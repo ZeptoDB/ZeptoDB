@@ -140,12 +140,13 @@ TEST(ActionOutcomeSupervisorRuntimeTest, RunOnceProcessesBatchAndSkipsDecidedPro
     EXPECT_EQ(snap.last_pass.proposals_seen, 4u);
     EXPECT_EQ(snap.last_pass.batch_proposals, 3u);
     EXPECT_EQ(snap.last_pass.duplicate_count, 1u);
-    EXPECT_EQ(snap.last_pass.processed_count, 2u);
-    EXPECT_EQ(snap.decisions_allow_total, 2u);
-    EXPECT_EQ(snap.evidence_rows_written_total, 6u);
-    ASSERT_EQ(sunk.size(), 2u);
+    EXPECT_EQ(snap.last_pass.processed_count, 3u);
+    EXPECT_EQ(snap.decisions_allow_total, 3u);
+    EXPECT_EQ(snap.evidence_rows_written_total, 9u);
+    ASSERT_EQ(sunk.size(), 3u);
     EXPECT_EQ(sunk[0], "p1");
     EXPECT_EQ(sunk[1], "p3");
+    EXPECT_EQ(sunk[2], "p4");
 }
 
 TEST(ActionOutcomeSupervisorRuntimeTest, DecisionErrorFailsClosedAndWritesSink) {
@@ -244,6 +245,121 @@ TEST(ActionOutcomeSupervisorRuntimeTest, LoaderExceptionCountsWorkerFailure) {
     const auto snap = runtime.snapshot();
     EXPECT_EQ(snap.worker_failures_total, 1u);
     EXPECT_EQ(snap.consecutive_failures, 1u);
+}
+
+TEST(ActionOutcomeSupervisorRuntimeTest, SinkErrorBudgetStopsPassEarly) {
+    ActionOutcomeSupervisorRuntimeConfig config;
+    config.batch_limit = 5;
+    config.max_sink_errors_per_pass = 2;
+
+    ActionOutcomeSupervisorRuntimeHooks hooks;
+    hooks.load_proposals = [] {
+        ActionOutcomeProposalLoadResult out;
+        out.ok = true;
+        out.proposals = {
+            proposal("p1", 1),
+            proposal("p2", 2),
+            proposal("p3", 3),
+            proposal("p4", 4),
+        };
+        return out;
+    };
+    hooks.decide = [](const ActionOutcomeProposal& item) {
+        ActionOutcomeDecisionResult out;
+        out.ok = true;
+        out.decision = allow_decision(item);
+        return out;
+    };
+    hooks.sink_decision = [](const ActionOutcomeDecision&, std::string* error) {
+        if (error) *error = "sink backpressure";
+        return false;
+    };
+
+    ActionOutcomeSupervisorRuntime runtime;
+    std::string error;
+    ASSERT_TRUE(runtime.setWorkerHooks(std::move(hooks), &error)) << error;
+    ASSERT_TRUE(runtime.configure(config, &error)) << error;
+    ASSERT_TRUE(runtime.start(&error)) << error;
+    EXPECT_FALSE(runtime.runOnce(&error));
+    EXPECT_NE(error.find("decision sink error budget exhausted"),
+              std::string::npos);
+
+    const auto snap = runtime.snapshot();
+    EXPECT_EQ(snap.last_pass.sink_error_count, 2u);
+    EXPECT_EQ(snap.last_pass.processed_count, 0u);
+    EXPECT_EQ(snap.worker_failures_total, 1u);
+}
+
+TEST(ActionOutcomeSupervisorRuntimeTest, BoundedSoakRetriesTransientFaultsAcrossPasses) {
+    ActionOutcomeSupervisorRuntimeConfig config;
+    config.batch_limit = 16;
+    config.max_sink_errors_per_pass = 4;
+
+    std::vector<ActionOutcomeProposal> proposals;
+    proposals.reserve(64);
+    for (int i = 0; i < 64; ++i) {
+        proposals.push_back(proposal("p" + std::to_string(i), i));
+    }
+
+    std::unordered_set<std::string> decided;
+    std::vector<uint32_t> decision_attempts(proposals.size(), 0);
+    std::vector<uint32_t> sink_attempts(proposals.size(), 0);
+
+    ActionOutcomeSupervisorRuntimeHooks hooks;
+    hooks.load_proposals = [&] {
+        ActionOutcomeProposalLoadResult out;
+        out.ok = true;
+        out.proposals = proposals;
+        return out;
+    };
+    hooks.already_decided = [&](const std::string& id) {
+        return decided.find(id) != decided.end();
+    };
+    hooks.decide = [&](const ActionOutcomeProposal& item) {
+        const auto idx = static_cast<size_t>(item.source_ts_ns);
+        ++decision_attempts[idx];
+        if ((idx % 13) == 0 && decision_attempts[idx] == 1) {
+            throw std::runtime_error("transient model fault");
+        }
+
+        ActionOutcomeDecisionResult out;
+        out.ok = true;
+        out.decision = allow_decision(item);
+        return out;
+    };
+    hooks.sink_decision = [&](const ActionOutcomeDecision& decision, std::string* error) {
+        const auto idx = static_cast<size_t>(std::stoul(decision.proposal_id.substr(1)));
+        ++sink_attempts[idx];
+        if (sink_attempts[idx] == 1) {
+            if (error) *error = "transient sink backpressure";
+            return false;
+        }
+        decided.insert(decision.proposal_id);
+        return true;
+    };
+
+    ActionOutcomeSupervisorRuntime runtime;
+    std::string error;
+    ASSERT_TRUE(runtime.setWorkerHooks(std::move(hooks), &error)) << error;
+    ASSERT_TRUE(runtime.configure(config, &error)) << error;
+    ASSERT_TRUE(runtime.start(&error)) << error;
+
+    for (size_t pass = 0; pass < 200 && decided.size() < proposals.size(); ++pass) {
+        error.clear();
+        const bool ok = runtime.runOnce(&error);
+        if (!ok) {
+            ASSERT_NE(error.find("decision sink error budget exhausted"),
+                      std::string::npos)
+                << error;
+        }
+    }
+
+    EXPECT_EQ(decided.size(), proposals.size());
+    EXPECT_GT(decision_attempts[13], 1u);
+    EXPECT_GT(sink_attempts[13], 1u);
+    const auto snap = runtime.snapshot();
+    EXPECT_GT(snap.worker_failures_total, 0u);
+    EXPECT_GE(snap.decisions_allow_total, proposals.size());
 }
 
 TEST(ActionOutcomeSupervisorRuntimeTest, WorkerModeRequiresHooksOnStart) {

@@ -1301,6 +1301,13 @@ target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include
 target_link_libraries(zepto_http_server PRIVATE
     zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
 
+# SQL-backed Action-Outcome supervisor soak/fault-injection harness.
+add_executable(zepto_action_outcome_soak tools/zepto_action_outcome_soak.cpp)
+target_include_directories(zepto_action_outcome_soak PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(zepto_action_outcome_soak PRIVATE
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+target_compile_options(zepto_action_outcome_soak PRIVATE -O2)
+
 # Stateless ingest node (P8-I3, devlog 113) — HTTP ingest-only pod that
 # forwards every tick to the right storage pod via CoordinatorRoutingAdapter.
 add_executable(zepto_ingest_node tools/zepto_ingest_node.cpp)

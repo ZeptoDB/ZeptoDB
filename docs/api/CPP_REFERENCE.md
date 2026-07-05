@@ -736,13 +736,16 @@ runtime.stop();
 - `configure()`, `setWorkerHooks()`, `start()`, `stop()`, `clear()`,
   `runOnce()`, and `snapshot()` are internally synchronized.
 - Only `mode="shadow"` is accepted.
-- Each worker pass sorts proposals by `source_ts_ns` and `proposal_id`, then
-  caps work at `batch_limit`.
+- Each worker pass sorts proposals by `source_ts_ns` and `proposal_id`, skips
+  already-decided proposals before consuming the batch budget, then caps
+  non-duplicate candidate work at `batch_limit`.
 - Empty proposal ids or empty proposed actions are rejected.
 - `already_decided` is optional; when installed it should check the durable
   decision sink for the proposal id.
 - Decision-provider errors produce a fail-closed `suppress_no_evidence`
   decision with `fail_closed_action` as the final action.
+- `max_decision_errors_per_pass` and `max_sink_errors_per_pass` bound
+  backpressure/fault work in one pass. Exhausting either budget fails the pass.
 - Sink failures are counted as worker failures and preserve the last error.
 - `worker_enabled=true` starts a background worker at `start()` time and sleeps
   for `worker_poll_interval_ms` between passes.
@@ -775,6 +778,11 @@ adapter.runtime.worker_enabled = true;
 adapter.history_evidence_limit = 64;
 adapter.suppress_outcome_score_below = 0;
 adapter.suppress_min_failure_count = 1;
+adapter.require_worker_ownership = true;
+adapter.manage_worker_lease = true;
+adapter.worker_owner_id = "node-a";
+adapter.worker_owner_epoch = 7;
+adapter.worker_lease_ttl_ms = 15000;
 
 std::string error;
 if (!zeptodb::server::ensureActionOutcomeSqlTables(
@@ -790,11 +798,37 @@ runtime.setWorkerHooks(std::move(hooks), &error);
 The HTTP server can install the same hooks against its own `QueryExecutor`:
 
 ```cpp
+server.set_action_outcome_supervisor_config_persistence(
+    "/var/lib/zeptodb/action_outcome_supervisor.json",
+    &error);
+
+server.set_action_outcome_supervisor_catalog_config(
+    "physical_ai_supervisor_config",
+    "physical_ai_action_outcome",
+    /*create_table_if_missing=*/true,
+    &error);
+
 server.set_action_outcome_supervisor_sql_adapter(
     adapter,
     /*create_tables_if_missing=*/true,
     &error);
 ```
+
+`set_action_outcome_supervisor_config_persistence()` enables server-local
+durable config for the experimental SQL adapter. If the path already exists,
+the server validates and loads it, configures the supervisor runtime,
+reinstalls SQL-backed hooks, recreates default tables idempotently when the
+persisted config requested table creation, and starts the supervisor when the
+persisted config was enabled. Successful
+`POST /admin/action-outcome-supervisor` calls with `sql_adapter_enabled=true`
+rewrite this file; `DELETE /admin/action-outcome-supervisor` removes it.
+
+`set_action_outcome_supervisor_catalog_config()` enables SQL catalog-backed
+config for the same experimental adapter. The catalog table stores versioned
+JSON config rows and becomes the source of truth when enabled; startup reloads
+the latest row, reinstalls SQL hooks, and starts the supervisor when that row
+was enabled. `DELETE /admin/action-outcome-supervisor` clears matching catalog
+rows.
 
 Default SQL contract:
 
@@ -804,16 +838,33 @@ Default SQL contract:
 | `physical_ai_action_history` | `action STRING`, `outcome_score INT64`, `source_ts_ns TIMESTAMP_NS` |
 | `physical_ai_supervision_decisions` | `proposal_id STRING`, `decision STRING`, `final_action STRING`, `reason STRING`, `evidence_count INT64`, `fail_closed BOOL`, `decided_ts_ns TIMESTAMP_NS` |
 | `physical_ai_supervision_evidence` | `proposal_id STRING`, `evidence_count INT64`, `reason STRING`, `written_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervision_commits` | `proposal_id STRING`, `decision STRING`, `final_action STRING`, `reason STRING`, `evidence_count INT64`, `fail_closed BOOL`, `decision_written BOOL`, `evidence_written BOOL`, `committed_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervisor_ownership` | `supervisor_name STRING`, `owner_id STRING`, `owner_epoch INT64`, `lease_expires_at_ns INT64`, `heartbeat_ts_ns TIMESTAMP_NS` |
+
+Ownership fencing is optional. When `require_worker_ownership=true`, proposal
+loading returns no work unless the ownership table contains the configured
+supervisor name with matching `worker_owner_id` and `worker_owner_epoch`.
+When `manage_worker_lease=true`, the adapter acquires or renews an expiring SQL
+lease before loading proposals and can take over an expired owner with a higher
+epoch. This is a SQL lease/heartbeat guard, not a consensus election protocol.
 
 Limits:
 
 - Still experimental and shadow-only.
-- The sink writes evidence summary first and decision second. The decision row
-  is the duplicate-suppression boundary; without a transaction, decision insert
-  failure after evidence insert can leave duplicate evidence summaries on
-  retry.
-- Runtime and adapter config are process-local until product-promotion gates
-  add catalog/config persistence.
+- Proposal loading fetches committed proposals first as projection-repair
+  candidates, then separately fetches undecided proposals with a commit-ledger
+  anti-join. Already-committed prefixes therefore cannot consume the
+  `proposal_query_limit` budget needed for new undecided work.
+- The sink writes one atomic commit ledger row before repairing the decision
+  and evidence projection tables. Duplicate checks read the commit ledger;
+  retries repair missing projections without duplicating decision or evidence
+  rows. This is effectively-once for the current sink contract, but not a
+  generic multi-table SQL transaction.
+- Runtime and adapter config can be persisted to a server-local file or a SQL
+  catalog table. Broader cluster rollout and migration policy remain
+  experimental.
+- The SQL lease/heartbeat gate fences stale workers by id and epoch, but does
+  not replace a full cluster consensus/election subsystem.
 
 ---
 

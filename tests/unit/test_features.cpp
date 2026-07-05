@@ -465,6 +465,15 @@ protected:
         server_->stop();
     }
 
+    int64_t table_count(const std::string& table_name) {
+        const auto result = executor_->execute("SELECT count(*) FROM " + table_name);
+        EXPECT_TRUE(result.ok()) << result.error;
+        if (!result.ok() || result.rows.empty() || result.rows[0].empty()) {
+            return -1;
+        }
+        return result.rows[0][0];
+    }
+
     uint16_t test_port_ = 0;
 
     std::unique_ptr<ZeptoPipeline>             pipeline_;
@@ -815,6 +824,193 @@ TEST_F(MetricsProviderTest, ActionOutcomeSupervisorAdminInstallsSqlAdapter) {
     EXPECT_EQ(del.status, 200);
 }
 
+TEST_F(MetricsProviderTest,
+       ActionOutcomeSupervisorRejectsEmptyConfigPersistencePath) {
+    std::string error;
+    EXPECT_FALSE(server_->set_action_outcome_supervisor_config_persistence(
+        "", &error));
+    EXPECT_NE(error.find("path is required"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest,
+       ActionOutcomeSupervisorSqlAdapterConfigPersistsAndReloadsAfterHttpRestart) {
+    pipeline_->start();
+    const auto config_path =
+        zepto_test_util::unique_test_path("action_outcome_supervisor_config");
+    std::error_code cleanup_ec;
+    std::filesystem::remove(config_path, cleanup_ec);
+
+    std::string error;
+    ASSERT_TRUE(server_->set_action_outcome_supervisor_config_persistence(
+        config_path.string(), &error)) << error;
+
+    const auto configure = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"durable-action-sql-worker","enabled":false,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1,"sql_adapter_enabled":true,"sql_adapter_create_tables":true,"worker_ownership_required":true,"worker_owner_id":"http-node-a","worker_owner_epoch":11})");
+    ASSERT_EQ(configure.status, 200) << configure.body;
+    EXPECT_NE(configure.body.find("\"enabled\":false"), std::string::npos);
+    EXPECT_NE(configure.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+    EXPECT_TRUE(std::filesystem::exists(config_path));
+
+    server_->stop();
+
+    auto inserted = executor_->execute(
+        "INSERT INTO physical_ai_supervisor_ownership "
+        "(supervisor_name, owner_id, owner_epoch) VALUES "
+        "('durable-action-sql-worker', 'http-node-a', 11)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+    inserted = executor_->execute(
+        "INSERT INTO physical_ai_action_proposals "
+        "(proposal_id, source_type, proposed_action, source_ts_ns) VALUES "
+        "('http_sql_restart_p1', 'vla_log', 'continue_route', 10)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+    inserted = executor_->execute(
+        "INSERT INTO physical_ai_action_history "
+        "(action, outcome_score, source_ts_ns) VALUES "
+        "('continue_route', 7, 1)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+
+    server_ = std::make_unique<zeptodb::server::HttpServer>(
+        *executor_, test_port_);
+    ASSERT_TRUE(server_->set_action_outcome_supervisor_config_persistence(
+        config_path.string(), &error)) << error;
+    server_->start_async();
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/action-outcome-supervisor");
+        return status.find("\"name\":\"durable-action-sql-worker\"") !=
+                   std::string::npos &&
+               status.find("\"enabled\":false") != std::string::npos &&
+               status.find("\"worker_hooks_configured\":true") !=
+                   std::string::npos;
+    }));
+
+    const auto enable = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"durable-action-sql-worker","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1})");
+    ASSERT_EQ(enable.status, 200) << enable.body;
+    EXPECT_NE(enable.body.find("\"enabled\":true"), std::string::npos);
+    EXPECT_NE(enable.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/action-outcome-supervisor");
+        return status.find("\"proposals_processed_total\":1") !=
+               std::string::npos;
+    }));
+
+    const auto decisions = executor_->execute(
+        "SELECT proposal_id, decision, evidence_count "
+        "FROM physical_ai_supervision_decisions");
+    ASSERT_TRUE(decisions.ok()) << decisions.error;
+    ASSERT_EQ(decisions.rows.size(), 1u);
+    ASSERT_NE(decisions.symbol_dict, nullptr);
+    EXPECT_EQ(decisions.symbol_dict->lookup(
+                  static_cast<uint32_t>(decisions.rows[0][0])),
+              "http_sql_restart_p1");
+    EXPECT_EQ(decisions.symbol_dict->lookup(
+                  static_cast<uint32_t>(decisions.rows[0][1])),
+              "allow");
+    EXPECT_EQ(decisions.rows[0][2], 1);
+
+    const auto del = http_request(
+        test_port_, "DELETE", "/admin/action-outcome-supervisor");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_FALSE(std::filesystem::exists(config_path));
+}
+
+TEST_F(MetricsProviderTest,
+       ActionOutcomeSupervisorSqlAdapterConfigReloadsFromCatalog) {
+    pipeline_->start();
+
+    std::string error;
+    ASSERT_TRUE(server_->set_action_outcome_supervisor_catalog_config(
+        "physical_ai_supervisor_config",
+        "catalog-action-sql-worker",
+        true,
+        &error)) << error;
+
+    const auto configure = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"catalog-action-sql-worker","enabled":false,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1,"sql_adapter_enabled":true,"sql_adapter_create_tables":true,"worker_ownership_required":true,"worker_lease_enabled":true,"worker_owner_id":"catalog-node-a","worker_lease_ttl_ms":1000})");
+    ASSERT_EQ(configure.status, 200) << configure.body;
+    EXPECT_NE(configure.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+    EXPECT_EQ(table_count("physical_ai_supervisor_config"), 1);
+
+    server_->stop();
+
+    auto inserted = executor_->execute(
+        "INSERT INTO physical_ai_action_proposals "
+        "(proposal_id, source_type, proposed_action, source_ts_ns) VALUES "
+        "('http_sql_catalog_p1', 'vla_log', 'continue_route', 10)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+    inserted = executor_->execute(
+        "INSERT INTO physical_ai_action_history "
+        "(action, outcome_score, source_ts_ns) VALUES "
+        "('continue_route', 7, 1)");
+    ASSERT_TRUE(inserted.ok()) << inserted.error;
+
+    server_ = std::make_unique<zeptodb::server::HttpServer>(
+        *executor_, test_port_);
+    ASSERT_TRUE(server_->set_action_outcome_supervisor_catalog_config(
+        "physical_ai_supervisor_config",
+        "catalog-action-sql-worker",
+        true,
+        &error)) << error;
+    server_->start_async();
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/action-outcome-supervisor");
+        return status.find("\"name\":\"catalog-action-sql-worker\"") !=
+                   std::string::npos &&
+               status.find("\"enabled\":false") != std::string::npos &&
+               status.find("\"worker_hooks_configured\":true") !=
+                   std::string::npos;
+    }));
+
+    const auto enable = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"catalog-action-sql-worker","enabled":true,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1})");
+    ASSERT_EQ(enable.status, 200) << enable.body;
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/action-outcome-supervisor");
+        return status.find("\"proposals_processed_total\":1") !=
+               std::string::npos;
+    }));
+
+    const auto decisions = executor_->execute(
+        "SELECT proposal_id, decision, evidence_count "
+        "FROM physical_ai_supervision_decisions");
+    ASSERT_TRUE(decisions.ok()) << decisions.error;
+    ASSERT_EQ(decisions.rows.size(), 1u);
+    ASSERT_NE(decisions.symbol_dict, nullptr);
+    EXPECT_EQ(decisions.symbol_dict->lookup(
+                  static_cast<uint32_t>(decisions.rows[0][0])),
+              "http_sql_catalog_p1");
+
+    EXPECT_EQ(table_count("physical_ai_supervision_commits"), 1);
+
+    const auto del = http_request(
+        test_port_, "DELETE", "/admin/action-outcome-supervisor");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_EQ(table_count("physical_ai_supervisor_config"), 0);
+}
+
 TEST_F(MetricsProviderTest, ActionOutcomeSupervisorRejectsInvalidModeAndMissingHooks) {
     const auto bad_mode = http_request(
         test_port_,
@@ -889,6 +1085,118 @@ TEST(EdgeFleetConnectorAdminAuthTest, RequiresAdminPermission) {
 
     server.stop();
     std::filesystem::remove(key_path);
+}
+
+TEST(ActionOutcomeSupervisorAdminAuthTest, MutatingControlsAuditAndRateLimit) {
+    const auto key_path =
+        zepto_test_util::unique_test_path("action_outcome_supervisor_keys");
+    {
+        std::ofstream file(key_path);
+    }
+
+    zeptodb::auth::AuthManager::Config auth_cfg;
+    auth_cfg.enabled = true;
+    auth_cfg.api_keys_file = key_path.string();
+    auth_cfg.jwt_enabled = false;
+    auth_cfg.rate_limit_enabled = true;
+    auth_cfg.rate_limit.requests_per_minute = 60;
+    auth_cfg.rate_limit.burst_capacity = 10;
+    auth_cfg.audit_enabled = true;
+    auth_cfg.audit_buffer_enabled = true;
+    auto auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
+    const std::string admin_key =
+        auth->create_api_key("action-admin", zeptodb::auth::Role::ADMIN);
+    const std::string writer_key =
+        auth->create_api_key("action-writer", zeptodb::auth::Role::WRITER);
+
+    const uint16_t port = zepto_test_util::pick_free_port();
+    auto pipeline = make_pipeline();
+    auto executor = std::make_unique<QueryExecutor>(*pipeline);
+    zeptodb::server::HttpServer server(*executor, port,
+                                       zeptodb::auth::TlsConfig{}, auth);
+    server.start_async();
+    std::this_thread::sleep_for(60ms);
+
+    const auto writer_post = http_request(
+        port,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"writer-denied"})",
+        writer_key);
+    EXPECT_EQ(writer_post.status, 403);
+
+    const auto admin_post = http_request(
+        port,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"audit-action","enabled":true,"worker_enabled":false})",
+        admin_key);
+    EXPECT_EQ(admin_post.status, 200) << admin_post.body;
+
+    const auto events = auth->audit_buffer().last(20);
+    bool saw_forbidden = false;
+    bool saw_configured = false;
+    for (const auto& ev : events) {
+        if (ev.detail == "admin-forbidden") saw_forbidden = true;
+        if (ev.detail == "action-outcome-supervisor-configured") {
+            saw_configured = true;
+        }
+    }
+    EXPECT_TRUE(saw_forbidden);
+    EXPECT_TRUE(saw_configured);
+
+    server.stop();
+    std::filesystem::remove(key_path);
+
+    const auto limited_key_path =
+        zepto_test_util::unique_test_path("action_outcome_supervisor_rl_keys");
+    {
+        std::ofstream file(limited_key_path);
+    }
+    zeptodb::auth::AuthManager::Config limited_cfg;
+    limited_cfg.enabled = true;
+    limited_cfg.api_keys_file = limited_key_path.string();
+    limited_cfg.jwt_enabled = false;
+    limited_cfg.rate_limit_enabled = true;
+    limited_cfg.rate_limit.requests_per_minute = 1;
+    limited_cfg.rate_limit.burst_capacity = 1;
+    limited_cfg.audit_enabled = false;
+    limited_cfg.audit_buffer_enabled = false;
+    auto limited_auth =
+        std::make_shared<zeptodb::auth::AuthManager>(limited_cfg);
+    const std::string limited_admin =
+        limited_auth->create_api_key("limited-action-admin",
+                                     zeptodb::auth::Role::ADMIN);
+
+    const uint16_t limited_port = zepto_test_util::pick_free_port();
+    auto limited_pipeline = make_pipeline();
+    auto limited_executor = std::make_unique<QueryExecutor>(*limited_pipeline);
+    zeptodb::server::HttpServer limited_server(
+        *limited_executor,
+        limited_port,
+        zeptodb::auth::TlsConfig{},
+        limited_auth);
+    limited_server.start_async();
+    std::this_thread::sleep_for(60ms);
+
+    const auto first = http_request(
+        limited_port,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"rate-limit-action","enabled":true,"worker_enabled":false})",
+        limited_admin);
+    EXPECT_EQ(first.status, 200) << first.body;
+    const auto second = http_request(
+        limited_port,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"rate-limit-action-2","enabled":true,"worker_enabled":false})",
+        limited_admin);
+    EXPECT_EQ(second.status, 403);
+    EXPECT_NE(second.body.find("Rate limit exceeded"), std::string::npos);
+
+    limited_server.stop();
+    std::filesystem::remove(limited_key_path);
 }
 
 // ============================================================================
