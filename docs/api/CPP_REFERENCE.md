@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-06-23*
+*Last updated: 2026-07-04*
 
 ---
 
@@ -13,6 +13,8 @@
 - [Telegraf Output Helpers](#telegraf-output-helpers)
 - [EdgeFleetFeedConnector Experimental](#edgefleetfeedconnector-experimental)
 - [EdgeFleetConnectorRuntime Experimental](#edgefleetconnectorruntime-experimental)
+- [ActionOutcomeSupervisorRuntime Experimental](#actionoutcomesupervisorruntime-experimental)
+- [ActionOutcome SQL Adapter Experimental](#actionoutcome-sql-adapter-experimental)
 - [AgentMemoryStore](#agentmemorystore)
 - [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
@@ -658,6 +660,211 @@ runtime.stop();
 
 The HTTP server exposes this runtime through
 `/admin/edge-fleet-connector` and appends its metrics to `/metrics`.
+
+---
+
+## ActionOutcomeSupervisorRuntime Experimental
+
+`#include "zeptodb/feeds/action_outcome_supervisor_runtime.h"` — Namespace:
+`zeptodb::feeds`
+
+Server-owned lifecycle wrapper for the experimental Physical AI Action-Outcome
+supervisor. It is shadow-only: the runtime loads action proposals, checks
+idempotency, computes advisory decisions, fail-closes decision errors to manual
+review, writes decisions/evidence through an injected sink, and emits status
+plus Prometheus metrics. It does not publish actuator commands.
+
+```cpp
+using namespace zeptodb::feeds;
+
+ActionOutcomeSupervisorRuntimeConfig cfg;
+cfg.name = "physical_ai_action_outcome";
+cfg.mode = "shadow";
+cfg.history_table = "physical_ai_action_history";
+cfg.proposal_table = "physical_ai_action_proposals";
+cfg.decision_table = "physical_ai_supervision_decisions";
+cfg.evidence_table = "physical_ai_supervision_evidence";
+cfg.batch_limit = 128;
+cfg.worker_enabled = true;
+cfg.worker_poll_interval_ms = 1000;
+
+ActionOutcomeSupervisorRuntime runtime;
+ActionOutcomeSupervisorRuntimeHooks hooks;
+hooks.load_proposals = [] {
+    ActionOutcomeProposalLoadResult out;
+    out.ok = true;
+    out.proposals = load_pending_action_proposals();
+    return out;
+};
+hooks.already_decided = [](const std::string& proposal_id) {
+    return decision_exists(proposal_id);
+};
+hooks.decide = [](const ActionOutcomeProposal& proposal) {
+    ActionOutcomeDecisionResult out;
+    out.ok = true;
+    out.decision.proposal_id = proposal.proposal_id;
+    out.decision.decision = "allow";
+    out.decision.final_action = proposal.proposed_action;
+    out.decision.reason = "positive_action_outcome_pressure";
+    out.decision.evidence_count = 3;
+    return out;
+};
+hooks.sink_decision = [](const ActionOutcomeDecision& decision,
+                         std::string* error) {
+    return write_supervision_decision(decision, error);
+};
+
+std::string error;
+if (!runtime.setWorkerHooks(std::move(hooks), &error)) {
+    // stop before changing hooks on an enabled runtime
+}
+if (!runtime.configure(cfg, &error)) {
+    // invalid mode, missing table names, or invalid limits
+}
+if (!runtime.start(&error)) {
+    // missing config or missing worker hooks for worker mode
+}
+runtime.runOnce(&error);  // optional manual bounded pass
+
+auto snap = runtime.snapshot();
+std::string metrics = runtime.formatPrometheus();
+runtime.stop();
+```
+
+### Guarantees And Limits
+
+- `configure()`, `setWorkerHooks()`, `start()`, `stop()`, `clear()`,
+  `runOnce()`, and `snapshot()` are internally synchronized.
+- Only `mode="shadow"` is accepted.
+- Each worker pass sorts proposals by `source_ts_ns` and `proposal_id`, skips
+  already-decided proposals before consuming the batch budget, then caps
+  non-duplicate candidate work at `batch_limit`.
+- Empty proposal ids or empty proposed actions are rejected.
+- `already_decided` is optional; when installed it should check the durable
+  decision sink for the proposal id.
+- Decision-provider errors produce a fail-closed `suppress_no_evidence`
+  decision with `fail_closed_action` as the final action.
+- `max_decision_errors_per_pass` and `max_sink_errors_per_pass` bound
+  backpressure/fault work in one pass. Exhausting either budget fails the pass.
+- Sink failures are counted as worker failures and preserve the last error.
+- `worker_enabled=true` starts a background worker at `start()` time and sleeps
+  for `worker_poll_interval_ms` between passes.
+- Configuration and counters are process-local and experimental.
+- Embeddings can still provide custom hooks. For ZeptoDB-backed demos and
+  controlled pilots, use the SQL adapter below.
+
+The HTTP server exposes this runtime through
+`/admin/action-outcome-supervisor` and appends its metrics to `/metrics`.
+
+---
+
+## ActionOutcome SQL Adapter Experimental
+
+`#include "zeptodb/server/action_outcome_sql_adapter.h"` — Namespace:
+`zeptodb::server`
+
+SQL-backed hook factory for the experimental Action-Outcome supervisor. The
+adapter validates table/column identifiers, optionally creates the default SQL
+contract tables, then builds runtime hooks that read proposals, check duplicate
+decisions, compute a deterministic historical-outcome policy, and write
+evidence summary plus decision rows.
+
+```cpp
+#include "zeptodb/server/action_outcome_sql_adapter.h"
+
+zeptodb::server::ActionOutcomeSqlAdapterConfig adapter;
+adapter.runtime.batch_limit = 128;
+adapter.runtime.worker_enabled = true;
+adapter.history_evidence_limit = 64;
+adapter.suppress_outcome_score_below = 0;
+adapter.suppress_min_failure_count = 1;
+adapter.require_worker_ownership = true;
+adapter.manage_worker_lease = true;
+adapter.worker_owner_id = "node-a";
+adapter.worker_owner_epoch = 7;
+adapter.worker_lease_ttl_ms = 15000;
+
+std::string error;
+if (!zeptodb::server::ensureActionOutcomeSqlTables(
+        executor, adapter, &error)) {
+    // creates proposal/history/decision/evidence tables when missing
+}
+
+auto hooks = zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+    executor, adapter);
+runtime.setWorkerHooks(std::move(hooks), &error);
+```
+
+The HTTP server can install the same hooks against its own `QueryExecutor`:
+
+```cpp
+server.set_action_outcome_supervisor_config_persistence(
+    "/var/lib/zeptodb/action_outcome_supervisor.json",
+    &error);
+
+server.set_action_outcome_supervisor_catalog_config(
+    "physical_ai_supervisor_config",
+    "physical_ai_action_outcome",
+    /*create_table_if_missing=*/true,
+    &error);
+
+server.set_action_outcome_supervisor_sql_adapter(
+    adapter,
+    /*create_tables_if_missing=*/true,
+    &error);
+```
+
+`set_action_outcome_supervisor_config_persistence()` enables server-local
+durable config for the experimental SQL adapter. If the path already exists,
+the server validates and loads it, configures the supervisor runtime,
+reinstalls SQL-backed hooks, recreates default tables idempotently when the
+persisted config requested table creation, and starts the supervisor when the
+persisted config was enabled. Successful
+`POST /admin/action-outcome-supervisor` calls with `sql_adapter_enabled=true`
+rewrite this file; `DELETE /admin/action-outcome-supervisor` removes it.
+
+`set_action_outcome_supervisor_catalog_config()` enables SQL catalog-backed
+config for the same experimental adapter. The catalog table stores versioned
+JSON config rows and becomes the source of truth when enabled; startup reloads
+the latest row, reinstalls SQL hooks, and starts the supervisor when that row
+was enabled. `DELETE /admin/action-outcome-supervisor` clears matching catalog
+rows.
+
+Default SQL contract:
+
+| Table | Columns |
+| --- | --- |
+| `physical_ai_action_proposals` | `proposal_id STRING`, `source_type STRING`, `proposed_action STRING`, `source_ts_ns TIMESTAMP_NS` |
+| `physical_ai_action_history` | `action STRING`, `outcome_score INT64`, `source_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervision_decisions` | `proposal_id STRING`, `decision STRING`, `final_action STRING`, `reason STRING`, `evidence_count INT64`, `fail_closed BOOL`, `decided_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervision_evidence` | `proposal_id STRING`, `evidence_count INT64`, `reason STRING`, `written_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervision_commits` | `proposal_id STRING`, `decision STRING`, `final_action STRING`, `reason STRING`, `evidence_count INT64`, `fail_closed BOOL`, `decision_written BOOL`, `evidence_written BOOL`, `committed_ts_ns TIMESTAMP_NS` |
+| `physical_ai_supervisor_ownership` | `supervisor_name STRING`, `owner_id STRING`, `owner_epoch INT64`, `lease_expires_at_ns INT64`, `heartbeat_ts_ns TIMESTAMP_NS` |
+
+Ownership fencing is optional. When `require_worker_ownership=true`, proposal
+loading returns no work unless the ownership table contains the configured
+supervisor name with matching `worker_owner_id` and `worker_owner_epoch`.
+When `manage_worker_lease=true`, the adapter acquires or renews an expiring SQL
+lease before loading proposals and can take over an expired owner with a higher
+epoch. This is a SQL lease/heartbeat guard, not a consensus election protocol.
+
+Limits:
+
+- Still experimental and shadow-only.
+- Proposal loading fetches committed proposals first as projection-repair
+  candidates, then separately fetches undecided proposals with a commit-ledger
+  anti-join. Already-committed prefixes therefore cannot consume the
+  `proposal_query_limit` budget needed for new undecided work.
+- The sink writes one atomic commit ledger row before repairing the decision
+  and evidence projection tables. Duplicate checks read the commit ledger;
+  retries repair missing projections without duplicating decision or evidence
+  rows. This is effectively-once for the current sink contract, but not a
+  generic multi-table SQL transaction.
+- Runtime and adapter config can be persisted to a server-local file or a SQL
+  catalog table. Broader cluster rollout and migration policy remain
+  experimental.
+- The SQL lease/heartbeat gate fences stale workers by id and epoch, but does
+  not replace a full cluster consensus/election subsystem.
 
 ---
 

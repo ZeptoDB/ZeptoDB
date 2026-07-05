@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-06-11*
+*Last updated: 2026-07-04*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -200,6 +200,9 @@ print(df)
 | `GET` | `/admin/edge-fleet-connector` | admin | Experimental Physical AI edge/fleet connector lifecycle status |
 | `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the experimental connector |
 | `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the experimental connector config |
+| `GET` | `/admin/action-outcome-supervisor` | admin | Experimental Physical AI Action-Outcome supervisor lifecycle status |
+| `POST` | `/admin/action-outcome-supervisor` | admin | Configure and optionally enable the experimental supervisor |
+| `DELETE` | `/admin/action-outcome-supervisor` | admin | Disable and clear the experimental supervisor config |
 | `GET` | `/admin/metrics/history` | admin | Metrics time-series history |
 | `GET` | `/admin/rebalance/status` | admin | Current rebalance status |
 | `POST` | `/admin/rebalance/start` | admin | Start rebalance (add/remove node) |
@@ -1750,6 +1753,264 @@ worker when embedding code installs outbox-loader and fleet-sink hooks, but the
 HTTP endpoint does not yet create a built-in SQL/HTTP adapter by itself.
 Connector configuration is not catalog-persisted and should not be described as
 a supported replication feature until the promotion gates in
+`docs/research/EXPERIMENT_GOVERNANCE.md` pass.
+
+#### `GET /admin/action-outcome-supervisor` - Experimental supervisor lifecycle status
+
+Returns server-owned lifecycle state for the experimental Physical AI
+Action-Outcome supervisor. The surface is shadow-only and does not publish
+actuator commands.
+
+```bash
+curl http://localhost:8123/admin/action-outcome-supervisor \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+```json
+{
+  "configured": true,
+  "enabled": true,
+  "worker_running": true,
+  "worker_hooks_configured": true,
+  "failure_budget_exhausted": false,
+  "name": "physical_ai_action_outcome",
+  "mode": "shadow",
+  "history_table": "physical_ai_action_history",
+  "proposal_table": "physical_ai_action_proposals",
+  "decision_table": "physical_ai_supervision_decisions",
+  "evidence_table": "physical_ai_supervision_evidence",
+  "fail_closed_action": "manual_review",
+  "worker_poll_interval_ms": 1000,
+  "batch_limit": 128,
+  "max_consecutive_failures": 3,
+  "max_decision_errors_per_pass": 16,
+  "max_sink_errors_per_pass": 16,
+  "consecutive_failures": 0,
+  "configure_total": 1,
+  "start_total": 1,
+  "stop_total": 0,
+  "start_failures_total": 0,
+  "stop_failures_total": 0,
+  "worker_start_total": 1,
+  "worker_wakeups_total": 12,
+  "worker_passes_total": 12,
+  "worker_idle_passes_total": 5,
+  "worker_failures_total": 0,
+  "proposals_processed_total": 42,
+  "proposals_duplicate_total": 4,
+  "proposals_rejected_total": 1,
+  "decisions_allow_total": 30,
+  "decisions_suppress_total": 12,
+  "fail_closed_total": 2,
+  "evidence_rows_written_total": 126,
+  "last_pass": {
+    "proposals_seen": 10,
+    "batch_proposals": 10,
+    "processed_count": 8,
+    "duplicate_count": 1,
+    "rejected_count": 1,
+    "decision_error_count": 0,
+    "sink_error_count": 0,
+    "allow_count": 6,
+    "suppress_count": 2,
+    "fail_closed_count": 0,
+    "evidence_rows_written": 24,
+    "latency_us": 512
+  },
+  "last_error": ""
+}
+```
+
+#### `POST /admin/action-outcome-supervisor` - Configure and optionally enable
+
+```bash
+curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "physical_ai_action_outcome",
+    "enabled": true,
+    "mode": "shadow",
+    "history_table": "physical_ai_action_history",
+    "proposal_table": "physical_ai_action_proposals",
+    "decision_table": "physical_ai_supervision_decisions",
+    "evidence_table": "physical_ai_supervision_evidence",
+    "fail_closed_action": "manual_review",
+    "worker_enabled": false,
+    "worker_poll_interval_ms": 1000,
+    "batch_limit": 128,
+    "max_consecutive_failures": 3,
+    "max_decision_errors_per_pass": 16,
+    "max_sink_errors_per_pass": 16,
+    "sql_adapter_enabled": true,
+    "sql_adapter_create_tables": true,
+    "history_evidence_limit": 64,
+    "suppress_min_failure_count": 1,
+    "suppress_outcome_score_below": 0,
+    "worker_ownership_required": true,
+    "worker_lease_enabled": true,
+    "worker_owner_id": "node-a",
+    "worker_lease_ttl_ms": 15000
+  }'
+```
+
+Only `mode="shadow"` is accepted. `batch_limit`,
+`worker_poll_interval_ms`, `max_consecutive_failures`,
+`max_decision_errors_per_pass`, and `max_sink_errors_per_pass` must be
+positive. The decision and sink error budgets bound one pass during
+backpressure or fault injection; exhausting either budget fails that pass. If
+`enabled` is omitted, the server enables the configured supervisor. If
+`worker_enabled=true`, the embedding application must have installed
+`ActionOutcomeSupervisorRuntimeHooks` or set `sql_adapter_enabled=true`;
+otherwise `start()` fails with HTTP 400.
+
+Set `sql_adapter_enabled=true` to install server-owned ZeptoDB SQL hooks
+instead of custom embedding hooks. Set `sql_adapter_create_tables=true` to
+create the default contract tables when they are missing; production
+deployments should still manage schemas through normal migrations.
+When embedding code has enabled
+`HttpServer::set_action_outcome_supervisor_config_persistence(path)`,
+successful POST requests with `sql_adapter_enabled=true` also rewrite the
+server-local durable SQL adapter config file. A later HTTP server instance can
+load that file and reinstall SQL-backed hooks before serving requests.
+When embedding code has enabled
+`HttpServer::set_action_outcome_supervisor_catalog_config(table, name, ...)`,
+successful SQL-adapter POST requests also append a versioned JSON config row to
+that SQL catalog table. A later HTTP server instance can reload the latest row,
+reinstall SQL hooks, and restart the supervisor when the persisted row was
+enabled.
+
+SQL adapter fields:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `sql_adapter_enabled` | `false` | Install SQL-backed proposal/history/decision/evidence hooks. |
+| `sql_adapter_create_tables` | `false` | Create default contract tables with `CREATE TABLE IF NOT EXISTS`. |
+| `proposal_query_limit` | `0` | Proposal query bound; `0` uses `batch_limit`. |
+| `history_evidence_limit` | `64` | Maximum matching history rows scanned per proposal. |
+| `suppress_min_failure_count` | `1` | Suppress when at least this many history rows are below threshold. |
+| `suppress_outcome_score_below` | `0` | Outcome scores below this value count as failures. |
+| `proposal_id_column` | `proposal_id` | Proposal idempotency key column. |
+| `proposal_source_type_column` | `source_type` | Proposal source type column. |
+| `proposal_action_column` | `proposed_action` | Proposed action column. |
+| `proposal_ts_column` | `source_ts_ns` | Proposal timestamp column. |
+| `history_action_column` | `action` | Historical action column. |
+| `history_outcome_score_column` | `outcome_score` | Historical outcome score column. |
+| `decision_proposal_id_column` | `proposal_id` | Decision table proposal key column. |
+| `decision_decision_column` | `decision` | Decision label column. |
+| `decision_final_action_column` | `final_action` | Advisory final action column. |
+| `decision_reason_column` | `reason` | Decision reason column. |
+| `decision_evidence_count_column` | `evidence_count` | Decision evidence count column. |
+| `decision_fail_closed_column` | `fail_closed` | Fail-closed marker column. |
+| `decision_ts_column` | `decided_ts_ns` | Decision timestamp column. |
+| `evidence_proposal_id_column` | `proposal_id` | Evidence table proposal key column. |
+| `evidence_count_column` | `evidence_count` | Evidence count column. |
+| `evidence_reason_column` | `reason` | Evidence reason column. |
+| `evidence_ts_column` | `written_ts_ns` | Evidence timestamp column. |
+| `commit_table` | `physical_ai_supervision_commits` | Atomic commit ledger table for complete decision/evidence state. |
+| `commit_proposal_id_column` | `proposal_id` | Commit table proposal key column. |
+| `commit_decision_column` | `decision` | Committed decision label column. |
+| `commit_final_action_column` | `final_action` | Committed advisory final action column. |
+| `commit_reason_column` | `reason` | Committed reason column. |
+| `commit_evidence_count_column` | `evidence_count` | Committed evidence count column. |
+| `commit_fail_closed_column` | `fail_closed` | Committed fail-closed marker column. |
+| `commit_decision_written_column` | `decision_written` | Projection repair marker for decision row. |
+| `commit_evidence_written_column` | `evidence_written` | Projection repair marker for evidence row. |
+| `commit_ts_column` | `committed_ts_ns` | Commit timestamp column. |
+| `worker_ownership_required` | `false` | Require a matching SQL ownership row before loading proposals. |
+| `worker_lease_enabled` | `false` | Acquire/renew an expiring SQL ownership lease before loading proposals. Requires `worker_ownership_required=true`. |
+| `worker_owner_id` | `""` | This server/worker owner id. Required when ownership is enabled. |
+| `worker_owner_epoch` | `0` | Fencing epoch; must match the ownership row. |
+| `worker_lease_ttl_ms` | `15000` | Managed SQL lease time-to-live. |
+| `ownership_table` | `physical_ai_supervisor_ownership` | SQL table used for owner id/epoch fencing. |
+| `ownership_supervisor_column` | `supervisor_name` | Supervisor name column in the ownership table. |
+| `ownership_owner_id_column` | `owner_id` | Owner id column in the ownership table. |
+| `ownership_epoch_column` | `owner_epoch` | Owner epoch column in the ownership table. |
+| `ownership_lease_expires_at_column` | `lease_expires_at_ns` | Lease expiry timestamp column. |
+| `ownership_heartbeat_ts_column` | `heartbeat_ts_ns` | Last heartbeat timestamp column. |
+
+Default SQL contract:
+
+```sql
+CREATE TABLE IF NOT EXISTS physical_ai_action_proposals (
+  proposal_id STRING,
+  source_type STRING,
+  proposed_action STRING,
+  source_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_action_history (
+  action STRING,
+  outcome_score INT64,
+  source_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_supervision_decisions (
+  proposal_id STRING,
+  decision STRING,
+  final_action STRING,
+  reason STRING,
+  evidence_count INT64,
+  fail_closed BOOL,
+  decided_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_supervision_evidence (
+  proposal_id STRING,
+  evidence_count INT64,
+  reason STRING,
+  written_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_supervision_commits (
+  proposal_id STRING,
+  decision STRING,
+  final_action STRING,
+  reason STRING,
+  evidence_count INT64,
+  fail_closed BOOL,
+  decision_written BOOL,
+  evidence_written BOOL,
+  committed_ts_ns TIMESTAMP_NS
+);
+
+CREATE TABLE IF NOT EXISTS physical_ai_supervisor_ownership (
+  supervisor_name STRING,
+  owner_id STRING,
+  owner_epoch INT64,
+  lease_expires_at_ns INT64,
+  heartbeat_ts_ns TIMESTAMP_NS
+);
+```
+
+The SQL adapter writes one atomic commit ledger row before repairing the
+decision and evidence projection tables. Duplicate checks read the commit
+ledger; retries repair missing projection rows without duplicating decision or
+evidence rows. This provides an effectively-once sink contract for the current
+supervisor path, but it is not a generic multi-table SQL transaction. Proposal
+loading reads committed proposals first as projection-repair candidates, then
+reads undecided proposals through a commit-ledger anti-join so committed
+prefixes cannot starve new work at `proposal_query_limit`. When
+`worker_lease_enabled=true`, the adapter acquires or renews the SQL ownership
+lease and can take over an expired owner with a higher epoch; this is not a
+full consensus election subsystem.
+
+#### `DELETE /admin/action-outcome-supervisor` - Disable and clear config
+
+```bash
+curl -X DELETE http://localhost:8123/admin/action-outcome-supervisor \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+This endpoint stops the worker when enabled and clears the process-local
+runtime config. If server-local SQL adapter config persistence is enabled, it
+also removes the persisted adapter config file. If SQL catalog-backed config
+is enabled, it clears matching catalog rows.
+
+This lifecycle surface is experimental. Supervisor configuration can be
+server-local or SQL catalog-backed when the embedding server enables those
+persistence hooks. Decisions are advisory, and the runtime must not be
+described as actuator enforcement until the promotion gates in
 `docs/research/EXPERIMENT_GOVERNANCE.md` pass.
 
 #### `DELETE /admin/nodes/:id` — Remove node from cluster

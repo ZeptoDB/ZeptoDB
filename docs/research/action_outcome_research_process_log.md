@@ -2868,3 +2868,243 @@ reusable outbox loading and fleet sink materialization logic from
 `zepto_edge_fleet_replay`, then validate the same dropped, duplicated, late,
 outage, restart, recovery JOIN, and suppression audit cases through the
 server-managed worker path.
+
+## 2026-07-04 - Experiment 021 shadow supervisor A/B and durability replay
+
+### Classification
+
+Research-only evidence plus focused C++ durability regression under the
+experimental Action-Outcome supervisor runtime path.
+
+### Work Completed
+
+1. Added Experiment 021.
+   - `docs/research/physical_ai_shadow_supervisor_ab_experiment_021.md`
+   - `docs/research/tools/physical_ai_shadow_supervisor_ab.py`
+   - `docs/research/results/physical_ai_shadow_supervisor_ab_021.md`
+
+2. Replayed A/B shadow proposals.
+   - 15 hazardous proposals from non-gated baselines:
+     `similar_robot_incident`, `runbook_action_prior`, and
+     `reflection_only_memory`.
+   - 5 safe proposals from
+     `context_gated_physical_ai_action_outcome`.
+   - Shadow supervisor suppresses 15/15 hazardous proposals and allows 5/5
+     safe proposals.
+
+3. Replayed D durability/idempotency.
+   - First pass processes 20 proposals and writes 20 decision/evidence records.
+   - Restart replay skips 20/20 proposals as already decided.
+   - Restart replay writes 0 new evidence rows.
+
+4. Added focused C++ guard.
+   - `ActionOutcomeSqlAdapterTest.RestartedRuntimeSkipsPersistedDecisions`
+     creates a fresh runtime object against the same SQL tables and verifies
+     persisted decision rows suppress duplicate processing.
+
+### Verification Commands
+
+```bash
+python3 -m py_compile docs/research/tools/physical_ai_shadow_supervisor_ab.py
+
+python3 docs/research/tools/physical_ai_shadow_supervisor_ab.py \
+  --fixture docs/research/fixtures/physical_ai_action_outcome_episodes.json \
+  --output docs/research/results/physical_ai_shadow_supervisor_ab_021.md
+
+./build/tests/zepto_tests \
+  --gtest_filter='ActionOutcomeSqlAdapterTest.RestartedRuntimeSkipsPersistedDecisions'
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Python harness compile | pass |
+| Experiment 021 acceptance | pass |
+| Hazardous proposal suppression | pass, 15/15 |
+| Safe proposal allow | pass, 5/5 |
+| Restart duplicate skip | pass, 20/20 |
+| Restart evidence stability | pass, 0 new rows |
+| Focused C++ durability test | pass |
+
+### Interpretation
+
+Experiment 021 strengthens the commercial case for ZeptoDB as a Physical AI
+Action-Outcome substrate without widening the product API. The A evidence
+shows why shadow supervision is more valuable than incident search; the D
+evidence identifies the first runtime durability boundary: persisted decision
+rows prevent duplicate work.
+
+This does not close product promotion. The next blocker is durable supervisor
+configuration so the SQL adapter can be reinstalled automatically after a full
+server restart.
+
+### Next Best Step
+
+Devlog 209 should add persisted experimental supervisor adapter configuration,
+then rerun Experiment 021 through a live HTTP server restart instead of a
+research-only replay plus fresh runtime object.
+
+## 2026-07-04 - Devlog 209 live HTTP restart config persistence
+
+### Classification
+
+Experimental runtime path under the Physical AI Action-Outcome supervisor.
+
+### Goal
+
+Close the next durability gap after Experiment 021: persist the SQL adapter
+configuration itself and verify that a real HTTP server restart can reinstall
+the adapter automatically.
+
+### Work Completed
+
+1. Added server-local durable adapter config.
+   - `HttpServer::set_action_outcome_supervisor_config_persistence(path)`
+     enables persistence and loads any existing config.
+   - Successful admin SQL-adapter configuration writes versioned JSON through a
+     temp file and rename.
+   - The persisted file includes runtime fields, table names, SQL adapter
+     column names, adapter limits, `enabled`, and
+     `sql_adapter_create_tables`.
+
+2. Added restart restore behavior.
+   - On load, the server validates the persisted file.
+   - The runtime is configured from the persisted adapter config.
+   - SQL-backed hooks are reinstalled against the new server's
+     `QueryExecutor`.
+   - Default SQL tables are recreated idempotently when the persisted config
+     requested table creation.
+   - If the persisted config was enabled, the supervisor is started.
+
+3. Tightened lifecycle semantics.
+   - `HttpServer::stop()` now stops experimental background workers before the
+     listener is fully torn down.
+   - `DELETE /admin/action-outcome-supervisor` removes the persisted adapter
+     config when persistence is enabled.
+
+4. Added live restart verification.
+   - `MetricsProviderTest.ActionOutcomeSupervisorSqlAdapterConfigPersistsAndReloadsAfterHttpRestart`
+     configures the SQL adapter through HTTP, persists it, stops the server
+     object, recreates a new HTTP server on the same port and executor, loads
+     the persisted config, and verifies `worker_hooks_configured=true`.
+   - The test then enables the supervisor without reposting
+     `sql_adapter_enabled`; processing succeeds only if the hooks were already
+     reinstalled from the persisted file.
+
+### Verification Commands
+
+```bash
+cmake --build build --target zepto_tests -j$(nproc)
+
+./build/tests/zepto_tests \
+  --gtest_filter='MetricsProviderTest.ActionOutcomeSupervisorSqlAdapterConfigPersistsAndReloadsAfterHttpRestart'
+
+./build/tests/zepto_tests \
+  --gtest_filter='MetricsProviderTest.ActionOutcomeSupervisor*:ActionOutcomeSqlAdapterTest.*:ActionOutcomeSqlAdapterConfigTest.*'
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Build | pass |
+| Live HTTP restart config persistence | pass |
+| Automatic SQL hook reinstall after restart | pass |
+| Enable-after-reinstall proposal processing | pass |
+| Focused Action-Outcome admin/SQL adapter regression | pass, 11/11 |
+
+### Interpretation
+
+The Action-Outcome supervisor now has both durability boundaries needed for the
+next commercialization demo: decision rows prevent duplicate proposal work, and
+server-local config persistence restores the SQL adapter after a real HTTP
+server restart. This still does not promote the path to product status because
+the config is file-local rather than catalog/cluster-owned, worker ownership is
+not cluster-safe, and the decision/evidence sink is not transactional.
+
+### Next Best Step
+
+Move from single-server durability to cluster promotion hardening: catalog- or
+control-plane-owned supervisor config, one-owner worker semantics, and
+node-replacement replay validation.
+
+## 2026-07-05 - Devlog 210 P0 production hardening
+
+### Classification
+
+Experimental runtime path hardening for Physical AI Action-Outcome supervisor
+promotion.
+
+### Goal
+
+Start closing production P0 blockers in priority order:
+
+1. Prevent evidence duplication after partial sink failure.
+2. Fence stale or non-owner workers before proposal loading.
+3. Add node-replacement style ownership handoff validation.
+
+### Work Completed
+
+1. Closed retry evidence duplication.
+   - The SQL sink now checks for an existing evidence summary by proposal id
+     before inserting evidence.
+   - If evidence was inserted but the decision insert failed, retry skips the
+     evidence insert and writes the missing decision row.
+
+2. Added SQL worker ownership fencing.
+   - `ActionOutcomeSqlAdapterConfig` can require worker ownership.
+   - Ownership is read from
+     `physical_ai_supervisor_ownership(supervisor_name, owner_id, owner_epoch)`.
+   - Non-owner or stale-epoch workers return an idle proposal load instead of
+     processing proposals.
+   - The ownership row is enforced by the runtime, but still maintained by an
+     external control-plane/catalog path.
+
+3. Extended durable config and HTTP admin.
+   - Ownership fields are accepted by
+     `POST /admin/action-outcome-supervisor`.
+   - Ownership fields are persisted in the server-local config JSON and loaded
+     after HTTP restart.
+
+4. Added focused tests.
+   - Evidence-success/decision-failure retry does not duplicate evidence.
+   - Non-owner and stale epoch workers idle.
+   - Node-a to node-b handoff fences the replaced owner.
+   - Live HTTP restart restores ownership-gated SQL adapter config.
+
+### Verification Commands
+
+```bash
+cmake --build build --target zepto_tests -j$(nproc)
+
+./build/tests/zepto_tests \
+  --gtest_filter='ActionOutcomeSqlAdapterTest.*:ActionOutcomeSqlAdapterConfigTest.*'
+
+./build/tests/zepto_tests \
+  --gtest_filter='MetricsProviderTest.ActionOutcomeSupervisor*:ActionOutcomeSqlAdapterTest.*:ActionOutcomeSqlAdapterConfigTest.*'
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Build | pass |
+| SQL adapter P0 hardening tests | pass, 8/8 |
+| HTTP/admin plus SQL adapter focused tests | pass, 13/13 |
+
+### Remaining Problems
+
+- Config is still server-local JSON rather than catalog/cluster-owned state.
+- Ownership is enforced but not elected or leased by ZeptoDB.
+- Decision/evidence writes are retry-idempotent for evidence summaries, but not
+  one atomic transaction.
+- Broader RBAC/audit coverage for mutating supervisor controls is still needed.
+- Rate/backpressure limits are still basic and tied to batch/query limits.
+- Long-running fault/soak and cross-architecture verification remain open.
+
+### Next Best Step
+
+Promote the ownership row into a catalog/control-plane owned config path, then
+add lease/election semantics with stale epoch rejection across real cluster
+nodes.

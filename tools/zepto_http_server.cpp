@@ -22,6 +22,7 @@
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/partition_migrator.h"
 #include "zeptodb/cluster/partition_router.h"
+#include "zeptodb/cluster/ring_consensus.h"
 #include "zeptodb/cluster/rebalance_manager.h"
 #include "zeptodb/cluster/partition_migrator.h"
 #include "zeptodb/cluster/partition_router.h"
@@ -739,6 +740,8 @@ int main(int argc, char* argv[]) {
     // ring under the same shared_mutex, exposed by QueryCoordinator.
     std::unique_ptr<zeptodb::cluster::PartitionMigrator>       rebalance_migrator;
     std::unique_ptr<zeptodb::cluster::RebalanceManager>        rebalance_mgr;
+    std::unique_ptr<zeptodb::cluster::FencingToken>            ring_fencing_token;
+    std::unique_ptr<zeptodb::cluster::EpochBroadcastConsensus> ring_consensus;
     std::unique_ptr<zeptodb::cluster::FailoverManager>         failover_mgr;
     std::unique_ptr<zeptodb::cluster::HealthMonitor>           health_monitor;
     std::unordered_map<zeptodb::cluster::NodeId,
@@ -760,6 +763,14 @@ int main(int argc, char* argv[]) {
         // add_node/remove_node.
         rebalance_mgr = std::make_unique<zeptodb::cluster::RebalanceManager>(
             coordinator->router(), *rebalance_migrator);
+        ring_fencing_token = std::make_unique<zeptodb::cluster::FencingToken>();
+        ring_consensus = std::make_unique<zeptodb::cluster::EpochBroadcastConsensus>(
+            coordinator->router(), coordinator->router_mutex(), *ring_fencing_token);
+        for (auto& rn : remote_nodes) {
+            ring_consensus->add_peer(
+                rn.id, rn.host, static_cast<uint16_t>(rn.port + 100));
+        }
+        rebalance_mgr->set_consensus(ring_consensus.get());
         server.set_rebalance_manager(rebalance_mgr.get());
         std::cout << "Rebalance manager: enabled (" << (remote_nodes.size() + 1) << " nodes)\n";
 
@@ -780,6 +791,10 @@ int main(int argc, char* argv[]) {
         // symmetric one with a tick_cb for TICK_INGEST.
         if (!rpc_srv) {
             rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+            rpc_srv->set_ring_update_callback(
+                [&ring_consensus](const uint8_t* data, size_t len) {
+                    return ring_consensus && ring_consensus->apply_update(data, len);
+                });
             rpc_srv->set_agent_memory_put_callback(
                 [&server](const uint8_t* data, size_t len) {
                     return server.handle_agent_memory_put_rpc(data, len);

@@ -24,6 +24,7 @@
 #include "zeptodb/auth/session_store.h"
 #include "zeptodb/auth/oauth2_token_exchange.h"
 #include "zeptodb/sql/parser.h"
+#include "zeptodb/storage/column_store.h"
 #include "zeptodb/util/logger.h"
 #include "zeptodb/auth/license_validator.h"
 
@@ -42,6 +43,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
+#include <exception>
 #include <iterator>
 #include <unordered_map>
 #include <unordered_set>
@@ -125,6 +127,67 @@ static std::string json_escape(const std::string& s) {
 
 static std::string json_quote(const std::string& s) {
     return "\"" + json_escape(s) + "\"";
+}
+
+static std::string sql_string_literal(const std::string& value) {
+    std::string out;
+    out.reserve(value.size() + 2);
+    out.push_back('\'');
+    for (const char ch : value) {
+        if (ch == '\'') out.push_back('\'');
+        out.push_back(ch);
+    }
+    out.push_back('\'');
+    return out;
+}
+
+static size_t sql_string_cell_index(const zeptodb::sql::QueryResultSet& result,
+                                    size_t row,
+                                    size_t col) {
+    size_t per_row = 0;
+    size_t before_col = 0;
+    for (size_t c = 0; c < result.column_names.size(); ++c) {
+        const bool is_string =
+            c < result.column_types.size() &&
+            (result.column_types[c] == zeptodb::storage::ColumnType::STRING ||
+             result.column_types[c] == zeptodb::storage::ColumnType::SYMBOL);
+        if (is_string) {
+            if (c < col) ++before_col;
+            ++per_row;
+        }
+    }
+    return row * per_row + before_col;
+}
+
+static std::string sql_cell_string(const zeptodb::sql::QueryResultSet& result,
+                                   size_t row,
+                                   size_t col) {
+    if (col < result.column_types.size() &&
+        (result.column_types[col] == zeptodb::storage::ColumnType::STRING ||
+         result.column_types[col] == zeptodb::storage::ColumnType::SYMBOL)) {
+        if (result.symbol_dict != nullptr &&
+            row < result.rows.size() &&
+            col < result.rows[row].size()) {
+            return std::string(result.symbol_dict->lookup(
+                static_cast<uint32_t>(result.rows[row][col])));
+        }
+        const size_t idx = sql_string_cell_index(result, row, col);
+        if (idx < result.string_rows.size()) return result.string_rows[idx];
+    }
+    if (row < result.rows.size() && col < result.rows[row].size()) {
+        return std::to_string(result.rows[row][col]);
+    }
+    return {};
+}
+
+static bool is_safe_sql_identifier(const std::string& value) {
+    if (value.empty()) return false;
+    const auto first = static_cast<unsigned char>(value.front());
+    if (!std::isalpha(first) && value.front() != '_') return false;
+    return std::all_of(value.begin() + 1, value.end(), [](char ch) {
+        const auto c = static_cast<unsigned char>(ch);
+        return std::isalnum(c) || ch == '_';
+    });
 }
 
 static size_t find_json_value(const std::string& body, const std::string& key) {
@@ -258,6 +321,510 @@ static bool json_bool_field(const std::string& body,
     return fallback;
 }
 
+struct PersistedActionOutcomeSupervisorSqlAdapterConfig {
+    ActionOutcomeSqlAdapterConfig sql;
+    bool enabled = false;
+    bool sql_adapter_enabled = false;
+    bool create_tables_if_missing = false;
+};
+
+static const char* json_bool_literal(bool value) {
+    return value ? "true" : "false";
+}
+
+static bool parse_persisted_action_outcome_limit(
+    const std::string& body,
+    const std::string& key,
+    int64_t fallback,
+    bool allow_zero,
+    int64_t* out,
+    std::string* error) {
+    const int64_t value = json_i64_field(body, key, fallback);
+    if ((allow_zero && value < 0) || (!allow_zero && value <= 0)) {
+        if (error) {
+            *error = key + (allow_zero ? " must be non-negative"
+                                       : " must be positive");
+        }
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+static std::string action_outcome_supervisor_persisted_config_json(
+    const PersistedActionOutcomeSupervisorSqlAdapterConfig& persisted) {
+    const auto& sql = persisted.sql;
+    const auto& runtime = sql.runtime;
+    std::ostringstream os;
+    os << "{\n"
+       << "  \"version\": 1,\n"
+       << "  \"enabled\": " << json_bool_literal(persisted.enabled) << ",\n"
+       << "  \"sql_adapter_enabled\": "
+       << json_bool_literal(persisted.sql_adapter_enabled) << ",\n"
+       << "  \"sql_adapter_create_tables\": "
+       << json_bool_literal(persisted.create_tables_if_missing) << ",\n"
+       << "  \"name\": " << json_quote(runtime.name) << ",\n"
+       << "  \"mode\": " << json_quote(runtime.mode) << ",\n"
+       << "  \"history_table\": " << json_quote(runtime.history_table) << ",\n"
+       << "  \"proposal_table\": " << json_quote(runtime.proposal_table) << ",\n"
+       << "  \"decision_table\": " << json_quote(runtime.decision_table) << ",\n"
+       << "  \"evidence_table\": " << json_quote(runtime.evidence_table) << ",\n"
+       << "  \"fail_closed_action\": "
+       << json_quote(runtime.fail_closed_action) << ",\n"
+       << "  \"worker_enabled\": "
+       << json_bool_literal(runtime.worker_enabled) << ",\n"
+       << "  \"worker_poll_interval_ms\": "
+       << runtime.worker_poll_interval_ms << ",\n"
+       << "  \"batch_limit\": " << runtime.batch_limit << ",\n"
+       << "  \"max_consecutive_failures\": "
+       << runtime.max_consecutive_failures << ",\n"
+       << "  \"max_decision_errors_per_pass\": "
+       << runtime.max_decision_errors_per_pass << ",\n"
+       << "  \"max_sink_errors_per_pass\": "
+       << runtime.max_sink_errors_per_pass << ",\n"
+       << "  \"proposal_id_column\": "
+       << json_quote(sql.proposal_id_column) << ",\n"
+       << "  \"proposal_source_type_column\": "
+       << json_quote(sql.proposal_source_type_column) << ",\n"
+       << "  \"proposal_action_column\": "
+       << json_quote(sql.proposal_action_column) << ",\n"
+       << "  \"proposal_ts_column\": "
+       << json_quote(sql.proposal_ts_column) << ",\n"
+       << "  \"history_action_column\": "
+       << json_quote(sql.history_action_column) << ",\n"
+       << "  \"history_outcome_score_column\": "
+       << json_quote(sql.history_outcome_score_column) << ",\n"
+       << "  \"decision_proposal_id_column\": "
+       << json_quote(sql.decision_proposal_id_column) << ",\n"
+       << "  \"decision_decision_column\": "
+       << json_quote(sql.decision_decision_column) << ",\n"
+       << "  \"decision_final_action_column\": "
+       << json_quote(sql.decision_final_action_column) << ",\n"
+       << "  \"decision_reason_column\": "
+       << json_quote(sql.decision_reason_column) << ",\n"
+       << "  \"decision_evidence_count_column\": "
+       << json_quote(sql.decision_evidence_count_column) << ",\n"
+       << "  \"decision_fail_closed_column\": "
+       << json_quote(sql.decision_fail_closed_column) << ",\n"
+       << "  \"decision_ts_column\": "
+       << json_quote(sql.decision_ts_column) << ",\n"
+       << "  \"evidence_proposal_id_column\": "
+       << json_quote(sql.evidence_proposal_id_column) << ",\n"
+       << "  \"evidence_count_column\": "
+       << json_quote(sql.evidence_count_column) << ",\n"
+       << "  \"evidence_reason_column\": "
+       << json_quote(sql.evidence_reason_column) << ",\n"
+       << "  \"evidence_ts_column\": "
+       << json_quote(sql.evidence_ts_column) << ",\n"
+       << "  \"commit_table\": "
+       << json_quote(sql.commit_table) << ",\n"
+       << "  \"commit_proposal_id_column\": "
+       << json_quote(sql.commit_proposal_id_column) << ",\n"
+       << "  \"commit_decision_column\": "
+       << json_quote(sql.commit_decision_column) << ",\n"
+       << "  \"commit_final_action_column\": "
+       << json_quote(sql.commit_final_action_column) << ",\n"
+       << "  \"commit_reason_column\": "
+       << json_quote(sql.commit_reason_column) << ",\n"
+       << "  \"commit_evidence_count_column\": "
+       << json_quote(sql.commit_evidence_count_column) << ",\n"
+       << "  \"commit_fail_closed_column\": "
+       << json_quote(sql.commit_fail_closed_column) << ",\n"
+       << "  \"commit_decision_written_column\": "
+       << json_quote(sql.commit_decision_written_column) << ",\n"
+       << "  \"commit_evidence_written_column\": "
+       << json_quote(sql.commit_evidence_written_column) << ",\n"
+       << "  \"commit_ts_column\": "
+       << json_quote(sql.commit_ts_column) << ",\n"
+       << "  \"worker_ownership_required\": "
+       << json_bool_literal(sql.require_worker_ownership) << ",\n"
+       << "  \"worker_lease_enabled\": "
+       << json_bool_literal(sql.manage_worker_lease) << ",\n"
+       << "  \"worker_owner_id\": "
+       << json_quote(sql.worker_owner_id) << ",\n"
+       << "  \"worker_owner_epoch\": "
+       << sql.worker_owner_epoch << ",\n"
+       << "  \"worker_lease_ttl_ms\": "
+       << sql.worker_lease_ttl_ms << ",\n"
+       << "  \"ownership_table\": "
+       << json_quote(sql.ownership_table) << ",\n"
+       << "  \"ownership_supervisor_column\": "
+       << json_quote(sql.ownership_supervisor_column) << ",\n"
+       << "  \"ownership_owner_id_column\": "
+       << json_quote(sql.ownership_owner_id_column) << ",\n"
+       << "  \"ownership_epoch_column\": "
+       << json_quote(sql.ownership_epoch_column) << ",\n"
+       << "  \"ownership_lease_expires_at_column\": "
+       << json_quote(sql.ownership_lease_expires_at_column) << ",\n"
+       << "  \"ownership_heartbeat_ts_column\": "
+       << json_quote(sql.ownership_heartbeat_ts_column) << ",\n"
+       << "  \"proposal_query_limit\": "
+       << sql.proposal_query_limit << ",\n"
+       << "  \"history_evidence_limit\": "
+       << sql.history_evidence_limit << ",\n"
+       << "  \"suppress_min_failure_count\": "
+       << sql.suppress_min_failure_count << ",\n"
+       << "  \"suppress_outcome_score_below\": "
+       << sql.suppress_outcome_score_below << "\n"
+       << "}\n";
+    return os.str();
+}
+
+static bool parse_persisted_action_outcome_supervisor_config(
+    const std::string& body,
+    PersistedActionOutcomeSupervisorSqlAdapterConfig* persisted,
+    std::string* error) {
+    if (!persisted) {
+        if (error) *error = "persisted action-outcome config output is required";
+        return false;
+    }
+    if (find_json_value(body, "version") == std::string::npos) {
+        if (error) *error = "persisted action-outcome config version is required";
+        return false;
+    }
+    const int64_t version = json_i64_field(body, "version", 0);
+    if (version != 1) {
+        if (error) *error = "unsupported persisted action-outcome config version";
+        return false;
+    }
+
+    PersistedActionOutcomeSupervisorSqlAdapterConfig out;
+    out.enabled = json_bool_field(body, "enabled", out.enabled);
+    out.sql_adapter_enabled =
+        json_bool_field(body, "sql_adapter_enabled", out.sql_adapter_enabled);
+    out.create_tables_if_missing = json_bool_field(
+        body, "sql_adapter_create_tables", out.create_tables_if_missing);
+    if (!out.sql_adapter_enabled) {
+        if (error) {
+            *error = "persisted action-outcome config requires sql_adapter_enabled";
+        }
+        return false;
+    }
+
+    auto& sql = out.sql;
+    auto& runtime = sql.runtime;
+    runtime.name = json_string_field(body, "name", runtime.name);
+    runtime.mode = json_string_field(body, "mode", runtime.mode);
+    runtime.history_table =
+        json_string_field(body, "history_table", runtime.history_table);
+    runtime.proposal_table =
+        json_string_field(body, "proposal_table", runtime.proposal_table);
+    runtime.decision_table =
+        json_string_field(body, "decision_table", runtime.decision_table);
+    runtime.evidence_table =
+        json_string_field(body, "evidence_table", runtime.evidence_table);
+    runtime.fail_closed_action =
+        json_string_field(body, "fail_closed_action", runtime.fail_closed_action);
+    runtime.worker_enabled =
+        json_bool_field(body, "worker_enabled", runtime.worker_enabled);
+
+    int64_t value = 0;
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "worker_poll_interval_ms",
+            static_cast<int64_t>(runtime.worker_poll_interval_ms),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    runtime.worker_poll_interval_ms = static_cast<uint64_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "batch_limit",
+            static_cast<int64_t>(runtime.batch_limit),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    runtime.batch_limit = static_cast<size_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "max_consecutive_failures",
+            static_cast<int64_t>(runtime.max_consecutive_failures),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    if (value > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        if (error) *error = "max_consecutive_failures is too large";
+        return false;
+    }
+    runtime.max_consecutive_failures = static_cast<uint32_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "max_decision_errors_per_pass",
+            static_cast<int64_t>(runtime.max_decision_errors_per_pass),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    if (value > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        if (error) *error = "max_decision_errors_per_pass is too large";
+        return false;
+    }
+    runtime.max_decision_errors_per_pass = static_cast<uint32_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "max_sink_errors_per_pass",
+            static_cast<int64_t>(runtime.max_sink_errors_per_pass),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    if (value > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        if (error) *error = "max_sink_errors_per_pass is too large";
+        return false;
+    }
+    runtime.max_sink_errors_per_pass = static_cast<uint32_t>(value);
+
+    sql.proposal_id_column = json_string_field(
+        body, "proposal_id_column", sql.proposal_id_column);
+    sql.proposal_source_type_column = json_string_field(
+        body,
+        "proposal_source_type_column",
+        sql.proposal_source_type_column);
+    sql.proposal_action_column = json_string_field(
+        body, "proposal_action_column", sql.proposal_action_column);
+    sql.proposal_ts_column = json_string_field(
+        body, "proposal_ts_column", sql.proposal_ts_column);
+    sql.history_action_column = json_string_field(
+        body, "history_action_column", sql.history_action_column);
+    sql.history_outcome_score_column = json_string_field(
+        body,
+        "history_outcome_score_column",
+        sql.history_outcome_score_column);
+    sql.decision_proposal_id_column = json_string_field(
+        body,
+        "decision_proposal_id_column",
+        sql.decision_proposal_id_column);
+    sql.decision_decision_column = json_string_field(
+        body,
+        "decision_decision_column",
+        sql.decision_decision_column);
+    sql.decision_final_action_column = json_string_field(
+        body,
+        "decision_final_action_column",
+        sql.decision_final_action_column);
+    sql.decision_reason_column = json_string_field(
+        body, "decision_reason_column", sql.decision_reason_column);
+    sql.decision_evidence_count_column = json_string_field(
+        body,
+        "decision_evidence_count_column",
+        sql.decision_evidence_count_column);
+    sql.decision_fail_closed_column = json_string_field(
+        body,
+        "decision_fail_closed_column",
+        sql.decision_fail_closed_column);
+    sql.decision_ts_column = json_string_field(
+        body, "decision_ts_column", sql.decision_ts_column);
+    sql.evidence_proposal_id_column = json_string_field(
+        body,
+        "evidence_proposal_id_column",
+        sql.evidence_proposal_id_column);
+    sql.evidence_count_column = json_string_field(
+        body, "evidence_count_column", sql.evidence_count_column);
+    sql.evidence_reason_column = json_string_field(
+        body, "evidence_reason_column", sql.evidence_reason_column);
+    sql.evidence_ts_column = json_string_field(
+        body, "evidence_ts_column", sql.evidence_ts_column);
+    sql.commit_table = json_string_field(
+        body, "commit_table", sql.commit_table);
+    sql.commit_proposal_id_column = json_string_field(
+        body, "commit_proposal_id_column", sql.commit_proposal_id_column);
+    sql.commit_decision_column = json_string_field(
+        body, "commit_decision_column", sql.commit_decision_column);
+    sql.commit_final_action_column = json_string_field(
+        body, "commit_final_action_column", sql.commit_final_action_column);
+    sql.commit_reason_column = json_string_field(
+        body, "commit_reason_column", sql.commit_reason_column);
+    sql.commit_evidence_count_column = json_string_field(
+        body,
+        "commit_evidence_count_column",
+        sql.commit_evidence_count_column);
+    sql.commit_fail_closed_column = json_string_field(
+        body, "commit_fail_closed_column", sql.commit_fail_closed_column);
+    sql.commit_decision_written_column = json_string_field(
+        body,
+        "commit_decision_written_column",
+        sql.commit_decision_written_column);
+    sql.commit_evidence_written_column = json_string_field(
+        body,
+        "commit_evidence_written_column",
+        sql.commit_evidence_written_column);
+    sql.commit_ts_column = json_string_field(
+        body, "commit_ts_column", sql.commit_ts_column);
+    sql.require_worker_ownership = json_bool_field(
+        body, "worker_ownership_required", sql.require_worker_ownership);
+    sql.manage_worker_lease = json_bool_field(
+        body, "worker_lease_enabled", sql.manage_worker_lease);
+    sql.worker_owner_id = json_string_field(
+        body, "worker_owner_id", sql.worker_owner_id);
+    sql.ownership_table = json_string_field(
+        body, "ownership_table", sql.ownership_table);
+    sql.ownership_supervisor_column = json_string_field(
+        body, "ownership_supervisor_column", sql.ownership_supervisor_column);
+    sql.ownership_owner_id_column = json_string_field(
+        body, "ownership_owner_id_column", sql.ownership_owner_id_column);
+    sql.ownership_epoch_column = json_string_field(
+        body, "ownership_epoch_column", sql.ownership_epoch_column);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "worker_owner_epoch",
+            static_cast<int64_t>(sql.worker_owner_epoch),
+            true,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.worker_owner_epoch = static_cast<uint64_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "worker_lease_ttl_ms",
+            static_cast<int64_t>(sql.worker_lease_ttl_ms),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.worker_lease_ttl_ms = static_cast<uint64_t>(value);
+    sql.ownership_lease_expires_at_column = json_string_field(
+        body,
+        "ownership_lease_expires_at_column",
+        sql.ownership_lease_expires_at_column);
+    sql.ownership_heartbeat_ts_column = json_string_field(
+        body,
+        "ownership_heartbeat_ts_column",
+        sql.ownership_heartbeat_ts_column);
+
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "proposal_query_limit",
+            static_cast<int64_t>(sql.proposal_query_limit),
+            true,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.proposal_query_limit = static_cast<size_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "history_evidence_limit",
+            static_cast<int64_t>(sql.history_evidence_limit),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.history_evidence_limit = static_cast<size_t>(value);
+    if (!parse_persisted_action_outcome_limit(
+            body,
+            "suppress_min_failure_count",
+            static_cast<int64_t>(sql.suppress_min_failure_count),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.suppress_min_failure_count = static_cast<uint64_t>(value);
+    sql.suppress_outcome_score_below = json_i64_field(
+        body,
+        "suppress_outcome_score_below",
+        sql.suppress_outcome_score_below);
+
+    if (!validateActionOutcomeSqlAdapterConfig(sql, error)) {
+        return false;
+    }
+
+    *persisted = std::move(out);
+    return true;
+}
+
+static bool load_persisted_action_outcome_supervisor_config(
+    const std::string& path,
+    PersistedActionOutcomeSupervisorSqlAdapterConfig* persisted,
+    std::string* error) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error) {
+            *error = "failed to open persisted action-outcome config: " + path;
+        }
+        return false;
+    }
+    const std::string body((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    return parse_persisted_action_outcome_supervisor_config(
+        body, persisted, error);
+}
+
+static bool save_persisted_action_outcome_supervisor_config(
+    const std::string& path,
+    const PersistedActionOutcomeSupervisorSqlAdapterConfig& persisted,
+    std::string* error) {
+    if (path.empty()) {
+        if (error) *error = "action-outcome supervisor config path is required";
+        return false;
+    }
+
+    const std::filesystem::path target(path);
+    const std::filesystem::path parent = target.parent_path();
+    std::error_code ec;
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            if (error) {
+                *error = "failed to create action-outcome config directory: " +
+                         parent.string() + ": " + ec.message();
+            }
+            return false;
+        }
+    }
+
+    std::filesystem::path tmp = target;
+    tmp += ".tmp";
+    {
+        std::ofstream output(tmp, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            if (error) {
+                *error = "failed to open action-outcome config temp file: " +
+                         tmp.string();
+            }
+            return false;
+        }
+        output << action_outcome_supervisor_persisted_config_json(persisted);
+        output.flush();
+        if (!output) {
+            if (error) {
+                *error = "failed to write action-outcome config temp file: " +
+                         tmp.string();
+            }
+            return false;
+        }
+    }
+
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::error_code remove_ec;
+        std::filesystem::remove(target, remove_ec);
+        ec.clear();
+        std::filesystem::rename(tmp, target, ec);
+    }
+    if (ec) {
+        if (error) {
+            *error = "failed to install persisted action-outcome config: " +
+                     target.string() + ": " + ec.message();
+        }
+        std::error_code ignored;
+        std::filesystem::remove(tmp, ignored);
+        return false;
+    }
+    return true;
+}
+
 static std::string edge_fleet_connector_status_json(
     const zeptodb::feeds::EdgeFleetConnectorRuntimeSnapshot& snap) {
     std::ostringstream os;
@@ -300,6 +867,75 @@ static std::string edge_fleet_connector_status_json(
        << ",\"duplicate_count\":" << snap.last_pass.duplicate_count
        << ",\"late_count\":" << snap.last_pass.late_count
        << ",\"rejected_count\":" << snap.last_pass.rejected_count
+       << "}"
+       << ",\"last_error\":" << json_quote(snap.last_error)
+       << "}";
+    return os.str();
+}
+
+static std::string action_outcome_supervisor_status_json(
+    const zeptodb::feeds::ActionOutcomeSupervisorRuntimeSnapshot& snap) {
+    std::ostringstream os;
+    os << "{\"configured\":" << (snap.configured ? "true" : "false")
+       << ",\"enabled\":" << (snap.enabled ? "true" : "false")
+       << ",\"worker_running\":" << (snap.worker_running ? "true" : "false")
+       << ",\"worker_hooks_configured\":"
+       << (snap.worker_hooks_configured ? "true" : "false")
+       << ",\"failure_budget_exhausted\":"
+       << (snap.failure_budget_exhausted ? "true" : "false")
+       << ",\"name\":" << json_quote(snap.name)
+       << ",\"mode\":" << json_quote(snap.mode)
+       << ",\"history_table\":" << json_quote(snap.history_table)
+       << ",\"proposal_table\":" << json_quote(snap.proposal_table)
+       << ",\"decision_table\":" << json_quote(snap.decision_table)
+       << ",\"evidence_table\":" << json_quote(snap.evidence_table)
+       << ",\"fail_closed_action\":" << json_quote(snap.fail_closed_action)
+       << ",\"worker_poll_interval_ms\":" << snap.worker_poll_interval_ms
+       << ",\"batch_limit\":" << snap.batch_limit
+       << ",\"max_consecutive_failures\":"
+       << snap.max_consecutive_failures
+       << ",\"max_decision_errors_per_pass\":"
+       << snap.max_decision_errors_per_pass
+       << ",\"max_sink_errors_per_pass\":"
+       << snap.max_sink_errors_per_pass
+       << ",\"consecutive_failures\":" << snap.consecutive_failures
+       << ",\"configure_total\":" << snap.configure_total
+       << ",\"start_total\":" << snap.start_total
+       << ",\"stop_total\":" << snap.stop_total
+       << ",\"start_failures_total\":" << snap.start_failures_total
+       << ",\"stop_failures_total\":" << snap.stop_failures_total
+       << ",\"worker_start_total\":" << snap.worker_start_total
+       << ",\"worker_wakeups_total\":" << snap.worker_wakeups_total
+       << ",\"worker_passes_total\":" << snap.worker_passes_total
+       << ",\"worker_idle_passes_total\":" << snap.worker_idle_passes_total
+       << ",\"worker_failures_total\":" << snap.worker_failures_total
+       << ",\"proposals_processed_total\":"
+       << snap.proposals_processed_total
+       << ",\"proposals_duplicate_total\":"
+       << snap.proposals_duplicate_total
+       << ",\"proposals_rejected_total\":"
+       << snap.proposals_rejected_total
+       << ",\"decisions_allow_total\":" << snap.decisions_allow_total
+       << ",\"decisions_suppress_total\":"
+       << snap.decisions_suppress_total
+       << ",\"fail_closed_total\":" << snap.fail_closed_total
+       << ",\"evidence_rows_written_total\":"
+       << snap.evidence_rows_written_total
+       << ",\"last_pass\":{\"proposals_seen\":"
+       << snap.last_pass.proposals_seen
+       << ",\"batch_proposals\":" << snap.last_pass.batch_proposals
+       << ",\"processed_count\":" << snap.last_pass.processed_count
+       << ",\"duplicate_count\":" << snap.last_pass.duplicate_count
+       << ",\"rejected_count\":" << snap.last_pass.rejected_count
+       << ",\"decision_error_count\":"
+       << snap.last_pass.decision_error_count
+       << ",\"sink_error_count\":" << snap.last_pass.sink_error_count
+       << ",\"allow_count\":" << snap.last_pass.allow_count
+       << ",\"suppress_count\":" << snap.last_pass.suppress_count
+       << ",\"fail_closed_count\":" << snap.last_pass.fail_closed_count
+       << ",\"evidence_rows_written\":"
+       << snap.last_pass.evidence_rows_written
+       << ",\"latency_us\":" << snap.last_pass.latency_us
        << "}"
        << ",\"last_error\":" << json_quote(snap.last_error)
        << "}";
@@ -1087,6 +1723,310 @@ bool HttpServer::set_edge_fleet_connector_runtime_hooks(
     zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks,
     std::string* error) {
     return edge_fleet_connector_runtime_.setWorkerHooks(std::move(hooks), error);
+}
+
+bool HttpServer::set_action_outcome_supervisor_runtime_hooks(
+    zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks,
+    std::string* error) {
+    return action_outcome_supervisor_runtime_.setWorkerHooks(std::move(hooks), error);
+}
+
+bool HttpServer::set_action_outcome_supervisor_sql_adapter(
+    ActionOutcomeSqlAdapterConfig config,
+    bool create_tables_if_missing,
+    std::string* error) {
+    if (!validateActionOutcomeSqlAdapterConfig(config, error)) {
+        return false;
+    }
+    if (create_tables_if_missing &&
+        !ensureActionOutcomeSqlTables(executor_, config, error)) {
+        return false;
+    }
+    try {
+        return action_outcome_supervisor_runtime_.setWorkerHooks(
+            makeActionOutcomeSqlRuntimeHooks(executor_, std::move(config)), error);
+    } catch (const std::exception& ex) {
+        if (error) *error = ex.what();
+        return false;
+    }
+}
+
+bool HttpServer::set_action_outcome_supervisor_config_persistence(
+    const std::string& path,
+    std::string* error) {
+    if (path.empty()) {
+        if (error) {
+            *error = "action-outcome supervisor config path is required";
+        }
+        return false;
+    }
+
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+        if (error) {
+            *error = "failed to inspect persisted action-outcome config: " +
+                     path + ": " + ec.message();
+        }
+        return false;
+    }
+    if (!exists) {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        action_outcome_supervisor_config_path_ = path;
+        return true;
+    }
+
+    PersistedActionOutcomeSupervisorSqlAdapterConfig persisted;
+    if (!load_persisted_action_outcome_supervisor_config(
+            path, &persisted, error)) {
+        return false;
+    }
+    if (!action_outcome_supervisor_runtime_.configure(
+            persisted.sql.runtime, error)) {
+        return false;
+    }
+    if (!set_action_outcome_supervisor_sql_adapter(
+            persisted.sql,
+            persisted.create_tables_if_missing,
+            error)) {
+        return false;
+    }
+    if (persisted.enabled &&
+        !action_outcome_supervisor_runtime_.start(error)) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        action_outcome_supervisor_config_path_ = path;
+    }
+    return true;
+}
+
+bool HttpServer::set_action_outcome_supervisor_catalog_config(
+    const std::string& table,
+    const std::string& supervisor_name,
+    bool create_table_if_missing,
+    std::string* error) {
+    if (!is_safe_sql_identifier(table)) {
+        if (error) *error = "action-outcome catalog table must be a simple SQL identifier";
+        return false;
+    }
+    if (supervisor_name.empty()) {
+        if (error) *error = "action-outcome catalog supervisor name is required";
+        return false;
+    }
+
+    if (create_table_if_missing) {
+        std::ostringstream ddl;
+        ddl << "CREATE TABLE IF NOT EXISTS " << table
+            << " (supervisor_name STRING, config_json STRING, "
+            << "config_epoch INT64, enabled BOOL, updated_ts_ns TIMESTAMP_NS)";
+        const auto created = executor_.execute(ddl.str());
+        if (!created.ok()) {
+            if (error) {
+                *error = "failed to create action-outcome catalog config table: " +
+                         created.error;
+            }
+            return false;
+        }
+    }
+
+    const auto supervisor_code = executor_.intern_symbol_for_ingest(supervisor_name);
+    std::ostringstream select;
+    select << "SELECT config_json FROM " << table
+           << " WHERE supervisor_name = " << static_cast<int64_t>(supervisor_code)
+           << " ORDER BY config_epoch DESC LIMIT 1";
+    const auto loaded = executor_.execute(select.str());
+    if (!loaded.ok()) {
+        if (error) {
+            *error = "failed to load action-outcome catalog config: " +
+                     loaded.error;
+        }
+        return false;
+    }
+
+    const bool has_row = !loaded.rows.empty() || !loaded.typed_rows.empty() ||
+                         !loaded.string_rows.empty();
+    if (has_row) {
+        const std::string body = sql_cell_string(loaded, 0, 0);
+        PersistedActionOutcomeSupervisorSqlAdapterConfig persisted;
+        if (!parse_persisted_action_outcome_supervisor_config(
+                body, &persisted, error)) {
+            return false;
+        }
+        if (!action_outcome_supervisor_runtime_.configure(
+                persisted.sql.runtime, error)) {
+            return false;
+        }
+        if (!set_action_outcome_supervisor_sql_adapter(
+                persisted.sql,
+                persisted.create_tables_if_missing,
+                error)) {
+            return false;
+        }
+        if (persisted.enabled &&
+            !action_outcome_supervisor_runtime_.start(error)) {
+            return false;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        action_outcome_supervisor_catalog_table_ = table;
+        action_outcome_supervisor_catalog_name_ = supervisor_name;
+        action_outcome_supervisor_catalog_create_tables_ =
+            create_table_if_missing;
+    }
+    return true;
+}
+
+bool HttpServer::persist_action_outcome_supervisor_config_(
+    const ActionOutcomeSqlAdapterConfig& config,
+    bool enabled,
+    bool create_tables_if_missing,
+    std::string* error) {
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        path = action_outcome_supervisor_config_path_;
+    }
+    if (path.empty()) {
+        return true;
+    }
+
+    PersistedActionOutcomeSupervisorSqlAdapterConfig persisted;
+    persisted.sql = config;
+    persisted.enabled = enabled;
+    persisted.sql_adapter_enabled = true;
+    persisted.create_tables_if_missing = create_tables_if_missing;
+    return save_persisted_action_outcome_supervisor_config(
+        path, persisted, error);
+}
+
+bool HttpServer::persist_action_outcome_supervisor_catalog_config_(
+    const ActionOutcomeSqlAdapterConfig& config,
+    bool enabled,
+    bool create_tables_if_missing,
+    std::string* error) {
+    std::string table;
+    std::string supervisor_name;
+    bool create_table = true;
+    {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        table = action_outcome_supervisor_catalog_table_;
+        supervisor_name = action_outcome_supervisor_catalog_name_;
+        create_table = action_outcome_supervisor_catalog_create_tables_;
+    }
+    if (table.empty()) {
+        return true;
+    }
+    if (!is_safe_sql_identifier(table)) {
+        if (error) *error = "action-outcome catalog table must be a simple SQL identifier";
+        return false;
+    }
+    if (supervisor_name.empty()) {
+        supervisor_name = config.runtime.name;
+    }
+    if (create_table) {
+        std::ostringstream ddl;
+        ddl << "CREATE TABLE IF NOT EXISTS " << table
+            << " (supervisor_name STRING, config_json STRING, "
+            << "config_epoch INT64, enabled BOOL, updated_ts_ns TIMESTAMP_NS)";
+        const auto created = executor_.execute(ddl.str());
+        if (!created.ok()) {
+            if (error) {
+                *error = "failed to create action-outcome catalog config table: " +
+                         created.error;
+            }
+            return false;
+        }
+    }
+
+    PersistedActionOutcomeSupervisorSqlAdapterConfig persisted;
+    persisted.sql = config;
+    persisted.enabled = enabled;
+    persisted.sql_adapter_enabled = true;
+    persisted.create_tables_if_missing = create_tables_if_missing;
+
+    const int64_t ts = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string config_json =
+        action_outcome_supervisor_persisted_config_json(persisted);
+    std::ostringstream insert;
+    insert << "INSERT INTO " << table
+           << " (supervisor_name, config_json, config_epoch, enabled, updated_ts_ns)"
+           << " VALUES ("
+           << sql_string_literal(supervisor_name) << ", "
+           << sql_string_literal(config_json) << ", "
+           << ts << ", "
+           << (enabled ? "1" : "0") << ", "
+           << ts << ")";
+    const auto saved = executor_.execute(insert.str());
+    if (!saved.ok()) {
+        if (error) {
+            *error = "failed to persist action-outcome catalog config: " +
+                     saved.error;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool HttpServer::clear_action_outcome_supervisor_config_persistence_(
+    std::string* error) {
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        path = action_outcome_supervisor_config_path_;
+    }
+    if (path.empty()) {
+        return true;
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec) {
+        if (error) {
+            *error = "failed to remove persisted action-outcome config: " +
+                     path + ": " + ec.message();
+        }
+        return false;
+    }
+    return true;
+}
+
+bool HttpServer::clear_action_outcome_supervisor_catalog_config_(
+    std::string* error) {
+    std::string table;
+    std::string supervisor_name;
+    {
+        std::lock_guard<std::mutex> lock(action_outcome_supervisor_config_mu_);
+        table = action_outcome_supervisor_catalog_table_;
+        supervisor_name = action_outcome_supervisor_catalog_name_;
+    }
+    if (table.empty()) {
+        return true;
+    }
+    if (!is_safe_sql_identifier(table)) {
+        if (error) *error = "action-outcome catalog table must be a simple SQL identifier";
+        return false;
+    }
+    if (supervisor_name.empty()) {
+        return true;
+    }
+    const auto supervisor_code = executor_.intern_symbol_for_ingest(supervisor_name);
+    std::ostringstream sql;
+    sql << "DELETE FROM " << table
+        << " WHERE supervisor_name = " << static_cast<int64_t>(supervisor_code);
+    const auto cleared = executor_.execute(sql.str());
+    if (!cleared.ok()) {
+        if (error) {
+            *error = "failed to clear action-outcome catalog config: " +
+                     cleared.error;
+        }
+        return false;
+    }
+    return true;
 }
 
 bool HttpServer::set_agent_memory_persistence(const std::string& directory,
@@ -2802,6 +3742,9 @@ void HttpServer::setup_auth_middleware() {
         if (decision.status == zeptodb::auth::AuthStatus::OK) {
             // Stash subject for access log
             mutable_req.set_header("X-Zepto-Subject", decision.context.subject);
+            mutable_req.set_header(
+                "X-Zepto-Role",
+                std::string(zeptodb::auth::role_to_string(decision.context.role)));
             // Stash allowed_tables for table-level ACL enforcement
             if (!decision.context.allowed_tables.empty()) {
                 std::string tables;
@@ -3960,6 +4903,26 @@ void HttpServer::setup_admin_routes() {
     auto require_admin = [this](const httplib::Request& req,
                                 httplib::Response& res) -> bool {
         if (!auth_) return true;  // auth disabled
+        if (req.has_header("X-Zepto-Role")) {
+            const auto role = zeptodb::auth::role_from_string(
+                req.get_header_value("X-Zepto-Role"));
+            if (role == zeptodb::auth::Role::ADMIN) {
+                return true;
+            }
+            zeptodb::auth::AuthContext ctx;
+            ctx.subject = req.has_header("X-Zepto-Subject")
+                ? req.get_header_value("X-Zepto-Subject")
+                : "unknown";
+            ctx.name = ctx.subject;
+            ctx.role = role;
+            ctx.source = "http";
+            auth_->audit(ctx, req.method + " " + req.path,
+                         "admin-forbidden", req.remote_addr);
+            res.status = 403;
+            res.set_content(build_error_json("Admin permission required"),
+                            "application/json");
+            return false;
+        }
         std::string auth_hdr;
         if (req.has_header("Authorization"))
             auth_hdr = req.get_header_value("Authorization");
@@ -3987,6 +4950,21 @@ void HttpServer::setup_admin_routes() {
             return false;
         }
         return true;
+    };
+
+    auto audit_admin_control = [this](const httplib::Request& req,
+                                      const std::string& detail) {
+        if (!auth_) return;
+        zeptodb::auth::AuthContext ctx;
+        ctx.subject = req.has_header("X-Zepto-Subject")
+            ? req.get_header_value("X-Zepto-Subject")
+            : "unknown";
+        ctx.name = ctx.subject;
+        ctx.role = req.has_header("X-Zepto-Role")
+            ? zeptodb::auth::role_from_string(req.get_header_value("X-Zepto-Role"))
+            : zeptodb::auth::Role::UNKNOWN;
+        ctx.source = "http";
+        auth_->audit(ctx, req.method + " " + req.path, detail, req.remote_addr);
     };
 
     // -------------------------------------------------------------------------
@@ -4753,6 +5731,420 @@ void HttpServer::setup_admin_routes() {
     });
 
     // -------------------------------------------------------------------------
+    // GET /admin/action-outcome-supervisor - experimental supervisor status
+    // -------------------------------------------------------------------------
+    svr_->Get("/admin/action-outcome-supervisor", [this, require_admin](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        res.set_content(
+            action_outcome_supervisor_status_json(
+                action_outcome_supervisor_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /admin/action-outcome-supervisor - configure and optionally enable
+    // Body: {"name":"physical_ai_action_outcome","enabled":true,
+    //        "mode":"shadow","history_table":"...",
+    //        "proposal_table":"...","decision_table":"...",
+    //        "evidence_table":"...","fail_closed_action":"manual_review",
+    //        "worker_enabled":false,"worker_poll_interval_ms":1000,
+    //        "batch_limit":128,"max_consecutive_failures":3,
+    //        "sql_adapter_enabled":false,
+    //        "sql_adapter_create_tables":false}
+    // -------------------------------------------------------------------------
+    svr_->Post("/admin/action-outcome-supervisor",
+        [this, require_admin, audit_admin_control](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+
+        std::string error;
+        zeptodb::feeds::ActionOutcomeSupervisorRuntimeConfig config;
+        config.name = json_string_field(req.body, "name", config.name);
+        config.mode = json_string_field(req.body, "mode", config.mode);
+        config.history_table = json_string_field(
+            req.body, "history_table", config.history_table);
+        config.proposal_table = json_string_field(
+            req.body, "proposal_table", config.proposal_table);
+        config.decision_table = json_string_field(
+            req.body, "decision_table", config.decision_table);
+        config.evidence_table = json_string_field(
+            req.body, "evidence_table", config.evidence_table);
+        config.fail_closed_action = json_string_field(
+            req.body, "fail_closed_action", config.fail_closed_action);
+        config.worker_enabled = json_bool_field(
+            req.body, "worker_enabled", config.worker_enabled);
+
+        const int64_t batch_limit = json_i64_field(
+            req.body, "batch_limit", static_cast<int64_t>(config.batch_limit));
+        const int64_t worker_poll_interval_ms = json_i64_field(
+            req.body,
+            "worker_poll_interval_ms",
+            static_cast<int64_t>(config.worker_poll_interval_ms));
+        const int64_t max_consecutive_failures = json_i64_field(
+            req.body,
+            "max_consecutive_failures",
+            static_cast<int64_t>(config.max_consecutive_failures));
+        const int64_t max_decision_errors_per_pass = json_i64_field(
+            req.body,
+            "max_decision_errors_per_pass",
+            static_cast<int64_t>(config.max_decision_errors_per_pass));
+        const int64_t max_sink_errors_per_pass = json_i64_field(
+            req.body,
+            "max_sink_errors_per_pass",
+            static_cast<int64_t>(config.max_sink_errors_per_pass));
+        if (batch_limit <= 0 || worker_poll_interval_ms <= 0 ||
+            max_consecutive_failures <= 0 ||
+            max_decision_errors_per_pass <= 0 ||
+            max_sink_errors_per_pass <= 0 ||
+            max_consecutive_failures >
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) ||
+            max_decision_errors_per_pass >
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) ||
+            max_sink_errors_per_pass >
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+            res.status = 400;
+            res.set_content(
+                build_error_json(
+                    "batch_limit, worker_poll_interval_ms, max_consecutive_failures, max_decision_errors_per_pass, and max_sink_errors_per_pass must be positive"),
+                "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-configure-invalid-limits");
+            return;
+        }
+        config.batch_limit = static_cast<size_t>(batch_limit);
+        config.worker_poll_interval_ms =
+            static_cast<uint64_t>(worker_poll_interval_ms);
+        config.max_consecutive_failures =
+            static_cast<uint32_t>(max_consecutive_failures);
+        config.max_decision_errors_per_pass =
+            static_cast<uint32_t>(max_decision_errors_per_pass);
+        config.max_sink_errors_per_pass =
+            static_cast<uint32_t>(max_sink_errors_per_pass);
+
+        ActionOutcomeSqlAdapterConfig sql_adapter_config;
+        sql_adapter_config.runtime = config;
+        sql_adapter_config.proposal_id_column = json_string_field(
+            req.body, "proposal_id_column",
+            sql_adapter_config.proposal_id_column);
+        sql_adapter_config.proposal_source_type_column = json_string_field(
+            req.body, "proposal_source_type_column",
+            sql_adapter_config.proposal_source_type_column);
+        sql_adapter_config.proposal_action_column = json_string_field(
+            req.body, "proposal_action_column",
+            sql_adapter_config.proposal_action_column);
+        sql_adapter_config.proposal_ts_column = json_string_field(
+            req.body, "proposal_ts_column",
+            sql_adapter_config.proposal_ts_column);
+        sql_adapter_config.history_action_column = json_string_field(
+            req.body, "history_action_column",
+            sql_adapter_config.history_action_column);
+        sql_adapter_config.history_outcome_score_column = json_string_field(
+            req.body, "history_outcome_score_column",
+            sql_adapter_config.history_outcome_score_column);
+        sql_adapter_config.decision_proposal_id_column = json_string_field(
+            req.body,
+            "decision_proposal_id_column",
+            sql_adapter_config.decision_proposal_id_column);
+        sql_adapter_config.decision_decision_column = json_string_field(
+            req.body,
+            "decision_decision_column",
+            sql_adapter_config.decision_decision_column);
+        sql_adapter_config.decision_final_action_column = json_string_field(
+            req.body,
+            "decision_final_action_column",
+            sql_adapter_config.decision_final_action_column);
+        sql_adapter_config.decision_reason_column = json_string_field(
+            req.body,
+            "decision_reason_column",
+            sql_adapter_config.decision_reason_column);
+        sql_adapter_config.decision_evidence_count_column = json_string_field(
+            req.body,
+            "decision_evidence_count_column",
+            sql_adapter_config.decision_evidence_count_column);
+        sql_adapter_config.decision_fail_closed_column = json_string_field(
+            req.body,
+            "decision_fail_closed_column",
+            sql_adapter_config.decision_fail_closed_column);
+        sql_adapter_config.decision_ts_column = json_string_field(
+            req.body,
+            "decision_ts_column",
+            sql_adapter_config.decision_ts_column);
+        sql_adapter_config.evidence_proposal_id_column = json_string_field(
+            req.body,
+            "evidence_proposal_id_column",
+            sql_adapter_config.evidence_proposal_id_column);
+        sql_adapter_config.evidence_count_column = json_string_field(
+            req.body,
+            "evidence_count_column",
+            sql_adapter_config.evidence_count_column);
+        sql_adapter_config.evidence_reason_column = json_string_field(
+            req.body,
+            "evidence_reason_column",
+            sql_adapter_config.evidence_reason_column);
+        sql_adapter_config.evidence_ts_column = json_string_field(
+            req.body,
+            "evidence_ts_column",
+            sql_adapter_config.evidence_ts_column);
+        sql_adapter_config.commit_table = json_string_field(
+            req.body, "commit_table", sql_adapter_config.commit_table);
+        sql_adapter_config.commit_proposal_id_column = json_string_field(
+            req.body,
+            "commit_proposal_id_column",
+            sql_adapter_config.commit_proposal_id_column);
+        sql_adapter_config.commit_decision_column = json_string_field(
+            req.body,
+            "commit_decision_column",
+            sql_adapter_config.commit_decision_column);
+        sql_adapter_config.commit_final_action_column = json_string_field(
+            req.body,
+            "commit_final_action_column",
+            sql_adapter_config.commit_final_action_column);
+        sql_adapter_config.commit_reason_column = json_string_field(
+            req.body,
+            "commit_reason_column",
+            sql_adapter_config.commit_reason_column);
+        sql_adapter_config.commit_evidence_count_column = json_string_field(
+            req.body,
+            "commit_evidence_count_column",
+            sql_adapter_config.commit_evidence_count_column);
+        sql_adapter_config.commit_fail_closed_column = json_string_field(
+            req.body,
+            "commit_fail_closed_column",
+            sql_adapter_config.commit_fail_closed_column);
+        sql_adapter_config.commit_decision_written_column = json_string_field(
+            req.body,
+            "commit_decision_written_column",
+            sql_adapter_config.commit_decision_written_column);
+        sql_adapter_config.commit_evidence_written_column = json_string_field(
+            req.body,
+            "commit_evidence_written_column",
+            sql_adapter_config.commit_evidence_written_column);
+        sql_adapter_config.commit_ts_column = json_string_field(
+            req.body, "commit_ts_column", sql_adapter_config.commit_ts_column);
+        sql_adapter_config.require_worker_ownership = json_bool_field(
+            req.body,
+            "worker_ownership_required",
+            sql_adapter_config.require_worker_ownership);
+        sql_adapter_config.manage_worker_lease = json_bool_field(
+            req.body,
+            "worker_lease_enabled",
+            sql_adapter_config.manage_worker_lease);
+        sql_adapter_config.worker_owner_id = json_string_field(
+            req.body, "worker_owner_id", sql_adapter_config.worker_owner_id);
+        sql_adapter_config.ownership_table = json_string_field(
+            req.body, "ownership_table", sql_adapter_config.ownership_table);
+        sql_adapter_config.ownership_supervisor_column = json_string_field(
+            req.body,
+            "ownership_supervisor_column",
+            sql_adapter_config.ownership_supervisor_column);
+        sql_adapter_config.ownership_owner_id_column = json_string_field(
+            req.body,
+            "ownership_owner_id_column",
+            sql_adapter_config.ownership_owner_id_column);
+        sql_adapter_config.ownership_epoch_column = json_string_field(
+            req.body,
+            "ownership_epoch_column",
+            sql_adapter_config.ownership_epoch_column);
+        sql_adapter_config.ownership_lease_expires_at_column =
+            json_string_field(
+                req.body,
+                "ownership_lease_expires_at_column",
+                sql_adapter_config.ownership_lease_expires_at_column);
+        sql_adapter_config.ownership_heartbeat_ts_column =
+            json_string_field(
+                req.body,
+                "ownership_heartbeat_ts_column",
+                sql_adapter_config.ownership_heartbeat_ts_column);
+
+        const int64_t proposal_query_limit = json_i64_field(
+            req.body,
+            "proposal_query_limit",
+            static_cast<int64_t>(sql_adapter_config.proposal_query_limit));
+        const int64_t history_evidence_limit = json_i64_field(
+            req.body,
+            "history_evidence_limit",
+            static_cast<int64_t>(sql_adapter_config.history_evidence_limit));
+        const int64_t suppress_min_failure_count = json_i64_field(
+            req.body,
+            "suppress_min_failure_count",
+            static_cast<int64_t>(sql_adapter_config.suppress_min_failure_count));
+        const int64_t worker_owner_epoch = json_i64_field(
+            req.body,
+            "worker_owner_epoch",
+            static_cast<int64_t>(sql_adapter_config.worker_owner_epoch));
+        const int64_t worker_lease_ttl_ms = json_i64_field(
+            req.body,
+            "worker_lease_ttl_ms",
+            static_cast<int64_t>(sql_adapter_config.worker_lease_ttl_ms));
+        sql_adapter_config.suppress_outcome_score_below = json_i64_field(
+            req.body,
+            "suppress_outcome_score_below",
+            sql_adapter_config.suppress_outcome_score_below);
+        if (proposal_query_limit < 0 || history_evidence_limit <= 0 ||
+            suppress_min_failure_count <= 0 || worker_owner_epoch < 0 ||
+            worker_lease_ttl_ms <= 0) {
+            res.status = 400;
+            res.set_content(
+                build_error_json(
+                    "proposal_query_limit and worker_owner_epoch must be non-negative; history_evidence_limit, suppress_min_failure_count, and worker_lease_ttl_ms must be positive"),
+                "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-configure-invalid-sql-limits");
+            return;
+        }
+        sql_adapter_config.proposal_query_limit =
+            static_cast<size_t>(proposal_query_limit);
+        sql_adapter_config.history_evidence_limit =
+            static_cast<size_t>(history_evidence_limit);
+        sql_adapter_config.suppress_min_failure_count =
+            static_cast<uint64_t>(suppress_min_failure_count);
+        sql_adapter_config.worker_owner_epoch =
+            static_cast<uint64_t>(worker_owner_epoch);
+        sql_adapter_config.worker_lease_ttl_ms =
+            static_cast<uint64_t>(worker_lease_ttl_ms);
+
+        const bool sql_adapter_enabled = json_bool_field(
+            req.body, "sql_adapter_enabled", false);
+        const bool sql_adapter_create_tables = json_bool_field(
+            req.body, "sql_adapter_create_tables", false);
+        const bool enabled = json_bool_field(req.body, "enabled", true);
+        if (sql_adapter_enabled &&
+            !validateActionOutcomeSqlAdapterConfig(sql_adapter_config, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome SQL adapter configuration failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-sql-config-rejected");
+            return;
+        }
+
+        if (!action_outcome_supervisor_runtime_.configure(config, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor configuration failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-configure-rejected");
+            return;
+        }
+
+        const ActionOutcomeSqlAdapterConfig persisted_sql_adapter_config =
+            sql_adapter_config;
+        if (sql_adapter_enabled &&
+            !set_action_outcome_supervisor_sql_adapter(
+                std::move(sql_adapter_config), sql_adapter_create_tables, &error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome SQL adapter install failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-sql-install-failed");
+            return;
+        }
+
+        if (enabled && !action_outcome_supervisor_runtime_.start(&error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor start failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-start-failed");
+            return;
+        }
+        if (sql_adapter_enabled) {
+            if (!persist_action_outcome_supervisor_config_(
+                    persisted_sql_adapter_config,
+                    enabled,
+                    sql_adapter_create_tables,
+                    &error)) {
+                res.status = 500;
+                res.set_content(build_error_json(error.empty()
+                                    ? "action-outcome supervisor config persistence failed"
+                                    : error),
+                                "application/json");
+                audit_admin_control(
+                    req, "action-outcome-supervisor-config-persist-failed");
+                return;
+            }
+            if (!persist_action_outcome_supervisor_catalog_config_(
+                    persisted_sql_adapter_config,
+                    enabled,
+                    sql_adapter_create_tables,
+                    &error)) {
+                res.status = 500;
+                res.set_content(build_error_json(error.empty()
+                                    ? "action-outcome supervisor catalog config persistence failed"
+                                    : error),
+                                "application/json");
+                audit_admin_control(
+                    req, "action-outcome-supervisor-catalog-persist-failed");
+                return;
+            }
+        }
+
+        audit_admin_control(req, "action-outcome-supervisor-configured");
+        res.set_content(
+            action_outcome_supervisor_status_json(
+                action_outcome_supervisor_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
+    // DELETE /admin/action-outcome-supervisor - disable and clear config
+    // -------------------------------------------------------------------------
+    svr_->Delete("/admin/action-outcome-supervisor",
+        [this, require_admin, audit_admin_control](
+        const httplib::Request& req, httplib::Response& res)
+    {
+        if (!require_admin(req, res)) return;
+        std::string error;
+        const auto before = action_outcome_supervisor_runtime_.snapshot();
+        if (before.enabled && !action_outcome_supervisor_runtime_.stop(&error)) {
+            res.status = 400;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor stop failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(req, "action-outcome-supervisor-stop-failed");
+            return;
+        }
+        (void)action_outcome_supervisor_runtime_.clear(&error);
+        if (!clear_action_outcome_supervisor_config_persistence_(&error)) {
+            res.status = 500;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor config persistence clear failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-config-clear-failed");
+            return;
+        }
+        if (!clear_action_outcome_supervisor_catalog_config_(&error)) {
+            res.status = 500;
+            res.set_content(build_error_json(error.empty()
+                                ? "action-outcome supervisor catalog config clear failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "action-outcome-supervisor-catalog-clear-failed");
+            return;
+        }
+        audit_admin_control(req, "action-outcome-supervisor-cleared");
+        res.set_content(
+            action_outcome_supervisor_status_json(
+                action_outcome_supervisor_runtime_.snapshot()),
+            "application/json");
+    });
+
+    // -------------------------------------------------------------------------
     // DELETE /admin/nodes/:id — remove a node from the cluster
     // -------------------------------------------------------------------------
     svr_->Delete(R"(/admin/nodes/(\d+))", [this, require_admin, require_feature](
@@ -5371,12 +6763,14 @@ void HttpServer::setup_admin_routes() {
                 return;
             }
             std::vector<cluster::PartitionRouter::Move> moves;
+            bool parsed_move = false;
             auto cur = arr_start;
             while (cur < arr_end) {
                 auto obj_start = req.body.find('{', cur);
                 if (obj_start == std::string::npos || obj_start >= arr_end) break;
                 auto obj_end = req.body.find('}', obj_start);
                 if (obj_end == std::string::npos || obj_end > arr_end) break;
+                parsed_move = true;
                 auto obj = req.body.substr(obj_start, obj_end - obj_start + 1);
                 auto find_val = [&](const std::string& key) -> int64_t {
                     auto p = obj.find("\"" + key + "\"");
@@ -5398,12 +6792,28 @@ void HttpServer::setup_admin_routes() {
                     res.set_content(build_error_json("Invalid move: 'from' and 'to' must differ"), "application/json");
                     return;
                 }
-                moves.push_back({static_cast<uint32_t>(sym), static_cast<uint32_t>(from), static_cast<uint32_t>(to)});
+                auto symbol = static_cast<uint32_t>(sym);
+                auto target = static_cast<uint32_t>(to);
+                auto source = static_cast<uint32_t>(from);
+                try {
+                    source = rebalance_mgr_->current_owner(symbol);
+                } catch (const std::exception& e) {
+                    res.status = 400;
+                    res.set_content(build_error_json(std::string("Cannot resolve current owner: ") + e.what()),
+                                    "application/json");
+                    return;
+                }
+                if (source != target)
+                    moves.push_back({symbol, source, target});
                 cur = obj_end + 1;
             }
             if (moves.empty()) {
-                res.status = 400;
-                res.set_content(build_error_json("Empty moves array"), "application/json");
+                if (!parsed_move) {
+                    res.status = 400;
+                    res.set_content(build_error_json("Empty moves array"), "application/json");
+                    return;
+                }
+                res.set_content(R"({"ok":true,"noop":true})", "application/json");
                 return;
             }
             ok = rebalance_mgr_->start_move_partitions(std::move(moves));
@@ -5700,6 +7110,20 @@ void HttpServer::stop() {
         zeptodb::util::Logger::instance().error(
             "{\"event\":\"agent_memory_snapshot_failed\",\"error\":\"" +
             json_escape(persist_error) + "\"}", "http");
+    }
+    std::string lifecycle_error;
+    if (edge_fleet_connector_runtime_.snapshot().enabled &&
+        !edge_fleet_connector_runtime_.stop(&lifecycle_error)) {
+        zeptodb::util::Logger::instance().error(
+            "{\"event\":\"edge_fleet_connector_stop_failed\",\"error\":\"" +
+            json_escape(lifecycle_error) + "\"}", "http");
+    }
+    lifecycle_error.clear();
+    if (action_outcome_supervisor_runtime_.snapshot().enabled &&
+        !action_outcome_supervisor_runtime_.stop(&lifecycle_error)) {
+        zeptodb::util::Logger::instance().error(
+            "{\"event\":\"action_outcome_supervisor_stop_failed\",\"error\":\"" +
+            json_escape(lifecycle_error) + "\"}", "http");
     }
     if (metrics_collector_) metrics_collector_->stop();
     svr_->stop();
@@ -6065,6 +7489,7 @@ std::string HttpServer::build_prometheus_metrics() const {
     }
 
     os << "\n" << edge_fleet_connector_runtime_.formatPrometheus();
+    os << "\n" << action_outcome_supervisor_runtime_.formatPrometheus();
 
     // Append output from registered metrics providers (e.g. Kafka consumers).
     {

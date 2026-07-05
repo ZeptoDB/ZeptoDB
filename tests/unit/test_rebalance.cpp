@@ -82,12 +82,36 @@ class MockRingConsensus : public zeptodb::cluster::RingConsensus {
 public:
     bool propose_add(NodeId node) override { last_add_ = node; add_count_++; return true; }
     bool propose_remove(NodeId node) override { last_remove_ = node; remove_count_++; return true; }
+    bool propose_pin(zeptodb::SymbolId symbol, NodeId node) override {
+        last_pin_symbol_ = symbol;
+        last_pin_node_ = node;
+        pin_count_++;
+        return true;
+    }
     bool apply_update(const uint8_t*, size_t) override { return true; }
     uint64_t current_epoch() const override { return 0; }
 
     NodeId last_add_ = 0, last_remove_ = 0;
+    zeptodb::SymbolId last_pin_symbol_ = 0;
+    NodeId last_pin_node_ = 0;
     int add_count_ = 0, remove_count_ = 0;
+    int pin_count_ = 0;
 };
+
+TEST(RingSnapshotTest, RoundTripsPinnedSymbols) {
+    RingSnapshot snap;
+    snap.epoch = 42;
+    snap.nodes = {1, 2, 3};
+    snap.pinned_symbols = {{500, 2}, {501, 3}};
+
+    const auto encoded = snap.serialize();
+
+    RingSnapshot decoded;
+    ASSERT_TRUE(RingSnapshot::deserialize(encoded.data(), encoded.size(), decoded));
+    EXPECT_EQ(decoded.epoch, 42u);
+    EXPECT_EQ(decoded.nodes, snap.nodes);
+    EXPECT_EQ(decoded.pinned_symbols, snap.pinned_symbols);
+}
 
 // ============================================================================
 // 1. DualWriteIngestTest — during migration, ticks written to BOTH nodes
@@ -185,6 +209,12 @@ protected:
         src_srv_.start(src_port_, [this](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*src_pipeline_);
             return ex.execute(sql);
+        }, nullptr,
+        [this](const std::vector<zeptodb::ingestion::TickMessage>& batch) -> size_t {
+            for (auto& msg : batch)
+                src_pipeline_->ingest_tick(msg);
+            src_pipeline_->drain_sync(100);
+            return batch.size();
         });
         dst_srv_.start(dst_port_, [this](const std::string& sql) {
             zeptodb::sql::QueryExecutor ex(*dst_pipeline_);
@@ -1271,6 +1301,25 @@ TEST_F(RebalanceTest, PartialMoveNoBroadcast) {
     EXPECT_EQ(mock.remove_count_, 0);
 }
 
+TEST_F(RebalanceTest, PartialMoveBroadcastsCommittedPin) {
+    router_.add_node(2);
+    MockRingConsensus mock;
+    RebalanceManager mgr(router_, migrator_);
+    mgr.set_consensus(&mock);
+
+    std::vector<PartitionRouter::Move> moves;
+    moves.push_back({500, 1, 2});
+
+    EXPECT_TRUE(mgr.start_move_partitions(std::move(moves)));
+    EXPECT_TRUE(mgr.wait(10));
+
+    EXPECT_EQ(mock.add_count_, 0);
+    EXPECT_EQ(mock.remove_count_, 0);
+    EXPECT_EQ(mock.pin_count_, 1);
+    EXPECT_EQ(mock.last_pin_symbol_, 500u);
+    EXPECT_EQ(mock.last_pin_node_, 2u);
+}
+
 TEST_F(RebalanceTest, PartialMoveAlreadyRunning) {
     RebalanceManager mgr(router_, migrator_);
     EXPECT_TRUE(mgr.start_add_node(2));
@@ -1292,6 +1341,27 @@ TEST_F(HttpRebalanceTest, HttpPartialMovePartitions) {
 
     mgr_->wait(10);
     EXPECT_EQ(mgr_->state(), RebalanceState::IDLE);
+}
+
+TEST_F(HttpRebalanceTest, HttpPartialMoveUsesCurrentOwner) {
+    router_.add_node(2);
+
+    uint32_t symbol = 700;
+    for (; symbol < 800; ++symbol) {
+        if (router_.route(symbol) == 1) break;
+    }
+    ASSERT_LT(symbol, 800u);
+
+    auto body = http_post_rebalance(
+        http_port_, "/admin/rebalance/start",
+        R"({"action":"move_partitions","moves":[{"symbol":)" +
+            std::to_string(symbol) + R"(,"from":99,"to":2}]})");
+    EXPECT_NE(body.find("\"ok\":true"), std::string::npos);
+
+    mgr_->wait(10);
+    auto status = mgr_->status();
+    EXPECT_EQ(status.failed_moves, 0u);
+    EXPECT_EQ(router_.route(symbol), 2u);
 }
 
 // 37. HTTP rejects self-move (from == to)
@@ -1410,6 +1480,48 @@ TEST_F(RebalanceTest, PartialMoveDataIntegrity) {
     auto r = ex_dst.execute("SELECT count(*) FROM trades WHERE symbol = 500");
     ASSERT_TRUE(r.ok());
     EXPECT_EQ(r.rows[0][0], 5);
+}
+
+TEST_F(RebalanceTest, PartialMovePinsCommittedDestinationAndReverse) {
+    router_.add_node(2);
+
+    RebalanceManager mgr(router_, migrator_);
+    std::vector<PartitionRouter::Move> to_dst;
+    to_dst.push_back({500, 1, 2});
+    EXPECT_TRUE(mgr.start_move_partitions(std::move(to_dst)));
+    EXPECT_TRUE(mgr.wait(10));
+
+    auto st = mgr.status();
+    EXPECT_EQ(st.failed_moves, 0u);
+    EXPECT_EQ(router_.route(500), 2u);
+    EXPECT_FALSE(router_.migration_target(500).has_value());
+
+    std::vector<PartitionRouter::Move> to_src;
+    to_src.push_back({500, 2, 1});
+    EXPECT_TRUE(mgr.start_move_partitions(std::move(to_src)));
+    EXPECT_TRUE(mgr.wait(10));
+
+    st = mgr.status();
+    EXPECT_EQ(st.failed_moves, 0u);
+    EXPECT_EQ(router_.route(500), 1u);
+    EXPECT_FALSE(router_.migration_target(500).has_value());
+}
+
+TEST_F(RebalanceTest, PartialMoveFailureDoesNotPinOrLeaveMigrationState) {
+    router_.add_node(2);
+
+    RebalanceManager mgr(router_, migrator_);
+    std::vector<PartitionRouter::Move> moves;
+    moves.push_back({500, 1, 99});
+    EXPECT_TRUE(mgr.start_move_partitions(std::move(moves)));
+    EXPECT_TRUE(mgr.wait(10));
+
+    auto st = mgr.status();
+    EXPECT_EQ(st.completed_moves, 0u);
+    EXPECT_EQ(st.failed_moves, 1u);
+    EXPECT_NE(router_.route(500), 99u);
+    EXPECT_FALSE(router_.migration_target(500).has_value());
+    EXPECT_FALSE(router_.recently_migrated(500).has_value());
 }
 
 TEST_F(RebalanceTest, PartialMovePreservesTradesTableId) {

@@ -306,6 +306,22 @@ public:
         }
     }
 
+    /// Commit a successful partial migration by pinning the symbol to its new
+    /// owner and clearing transient migration state.
+    void commit_migration(SymbolId symbol, NodeId owner) {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        pinned_[symbol] = owner;
+        migrating_.erase(symbol);
+        recently_migrated_.erase(symbol);
+        cache_.erase(symbol);
+    }
+
+    /// Abort a failed migration without recording a recently-migrated range.
+    void abort_migration(SymbolId symbol) {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        migrating_.erase(symbol);
+    }
+
     /// If symbol is migrating, returns {from, to}. Otherwise nullopt.
     std::optional<std::pair<NodeId, NodeId>> migration_target(SymbolId symbol) const {
         std::lock_guard<std::mutex> lock(cache_mutex_);

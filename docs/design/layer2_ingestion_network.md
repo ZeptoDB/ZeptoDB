@@ -236,7 +236,116 @@ persistence for feed config and ACK/cursor state, long-running operational
 tests, cross-architecture verification, and user-facing docs for idempotent
 sink requirements.
 
-Last updated: 2026-06-23 (Physical AI edge/fleet worker runtime - devlog 205)
+## Experimental Physical AI Action-Outcome supervisor (devlog 206)
+
+`ActionOutcomeSupervisorRuntime` adds a shadow-only runtime lifecycle around the
+Action-Outcome supervision idea validated in the Physical AI research replays.
+The runtime is deliberately source-neutral: embedding code supplies hooks that
+load pending action proposals, check whether a proposal has already been
+decided, compute an advisory decision, and sink the decision/evidence record.
+
+The runtime handles the first production-shaped safety loop:
+
+- bounded proposal batches with `batch_limit`; already-decided proposals are
+  skipped before consuming the candidate budget,
+- stable timestamp/id ordering before each bounded pass,
+- optional idempotency skips through `already_decided`,
+- invalid-proposal rejection for empty proposal ids or actions,
+- decision-provider failures converted to fail-closed
+  `suppress_no_evidence` decisions,
+- `manual_review` as the default fail-closed final action,
+- sink failure accounting, per-pass decision/sink error budgets, and worker
+  failure budgets,
+- optional background worker pacing through `worker_enabled` and
+  `worker_poll_interval_ms`,
+- status snapshots and Prometheus metrics for lifecycle, proposals, decisions,
+  fail-closed counts, evidence rows, worker failures, and pass latency.
+
+Devlog 207 adds the first built-in ZeptoDB SQL adapter for this runtime in the
+server layer. `ActionOutcomeSqlAdapterConfig` validates the proposal, history,
+decision, and evidence table/column contract, can create the default demo
+tables, and builds runtime hooks that:
+
+- load bounded proposals from `physical_ai_action_proposals`,
+- check complete decision/evidence/commit state through
+  `physical_ai_supervision_commits`,
+- compute a deterministic historical-outcome policy from
+  `physical_ai_action_history`,
+- write one atomic commit ledger row containing the decision/evidence payload,
+- repair the `physical_ai_supervision_decisions` and
+  `physical_ai_supervision_evidence` projection rows from the ledger.
+- fetch committed proposal rows as bounded repair candidates separately from
+  undecided proposal rows so old committed prefixes cannot starve new work
+  when `proposal_query_limit` equals the runtime batch limit.
+
+The adapter remains experimental and shadow-only. The P0 hardening path adds
+server-local config persistence, SQL catalog-backed config, retry-idempotent
+evidence summaries, an atomic commit ledger row that repairs partial sink state,
+managed SQL worker leases with heartbeat/expiry, and owner id/epoch fencing.
+Cross-architecture verification now passes with matching x86_64/aarch64 CTest
+coverage. Product promotion still requires a decision on whether the
+commit-ledger sink contract is sufficient or should be replaced by a future
+generic multi-table transaction.
+
+Experiment 021 adds the first commercialization evidence for the supervisor
+path. The research replay converts Experiment 013 baseline recommendations into
+20 shadow proposals, suppresses 15/15 hazardous non-gated proposals, allows 5/5
+context-gated recovery proposals, and verifies that replay after a simulated
+restart skips 20/20 proposals from the decision ledger without writing new
+evidence. A focused C++ regression pins the same decision-row idempotency
+boundary for a fresh SQL-backed runtime object. This does not yet satisfy full
+durability promotion by itself; devlogs 209-210 add live HTTP/server restart
+validation, retry-idempotent evidence summaries, and ownership handoff tests.
+
+Server-local durable SQL adapter config is available through
+`HttpServer::set_action_outcome_supervisor_config_persistence`. When embedding
+code enables a config path, successful SQL-adapter admin configuration writes a
+versioned JSON file. A later HTTP server instance can load that file, validate
+it, reconfigure the runtime, reinstall SQL-backed hooks, recreate default
+tables idempotently when requested, and start the supervisor if the persisted
+config was enabled. `DELETE /admin/action-outcome-supervisor` removes the
+persisted adapter config file when persistence is enabled.
+
+SQL catalog-backed config is available through
+`HttpServer::set_action_outcome_supervisor_catalog_config`. The catalog table
+stores versioned JSON config rows keyed by supervisor name, and startup reloads
+the latest row as the source of truth. `DELETE /admin/action-outcome-supervisor`
+clears matching catalog rows when catalog config is enabled.
+
+The SQL adapter writes one atomic commit ledger row containing the full
+decision/evidence payload before repairing decision and evidence projection
+tables. Duplicate checks read the ledger; retries repair missing projection
+rows from the committed payload without duplicating decision or evidence rows.
+This is effectively-once for the current sink contract, but it is not a
+generic multi-table SQL transaction.
+
+Proposal loading treats the commit ledger as both an idempotency boundary and a
+repair index. Each pass first loads committed proposal rows as projection
+repair candidates, then loads undecided rows through a commit-ledger anti-join.
+Runtime duplicate checks skip committed rows before consuming the batch budget,
+which prevents a fully committed prefix from starving later undecided proposals
+when SQL query limits are tight.
+
+The SQL adapter can require a matching worker ownership row before loading
+proposals:
+`physical_ai_supervisor_ownership(supervisor_name, owner_id, owner_epoch,
+lease_expires_at_ns, heartbeat_ts_ns)`. With managed leases enabled, the
+adapter acquires or renews the SQL lease and can take over an expired owner
+with a higher epoch; non-owners and stale epochs fail closed to idle passes.
+This is a SQL lease/heartbeat guard, not a full consensus subsystem.
+
+The HTTP server owns admin-gated process-local lifecycle state through
+`GET`/`POST`/`DELETE /admin/action-outcome-supervisor`. The runtime is not a
+robot-control or actuator-enforcement API. It records advisory decisions in
+shadow mode so operators can validate whether historical action-outcome memory
+would have suppressed unsafe or low-evidence actions.
+
+Product promotion still requires broader operational validation of
+catalog-backed config plus SQL lease behavior under real node replacement. The
+current sink is retry-idempotent and repairable via the atomic commit ledger
+row, but not a generic multi-table transaction.
+
+Last updated: 2026-07-05 (Action-Outcome supervisor P0 hardening - devlog 210)
 
 ## Table-aware ingest (Stage B — devlog 084)
 

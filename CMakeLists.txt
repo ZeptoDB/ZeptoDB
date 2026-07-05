@@ -866,6 +866,7 @@ if(ZEPTO_HAS_FLIGHT)
 endif()
 
 add_library(zepto_server STATIC
+    src/server/action_outcome_sql_adapter.cpp
     src/server/http_server.cpp
     src/server/msgpack_ingest.cpp
 )
@@ -983,6 +984,7 @@ target_link_libraries(zepto_scheduler PUBLIC
 
 # --- Feed Handler Adapters ---
 add_library(zepto_feeds STATIC
+    src/feeds/action_outcome_supervisor_runtime.cpp
     src/feeds/edge_fleet_connector_runtime.cpp
     src/feeds/edge_fleet_feed_connector.cpp
     src/feeds/fix_parser.cpp
@@ -1298,6 +1300,13 @@ add_executable(zepto_http_server tools/zepto_http_server.cpp)
 target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_http_server PRIVATE
     zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+
+# SQL-backed Action-Outcome supervisor soak/fault-injection harness.
+add_executable(zepto_action_outcome_soak tools/zepto_action_outcome_soak.cpp)
+target_include_directories(zepto_action_outcome_soak PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(zepto_action_outcome_soak PRIVATE
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+target_compile_options(zepto_action_outcome_soak PRIVATE -O2)
 
 # Stateless ingest node (P8-I3, devlog 113) — HTTP ingest-only pod that
 # forwards every tick to the right storage pod via CoordinatorRoutingAdapter.

@@ -326,9 +326,21 @@ cmd_aarch64_ssh='set -e
     cd ~/zeptodb
     # devlog 097: auto-configure when build/ missing (e.g., compiler changed,
     # CMakeCache.txt purged). CMakeLists.txt soft-default picks clang-19.
+    # Refresh on forced resync or stale optional-feature caches so cross-arch
+    # counts do not silently drift into Arrow/Flight stub-only coverage.
+    need_configure=false
     if [[ ! -f build/build.ninja ]]; then
       echo ── Remote: build/ missing or stale, running cmake configure ──
-      cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      need_configure=true
+    elif [[ \"${FORCE_RESYNC:-false}\" == \"true\" ]]; then
+      echo ── Remote: force-resync requested, refreshing cmake cache ──
+      need_configure=true
+    elif [[ -f build/CMakeCache.txt ]] && grep -Eq \"ZEPTO_USE_(FLIGHT|PARQUET):BOOL=OFF\" build/CMakeCache.txt; then
+      echo ── Remote: Arrow/Flight or Parquet cache disabled, refreshing cmake cache ──
+      need_configure=true
+    fi
+    if [[ \"\$need_configure\" == \"true\" ]]; then
+      cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DZEPTO_USE_FLIGHT=ON -DZEPTO_USE_PARQUET=ON
     fi
     cd build
     ninja -j\$(nproc) zepto_tests test_feeds test_migration

@@ -35,10 +35,11 @@ namespace zeptodb::cluster {
 struct RingSnapshot {
     uint64_t              epoch = 0;
     std::vector<NodeId>   nodes;   // 물리 노드 목록
+    std::vector<std::pair<SymbolId, NodeId>> pinned_symbols;
 
     std::vector<uint8_t> serialize() const {
         std::vector<uint8_t> buf;
-        buf.reserve(8 + 4 + nodes.size() * 4);
+        buf.reserve(8 + 4 + nodes.size() * 4 + 4 + pinned_symbols.size() * 8);
         // epoch (8 bytes)
         uint64_t e = epoch;
         for (int i = 0; i < 8; ++i) {
@@ -57,6 +58,23 @@ struct RingSnapshot {
             for (int i = 0; i < 4; ++i) {
                 buf.push_back(static_cast<uint8_t>(v & 0xFF));
                 v >>= 8;
+            }
+        }
+        uint32_t pin_count = static_cast<uint32_t>(pinned_symbols.size());
+        for (int i = 0; i < 4; ++i) {
+            buf.push_back(static_cast<uint8_t>(pin_count & 0xFF));
+            pin_count >>= 8;
+        }
+        for (const auto& [symbol, node] : pinned_symbols) {
+            uint32_t sym = static_cast<uint32_t>(symbol);
+            for (int i = 0; i < 4; ++i) {
+                buf.push_back(static_cast<uint8_t>(sym & 0xFF));
+                sym >>= 8;
+            }
+            uint32_t n = static_cast<uint32_t>(node);
+            for (int i = 0; i < 4; ++i) {
+                buf.push_back(static_cast<uint8_t>(n & 0xFF));
+                n >>= 8;
             }
         }
         return buf;
@@ -81,6 +99,28 @@ struct RingSnapshot {
                 v = (v << 8) | data[off + i];
             out.nodes[j] = static_cast<NodeId>(v);
         }
+        out.pinned_symbols.clear();
+        size_t off = 12 + count * 4;
+        if (len == off) return true;  // Backward-compatible node-only snapshot.
+        if (len < off + 4) return false;
+        uint32_t pin_count = 0;
+        for (int i = 3; i >= 0; --i)
+            pin_count = (pin_count << 8) | data[off + i];
+        off += 4;
+        if (len < off + pin_count * 8) return false;
+        out.pinned_symbols.reserve(pin_count);
+        for (uint32_t j = 0; j < pin_count; ++j) {
+            uint32_t sym = 0;
+            for (int i = 3; i >= 0; --i)
+                sym = (sym << 8) | data[off + i];
+            off += 4;
+            uint32_t node = 0;
+            for (int i = 3; i >= 0; --i)
+                node = (node << 8) | data[off + i];
+            off += 4;
+            out.pinned_symbols.emplace_back(static_cast<SymbolId>(sym),
+                                            static_cast<NodeId>(node));
+        }
         return true;
     }
 };
@@ -97,6 +137,9 @@ public:
 
     /// Coordinator: 노드 제거 제안 → 합의 후 전체 적용
     virtual bool propose_remove(NodeId node) = 0;
+
+    /// Coordinator: symbol owner pin proposal after a committed partial move.
+    virtual bool propose_pin(SymbolId symbol, NodeId node) = 0;
 
     /// Follower: 수신한 ring update 적용
     virtual bool apply_update(const uint8_t* data, size_t len) = 0;
@@ -156,6 +199,14 @@ public:
         return broadcast_ring();
     }
 
+    bool propose_pin(SymbolId symbol, NodeId node) override {
+        {
+            std::unique_lock lock(router_mu_);
+            router_.pin_symbol(symbol, node);
+        }
+        return broadcast_ring();
+    }
+
     // ----------------------------------------------------------------
     // Follower: apply received update
     // ----------------------------------------------------------------
@@ -183,6 +234,19 @@ public:
         for (auto id : snap.nodes) {
             router_.add_node(id);  // 이미 있으면 내부에서 무시
         }
+        for (const auto& [symbol, node] : router_.pinned_symbols()) {
+            bool found = false;
+            for (const auto& [snap_symbol, snap_node] : snap.pinned_symbols) {
+                if (snap_symbol == symbol && snap_node == node) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) router_.unpin_symbol(symbol);
+        }
+        for (const auto& [symbol, node] : snap.pinned_symbols) {
+            router_.pin_symbol(symbol, node);
+        }
 
         return true;
     }
@@ -199,6 +263,9 @@ private:
         {
             std::shared_lock lock(router_mu_);
             snap.nodes = router_.all_nodes();
+            for (const auto& [symbol, node] : router_.pinned_symbols()) {
+                snap.pinned_symbols.emplace_back(symbol, node);
+            }
         }
         auto payload = snap.serialize();
 

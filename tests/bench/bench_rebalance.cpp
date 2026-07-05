@@ -403,12 +403,21 @@ bool trigger_rebalance(const Config& cfg, const std::string& action, int node_id
 
 bool wait_rebalance_done(const Config& cfg, int timeout_sec) {
     auto deadline = Clock::now() + std::chrono::seconds(timeout_sec);
+    std::string last_status;
     while (Clock::now() < deadline) {
         auto status = get_rebalance_status(cfg);
-        if (status.find("\"IDLE\"") != std::string::npos)
-            return rebalance_status_succeeded(status);
+        if (!status.empty()) last_status = status;
+        if (status.find("\"IDLE\"") != std::string::npos) {
+            bool ok = rebalance_status_succeeded(status);
+            if (!ok)
+                std::cerr << "  WARNING: Rebalance completed with failed moves: "
+                          << status << "\n";
+            return ok;
+        }
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+    if (!last_status.empty())
+        std::cerr << "  WARNING: Last rebalance status: " << last_status << "\n";
     return false;
 }
 

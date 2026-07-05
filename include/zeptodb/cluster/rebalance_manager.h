@@ -99,6 +99,9 @@ public:
     /// Current status snapshot.
     RebalanceStatus status() const;
 
+    /// Current owner for a symbol according to the router used by rebalance.
+    NodeId current_owner(SymbolId symbol) const { return router_.route(symbol); }
+
     /// Current state.
     RebalanceState state() const { return state_.load(std::memory_order_acquire); }
 
