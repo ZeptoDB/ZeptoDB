@@ -17,7 +17,7 @@ Use the SQL path below when you want to validate the live time-series engine fir
 ### Option A: Docker (recommended)
 
 ```bash
-docker run -p 8123:8123 -p 8815:8815 zeptodb/zeptodb:0.0.1 --demo
+docker run -p 8123:8123 -p 8815:8815 zeptodb/zeptodb:0.1.6 --demo
 ```
 
 The `--demo` flag preloads sample trade/quote data so you can query immediately.

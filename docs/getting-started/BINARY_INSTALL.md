@@ -78,18 +78,18 @@ If the output is empty, all dependencies are satisfied.
 ### 1. Download
 
 ```bash
-# Latest release — amd64
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-linux-amd64-0.0.1.tar.gz
+# Current release — amd64
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.6/zeptodb-linux-amd64-0.1.6.tar.gz
 
-# Latest release — arm64 (Graviton)
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-linux-arm64-0.0.1.tar.gz
+# Current release — arm64 (Graviton)
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.6/zeptodb-linux-arm64-0.1.6.tar.gz
 ```
 
 ### 2. Extract
 
 ```bash
-tar xzf zeptodb-linux-amd64-0.0.1.tar.gz
-cd zeptodb-linux-amd64-0.0.1/
+tar xzf zeptodb-linux-amd64-0.1.6.tar.gz
+cd zeptodb-linux-amd64-0.1.6/
 ```
 
 ### 3. Included Binaries

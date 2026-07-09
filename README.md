@@ -103,7 +103,7 @@ New to the project? Start with the website:
 |--------|---------|
 | **Binary** | Download from [GitHub Releases](https://github.com/ZeptoDB/ZeptoDB/releases) |
 | **Homebrew** | `brew install ZeptoDB/tap/zeptodb` |
-| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.0.1` |
+| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.1.6` |
 | **PyPI** | `pip install zeptodb` |
 | **Source** | [Build instructions below](#build-from-source) |
 
@@ -111,12 +111,12 @@ New to the project? Start with the website:
 
 ```bash
 # amd64
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-linux-amd64-0.0.1.tar.gz
-tar xzf zeptodb-linux-amd64-0.0.1.tar.gz
-./zeptodb-linux-amd64-0.0.1/zepto_http_server --port 8123
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.6/zeptodb-linux-amd64-0.1.6.tar.gz
+tar xzf zeptodb-linux-amd64-0.1.6.tar.gz
+./zeptodb-linux-amd64-0.1.6/zepto_http_server --port 8123
 
 # arm64 (AWS Graviton)
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-linux-arm64-0.0.1.tar.gz
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.6/zeptodb-linux-arm64-0.1.6.tar.gz
 ```
 
 > **Note:** Prebuilt binaries require runtime libraries (LLVM 19, Arrow, etc.). See the [Binary Installation Guide](docs/getting-started/BINARY_INSTALL.md) for prerequisites and troubleshooting.
@@ -124,7 +124,7 @@ curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/latest/download/zeptodb-lin
 ### Docker
 
 ```bash
-docker run -p 8123:8123 zeptodb/zeptodb:0.0.1
+docker run -p 8123:8123 zeptodb/zeptodb:0.1.6
 
 # Insert data
 curl -X POST http://localhost:8123/ \
