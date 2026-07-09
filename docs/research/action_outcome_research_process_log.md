@@ -3108,3 +3108,72 @@ cmake --build build --target zepto_tests -j$(nproc)
 Promote the ownership row into a catalog/control-plane owned config path, then
 add lease/election semantics with stale epoch rejection across real cluster
 nodes.
+
+## 2026-07-09 - Experiments 022 and 023 closure
+
+### Classification
+
+Experimental runtime path validation for the Physical AI Action-Outcome
+supervisor.
+
+### Goal
+
+Close the two remaining P0 validation questions from devlog 210:
+
+1. Node-replacement shaped ownership handoff and stale-owner fencing.
+2. Commit-ledger sink stress under repeated projection faults and fresh runtime
+   repair passes.
+
+### Work Completed
+
+1. Added Experiment 022.
+   - Node A commits one proposal under a managed SQL ownership lease.
+   - Node B takes over the expired lease with a higher epoch.
+   - A stale node A runtime is fenced to an idle pass.
+   - Restarted node B converges the remaining proposal stream.
+
+2. Added Experiment 023.
+   - Six bounded passes insert 12 total proposals.
+   - Three malformed evidence projection faults are injected.
+   - Fresh runtime objects repair committed state after schema restoration.
+   - Commit, decision, and evidence proposal ids stay unique after every pass.
+
+### Verification Commands
+
+```bash
+ninja -C build -j$(nproc) zepto_tests
+
+./build/tests/zepto_tests \
+  --gtest_filter='ActionOutcomeSqlAdapterTest.WorkerLeaseRollingRestartNodeReplacementFencesStaleOwnerAndConverges:ActionOutcomeSqlAdapterTest.CommitLedgerStressRepairsProjectionFailuresAcrossRestarts' \
+  --gtest_brief=1
+
+./build/tests/zepto_tests \
+  --gtest_filter='ActionOutcomeSqlAdapterTest.*:ActionOutcomeSqlAdapterConfigTest.*' \
+  --gtest_brief=1
+
+cd build && ctest -j$(nproc) -E "Benchmark\.|K8s" \
+  --output-on-failure --timeout 180
+
+./tools/run-full-matrix.sh --stages=8 --force-resync
+
+ZEPTO_S3_TEST_BUCKET=<temporary-bucket> \
+  ./build/tests/zepto_tests --gtest_filter='S3Sink.*' --gtest_brief=1
+```
+
+### Result Summary
+
+| Check | Status |
+| --- | --- |
+| Build | pass |
+| Experiment 022/023 focused regressions | pass, 2/2 |
+| Action-Outcome SQL adapter suite | pass, 14/14 |
+| x86_64 CTest | pass, 1712/1712 |
+| aarch64 stage 8 CTest | pass, 1712/1712 |
+| Live S3 opt-in smoke | pass, 2/2; temporary bucket cleanup verified |
+
+### Remaining Limits
+
+- The SQL lease is a supervisor-specific fencing guard, not consensus.
+- The commit ledger is a supervisor-specific effectively-once sink boundary,
+  not a generic multi-table SQL transaction primitive.
+- Product promotion still needs an explicit GA/operator rollout decision.

@@ -1,10 +1,25 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-05
+Last updated: 2026-07-09
 
 ---
 
 ## Latest
+
+- [x] **P0 Physical AI Action-Outcome supervisor experiment 022/023 closure**
+  (devlog 211) — Added the final focused validation for controlled shadow
+  pilots. Experiment 022 now covers a node-replacement shaped SQL lease handoff:
+  node A commits one proposal, node B takes over the expired lease with a
+  higher epoch, stale node A is fenced to an idle pass, and restarted node B
+  converges the remaining proposal stream. Experiment 023 stress-tests the
+  supervisor-specific commit ledger across six bounded passes, 12 proposals,
+  three malformed evidence projection faults, and fresh runtime repair passes,
+  verifying unique proposal ids in commit, decision, and evidence tables after
+  each pass. The focused regressions pass on x86_64 and aarch64, broad CTest
+  passes with matching 1712/1712 counts, and the live S3 opt-in smoke passes
+  with temporary bucket cleanup verified. The runtime remains experimental and
+  shadow-only: the SQL lease is not consensus, and the commit ledger is not a
+  generic multi-table transaction primitive.
 
 - [x] **P0 Physical AI Action-Outcome supervisor production hardening**
   (devlog 210) — Added SQL catalog-backed adapter config as a durable source
@@ -37,8 +52,8 @@ Last updated: 2026-07-05
   processes a proposal. Devlog 210 extends this with SQL catalog-backed
   config, retry-idempotent evidence summaries, commit marker repair, managed
   SQL leases, admin RBAC/audit/rate-limit coverage, and cross-architecture
-  validation. This remains experimental pending broader operational
-  node-replacement validation.
+  validation. Devlog 211 closes the broader node-replacement and commit-ledger
+  stress validation items for controlled shadow pilots.
 
 - [x] **P0 Physical AI shadow supervisor A/B and durability evidence**
   (devlog 208) — Added Experiment 021 plus a focused SQL adapter durability
@@ -68,8 +83,9 @@ Last updated: 2026-07-05
   persistence, retry-idempotent evidence summaries, and owner id/epoch
   fencing. Devlog 210 extends this with catalog-backed config, managed SQL
   leases, commit marker repair, admin-control hardening, and
-  cross-architecture verification. This remains experimental until broader
-  operational node-replacement validation completes.
+  cross-architecture verification. Devlog 211 closes the broader
+  node-replacement and commit-ledger stress validation items for controlled
+  shadow pilots.
 
 - [x] **P0 Physical AI Action-Outcome supervisor runtime foundation**
   (devlog 206) — Added `ActionOutcomeSupervisorRuntime`, an experimental
@@ -84,8 +100,8 @@ Last updated: 2026-07-05
   worker metrics, plus admin-only status access. Devlogs 207-210 add the
   SQL-backed adapter, durable config, catalog-backed config, sink repair,
   managed SQL leases, admin-control hardening, and cross-architecture
-  verification. This remains experimental until broader operational
-  node-replacement validation completes.
+  verification. Devlog 211 closes the broader node-replacement and
+  commit-ledger stress validation items for controlled shadow pilots.
 
 - [x] **P3 Physical AI edge/fleet worker runtime foundation**
   (devlog 205) — Extended `EdgeFleetConnectorRuntime` with an injected
@@ -821,7 +837,7 @@ Last updated: 2026-07-05
 - [x] **JIT SIMD emit** — `compile_simd()` generates explicit `<4 x i64>` vector IR (256-bit). Vector load/compare, `bitcast <4 x i1>→i4`, cttz mask extraction loop. Scalar tail for remainder (n%4). Reuses existing AST parser — 8 tests (devlog 079)
 
 ## Package Distribution (P2)
-- [x] **Docker Hub official image** — `docker pull zeptodb/zeptodb:0.0.1`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint
+- [x] **Docker Hub official image** — current tagged pulls use `docker pull zeptodb/zeptodb:0.1.6`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint
 - [x] **GitHub Releases + binaries** — Release workflow builds amd64 + arm64 tarballs, creates GitHub Release with download links on tag push
 - [x] **Homebrew Formula** — `homebrew-tap` repo with auto-update workflow triggered on release via repository_dispatch
 

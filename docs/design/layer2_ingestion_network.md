@@ -283,9 +283,10 @@ server-local config persistence, SQL catalog-backed config, retry-idempotent
 evidence summaries, an atomic commit ledger row that repairs partial sink state,
 managed SQL worker leases with heartbeat/expiry, and owner id/epoch fencing.
 Cross-architecture verification now passes with matching x86_64/aarch64 CTest
-coverage. Product promotion still requires a decision on whether the
-commit-ledger sink contract is sufficient or should be replaced by a future
-generic multi-table transaction.
+coverage. Experiments 022 and 023 validate node-replacement fencing and the
+commit-ledger sink stress path for controlled shadow pilots. The commit ledger
+is the accepted supervisor-specific effectively-once boundary for this runtime;
+generic multi-table SQL transactions remain a separate future capability.
 
 Experiment 021 adds the first commercialization evidence for the supervisor
 path. The research replay converts Experiment 013 baseline recommendations into
@@ -340,12 +341,16 @@ robot-control or actuator-enforcement API. It records advisory decisions in
 shadow mode so operators can validate whether historical action-outcome memory
 would have suppressed unsafe or low-evidence actions.
 
-Product promotion still requires broader operational validation of
-catalog-backed config plus SQL lease behavior under real node replacement. The
-current sink is retry-idempotent and repairable via the atomic commit ledger
-row, but not a generic multi-table transaction.
+Experiment 022 validates a node-replacement shaped sequence for the SQL lease:
+node A commits one proposal, node B takes over the expired lease with a higher
+epoch, stale node A is fenced to an idle pass, and restarted node B completes
+the remaining proposal stream. Experiment 023 validates repeated malformed
+projection failures and fresh runtime repair passes through the atomic commit
+ledger. These close the current P0 validation items for controlled shadow
+pilots while keeping the documented limits: the SQL lease is not a consensus
+subsystem, and the commit ledger is not a generic multi-table transaction.
 
-Last updated: 2026-07-05 (Action-Outcome supervisor P0 hardening - devlog 210)
+Last updated: 2026-07-09 (Action-Outcome supervisor experiment 022/023 closure - devlog 211)
 
 ## Table-aware ingest (Stage B — devlog 084)
 

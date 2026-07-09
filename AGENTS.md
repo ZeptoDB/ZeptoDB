@@ -157,3 +157,10 @@ there for Codex:
 - `edge-case-catalog`
 - `layer-patterns`
 - `review-checklist-by-layer`
+- `zeptodb-aws-test-resources`
+- `zeptodb-ci-triage`
+- `zeptodb-production-gate`
+- `zeptodb-public-docs-sync`
+- `zeptodb-release-readiness`
+- `zeptodb-test-orchestrator`
+- `zeptodb-working-tree-safety`

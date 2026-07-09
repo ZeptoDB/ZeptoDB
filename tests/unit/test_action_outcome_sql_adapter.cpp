@@ -7,9 +7,11 @@
 #include "zeptodb/server/action_outcome_sql_adapter.h"
 #include "zeptodb/sql/executor.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <gtest/gtest.h>
 
@@ -71,6 +73,25 @@ protected:
         EXPECT_TRUE(result.ok()) << result.error;
         if (!result.ok() || result.rows.empty() || result.rows[0].empty()) return -1;
         return result.rows[0][0];
+    }
+
+    bool table_keys_are_unique(const std::string& table_name,
+                               const std::string& key_column,
+                               int64_t expected_count) {
+        const auto result = executor_->execute(
+            "SELECT " + key_column + " FROM " + table_name);
+        EXPECT_TRUE(result.ok()) << result.error;
+        if (!result.ok()) return false;
+
+        const size_t rows = std::max(result.rows.size(), result.typed_rows.size());
+        std::unordered_set<std::string> keys;
+        for (size_t row = 0; row < rows; ++row) {
+            keys.insert(string_cell(result, row, 0));
+        }
+        EXPECT_EQ(static_cast<int64_t>(rows), expected_count);
+        EXPECT_EQ(static_cast<int64_t>(keys.size()), expected_count);
+        return static_cast<int64_t>(rows) == expected_count &&
+               static_cast<int64_t>(keys.size()) == expected_count;
     }
 
     std::unique_ptr<ZeptoPipeline> pipeline_;
@@ -733,6 +754,219 @@ TEST_F(ActionOutcomeSqlAdapterTest,
     EXPECT_EQ(int_cell(lease_after_b, 0, 1), 2);
     EXPECT_EQ(table_count(node_a_config.runtime.decision_table), 2);
     EXPECT_EQ(table_count(node_a_config.commit_table), 2);
+}
+
+TEST_F(ActionOutcomeSqlAdapterTest,
+       WorkerLeaseRollingRestartNodeReplacementFencesStaleOwnerAndConverges) {
+    ActionOutcomeSqlAdapterConfig node_a_config;
+    node_a_config.runtime.batch_limit = 1;
+    node_a_config.proposal_query_limit = 3;
+    node_a_config.require_worker_ownership = true;
+    node_a_config.manage_worker_lease = true;
+    node_a_config.worker_owner_id = "node-a";
+    node_a_config.worker_owner_epoch = 1;
+    node_a_config.worker_lease_ttl_ms = 1000;
+    ensure_contract(node_a_config);
+
+    exec_ok(
+        "INSERT INTO physical_ai_action_proposals "
+        "(proposal_id, source_type, proposed_action, source_ts_ns) VALUES "
+        "('p_before_replacement', 'rolling_restart', 'continue_route', 100),"
+        "('p_during_replacement', 'rolling_restart', 'continue_route', 200),"
+        "('p_after_stale_probe', 'rolling_restart', 'continue_route', 300)");
+    exec_ok(
+        "INSERT INTO physical_ai_action_history "
+        "(action, outcome_score, source_ts_ns) VALUES "
+        "('continue_route', 10, 10)");
+
+    std::string error;
+    {
+        ActionOutcomeSupervisorRuntime node_a;
+        ASSERT_TRUE(node_a.setWorkerHooks(
+            zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                *executor_, node_a_config),
+            &error)) << error;
+        ASSERT_TRUE(node_a.configure(node_a_config.runtime, &error)) << error;
+        ASSERT_TRUE(node_a.start(&error)) << error;
+        ASSERT_TRUE(node_a.runOnce(&error)) << error;
+        EXPECT_EQ(node_a.snapshot().last_pass.processed_count, 1u);
+        ASSERT_TRUE(node_a.stop(&error)) << error;
+    }
+    EXPECT_EQ(table_count(node_a_config.commit_table), 1);
+
+    exec_ok(
+        "UPDATE physical_ai_supervisor_ownership "
+        "SET lease_expires_at_ns = 1, heartbeat_ts_ns = 1");
+
+    ActionOutcomeSqlAdapterConfig node_b_config = node_a_config;
+    node_b_config.worker_owner_id = "node-b";
+    node_b_config.worker_owner_epoch = 1;
+    node_b_config.worker_lease_ttl_ms = 1000;
+    {
+        ActionOutcomeSupervisorRuntime node_b;
+        ASSERT_TRUE(node_b.setWorkerHooks(
+            zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                *executor_, node_b_config),
+            &error)) << error;
+        ASSERT_TRUE(node_b.configure(node_b_config.runtime, &error)) << error;
+        ASSERT_TRUE(node_b.start(&error)) << error;
+        ASSERT_TRUE(node_b.runOnce(&error)) << error;
+
+        const auto snap = node_b.snapshot();
+        EXPECT_EQ(snap.last_pass.duplicate_count, 1u);
+        EXPECT_EQ(snap.last_pass.processed_count, 1u);
+        ASSERT_TRUE(node_b.stop(&error)) << error;
+    }
+
+    {
+        ActionOutcomeSupervisorRuntime stale_node_a;
+        ASSERT_TRUE(stale_node_a.setWorkerHooks(
+            zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                *executor_, node_a_config),
+            &error)) << error;
+        ASSERT_TRUE(stale_node_a.configure(node_a_config.runtime, &error)) << error;
+        ASSERT_TRUE(stale_node_a.start(&error)) << error;
+        ASSERT_TRUE(stale_node_a.runOnce(&error)) << error;
+
+        const auto snap = stale_node_a.snapshot();
+        EXPECT_EQ(snap.last_pass.batch_proposals, 0u);
+        EXPECT_EQ(snap.last_pass.processed_count, 0u);
+        ASSERT_TRUE(stale_node_a.stop(&error)) << error;
+    }
+    EXPECT_EQ(table_count(node_a_config.commit_table), 2);
+
+    {
+        ActionOutcomeSupervisorRuntime restarted_node_b;
+        ASSERT_TRUE(restarted_node_b.setWorkerHooks(
+            zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                *executor_, node_b_config),
+            &error)) << error;
+        ASSERT_TRUE(restarted_node_b.configure(node_b_config.runtime, &error))
+            << error;
+        ASSERT_TRUE(restarted_node_b.start(&error)) << error;
+        ASSERT_TRUE(restarted_node_b.runOnce(&error)) << error;
+
+        const auto snap = restarted_node_b.snapshot();
+        EXPECT_GE(snap.last_pass.duplicate_count, 1u);
+        EXPECT_EQ(snap.last_pass.processed_count, 1u);
+        ASSERT_TRUE(restarted_node_b.stop(&error)) << error;
+    }
+
+    const auto ownership = executor_->execute(
+        "SELECT owner_id, owner_epoch FROM physical_ai_supervisor_ownership");
+    ASSERT_TRUE(ownership.ok()) << ownership.error;
+    ASSERT_EQ(ownership.rows.size(), 1u);
+    EXPECT_EQ(string_cell(ownership, 0, 0), "node-b");
+    EXPECT_EQ(int_cell(ownership, 0, 1), 2);
+    EXPECT_EQ(table_count(node_a_config.runtime.decision_table), 3);
+    EXPECT_EQ(table_count(node_a_config.runtime.evidence_table), 3);
+    EXPECT_EQ(table_count(node_a_config.commit_table), 3);
+    EXPECT_TRUE(table_keys_are_unique(
+        node_a_config.commit_table,
+        node_a_config.commit_proposal_id_column,
+        3));
+}
+
+TEST_F(ActionOutcomeSqlAdapterTest,
+       CommitLedgerStressRepairsProjectionFailuresAcrossRestarts) {
+    ActionOutcomeSqlAdapterConfig config;
+    config.runtime.batch_limit = 2;
+    config.runtime.max_sink_errors_per_pass = 1;
+    config.proposal_query_limit = 16;
+    ensure_contract(config);
+
+    exec_ok(
+        "INSERT INTO physical_ai_action_history "
+        "(action, outcome_score, source_ts_ns) VALUES "
+        "('continue_route', 10, 10),"
+        "('rollback', -10, 20)");
+
+    std::string error;
+    int64_t expected_total = 0;
+    for (int pass = 0; pass < 6; ++pass) {
+        const int first = pass * 2;
+        const int second = first + 1;
+        exec_ok(
+            "INSERT INTO physical_ai_action_proposals "
+            "(proposal_id, source_type, proposed_action, source_ts_ns) VALUES "
+            "('stress_p" + std::to_string(first) +
+            "', 'commit_ledger_stress', 'continue_route', " +
+            std::to_string(first) + "),"
+            "('stress_p" + std::to_string(second) +
+            "', 'commit_ledger_stress', 'rollback', " +
+            std::to_string(second) + ")");
+        expected_total += 2;
+
+        if (pass % 2 == 1) {
+            exec_ok("DROP TABLE physical_ai_supervision_evidence");
+            exec_ok(
+                "CREATE TABLE physical_ai_supervision_evidence "
+                "(proposal_id STRING)");
+            {
+                ActionOutcomeSupervisorRuntime faulted;
+                ASSERT_TRUE(faulted.setWorkerHooks(
+                    zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                        *executor_, config),
+                    &error)) << error;
+                ASSERT_TRUE(faulted.configure(config.runtime, &error)) << error;
+                ASSERT_TRUE(faulted.start(&error)) << error;
+                EXPECT_FALSE(faulted.runOnce(&error));
+                EXPECT_NE(error.find("insert evidence summary"),
+                          std::string::npos);
+                ASSERT_TRUE(faulted.stop(&error)) << error;
+            }
+
+            exec_ok("DROP TABLE physical_ai_supervision_evidence");
+            exec_ok(
+                "CREATE TABLE physical_ai_supervision_evidence "
+                "(proposal_id STRING, evidence_count INT64, reason STRING, "
+                "written_ts_ns TIMESTAMP_NS)");
+            {
+                ActionOutcomeSupervisorRuntime repaired;
+                ASSERT_TRUE(repaired.setWorkerHooks(
+                    zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                        *executor_, config),
+                    &error)) << error;
+                ASSERT_TRUE(repaired.configure(config.runtime, &error)) << error;
+                ASSERT_TRUE(repaired.start(&error)) << error;
+                ASSERT_TRUE(repaired.runOnce(&error)) << error;
+
+                const auto snap = repaired.snapshot();
+                EXPECT_GE(snap.last_pass.duplicate_count, 1u);
+                EXPECT_GT(snap.last_pass.processed_count, 0u);
+                ASSERT_TRUE(repaired.stop(&error)) << error;
+            }
+        } else {
+            ActionOutcomeSupervisorRuntime runtime;
+            ASSERT_TRUE(runtime.setWorkerHooks(
+                zeptodb::server::makeActionOutcomeSqlRuntimeHooks(
+                    *executor_, config),
+                &error)) << error;
+            ASSERT_TRUE(runtime.configure(config.runtime, &error)) << error;
+            ASSERT_TRUE(runtime.start(&error)) << error;
+            ASSERT_TRUE(runtime.runOnce(&error)) << error;
+
+            const auto snap = runtime.snapshot();
+            EXPECT_EQ(snap.last_pass.processed_count, 2u);
+            ASSERT_TRUE(runtime.stop(&error)) << error;
+        }
+
+        EXPECT_EQ(table_count(config.commit_table), expected_total);
+        EXPECT_EQ(table_count(config.runtime.decision_table), expected_total);
+        EXPECT_EQ(table_count(config.runtime.evidence_table), expected_total);
+        EXPECT_TRUE(table_keys_are_unique(
+            config.commit_table,
+            config.commit_proposal_id_column,
+            expected_total));
+        EXPECT_TRUE(table_keys_are_unique(
+            config.runtime.decision_table,
+            config.decision_proposal_id_column,
+            expected_total));
+        EXPECT_TRUE(table_keys_are_unique(
+            config.runtime.evidence_table,
+            config.evidence_proposal_id_column,
+            expected_total));
+    }
 }
 
 TEST(ActionOutcomeSqlAdapterConfigTest, RejectsUnsafeIdentifiersAndLimits) {
