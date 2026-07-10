@@ -25,8 +25,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: graviton-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: graviton-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):') && github.sha || 'active' }}
+  cancel-in-progress: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
 
 jobs:
   build-and-test:

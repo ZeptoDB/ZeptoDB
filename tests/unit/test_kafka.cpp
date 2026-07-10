@@ -432,20 +432,20 @@ TEST(KafkaConsumerTest, UnknownTableDropsMessages) {
 }
 
 // ============================================================================
-// Disabled perf harness — cross-connector parity with OpcUaPerf (devlog 110)
+// CI-safe perf smoke — cross-connector parity with OpcUaPerf (devlog 110)
 // ============================================================================
-// Run with --gtest_also_run_disabled_tests. Same shape as
-// OpcUaPerf.DISABLED_SingleThreadHotPath so numbers are directly
-// comparable across Kafka / MQTT / OPC-UA. BACKLOG P9 #2t.
+// Same shape as OpcUaPerf.SingleThreadHotPath so numbers are directly
+// comparable across Kafka / MQTT / OPC-UA without exceeding TickPlant capacity.
 // ============================================================================
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <vector>
 
-TEST(KafkaPerf, DISABLED_SingleThreadHotPath) {
+TEST(KafkaPerf, SingleThreadHotPath) {
     constexpr int kPool  = 500;
-    constexpr int kCalls = 1'000'000;
+    constexpr int kCalls = 50'000;
 
     KafkaConfig cfg;
     cfg.topic                 = "perf";
@@ -465,59 +465,49 @@ TEST(KafkaPerf, DISABLED_SingleThreadHotPath) {
     zeptodb::core::ZeptoPipeline pipeline;
     consumer.set_pipeline(&pipeline);
 
-    auto t0 = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
     for (int i = 0; i < kCalls; ++i) {
         const auto& p = payloads[i % kPool];
         consumer.on_message(p.data(), p.size());
     }
-    auto t1 = std::chrono::steady_clock::now();
-    auto wall_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    double tps = static_cast<double>(kCalls) * 1e6 / static_cast<double>(wall_us);
-    auto s1 = consumer.stats();
+    auto end_time = std::chrono::steady_clock::now();
+    auto wall_us = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::microseconds>(
+                                            end_time - start_time).count());
+    double ticks_per_second = static_cast<double>(kCalls) * 1e6 / static_cast<double>(wall_us);
+    auto stats_after_throughput = consumer.stats();
 
-    constexpr int kLatSamples = 100'000;
+    constexpr int kLatSamples = 10'000;
     std::vector<int64_t> samples;
     samples.reserve(kLatSamples);
     for (int i = 0; i < kLatSamples; ++i) {
         const auto& p = payloads[i % kPool];
-        auto a = std::chrono::steady_clock::now();
+        auto sample_start = std::chrono::steady_clock::now();
         consumer.on_message(p.data(), p.size());
-        auto b = std::chrono::steady_clock::now();
+        auto sample_end = std::chrono::steady_clock::now();
         samples.push_back(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                sample_end - sample_start).count());
     }
     std::sort(samples.begin(), samples.end());
     auto p50 = samples[samples.size() / 2];
     auto p99 = samples[samples.size() * 99 / 100];
+    auto stats_after_latency = consumer.stats();
 
     std::fprintf(stderr,
-        "[KafkaPerf] pass1 wall=%lld us  throughput=%.0f ticks/s  "
-        "ok=%llu failures=%llu  | pass2 p50=%lld ns  p99=%lld ns\n",
-        static_cast<long long>(wall_us), tps,
-        static_cast<unsigned long long>(s1.route_local),
-        static_cast<unsigned long long>(s1.ingest_failures),
+        "[KafkaPerf] wall=%lld us  throughput=%.0f ticks/s  "
+        "ok=%llu failures=%llu  | p50=%lld ns  p99=%lld ns\n",
+        static_cast<long long>(wall_us), ticks_per_second,
+        static_cast<unsigned long long>(stats_after_latency.route_local),
+        static_cast<unsigned long long>(stats_after_latency.ingest_failures),
         static_cast<long long>(p50), static_cast<long long>(p99));
 
-    // Pass 3 — fresh pipeline, 50K calls stays below TickPlant capacity
-    // → measures the pure cheap path (no store_tick fallback).
-    {
-        zeptodb::core::ZeptoPipeline fresh;
-        KafkaConsumer c2(cfg);
-        c2.set_pipeline(&fresh);
-        constexpr int kFast = 50'000;
-        auto a = std::chrono::steady_clock::now();
-        for (int i = 0; i < kFast; ++i) {
-            const auto& p = payloads[i % kPool];
-            c2.on_message(p.data(), p.size());
-        }
-        auto b = std::chrono::steady_clock::now();
-        auto us = std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
-        std::fprintf(stderr,
-            "[KafkaPerf] pass3 (cheap-path only) wall=%lld us  "
-            "throughput=%.0f ticks/s  ok=%llu\n",
-            static_cast<long long>(us),
-            static_cast<double>(kFast) * 1e6 / static_cast<double>(us),
-            static_cast<unsigned long long>(c2.stats().route_local));
-    }
-    SUCCEED();
+    EXPECT_EQ(stats_after_throughput.messages_consumed, static_cast<uint64_t>(kCalls));
+    EXPECT_EQ(stats_after_throughput.route_local, static_cast<uint64_t>(kCalls));
+    EXPECT_EQ(stats_after_throughput.decode_errors, 0u);
+    EXPECT_EQ(stats_after_throughput.ingest_failures, 0u);
+    EXPECT_EQ(stats_after_latency.messages_consumed,
+              static_cast<uint64_t>(kCalls + kLatSamples));
+    EXPECT_EQ(stats_after_latency.route_local, static_cast<uint64_t>(kCalls + kLatSamples));
+    EXPECT_EQ(stats_after_latency.decode_errors, 0u);
+    EXPECT_EQ(stats_after_latency.ingest_failures, 0u);
 }

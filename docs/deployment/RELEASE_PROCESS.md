@@ -45,28 +45,31 @@ package version aligned.
 The existing `Release` workflow still owns publishing:
 
 - Linux amd64 and arm64 binary archives.
-- Docker image tags `zeptodb/zeptodb:X.Y.Z` and `zeptodb/zeptodb:latest`.
+- Multi-arch Docker image tags `zeptodb/zeptodb:X.Y.Z` and `zeptodb/zeptodb:latest`.
 - GitHub Release notes and downloadable archives.
 - PyPI package publishing through trusted publishing.
 - Homebrew tap update dispatch.
 
-The workflow can be triggered either by a `v*` tag push or manually through
-`workflow_dispatch` using a `v*` tag ref.
+The full release workflow is triggered by a `v*` tag push. The workflow can
+also be run manually with `workflow_dispatch` plus a `version` input to
+republish Docker images and manifests for an existing release without creating
+a new GitHub Release, PyPI package, Homebrew dispatch, or tag.
 
 Release binary builds use ccache with per-architecture restore keys so repeated
 tag builds can reuse unchanged C++ compilation results. Docker release builds
 use the repository `.dockerignore` to keep local build directories, web build
 output, docs, Git metadata, and benchmark artifacts out of the build context.
-The Docker image path is split into a cache-warming job and a gated publish
-job: cache warming runs in parallel with the amd64/arm64 binary matrix, while
-the Docker Hub push still waits for successful binary artifacts. This preserves
-release gating while removing the previous binary-build-then-Docker-build
-serial bottleneck.
+The Docker image path is split into native amd64/arm64 cache-warming jobs,
+native per-architecture publish jobs, and a manifest job that composes the
+public multi-arch tags. The GitHub Release job waits for both the binary matrix
+and the Docker manifest, preserving release gating while avoiding an
+amd64-only Docker artifact.
 
 The `Graviton ARM64 Build & Test` workflow is not run for release-bot
 `chore(release): vX.Y.Z` version bump commits. Those commits are validated by
 the tag-triggered `Release` binary matrix, which builds both amd64 and arm64
-artifacts.
+artifacts. Release-version commits use a separate Graviton concurrency key so
+they do not cancel the main-merge Graviton run that preceded the version bump.
 
 ## Repository Settings
 
