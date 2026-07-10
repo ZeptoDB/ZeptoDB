@@ -3,8 +3,8 @@
 ## Option 1: Docker (recommended for getting started)
 
 ```bash
-docker pull zeptodb/zeptodb:0.1.6
-docker run -p 8123:8123 zeptodb/zeptodb:0.1.6
+docker pull zeptodb/zeptodb:0.1.7
+docker run -p 8123:8123 zeptodb/zeptodb:0.1.7
 ```
 
 Open [http://localhost:8123/ui/](http://localhost:8123/ui/) for the Web UI.
@@ -18,12 +18,12 @@ Download from [GitHub Releases](https://github.com/ZeptoDB/ZeptoDB/releases):
 
 ```bash
 # x86_64
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.6/zeptodb-linux-amd64-0.1.6.tar.gz
-tar xzf zeptodb-linux-amd64-0.1.6.tar.gz
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-linux-amd64-0.1.7.tar.gz
+tar xzf zeptodb-linux-amd64-0.1.7.tar.gz
 
 # arm64 (Graviton, Apple Silicon Linux VMs)
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.6/zeptodb-linux-arm64-0.1.6.tar.gz
-tar xzf zeptodb-linux-arm64-0.1.6.tar.gz
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-linux-arm64-0.1.7.tar.gz
+tar xzf zeptodb-linux-arm64-0.1.7.tar.gz
 
 # Run
 ./zeptodb-linux-*/zepto_http_server --port 8123 --no-auth
