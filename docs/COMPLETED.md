@@ -1,10 +1,35 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ---
 
 ## Latest
+
+- [x] **P3 Physical AI edge/fleet production hardening**
+  (devlog 213) — Added server-local SQL/HTTP adapter config persistence,
+  checkpoint-backed ACK/cursor restart reload coverage, idempotent sink docs,
+  explicit `outbox_query_limit`/`max_outbox_bytes` SQL load bounds with
+  ACK-ledger paging,
+  `max_failures_per_pass` and `retry_backoff_ms` runtime controls, and
+  mutating admin audit/rate-limit regression coverage. The connector remains
+  experimental; focused tests pass 33/33, x86_64/aarch64 CTest each report
+  0 failed out of 1724 run tests, and live S3 opt-in smoke passes 2/2 with
+  temporary bucket cleanup verified. Remaining promotion evidence is
+  long-running server-runtime soak/fault testing and node-replacement
+  validation over live edge/fleet tables.
+
+- [x] **P3 Physical AI edge/fleet built-in SQL/HTTP adapter**
+  (devlog 212) — Added `EdgeFleetSqlHttpAdapterConfig`, local Experiment 016
+  contract table bootstrap, SQL/HTTP edge outbox loading, fleet
+  inbox/final/ACK/telemetry sinks, and admin support through
+  `POST /admin/edge-fleet-connector` with `sql_adapter_enabled` and
+  `sql_adapter_create_tables`. Focused tests cover default table creation,
+  decision/retrieval/suppression materialization, duplicate skip on a second
+  pass, invalid identifier and remote-bootstrap rejection, plus an HTTP admin
+  adapter-install smoke test. The local x86_64 CTest gate and aarch64 Graviton
+  SSH CTest gate both report 0 failed out of 1717 counted tests. This closes
+  the built-in adapter gap while the connector remains experimental.
 
 - [x] **P0 Physical AI Action-Outcome supervisor experiment 022/023 closure**
   (devlog 211) — Added the final focused validation for controlled shadow

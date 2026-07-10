@@ -48,6 +48,7 @@ add_executable(zepto_tests
     unit/test_action_outcome_sql_adapter.cpp
     unit/test_action_outcome_supervisor_runtime.cpp
     unit/test_edge_fleet_feed_connector.cpp
+    unit/test_edge_fleet_sql_http_adapter.cpp
     unit/test_feed_table_id.cpp
     unit/test_table_acl_ddl.cpp
     unit/test_distributed_insert.cpp

@@ -58,7 +58,7 @@ bool EdgeFleetConnectorRuntime::validateConfig(
         return false;
     }
     if (!EdgeFleetFeedConnector::isValidConfig(config.feed)) {
-        if (error) *error = "batch_limit, max_inflight, and max_retries_per_event must be positive";
+        if (error) *error = "batch_limit, max_inflight, max_retries_per_event, and max_failures_per_pass must be positive";
         return false;
     }
     if (config.worker_poll_interval_ms == 0) {
@@ -286,6 +286,8 @@ EdgeFleetConnectorRuntimeSnapshot EdgeFleetConnectorRuntime::snapshot() const {
     snap.batch_limit = config_.feed.batch_limit;
     snap.max_inflight = config_.feed.max_inflight;
     snap.max_retries_per_event = config_.feed.max_retries_per_event;
+    snap.max_failures_per_pass = config_.feed.max_failures_per_pass;
+    snap.retry_backoff_ms = config_.feed.retry_backoff_ms;
     snap.allow_late_events = config_.feed.allow_late_events;
     snap.worker_enabled = config_.worker_enabled;
     snap.worker_hooks_configured = workerHooksConfiguredLocked();

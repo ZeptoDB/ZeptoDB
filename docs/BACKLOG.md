@@ -1,18 +1,38 @@
 # ZeptoDB Backlog
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full C++ gate:
-> x86_64 1712/1712 passed and aarch64 1712/1712 passed
+> x86_64 and aarch64 each reported 0 failed out of 1724 run tests
 > (`ctest -E "Benchmark\.|K8s"`); both skipped the live S3 opt-in test and
-> left 3 perf tests disabled. Live S3 opt-in smoke passed separately, 2/2.
+> left 3 perf tests disabled. Latest live S3 opt-in smoke passed separately,
+> 2/2, with temporary bucket cleanup verified.
 >
-> Last cleaned: 2026-07-09
+> Last cleaned: 2026-07-10
 >
-> Devlog: last `211_action_outcome_supervisor_experiment_022_023.md` -> next `212_*.md`
+> Devlog: last `213_physical_ai_edge_fleet_production_hardening.md` -> next `214_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 Physical AI edge/fleet production hardening** (devlog 213) —
+  added server-local SQL/HTTP adapter config persistence, documented
+  checkpoint-backed ACK/cursor reload, idempotent sink docs, explicit
+  `outbox_query_limit`/`max_outbox_bytes` SQL load bounds with ACK-ledger paging,
+  `max_failures_per_pass` and `retry_backoff_ms` runtime controls, and
+  mutating admin audit/rate-limit regression coverage. The connector remains
+  experimental while long-running server-runtime soak/fault validation and
+  node-replacement evidence remain before promotion.
+- ✅ **P3 Physical AI edge/fleet built-in SQL/HTTP adapter** (devlog 212) —
+  added `EdgeFleetSqlHttpAdapterConfig`, local table bootstrap, SQL/HTTP
+  outbox loading, fleet inbox/final/ACK/telemetry sinks, and
+  `POST /admin/edge-fleet-connector` support for `sql_adapter_enabled` and
+  `sql_adapter_create_tables`. Focused C++ tests cover default table creation,
+  materialization of decision/retrieval/suppression rows, duplicate skip on a
+  second pass, invalid identifiers, remote-bootstrap rejection, and an HTTP
+  admin adapter-install smoke test. The local x86_64 CTest gate and aarch64
+  Graviton SSH CTest gate both report 0 failed out of 1717 counted tests. The
+  connector remains experimental while the remaining hardening moved to
+  devlog 213.
 - ✅ **P0 Physical AI Action-Outcome supervisor experiment 022/023 closure**
   (devlog 211) — added focused SQL-backed regressions for the two remaining
   supervisor validation questions. Experiment 022 validates a node-replacement
@@ -81,10 +101,10 @@
   loop, injected outbox-loader/fleet-sink hooks, manual `runOnce()`, worker
   lifecycle counters, last-pass telemetry, HTTP status fields, Prometheus
   worker metrics, and admin lifecycle tests with installed hooks. This closes
-  the server-owned worker lifecycle gap, while the remaining product-promotion
-  blockers are the concrete built-in SQL/HTTP adapter, persisted connector
-  config, idempotent sink documentation, long-running soak/fault tests, and
-  cross-architecture verification.
+  the server-owned worker lifecycle gap; devlog 212 adds the built-in SQL/HTTP
+  adapter. The remaining product-promotion blockers are persisted connector
+  config, idempotent sink documentation, long-running soak/fault tests,
+  backpressure, and cross-architecture verification.
 - ✅ **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
   added `EdgeFleetConnectorRuntime` and admin endpoints for the experimental
   connector lifecycle: `GET`, `POST`, and `DELETE`
@@ -483,7 +503,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **Persisted operational table placement option** | Devlog 196 validates the experimental runtime control-plane path and Experiment 012 telemetry proof. The next product step is to persist placement in the catalog/DDL layer, e.g. a table option for `hash_by_table`, default table+symbol hashing, or pinned operational tables, instead of relying on an admin-only runtime override. | M |
 | **Productize bounded small-table JOIN policy** | Devlog 195 validates coordinator-local small-table JOIN under a strict row cap. Before promotion, decide whether it stays automatic, becomes a feature flag, or moves behind an optimizer rule with cost checks, and document memory/latency limits for operational/control tables. | M |
 | **Bounded distributed window materialization policy** | Devlog 194 fixes correctness for the validated Action-Outcome window replay shape. Product promotion needs explicit row/memory limits, telemetry for full-data materialization, and fallback/error semantics for large tables. | M |
-| **Built-in Physical AI edge/fleet SQL/HTTP adapter and promotion hardening** | Devlog 205 adds the bounded worker lifecycle and hook contract. Product promotion still needs a built-in SQL/HTTP outbox-loader plus fleet-sink adapter, persisted connector config/catalog metadata, documented idempotent sink requirements, restart/node-replacement tests over real ZeptoDB tables, long-running soak/fault injection, rate/backpressure limits, and cross-architecture verification. | M |
+| **Physical AI edge/fleet promotion validation** | Devlogs 212-213 add the server-owned SQL/HTTP outbox-loader plus fleet-sink adapter, local contract bootstrap, config persistence, checkpoint reload coverage, idempotent sink docs, bounded SQL/backpressure controls, and admin audit/rate-limit coverage. Product promotion still needs long-running server-runtime soak/fault injection and node-replacement validation over live edge/fleet tables before a GA/operator rollout decision. | M |
 | **Productize Physical AI Action-Outcome supervisor** | Devlogs 206-211 add the admin-gated shadow runtime, hook contract, SQL-backed proposal/history/decision/evidence adapter, server-local and SQL catalog-backed durable config, live HTTP restart reinstall regressions, atomic commit-ledger sink repair, managed SQL worker lease/heartbeat with owner id/epoch fencing, admin RBAC/audit/rate-limit coverage, per-pass decision/sink error budgets, a SQL-backed soak/fault harness, matching x86_64/aarch64 CTest verification, node-replacement handoff validation, and commit-ledger stress validation. Product promotion now needs an explicit GA/operator rollout decision; the current design keeps the SQL lease supervisor-specific rather than consensus, and keeps generic multi-table transactions as a separate future SQL capability. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 

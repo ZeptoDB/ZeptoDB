@@ -51,6 +51,8 @@ TEST(EdgeFleetFeedConnectorTest, ConfigDefaultsAndValidation) {
     EXPECT_EQ(config.batch_limit, 128u);
     EXPECT_EQ(config.max_inflight, 128u);
     EXPECT_EQ(config.max_retries_per_event, 1u);
+    EXPECT_EQ(config.max_failures_per_pass, 16u);
+    EXPECT_EQ(config.retry_backoff_ms, 0u);
     EXPECT_TRUE(config.allow_late_events);
 
     config.batch_limit = 0;
@@ -258,6 +260,30 @@ TEST(EdgeFleetFeedConnectorTest, RetriesTransientFailureWithinPass) {
     EXPECT_EQ(pass.acked_count, 1u);
 }
 
+TEST(EdgeFleetFeedConnectorTest, StopsPassWhenFailureBudgetIsExhausted) {
+    EdgeFleetFeedConfig config;
+    config.batch_limit = 4;
+    config.max_inflight = 4;
+    config.max_retries_per_event = 3;
+    config.max_failures_per_pass = 2;
+
+    EdgeFleetFeedConnector connector(
+        config,
+        [](const EdgeFleetFeedEvent&) {
+            return EdgeFleetDeliveryResult::TransientFailure;
+        });
+
+    const auto pass = connector.processOnce({
+        event("e1", 1),
+        event("e2", 2),
+        event("e3", 3),
+    });
+    EXPECT_EQ(pass.attempted_count, 2u);
+    EXPECT_EQ(pass.transient_failure_count, 2u);
+    EXPECT_TRUE(pass.failure_budget_exhausted);
+    EXPECT_EQ(connector.stats().failure_budget_exhausted, 1u);
+}
+
 TEST(EdgeFleetFeedConnectorTest, FormatsPrometheusCounters) {
     EdgeFleetFeedStats stats;
     stats.passes = 2;
@@ -265,6 +291,7 @@ TEST(EdgeFleetFeedConnectorTest, FormatsPrometheusCounters) {
     stats.events_acked = 2;
     stats.ack_boundary_failures = 1;
     stats.max_inflight_observed = 4;
+    stats.failure_budget_exhausted = 1;
 
     const std::string text = EdgeFleetFeedConnector::formatPrometheus(
         "edge\"a", stats);
@@ -276,6 +303,8 @@ TEST(EdgeFleetFeedConnectorTest, FormatsPrometheusCounters) {
               std::string::npos);
     EXPECT_NE(text.find("zepto_edge_fleet_feed_max_inflight_observed{connector=\"edge\\\"a\"} 4"),
               std::string::npos);
+    EXPECT_NE(text.find("zepto_edge_fleet_feed_failure_budget_exhausted_total{connector=\"edge\\\"a\"} 1"),
+              std::string::npos);
 }
 
 TEST(EdgeFleetConnectorRuntimeTest, ConfigureStartStopExposeSnapshotAndMetrics) {
@@ -286,6 +315,8 @@ TEST(EdgeFleetConnectorRuntimeTest, ConfigureStartStopExposeSnapshotAndMetrics) 
     config.feed.batch_limit = 7;
     config.feed.max_inflight = 5;
     config.feed.max_retries_per_event = 2;
+    config.feed.max_failures_per_pass = 3;
+    config.feed.retry_backoff_ms = 1;
 
     EdgeFleetConnectorRuntime runtime;
     std::string error;
@@ -301,6 +332,8 @@ TEST(EdgeFleetConnectorRuntimeTest, ConfigureStartStopExposeSnapshotAndMetrics) 
     EXPECT_EQ(snap.batch_limit, 7u);
     EXPECT_EQ(snap.max_inflight, 5u);
     EXPECT_EQ(snap.max_retries_per_event, 2u);
+    EXPECT_EQ(snap.max_failures_per_pass, 3u);
+    EXPECT_EQ(snap.retry_backoff_ms, 1u);
     EXPECT_EQ(snap.start_total, 1u);
 
     const std::string metrics = runtime.formatPrometheus();
