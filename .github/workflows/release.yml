@@ -4,6 +4,16 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release version to publish Docker images for, with or without leading v.
+        required: false
+        type: string
+      update_latest:
+        description: Also refresh latest and latest-<arch> Docker tags.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -134,10 +144,25 @@ jobs:
           name: ${{ matrix.artifact }}
           path: "*.tar.gz"
 
-  # ── Docker image cache warm-up (amd64 only for now) ──
+  # ── Docker image cache warm-up (native amd64 + arm64) ──
   docker-cache:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && inputs.version != '')
+      }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            dockerfile: deploy/docker/Dockerfile
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: deploy/docker/Dockerfile.arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
 
@@ -147,16 +172,32 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/docker/Dockerfile
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
           push: false
-          cache-from: type=gha,scope=release-docker
-          cache-to: type=gha,mode=max,scope=release-docker
+          cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-docker-${{ matrix.arch }}
 
-  # ── Docker image publish (amd64 only for now) ──
+  # ── Docker image publish (native per-arch images) ──
   docker:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    needs: [build, docker-cache]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && inputs.version != '')
+      }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            dockerfile: deploy/docker/Dockerfile
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: deploy/docker/Dockerfile.arm64
+    runs-on: ${{ matrix.runner }}
+    needs: docker-cache
     steps:
       - uses: actions/checkout@v6
 
@@ -169,23 +210,86 @@ jobs:
 
       - name: Extract version
         id: meta
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          UPDATE_LATEST: ${{ inputs.update_latest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -n "$INPUT_VERSION" ]; then
+            version="${INPUT_VERSION#v}"
+          fi
+
+          {
+            echo "version=$version"
+            echo "tags<<EOF"
+            echo "${IMAGE_NAME}:${version}-${ARCH}"
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$UPDATE_LATEST" = "true" ]; then
+              echo "${IMAGE_NAME}:latest-${ARCH}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/docker/Dockerfile
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-            ${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha,scope=release-docker
-          cache-to: type=gha,mode=max,scope=release-docker
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-docker-${{ matrix.arch }}
+
+  # ── Docker manifest publish (public multi-arch tags) ──
+  docker-manifest:
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && inputs.version != '')
+      }}
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -n "$INPUT_VERSION" ]; then
+            version="${INPUT_VERSION#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish multi-arch manifests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          UPDATE_LATEST: ${{ inputs.update_latest }}
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:${VERSION}" \
+            "${IMAGE_NAME}:${VERSION}-amd64" \
+            "${IMAGE_NAME}:${VERSION}-arm64"
+
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$UPDATE_LATEST" = "true" ]; then
+            docker buildx imagetools create \
+              -t "${IMAGE_NAME}:latest" \
+              "${IMAGE_NAME}:latest-amd64" \
+              "${IMAGE_NAME}:latest-arm64"
+          fi
 
   # ── GitHub Release ──
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [build, docker]
+    needs: [build, docker-manifest]
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -220,6 +324,7 @@ jobs:
 
   # ── PyPI publish ──
   pypi:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: build
     environment: pypi
@@ -242,6 +347,7 @@ jobs:
 
   # ── Update Homebrew Formula ──
   homebrew:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: release
     steps:

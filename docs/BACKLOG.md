@@ -1,19 +1,25 @@
 # ZeptoDB Backlog
 
-> Completed features: [`COMPLETED.md`](COMPLETED.md) | latest full C++ gate:
-> x86_64 and aarch64 each reported 0 failed out of 1724 run tests
-> (`ctest -E "Benchmark\.|K8s"`); both skipped the live S3 opt-in test and
-> left 3 perf tests disabled. Latest live S3 opt-in smoke passed separately,
-> 2/2, with temporary bucket cleanup verified.
+> Completed features: [`COMPLETED.md`](COMPLETED.md) | latest local C++ gate:
+> x86_64 reported 0 failed out of 1727 run tests
+> (`ctest -E "Benchmark\.|K8s"`); the default suite has no disabled tests.
+> Latest live S3 opt-in smoke passed separately, 2/2, with temporary bucket
+> cleanup verified. aarch64 is covered by the Graviton CI gate on PR/main.
 >
 > Last cleaned: 2026-07-10
 >
-> Devlog: last `213_physical_ai_edge_fleet_production_hardening.md` -> next `214_*.md`
+> Devlog: last `214_release_docker_multiarch_and_perf_smoke.md` -> next `215_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **Release Docker multi-arch and perf smoke closure** (devlog 214) —
+  converted Kafka, MQTT, and OPC-UA hot-path perf harnesses into default
+  CI-safe smoke tests; the local CTest gate now runs 1727 tests with no
+  disabled entries. The release workflow now publishes native amd64/arm64
+  Docker images, public multi-arch manifests, and a manual Docker-only
+  republish path for existing versions.
 - ✅ **P3 Physical AI edge/fleet production hardening** (devlog 213) —
   added server-local SQL/HTTP adapter config persistence, documented
   checkpoint-backed ACK/cursor reload, idempotent sink docs, explicit
