@@ -2,7 +2,7 @@
 
 > Single Docker image for all roles: master, data node, flight server, CLI.
 
-**Image:** `zeptodb/zeptodb:0.1.6`
+**Image:** `zeptodb/zeptodb:0.1.7`
 **Size:** ~300MB (distroless runtime)
 **Base:** `gcr.io/distroless/cc-debian12:nonroot`
 
@@ -12,7 +12,7 @@
 
 ```bash
 # Start master node with Web UI
-docker run -p 8123:8123 zeptodb/zeptodb:0.1.6
+docker run -p 8123:8123 zeptodb/zeptodb:0.1.7
 
 # Open Web UI
 open http://localhost:8123/ui/
@@ -36,16 +36,16 @@ curl -X POST http://localhost:8123/ -d "SELECT 1+1 AS result"
 
 ```bash
 # Master node (default)
-docker run -p 8123:8123 zeptodb/zeptodb:0.1.6
+docker run -p 8123:8123 zeptodb/zeptodb:0.1.7
 
 # Data node
-docker run zeptodb/zeptodb:0.1.6 ./zepto_data_node 9000
+docker run zeptodb/zeptodb:0.1.7 ./zepto_data_node 9000
 
 # Arrow Flight server
-docker run -p 8815:8815 zeptodb/zeptodb:0.1.6 ./zepto_flight_server --port 8815
+docker run -p 8815:8815 zeptodb/zeptodb:0.1.7 ./zepto_flight_server --port 8815
 
 # CLI (interactive)
-docker run -it --entrypoint ./zepto-cli zeptodb/zeptodb:0.1.6
+docker run -it --entrypoint ./zepto-cli zeptodb/zeptodb:0.1.7
 ```
 
 ---
@@ -127,7 +127,7 @@ docker run -it --entrypoint ./zepto-cli zeptodb/zeptodb:0.1.6
 
 ```bash
 # Pin to cores 0-3
-docker run --cpuset-cpus="0-3" -p 8123:8123 zeptodb/zeptodb:0.1.6
+docker run --cpuset-cpus="0-3" -p 8123:8123 zeptodb/zeptodb:0.1.7
 ```
 
 ### HugePages
@@ -139,14 +139,14 @@ echo 1024 > /proc/sys/vm/nr_hugepages
 # Container: mount hugetlbfs
 docker run --shm-size=2g \
   -v /dev/hugepages:/dev/hugepages \
-  -p 8123:8123 zeptodb/zeptodb:0.1.6
+  -p 8123:8123 zeptodb/zeptodb:0.1.7
 ```
 
 ### NUMA (multi-socket hosts)
 
 ```bash
 docker run --cpuset-cpus="0-15" --cpuset-mems="0" \
-  -p 8123:8123 zeptodb/zeptodb:0.1.6
+  -p 8123:8123 zeptodb/zeptodb:0.1.7
 ```
 
 ### Persistent Storage
@@ -154,7 +154,7 @@ docker run --cpuset-cpus="0-15" --cpuset-mems="0" \
 ```bash
 docker run -p 8123:8123 \
   -v /data/zeptodb:/opt/zeptodb/data \
-  zeptodb/zeptodb:0.1.6
+  zeptodb/zeptodb:0.1.7
 ```
 
 ### S3 Upload
@@ -164,7 +164,7 @@ docker run -p 8123:8123 \
   -e AWS_ACCESS_KEY_ID=<key> \
   -e AWS_SECRET_ACCESS_KEY=<secret> \
   -e AWS_DEFAULT_REGION=us-east-1 \
-  zeptodb/zeptodb:0.1.6
+  zeptodb/zeptodb:0.1.7
 ```
 
 ---
@@ -175,7 +175,7 @@ docker run -p 8123:8123 \
 version: "3.8"
 services:
   master:
-    image: zeptodb/zeptodb:0.1.6
+    image: zeptodb/zeptodb:0.1.7
     ports:
       - "8123:8123"
     command: >
@@ -185,12 +185,12 @@ services:
       --add-node 2:data2:9001
 
   data1:
-    image: zeptodb/zeptodb:0.1.6
+    image: zeptodb/zeptodb:0.1.7
     entrypoint: ["./zepto_data_node"]
     command: ["9000", "--node-id", "1"]
 
   data2:
-    image: zeptodb/zeptodb:0.1.6
+    image: zeptodb/zeptodb:0.1.7
     entrypoint: ["./zepto_data_node"]
     command: ["9001", "--node-id", "2"]
 ```
