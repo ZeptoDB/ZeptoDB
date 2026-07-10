@@ -474,6 +474,31 @@ protected:
         return result.rows[0][0];
     }
 
+    void insert_edge_outbox_decision(const std::string& event_id,
+                                     uint64_t stream_seq) {
+        const int64_t decision_ts_ns = 1810000001000050000LL;
+        const int64_t ready_ts_ns =
+            1810000001250050000LL + static_cast<int64_t>(stream_seq);
+        const auto inserted = executor_->execute(
+            "INSERT INTO physical_ai_edge_feed_outbox_016 "
+            "(feed_event_id, stream_seq, event_kind, query_id, query_seq, "
+            "candidate_id, suppression_key, selected_action, "
+            "selected_action_code, selected_expected_key, unsafe_action_code, "
+            "recovery_top1_hit, avoids_risky_repeat, risky_action_suppressed, "
+            "suppressed_count, edge_latency_ms, retrieval_rank, quality_label, "
+            "quality_code, score_micros, action_class, action_code, outcome_label, "
+            "raw_value_micros, gated_value_micros, context_score_micros, "
+            "source_edge_node_id, decision_ts_ns, ready_ts_ns, timestamp) VALUES ('" +
+            event_id + "', " + std::to_string(stream_seq) +
+            ", 'decision', 'http_edge_q', 7, '', '', 'reroute_zone', 9, "
+            "'http_edge_q|reroute_zone', 2, 1, 1, 1, 2, 13, 0, '', 0, 0, "
+            "'', 0, '', 0, 0, 0, 1, " +
+            std::to_string(decision_ts_ns) + ", " +
+            std::to_string(ready_ts_ns) + ", " +
+            std::to_string(ready_ts_ns) + ")");
+        ASSERT_TRUE(inserted.ok()) << inserted.error;
+    }
+
     uint16_t test_port_ = 0;
 
     std::unique_ptr<ZeptoPipeline>             pipeline_;
@@ -646,6 +671,120 @@ TEST_F(MetricsProviderTest, EdgeFleetConnectorAdminStartsWorkerWhenHooksInstalle
     EXPECT_GE(delivered.size(), 2u);
 }
 
+TEST_F(MetricsProviderTest, EdgeFleetConnectorAdminInstallsSqlAdapter) {
+    pipeline_->start();
+
+    const auto configure = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"test-edge-sql-worker","enabled":false,"worker_enabled":true,"worker_poll_interval_ms":1,"batch_limit":1,"max_inflight":1,"sql_adapter_enabled":true,"sql_adapter_create_tables":true})");
+    ASSERT_EQ(configure.status, 200) << configure.body;
+    EXPECT_NE(configure.body.find("\"configured\":true"), std::string::npos);
+    EXPECT_NE(configure.body.find("\"enabled\":false"), std::string::npos);
+    EXPECT_NE(configure.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+
+    EXPECT_TRUE(pipeline_->schema_registry().exists(
+        "physical_ai_edge_feed_outbox_016"));
+    EXPECT_TRUE(pipeline_->schema_registry().exists(
+        "physical_ai_fleet_feed_ack_016"));
+    EXPECT_TRUE(pipeline_->schema_registry().exists(
+        "physical_ai_fleet_feed_inbox_016"));
+
+    const auto del = http_request(test_port_, "DELETE", "/admin/edge-fleet-connector");
+    EXPECT_EQ(del.status, 200);
+}
+
+TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsEmptyConfigPersistencePath) {
+    std::string error;
+    EXPECT_FALSE(server_->set_edge_fleet_connector_config_persistence(
+        "", &error));
+    EXPECT_NE(error.find("path is required"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest,
+       EdgeFleetConnectorSqlAdapterConfigAndCheckpointReloadAfterHttpRestart) {
+    pipeline_->start();
+    const auto config_path =
+        zepto_test_util::unique_test_path("edge_fleet_connector_config");
+    const auto checkpoint_path =
+        zepto_test_util::unique_test_path("edge_fleet_connector_checkpoint");
+    std::error_code cleanup_ec;
+    std::filesystem::remove(config_path, cleanup_ec);
+    std::filesystem::remove(checkpoint_path, cleanup_ec);
+
+    std::string error;
+    ASSERT_TRUE(server_->set_edge_fleet_connector_config_persistence(
+        config_path.string(), &error)) << error;
+
+    const std::string body =
+        std::string(R"({"name":"durable-edge-sql-worker","enabled":true,)")
+        + R"("worker_enabled":true,"worker_poll_interval_ms":1,)"
+        + R"("batch_limit":1,"max_inflight":1,"max_failures_per_pass":2,)"
+        + R"("retry_backoff_ms":0,"sql_adapter_enabled":true,)"
+        + R"("sql_adapter_create_tables":true,"outbox_query_limit":1,)"
+        + R"("max_outbox_bytes":1048576,"checkpoint_path":")"
+        + checkpoint_path.string() + R"("})";
+    const auto configure = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        body);
+    ASSERT_EQ(configure.status, 200) << configure.body;
+    EXPECT_NE(configure.body.find("\"worker_hooks_configured\":true"),
+              std::string::npos);
+    EXPECT_TRUE(std::filesystem::exists(config_path));
+
+    insert_edge_outbox_decision("http_edge_restart_e1", 1);
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/edge-fleet-connector");
+        return status.find("\"acked_count\":1") != std::string::npos;
+    }));
+    EXPECT_EQ(table_count("physical_ai_fleet_feed_ack_016"), 1);
+    EXPECT_EQ(table_count("physical_ai_fleet_feed_inbox_016"), 1);
+
+    server_->stop();
+    EXPECT_TRUE(std::filesystem::exists(checkpoint_path));
+
+    server_ = std::make_unique<zeptodb::server::HttpServer>(
+        *executor_, test_port_);
+    ASSERT_TRUE(server_->set_edge_fleet_connector_config_persistence(
+        config_path.string(), &error)) << error;
+    server_->start_async();
+
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/edge-fleet-connector");
+        return status.find("\"name\":\"durable-edge-sql-worker\"") !=
+                   std::string::npos &&
+               status.find("\"enabled\":true") != std::string::npos &&
+               status.find("\"acked_count\":1") != std::string::npos &&
+               status.find("\"worker_hooks_configured\":true") !=
+                   std::string::npos;
+    }));
+
+    std::this_thread::sleep_for(30ms);
+    EXPECT_EQ(table_count("physical_ai_fleet_feed_ack_016"), 1);
+    EXPECT_EQ(table_count("physical_ai_fleet_feed_inbox_016"), 1);
+
+    insert_edge_outbox_decision("http_edge_restart_e2", 2);
+    ASSERT_TRUE(wait_until([&] {
+        const std::string status =
+            http_get(test_port_, "/admin/edge-fleet-connector");
+        return status.find("\"acked_count\":2") != std::string::npos;
+    }));
+    EXPECT_EQ(table_count("physical_ai_fleet_feed_ack_016"), 2);
+    EXPECT_EQ(table_count("physical_ai_fleet_feed_inbox_016"), 2);
+
+    const auto del = http_request(
+        test_port_, "DELETE", "/admin/edge-fleet-connector");
+    EXPECT_EQ(del.status, 200);
+    EXPECT_FALSE(std::filesystem::exists(config_path));
+    std::filesystem::remove(checkpoint_path);
+}
+
 TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsInvalidLimits) {
     const auto post = http_request(
         test_port_,
@@ -654,6 +793,14 @@ TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsInvalidLimits) {
         R"({"name":"bad-edge-fleet","batch_limit":0})");
     EXPECT_EQ(post.status, 400);
     EXPECT_NE(post.body.find("positive"), std::string::npos);
+
+    const auto bad_sql_limit = http_request(
+        test_port_,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"bad-edge-fleet-sql","sql_adapter_enabled":true,"outbox_query_limit":0})");
+    EXPECT_EQ(bad_sql_limit.status, 400);
+    EXPECT_NE(bad_sql_limit.body.find("outbox_query_limit"), std::string::npos);
 }
 
 TEST_F(MetricsProviderTest, EdgeFleetConnectorRejectsWorkerModeWithoutHooks) {
@@ -1085,6 +1232,118 @@ TEST(EdgeFleetConnectorAdminAuthTest, RequiresAdminPermission) {
 
     server.stop();
     std::filesystem::remove(key_path);
+}
+
+TEST(EdgeFleetConnectorAdminAuthTest, MutatingControlsAuditAndRateLimit) {
+    const auto key_path =
+        zepto_test_util::unique_test_path("edge_fleet_connector_audit_keys");
+    {
+        std::ofstream file(key_path);
+    }
+
+    zeptodb::auth::AuthManager::Config auth_cfg;
+    auth_cfg.enabled = true;
+    auth_cfg.api_keys_file = key_path.string();
+    auth_cfg.jwt_enabled = false;
+    auth_cfg.rate_limit_enabled = true;
+    auth_cfg.rate_limit.requests_per_minute = 60;
+    auth_cfg.rate_limit.burst_capacity = 10;
+    auth_cfg.audit_enabled = true;
+    auth_cfg.audit_buffer_enabled = true;
+    auto auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
+    const std::string admin_key =
+        auth->create_api_key("edge-admin", zeptodb::auth::Role::ADMIN);
+    const std::string writer_key =
+        auth->create_api_key("edge-writer", zeptodb::auth::Role::WRITER);
+
+    const uint16_t port = zepto_test_util::pick_free_port();
+    auto pipeline = make_pipeline();
+    auto executor = std::make_unique<QueryExecutor>(*pipeline);
+    zeptodb::server::HttpServer server(*executor, port,
+                                       zeptodb::auth::TlsConfig{}, auth);
+    server.start_async();
+    std::this_thread::sleep_for(60ms);
+
+    const auto writer_post = http_request(
+        port,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"writer-denied"})",
+        writer_key);
+    EXPECT_EQ(writer_post.status, 403);
+
+    const auto admin_post = http_request(
+        port,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"audit-edge","enabled":true,"worker_enabled":false})",
+        admin_key);
+    EXPECT_EQ(admin_post.status, 200) << admin_post.body;
+
+    const auto events = auth->audit_buffer().last(20);
+    bool saw_forbidden = false;
+    bool saw_configured = false;
+    for (const auto& ev : events) {
+        if (ev.detail == "admin-forbidden") saw_forbidden = true;
+        if (ev.detail == "edge-fleet-connector-configured") {
+            saw_configured = true;
+        }
+    }
+    EXPECT_TRUE(saw_forbidden);
+    EXPECT_TRUE(saw_configured);
+
+    server.stop();
+    std::filesystem::remove(key_path);
+
+    const auto limited_key_path =
+        zepto_test_util::unique_test_path("edge_fleet_connector_rl_keys");
+    {
+        std::ofstream file(limited_key_path);
+    }
+    zeptodb::auth::AuthManager::Config limited_cfg;
+    limited_cfg.enabled = true;
+    limited_cfg.api_keys_file = limited_key_path.string();
+    limited_cfg.jwt_enabled = false;
+    limited_cfg.rate_limit_enabled = true;
+    limited_cfg.rate_limit.requests_per_minute = 1;
+    limited_cfg.rate_limit.burst_capacity = 1;
+    limited_cfg.audit_enabled = false;
+    limited_cfg.audit_buffer_enabled = false;
+    auto limited_auth =
+        std::make_shared<zeptodb::auth::AuthManager>(limited_cfg);
+    const std::string limited_admin =
+        limited_auth->create_api_key("limited-edge-admin",
+                                     zeptodb::auth::Role::ADMIN);
+
+    const uint16_t limited_port = zepto_test_util::pick_free_port();
+    auto limited_pipeline = make_pipeline();
+    auto limited_executor = std::make_unique<QueryExecutor>(*limited_pipeline);
+    zeptodb::server::HttpServer limited_server(
+        *limited_executor,
+        limited_port,
+        zeptodb::auth::TlsConfig{},
+        limited_auth);
+    limited_server.start_async();
+    std::this_thread::sleep_for(60ms);
+
+    const auto first = http_request(
+        limited_port,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"rate-limit-edge","enabled":true,"worker_enabled":false})",
+        limited_admin);
+    EXPECT_EQ(first.status, 200) << first.body;
+    const auto second = http_request(
+        limited_port,
+        "POST",
+        "/admin/edge-fleet-connector",
+        R"({"name":"rate-limit-edge-2","enabled":true,"worker_enabled":false})",
+        limited_admin);
+    EXPECT_EQ(second.status, 403);
+    EXPECT_NE(second.body.find("Rate limit exceeded"), std::string::npos);
+
+    limited_server.stop();
+    std::filesystem::remove(limited_key_path);
 }
 
 TEST(ActionOutcomeSupervisorAdminAuthTest, MutatingControlsAuditAndRateLimit) {

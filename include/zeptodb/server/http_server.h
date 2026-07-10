@@ -47,6 +47,7 @@
 #include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/server/metrics_collector.h"
 #include "zeptodb/server/action_outcome_sql_adapter.h"
+#include "zeptodb/server/edge_fleet_sql_http_adapter.h"
 #include "zeptodb/ai/agent_memory_router.h"
 #include "zeptodb/cluster/query_coordinator.h"
 #include "zeptodb/cluster/rebalance_manager.h"
@@ -203,6 +204,22 @@ public:
     /// config; embeddings supply SQL/HTTP/RPC outbox and fleet sink callbacks.
     bool set_edge_fleet_connector_runtime_hooks(
         zeptodb::feeds::EdgeFleetConnectorRuntimeHooks hooks,
+        std::string* error = nullptr);
+
+    /// Install built-in SQL/HTTP hooks for the experimental edge/fleet
+    /// connector using this server's QueryExecutor for local endpoints.
+    bool set_edge_fleet_connector_sql_http_adapter(
+        EdgeFleetSqlHttpAdapterConfig config,
+        bool create_tables_if_missing,
+        std::string* error = nullptr);
+
+    /// Enable durable SQL/HTTP adapter config for the experimental edge/fleet
+    /// connector. If path already exists, the server loads it, reinstalls the
+    /// SQL/HTTP adapter, and restarts the connector when the persisted config
+    /// was enabled. ACK/cursor durability remains in the configured
+    /// checkpoint_path.
+    bool set_edge_fleet_connector_config_persistence(
+        const std::string& path,
         std::string* error = nullptr);
 
     /// Install hooks for the experimental Physical AI Action-Outcome
@@ -382,10 +399,17 @@ private:
         bool enabled,
         bool create_tables_if_missing,
         std::string* error = nullptr);
+    bool persist_edge_fleet_connector_config_(
+        const EdgeFleetSqlHttpAdapterConfig& config,
+        bool enabled,
+        bool create_tables_if_missing,
+        std::string* error = nullptr);
     bool persist_action_outcome_supervisor_catalog_config_(
         const ActionOutcomeSqlAdapterConfig& config,
         bool enabled,
         bool create_tables_if_missing,
+        std::string* error = nullptr);
+    bool clear_edge_fleet_connector_config_persistence_(
         std::string* error = nullptr);
     bool clear_action_outcome_supervisor_config_persistence_(
         std::string* error = nullptr);
@@ -497,6 +521,8 @@ private:
 
     // Experimental Physical AI edge/fleet connector lifecycle.
     zeptodb::feeds::EdgeFleetConnectorRuntime               edge_fleet_connector_runtime_;
+    mutable std::mutex                                      edge_fleet_connector_config_mu_;
+    std::string                                             edge_fleet_connector_config_path_;
 
     // Experimental Physical AI Action-Outcome supervisor lifecycle.
     zeptodb::feeds::ActionOutcomeSupervisorRuntime          action_outcome_supervisor_runtime_;

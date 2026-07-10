@@ -190,7 +190,7 @@ Kinesis because it is a cloud/IoT streaming connector. Metrics are exposed
 through `PulsarConsumer::format_prometheus` and can be appended to `/metrics`
 with `HttpServer::add_metrics_provider()`.
 
-## Experimental Physical AI edge/fleet connector (devlogs 202-205)
+## Experimental Physical AI edge/fleet connector (devlogs 202-205, 212-213)
 
 `EdgeFleetFeedConnector` adds an experimental runtime state machine for bounded
 Physical AI edge-to-fleet Action-Outcome evidence transfer. It is deliberately
@@ -201,6 +201,8 @@ The connector handles the semantics validated by Experiments 016 and 017:
 
 - bounded passes with `batch_limit` and `max_inflight`,
 - per-event retry accounting for transient failures,
+- optional retry pacing with `retry_backoff_ms`,
+- per-pass failure budget enforcement with `max_failures_per_pass`,
 - duplicate ACK suppression by event id,
 - late-event detection by stream sequence,
 - optional local checkpoint file for restart ACK reload,
@@ -228,13 +230,44 @@ passes or a background worker loop controlled by `worker_enabled` and
 worker hook readiness, worker running state, worker pass counts, loader errors,
 observer errors, and the last bounded pass result.
 
+Devlog 212 adds the first built-in server SQL/HTTP adapter for this runtime.
+`EdgeFleetSqlHttpAdapterConfig` binds the runtime hook contract to ZeptoDB SQL:
+the loader reads the configured edge outbox table, the sink writes fleet inbox,
+event-specific final, ACK, and optional telemetry rows, and the admin endpoint
+can install the adapter with `sql_adapter_enabled=true`. Empty edge/fleet SQL
+URLs use the server-local `QueryExecutor`; non-empty URLs execute SQL through
+ZeptoDB HTTP `POST /`. The default local Experiment 016 table contract can be
+bootstrapped with `sql_adapter_create_tables=true`.
+
+Devlog 213 hardens the server path for controlled production pilots. Embedding
+code can call `HttpServer::set_edge_fleet_connector_config_persistence(path)`
+to persist successful SQL/HTTP adapter admin configs as versioned JSON. Startup
+reloads the config, reinstalls SQL/HTTP hooks, recreates local default tables
+when requested, and starts the connector if the persisted config was enabled.
+ACK/cursor durability remains separate through `checkpoint_path`; the runtime
+loads acknowledged event ids and `highest_acked_stream_seq` before processing
+rows. The SQL adapter now requires a positive `outbox_query_limit`, enforces
+`max_outbox_bytes` on decoded outbox cells, pages past rows already present in
+the fleet ACK ledger when a small query limit would otherwise reread the ACKed
+prefix, and the feed state machine exposes `max_failures_per_pass` plus
+`retry_backoff_ms` for explicit backpressure.
+Admin POST/DELETE outcomes are audited through the server auth audit buffer
+when auth/audit is enabled.
+
+The SQL/HTTP sink contract is intentionally idempotent at the ACK boundary.
+`feed_event_id` is the stable idempotency key, the fleet ACK table is the
+durable delivery ledger, and an event that applies its final fleet row but
+fails ACK persistence returns `AppliedButAckFailed` so a later pass can replay
+it. ZeptoDB's default bootstrap tables are append-only, so operators should use
+the ACK ledger as source of truth and add external uniqueness/dedupe policy for
+fleet projections when the deployment target supports it.
+
 This is not yet a promoted ZeptoDB replication feature. The validated SQL/HTTP
-adapter is available as a standalone experiment tool, while the server runtime
-currently exposes a transport-neutral worker hook contract. Product promotion
-still requires a built-in SQL/HTTP adapter, catalog or documented runtime
-persistence for feed config and ACK/cursor state, long-running operational
-tests, cross-architecture verification, and user-facing docs for idempotent
-sink requirements.
+adapter is now available both as the standalone experiment tool and as a
+server-owned runtime adapter, but the path remains experimental. Product
+promotion still requires longer-running soak/fault tests and a GA/operator
+rollout decision; generic multi-table transactions remain out of scope for this
+connector.
 
 ## Experimental Physical AI Action-Outcome supervisor (devlog 206)
 
