@@ -5,6 +5,7 @@
 **Image:** `zeptodb/zeptodb:0.1.7`
 **Size:** ~300MB (distroless runtime)
 **Base:** `gcr.io/distroless/cc-debian12:nonroot`
+**Platforms:** `linux/amd64`, `linux/arm64`
 
 ---
 

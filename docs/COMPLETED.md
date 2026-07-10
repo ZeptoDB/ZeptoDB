@@ -328,13 +328,12 @@ Last updated: 2026-07-10
   rows. Pytest coverage exercises multi-table inserts, memory metadata,
   trace/replay SQL, empty rows, and epoch-zero timestamps.
 
-- [x] **Release pipeline speedups** (devlogs 177-178) —
+- [x] **Release pipeline speedups** (devlogs 177-178, 214) —
   release binary builds now use per-architecture ccache, Docker context upload
   is trimmed through `.dockerignore`, non-code Graviton runs are skipped, and
-  Docker release builds warm the BuildKit cache in parallel with amd64/arm64
-  binary builds while the final Docker Hub push remains gated behind successful
-  binaries. The backlog header and recent-completion index are refreshed
-  through devlog 178.
+  Docker release builds now publish native amd64/arm64 images plus public
+  multi-arch manifests. The backlog header and recent-completion index are
+  refreshed through devlog 214.
 
 - [x] **Dev branch and main release pipeline** (devlog 176) —
   development now targets `dev`, while `main` is treated as the release branch.
