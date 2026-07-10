@@ -1680,6 +1680,8 @@ curl http://localhost:8123/admin/edge-fleet-connector \
   "batch_limit": 128,
   "max_inflight": 128,
   "max_retries_per_event": 1,
+  "max_failures_per_pass": 16,
+  "retry_backoff_ms": 0,
   "allow_late_events": true,
   "worker_enabled": true,
   "worker_hooks_configured": true,
@@ -1705,7 +1707,8 @@ curl http://localhost:8123/admin/edge-fleet-connector \
     "permanent_failure_count": 0,
     "duplicate_count": 0,
     "late_count": 0,
-    "rejected_count": 0
+    "rejected_count": 0,
+    "failure_budget_exhausted": false
   },
   "last_error": ""
 }
@@ -1726,17 +1729,74 @@ curl -X POST http://localhost:8123/admin/edge-fleet-connector \
     "batch_limit": 128,
     "max_inflight": 128,
     "max_retries_per_event": 1,
+    "max_failures_per_pass": 16,
+    "retry_backoff_ms": 0,
     "allow_late_events": true,
     "worker_enabled": false,
-    "worker_poll_interval_ms": 1000
+    "worker_poll_interval_ms": 1000,
+    "sql_adapter_enabled": true,
+    "sql_adapter_create_tables": true
   }'
 ```
 
-`batch_limit`, `max_inflight`, `max_retries_per_event`, and
-`worker_poll_interval_ms` must be positive. If `enabled` is omitted, the server
-enables the configured connector. If `worker_enabled=true`, the embedding
-application must have installed `EdgeFleetConnectorRuntimeHooks`; otherwise
-`start()` fails with HTTP 400.
+`batch_limit`, `max_inflight`, `max_retries_per_event`,
+`max_failures_per_pass`, and `worker_poll_interval_ms` must be positive;
+`retry_backoff_ms` must be non-negative. If `enabled` is omitted, the server
+enables the configured connector. If `worker_enabled=true`, either the
+embedding application must have installed `EdgeFleetConnectorRuntimeHooks` or
+the request must set `sql_adapter_enabled=true`; otherwise `start()` fails with
+HTTP 400.
+
+Set `sql_adapter_enabled=true` to install the built-in SQL/HTTP adapter instead
+of embedding-provided worker hooks. Empty `edge_sql_url` and `fleet_sql_url`
+use the server-local `QueryExecutor`; non-empty URLs execute SQL against
+ZeptoDB HTTP `POST /`. Set `sql_adapter_create_tables=true` to create the
+default local Experiment 016 edge outbox, fleet inbox, fleet final, ACK, and
+telemetry tables. Table bootstrap is intentionally local-only; remote HTTP
+endpoints should be migrated by the operator.
+
+SQL/HTTP adapter fields:
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `sql_adapter_enabled` | `false` | Install server-owned SQL/HTTP outbox loader, fleet sink, and pass telemetry hooks. |
+| `sql_adapter_create_tables` | `false` | Create default local Experiment 016 contract tables when URLs are empty. |
+| `edge_sql_url` | `""` | Optional ZeptoDB HTTP SQL endpoint for loading the edge outbox. Empty uses the local executor. |
+| `fleet_sql_url` | `""` | Optional ZeptoDB HTTP SQL endpoint for fleet inbox/final/ACK/telemetry inserts. Empty uses the local executor. |
+| `fleet_inbox_table` | `physical_ai_fleet_feed_inbox_016` | Fleet delivery attempt table. |
+| `fleet_decision_table` | `physical_ai_fleet_edge_decisions_016` | Fleet materialized decision table. |
+| `fleet_retrieval_table` | `physical_ai_fleet_retrieval_016` | Fleet materialized retrieval evidence table. |
+| `fleet_suppression_table` | `physical_ai_fleet_suppressions_016` | Fleet materialized suppression evidence table. |
+| `fleet_telemetry_table` | `physical_ai_fleet_feed_telemetry_016` | Fleet worker pass telemetry table. |
+| `outbox_query_limit` | `128` | Required positive SQL page size and maximum unacked events returned to one worker pass. The loader pages past rows already present in the fleet ACK ledger so small limits do not starve newer rows. |
+| `max_outbox_bytes` | `1048576` | Required positive decoded SQL cell byte budget for one outbox load, including ACKed rows scanned while paging. |
+| `record_pass_telemetry` | `true` | Insert one telemetry row after each successful worker pass. |
+
+Embedding applications can enable durable SQL/HTTP adapter configuration by
+calling `HttpServer::set_edge_fleet_connector_config_persistence(path)` before
+serving traffic. Successful SQL-adapter `POST` requests then write a versioned
+JSON config file. On restart, a new server instance reloads the config,
+reinstalls SQL/HTTP hooks, recreates local default tables when requested, and
+starts the connector if the persisted config was enabled. ACK/cursor state is
+separate: set `checkpoint_path` to persist acknowledged event ids and highest
+stream sequence, and the runtime reloads it before processing outbox rows. The
+SQL/HTTP loader also checks the fleet ACK ledger before delivery and pages past
+already-ACKed rows to keep bounded loads moving after restarts.
+
+Idempotent sink contract:
+
+- `feed_event_id` is the event idempotency key and must be stable across edge
+  retries, HTTP reconnects, and process restarts.
+- The fleet ACK table is the durable delivery ledger. The SQL/HTTP sink checks
+  it before applying fleet final rows and inserts an ACK only after the final
+  row succeeds.
+- If final-row materialization succeeds but ACK insertion fails, the sink
+  returns `AppliedButAckFailed`; the next pass replays the event and must be
+  safe for duplicate final-row attempts.
+- Operators should enforce uniqueness or dedupe policy on `feed_event_id` in
+  downstream fleet projections when external storage supports it. ZeptoDB v0
+  table bootstrap creates append-only tables, so consumers should treat the ACK
+  ledger as the source of truth.
 
 #### `DELETE /admin/edge-fleet-connector` — Disable and clear config
 
@@ -1746,13 +1806,15 @@ curl -X DELETE http://localhost:8123/admin/edge-fleet-connector \
 ```
 
 This endpoint stops the connector when enabled, saves checkpoint state when a
-checkpoint path is configured, and clears the process-local runtime config.
+checkpoint path is configured, clears the process-local runtime config, and
+removes the persisted SQL/HTTP adapter config file when config persistence is
+enabled.
 
 This lifecycle surface is experimental. The server runtime can run a bounded
-worker when embedding code installs outbox-loader and fleet-sink hooks, but the
-HTTP endpoint does not yet create a built-in SQL/HTTP adapter by itself.
-Connector configuration is not catalog-persisted and should not be described as
-a supported replication feature until the promotion gates in
+worker with embedding-provided hooks or with the built-in SQL/HTTP adapter.
+Connector configuration is file-persisted when enabled by embedding code, but
+the path is still experimental and should not be described as a promoted
+replication feature until the promotion gates in
 `docs/research/EXPERIMENT_GOVERNANCE.md` pass.
 
 #### `GET /admin/action-outcome-supervisor` - Experimental supervisor lifecycle status

@@ -328,6 +328,13 @@ struct PersistedActionOutcomeSupervisorSqlAdapterConfig {
     bool create_tables_if_missing = false;
 };
 
+struct PersistedEdgeFleetConnectorSqlAdapterConfig {
+    EdgeFleetSqlHttpAdapterConfig sql;
+    bool enabled = false;
+    bool sql_adapter_enabled = false;
+    bool create_tables_if_missing = false;
+};
+
 static const char* json_bool_literal(bool value) {
     return value ? "true" : "false";
 }
@@ -348,6 +355,319 @@ static bool parse_persisted_action_outcome_limit(
         return false;
     }
     *out = value;
+    return true;
+}
+
+static bool parse_persisted_edge_fleet_limit(
+    const std::string& body,
+    const std::string& key,
+    int64_t fallback,
+    bool allow_zero,
+    int64_t* out,
+    std::string* error) {
+    const int64_t value = json_i64_field(body, key, fallback);
+    if ((allow_zero && value < 0) || (!allow_zero && value <= 0)) {
+        if (error) {
+            *error = key + (allow_zero ? " must be non-negative"
+                                       : " must be positive");
+        }
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+static std::string edge_fleet_connector_persisted_config_json(
+    const PersistedEdgeFleetConnectorSqlAdapterConfig& persisted) {
+    const auto& sql = persisted.sql;
+    const auto& runtime = sql.runtime;
+    std::ostringstream os;
+    os << "{\n"
+       << "  \"version\": 1,\n"
+       << "  \"enabled\": " << json_bool_literal(persisted.enabled) << ",\n"
+       << "  \"sql_adapter_enabled\": "
+       << json_bool_literal(persisted.sql_adapter_enabled) << ",\n"
+       << "  \"sql_adapter_create_tables\": "
+       << json_bool_literal(persisted.create_tables_if_missing) << ",\n"
+       << "  \"name\": " << json_quote(runtime.name) << ",\n"
+       << "  \"edge_outbox_table\": "
+       << json_quote(runtime.edge_outbox_table) << ",\n"
+       << "  \"fleet_ack_table\": "
+       << json_quote(runtime.fleet_ack_table) << ",\n"
+       << "  \"checkpoint_path\": "
+       << json_quote(runtime.feed.checkpoint_path) << ",\n"
+       << "  \"allow_late_events\": "
+       << json_bool_literal(runtime.feed.allow_late_events) << ",\n"
+       << "  \"worker_enabled\": "
+       << json_bool_literal(runtime.worker_enabled) << ",\n"
+       << "  \"worker_poll_interval_ms\": "
+       << runtime.worker_poll_interval_ms << ",\n"
+       << "  \"batch_limit\": " << runtime.feed.batch_limit << ",\n"
+       << "  \"max_inflight\": " << runtime.feed.max_inflight << ",\n"
+       << "  \"max_retries_per_event\": "
+       << runtime.feed.max_retries_per_event << ",\n"
+       << "  \"max_failures_per_pass\": "
+       << runtime.feed.max_failures_per_pass << ",\n"
+       << "  \"retry_backoff_ms\": "
+       << runtime.feed.retry_backoff_ms << ",\n"
+       << "  \"edge_sql_url\": " << json_quote(sql.edge_sql_url) << ",\n"
+       << "  \"fleet_sql_url\": " << json_quote(sql.fleet_sql_url) << ",\n"
+       << "  \"fleet_inbox_table\": "
+       << json_quote(sql.fleet_inbox_table) << ",\n"
+       << "  \"fleet_decision_table\": "
+       << json_quote(sql.fleet_decision_table) << ",\n"
+       << "  \"fleet_retrieval_table\": "
+       << json_quote(sql.fleet_retrieval_table) << ",\n"
+       << "  \"fleet_suppression_table\": "
+       << json_quote(sql.fleet_suppression_table) << ",\n"
+       << "  \"fleet_telemetry_table\": "
+       << json_quote(sql.fleet_telemetry_table) << ",\n"
+       << "  \"outbox_query_limit\": "
+       << sql.outbox_query_limit << ",\n"
+       << "  \"max_outbox_bytes\": "
+       << sql.max_outbox_bytes << ",\n"
+       << "  \"record_pass_telemetry\": "
+       << json_bool_literal(sql.record_pass_telemetry) << "\n"
+       << "}\n";
+    return os.str();
+}
+
+static bool parse_persisted_edge_fleet_connector_config(
+    const std::string& body,
+    PersistedEdgeFleetConnectorSqlAdapterConfig* persisted,
+    std::string* error) {
+    if (!persisted) {
+        if (error) *error = "persisted edge/fleet config output is required";
+        return false;
+    }
+    if (find_json_value(body, "version") == std::string::npos) {
+        if (error) *error = "persisted edge/fleet config version is required";
+        return false;
+    }
+    const int64_t version = json_i64_field(body, "version", 0);
+    if (version != 1) {
+        if (error) *error = "unsupported persisted edge/fleet config version";
+        return false;
+    }
+
+    PersistedEdgeFleetConnectorSqlAdapterConfig out;
+    out.enabled = json_bool_field(body, "enabled", out.enabled);
+    out.sql_adapter_enabled =
+        json_bool_field(body, "sql_adapter_enabled", out.sql_adapter_enabled);
+    out.create_tables_if_missing = json_bool_field(
+        body, "sql_adapter_create_tables", out.create_tables_if_missing);
+    if (!out.sql_adapter_enabled) {
+        if (error) {
+            *error = "persisted edge/fleet config requires sql_adapter_enabled";
+        }
+        return false;
+    }
+
+    auto& sql = out.sql;
+    auto& runtime = sql.runtime;
+    runtime.name = json_string_field(body, "name", runtime.name);
+    runtime.edge_outbox_table = json_string_field(
+        body, "edge_outbox_table", runtime.edge_outbox_table);
+    runtime.fleet_ack_table = json_string_field(
+        body, "fleet_ack_table", runtime.fleet_ack_table);
+    runtime.feed.checkpoint_path = json_string_field(
+        body, "checkpoint_path", runtime.feed.checkpoint_path);
+    runtime.feed.allow_late_events = json_bool_field(
+        body, "allow_late_events", runtime.feed.allow_late_events);
+    runtime.worker_enabled =
+        json_bool_field(body, "worker_enabled", runtime.worker_enabled);
+
+    int64_t value = 0;
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "worker_poll_interval_ms",
+            static_cast<int64_t>(runtime.worker_poll_interval_ms),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    runtime.worker_poll_interval_ms = static_cast<uint64_t>(value);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "batch_limit",
+            static_cast<int64_t>(runtime.feed.batch_limit),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    runtime.feed.batch_limit = static_cast<size_t>(value);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "max_inflight",
+            static_cast<int64_t>(runtime.feed.max_inflight),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    runtime.feed.max_inflight = static_cast<size_t>(value);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "max_retries_per_event",
+            static_cast<int64_t>(runtime.feed.max_retries_per_event),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    if (value > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        if (error) *error = "max_retries_per_event is too large";
+        return false;
+    }
+    runtime.feed.max_retries_per_event = static_cast<uint32_t>(value);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "max_failures_per_pass",
+            static_cast<int64_t>(runtime.feed.max_failures_per_pass),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    if (value > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        if (error) *error = "max_failures_per_pass is too large";
+        return false;
+    }
+    runtime.feed.max_failures_per_pass = static_cast<uint32_t>(value);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "retry_backoff_ms",
+            static_cast<int64_t>(runtime.feed.retry_backoff_ms),
+            true,
+            &value,
+            error)) {
+        return false;
+    }
+    runtime.feed.retry_backoff_ms = static_cast<uint64_t>(value);
+
+    sql.edge_sql_url = json_string_field(body, "edge_sql_url", sql.edge_sql_url);
+    sql.fleet_sql_url = json_string_field(
+        body, "fleet_sql_url", sql.fleet_sql_url);
+    sql.fleet_inbox_table = json_string_field(
+        body, "fleet_inbox_table", sql.fleet_inbox_table);
+    sql.fleet_decision_table = json_string_field(
+        body, "fleet_decision_table", sql.fleet_decision_table);
+    sql.fleet_retrieval_table = json_string_field(
+        body, "fleet_retrieval_table", sql.fleet_retrieval_table);
+    sql.fleet_suppression_table = json_string_field(
+        body, "fleet_suppression_table", sql.fleet_suppression_table);
+    sql.fleet_telemetry_table = json_string_field(
+        body, "fleet_telemetry_table", sql.fleet_telemetry_table);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "outbox_query_limit",
+            static_cast<int64_t>(sql.outbox_query_limit),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.outbox_query_limit = static_cast<size_t>(value);
+    if (!parse_persisted_edge_fleet_limit(
+            body,
+            "max_outbox_bytes",
+            static_cast<int64_t>(sql.max_outbox_bytes),
+            false,
+            &value,
+            error)) {
+        return false;
+    }
+    sql.max_outbox_bytes = static_cast<size_t>(value);
+    sql.record_pass_telemetry = json_bool_field(
+        body, "record_pass_telemetry", sql.record_pass_telemetry);
+
+    if (!validateEdgeFleetSqlHttpAdapterConfig(sql, error)) {
+        return false;
+    }
+
+    *persisted = std::move(out);
+    return true;
+}
+
+static bool load_persisted_edge_fleet_connector_config(
+    const std::string& path,
+    PersistedEdgeFleetConnectorSqlAdapterConfig* persisted,
+    std::string* error) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error) {
+            *error = "failed to open persisted edge/fleet config: " + path;
+        }
+        return false;
+    }
+    const std::string body((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    return parse_persisted_edge_fleet_connector_config(body, persisted, error);
+}
+
+static bool save_persisted_edge_fleet_connector_config(
+    const std::string& path,
+    const PersistedEdgeFleetConnectorSqlAdapterConfig& persisted,
+    std::string* error) {
+    if (path.empty()) {
+        if (error) *error = "edge/fleet connector config path is required";
+        return false;
+    }
+
+    const std::filesystem::path target(path);
+    const std::filesystem::path parent = target.parent_path();
+    std::error_code ec;
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            if (error) {
+                *error = "failed to create edge/fleet config directory: " +
+                         parent.string() + ": " + ec.message();
+            }
+            return false;
+        }
+    }
+
+    std::filesystem::path tmp = target;
+    tmp += ".tmp";
+    {
+        std::ofstream output(tmp, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            if (error) {
+                *error = "failed to open edge/fleet config temp file: " +
+                         tmp.string();
+            }
+            return false;
+        }
+        output << edge_fleet_connector_persisted_config_json(persisted);
+        output.flush();
+        if (!output) {
+            if (error) {
+                *error = "failed to write edge/fleet config temp file: " +
+                         tmp.string();
+            }
+            return false;
+        }
+    }
+
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::error_code remove_ec;
+        std::filesystem::remove(target, remove_ec);
+        ec.clear();
+        std::filesystem::rename(tmp, target, ec);
+    }
+    if (ec) {
+        if (error) {
+            *error = "failed to install persisted edge/fleet config: " +
+                     target.string() + ": " + ec.message();
+        }
+        std::error_code ignored;
+        std::filesystem::remove(tmp, ignored);
+        return false;
+    }
     return true;
 }
 
@@ -837,6 +1157,8 @@ static std::string edge_fleet_connector_status_json(
        << ",\"batch_limit\":" << snap.batch_limit
        << ",\"max_inflight\":" << snap.max_inflight
        << ",\"max_retries_per_event\":" << snap.max_retries_per_event
+       << ",\"max_failures_per_pass\":" << snap.max_failures_per_pass
+       << ",\"retry_backoff_ms\":" << snap.retry_backoff_ms
        << ",\"allow_late_events\":" << (snap.allow_late_events ? "true" : "false")
        << ",\"worker_enabled\":" << (snap.worker_enabled ? "true" : "false")
        << ",\"worker_hooks_configured\":"
@@ -867,6 +1189,8 @@ static std::string edge_fleet_connector_status_json(
        << ",\"duplicate_count\":" << snap.last_pass.duplicate_count
        << ",\"late_count\":" << snap.last_pass.late_count
        << ",\"rejected_count\":" << snap.last_pass.rejected_count
+       << ",\"failure_budget_exhausted\":"
+       << (snap.last_pass.failure_budget_exhausted ? "true" : "false")
        << "}"
        << ",\"last_error\":" << json_quote(snap.last_error)
        << "}";
@@ -1725,6 +2049,77 @@ bool HttpServer::set_edge_fleet_connector_runtime_hooks(
     return edge_fleet_connector_runtime_.setWorkerHooks(std::move(hooks), error);
 }
 
+bool HttpServer::set_edge_fleet_connector_sql_http_adapter(
+    EdgeFleetSqlHttpAdapterConfig config,
+    bool create_tables_if_missing,
+    std::string* error) {
+    if (!validateEdgeFleetSqlHttpAdapterConfig(config, error)) {
+        return false;
+    }
+    if (create_tables_if_missing &&
+        !ensureEdgeFleetSqlHttpTables(executor_, config, error)) {
+        return false;
+    }
+    try {
+        return edge_fleet_connector_runtime_.setWorkerHooks(
+            makeEdgeFleetSqlHttpRuntimeHooks(executor_, std::move(config)), error);
+    } catch (const std::exception& ex) {
+        if (error) *error = ex.what();
+        return false;
+    }
+}
+
+bool HttpServer::set_edge_fleet_connector_config_persistence(
+    const std::string& path,
+    std::string* error) {
+    if (path.empty()) {
+        if (error) {
+            *error = "edge/fleet connector config path is required";
+        }
+        return false;
+    }
+
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+        if (error) {
+            *error = "failed to inspect persisted edge/fleet config: " +
+                     path + ": " + ec.message();
+        }
+        return false;
+    }
+    if (!exists) {
+        std::lock_guard<std::mutex> lock(edge_fleet_connector_config_mu_);
+        edge_fleet_connector_config_path_ = path;
+        return true;
+    }
+
+    PersistedEdgeFleetConnectorSqlAdapterConfig persisted;
+    if (!load_persisted_edge_fleet_connector_config(
+            path, &persisted, error)) {
+        return false;
+    }
+    if (!edge_fleet_connector_runtime_.configure(
+            persisted.sql.runtime, error)) {
+        return false;
+    }
+    if (!set_edge_fleet_connector_sql_http_adapter(
+            persisted.sql,
+            persisted.create_tables_if_missing,
+            error)) {
+        return false;
+    }
+    if (persisted.enabled &&
+        !edge_fleet_connector_runtime_.start(error)) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(edge_fleet_connector_config_mu_);
+        edge_fleet_connector_config_path_ = path;
+    }
+    return true;
+}
+
 bool HttpServer::set_action_outcome_supervisor_runtime_hooks(
     zeptodb::feeds::ActionOutcomeSupervisorRuntimeHooks hooks,
     std::string* error) {
@@ -1876,6 +2271,51 @@ bool HttpServer::set_action_outcome_supervisor_catalog_config(
         action_outcome_supervisor_catalog_name_ = supervisor_name;
         action_outcome_supervisor_catalog_create_tables_ =
             create_table_if_missing;
+    }
+    return true;
+}
+
+bool HttpServer::persist_edge_fleet_connector_config_(
+    const EdgeFleetSqlHttpAdapterConfig& config,
+    bool enabled,
+    bool create_tables_if_missing,
+    std::string* error) {
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(edge_fleet_connector_config_mu_);
+        path = edge_fleet_connector_config_path_;
+    }
+    if (path.empty()) {
+        return true;
+    }
+
+    PersistedEdgeFleetConnectorSqlAdapterConfig persisted;
+    persisted.sql = config;
+    persisted.enabled = enabled;
+    persisted.sql_adapter_enabled = true;
+    persisted.create_tables_if_missing = create_tables_if_missing;
+    return save_persisted_edge_fleet_connector_config(path, persisted, error);
+}
+
+bool HttpServer::clear_edge_fleet_connector_config_persistence_(
+    std::string* error) {
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(edge_fleet_connector_config_mu_);
+        path = edge_fleet_connector_config_path_;
+    }
+    if (path.empty()) {
+        return true;
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec) {
+        if (error) {
+            *error = "failed to remove persisted edge/fleet config: " +
+                     path + ": " + ec.message();
+        }
+        return false;
     }
     return true;
 }
@@ -5635,10 +6075,13 @@ void HttpServer::setup_admin_routes() {
     //        "edge_outbox_table":"...","fleet_ack_table":"...",
     //        "checkpoint_path":"/var/lib/zeptodb/edge-fleet.checkpoint",
     //        "batch_limit":128,"max_inflight":128,
-    //        "max_retries_per_event":1,"allow_late_events":true,
-    //        "worker_enabled":false,"worker_poll_interval_ms":1000}
+    //        "max_retries_per_event":1,"max_failures_per_pass":16,
+    //        "retry_backoff_ms":0,"allow_late_events":true,
+    //        "worker_enabled":false,"worker_poll_interval_ms":1000,
+    //        "sql_adapter_enabled":false,"outbox_query_limit":128,
+    //        "max_outbox_bytes":1048576}
     // -------------------------------------------------------------------------
-    svr_->Post("/admin/edge-fleet-connector", [this, require_admin](
+    svr_->Post("/admin/edge-fleet-connector", [this, require_admin, audit_admin_control](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
@@ -5662,46 +6105,154 @@ void HttpServer::setup_admin_routes() {
         const int64_t max_retries = json_i64_field(
             req.body, "max_retries_per_event",
             static_cast<int64_t>(config.feed.max_retries_per_event));
+        const int64_t max_failures_per_pass = json_i64_field(
+            req.body,
+            "max_failures_per_pass",
+            static_cast<int64_t>(config.feed.max_failures_per_pass));
+        const int64_t retry_backoff_ms = json_i64_field(
+            req.body,
+            "retry_backoff_ms",
+            static_cast<int64_t>(config.feed.retry_backoff_ms));
         const int64_t worker_poll_interval_ms = json_i64_field(
             req.body,
             "worker_poll_interval_ms",
             static_cast<int64_t>(config.worker_poll_interval_ms));
         if (batch_limit <= 0 || max_inflight <= 0 || max_retries <= 0 ||
+            max_failures_per_pass <= 0 || retry_backoff_ms < 0 ||
             worker_poll_interval_ms <= 0 ||
-            max_retries > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+            max_retries > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) ||
+            max_failures_per_pass >
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
             res.status = 400;
             res.set_content(
                 build_error_json(
-                    "batch_limit, max_inflight, max_retries_per_event, and worker_poll_interval_ms must be positive"),
+                    "batch_limit, max_inflight, max_retries_per_event, max_failures_per_pass, and worker_poll_interval_ms must be positive; retry_backoff_ms must be non-negative"),
                 "application/json");
+            audit_admin_control(
+                req, "edge-fleet-connector-configure-invalid-limits");
             return;
         }
         config.feed.batch_limit = static_cast<size_t>(batch_limit);
         config.feed.max_inflight = static_cast<size_t>(max_inflight);
         config.feed.max_retries_per_event = static_cast<uint32_t>(max_retries);
+        config.feed.max_failures_per_pass =
+            static_cast<uint32_t>(max_failures_per_pass);
+        config.feed.retry_backoff_ms = static_cast<uint64_t>(retry_backoff_ms);
         config.worker_poll_interval_ms =
             static_cast<uint64_t>(worker_poll_interval_ms);
 
         std::string error;
+        const auto configured_config = config;
+        const bool sql_adapter_enabled = json_bool_field(
+            req.body, "sql_adapter_enabled", false);
+        const bool enabled = json_bool_field(req.body, "enabled", true);
         if (!edge_fleet_connector_runtime_.configure(std::move(config), &error)) {
             res.status = 400;
             res.set_content(build_error_json(error.empty()
                                 ? "edge/fleet connector configuration failed"
                                 : error),
                             "application/json");
+            audit_admin_control(
+                req, "edge-fleet-connector-configure-rejected");
             return;
         }
 
-        const bool enabled = json_bool_field(req.body, "enabled", true);
+        EdgeFleetSqlHttpAdapterConfig persisted_adapter_config;
+        bool sql_adapter_create_tables = false;
+        if (sql_adapter_enabled) {
+            EdgeFleetSqlHttpAdapterConfig adapter_config;
+            adapter_config.runtime = configured_config;
+            adapter_config.edge_sql_url =
+                json_string_field(req.body, "edge_sql_url");
+            adapter_config.fleet_sql_url =
+                json_string_field(req.body, "fleet_sql_url");
+            adapter_config.fleet_inbox_table = json_string_field(
+                req.body, "fleet_inbox_table", adapter_config.fleet_inbox_table);
+            adapter_config.fleet_decision_table = json_string_field(
+                req.body,
+                "fleet_decision_table",
+                adapter_config.fleet_decision_table);
+            adapter_config.fleet_retrieval_table = json_string_field(
+                req.body,
+                "fleet_retrieval_table",
+                adapter_config.fleet_retrieval_table);
+            adapter_config.fleet_suppression_table = json_string_field(
+                req.body,
+                "fleet_suppression_table",
+                adapter_config.fleet_suppression_table);
+            adapter_config.fleet_telemetry_table = json_string_field(
+                req.body,
+                "fleet_telemetry_table",
+                adapter_config.fleet_telemetry_table);
+            const int64_t outbox_query_limit = json_i64_field(
+                req.body,
+                "outbox_query_limit",
+                static_cast<int64_t>(adapter_config.outbox_query_limit));
+            const int64_t max_outbox_bytes = json_i64_field(
+                req.body,
+                "max_outbox_bytes",
+                static_cast<int64_t>(adapter_config.max_outbox_bytes));
+            if (outbox_query_limit <= 0 || max_outbox_bytes <= 0) {
+                res.status = 400;
+                res.set_content(
+                    build_error_json(
+                        "outbox_query_limit and max_outbox_bytes must be positive"),
+                    "application/json");
+                audit_admin_control(
+                    req, "edge-fleet-connector-configure-invalid-sql-limits");
+                return;
+            }
+            adapter_config.outbox_query_limit =
+                static_cast<size_t>(outbox_query_limit);
+            adapter_config.max_outbox_bytes =
+                static_cast<size_t>(max_outbox_bytes);
+            adapter_config.record_pass_telemetry = json_bool_field(
+                req.body,
+                "record_pass_telemetry",
+                adapter_config.record_pass_telemetry);
+
+            sql_adapter_create_tables = json_bool_field(
+                req.body, "sql_adapter_create_tables", false);
+            persisted_adapter_config = adapter_config;
+            if (!set_edge_fleet_connector_sql_http_adapter(
+                    std::move(adapter_config), sql_adapter_create_tables, &error)) {
+                res.status = 400;
+                res.set_content(build_error_json(error.empty()
+                                    ? "edge/fleet SQL/HTTP adapter setup failed"
+                                    : error),
+                                "application/json");
+                audit_admin_control(
+                    req, "edge-fleet-connector-sql-install-failed");
+                return;
+            }
+        }
+
         if (enabled && !edge_fleet_connector_runtime_.start(&error)) {
             res.status = 400;
             res.set_content(build_error_json(error.empty()
                                 ? "edge/fleet connector start failed"
                                 : error),
                             "application/json");
+            audit_admin_control(req, "edge-fleet-connector-start-failed");
+            return;
+        }
+        if (sql_adapter_enabled &&
+            !persist_edge_fleet_connector_config_(
+                persisted_adapter_config,
+                enabled,
+                sql_adapter_create_tables,
+                &error)) {
+            res.status = 500;
+            res.set_content(build_error_json(error.empty()
+                                ? "edge/fleet connector config persistence failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "edge-fleet-connector-config-persist-failed");
             return;
         }
 
+        audit_admin_control(req, "edge-fleet-connector-configured");
         res.set_content(
             edge_fleet_connector_status_json(edge_fleet_connector_runtime_.snapshot()),
             "application/json");
@@ -5710,7 +6261,7 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // DELETE /admin/edge-fleet-connector — disable and clear experimental config
     // -------------------------------------------------------------------------
-    svr_->Delete("/admin/edge-fleet-connector", [this, require_admin](
+    svr_->Delete("/admin/edge-fleet-connector", [this, require_admin, audit_admin_control](
         const httplib::Request& req, httplib::Response& res)
     {
         if (!require_admin(req, res)) return;
@@ -5722,9 +6273,21 @@ void HttpServer::setup_admin_routes() {
                                 ? "edge/fleet connector stop failed"
                                 : error),
                             "application/json");
+            audit_admin_control(req, "edge-fleet-connector-stop-failed");
             return;
         }
         (void)edge_fleet_connector_runtime_.clear(&error);
+        if (!clear_edge_fleet_connector_config_persistence_(&error)) {
+            res.status = 500;
+            res.set_content(build_error_json(error.empty()
+                                ? "edge/fleet connector config persistence clear failed"
+                                : error),
+                            "application/json");
+            audit_admin_control(
+                req, "edge-fleet-connector-config-clear-failed");
+            return;
+        }
+        audit_admin_control(req, "edge-fleet-connector-cleared");
         res.set_content(
             edge_fleet_connector_status_json(edge_fleet_connector_runtime_.snapshot()),
             "application/json");

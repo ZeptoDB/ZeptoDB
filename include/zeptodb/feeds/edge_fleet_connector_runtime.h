@@ -66,6 +66,8 @@ struct EdgeFleetConnectorRuntimeSnapshot {
     size_t batch_limit = 0;
     size_t max_inflight = 0;
     uint32_t max_retries_per_event = 0;
+    uint32_t max_failures_per_pass = 0;
+    uint64_t retry_backoff_ms = 0;
     bool allow_late_events = true;
     bool worker_enabled = false;
     bool worker_hooks_configured = false;

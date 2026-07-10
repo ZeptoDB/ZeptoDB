@@ -5,9 +5,11 @@
 #include "zeptodb/feeds/edge_fleet_feed_connector.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 namespace zeptodb::feeds {
@@ -40,7 +42,8 @@ EdgeFleetFeedConnector::EdgeFleetFeedConnector(EdgeFleetFeedConfig config,
 bool EdgeFleetFeedConnector::isValidConfig(const EdgeFleetFeedConfig& config) noexcept {
     return config.batch_limit > 0 &&
            config.max_inflight > 0 &&
-           config.max_retries_per_event > 0;
+           config.max_retries_per_event > 0 &&
+           config.max_failures_per_pass > 0;
 }
 
 std::optional<EdgeFleetEventKind> EdgeFleetFeedConnector::parseKind(std::string_view value) {
@@ -147,6 +150,18 @@ EdgeFleetFeedPassResult EdgeFleetFeedConnector::processOnce(
 
     for (const auto& event : batch) {
         bool done = false;
+        bool stop_pass = false;
+        auto failure_budget_exhausted = [&]() {
+            const size_t failures = result.transient_failure_count +
+                                    result.permanent_failure_count +
+                                    result.ack_boundary_failure_count;
+            if (failures < config_.max_failures_per_pass) return false;
+            if (!result.failure_budget_exhausted) {
+                result.failure_budget_exhausted = true;
+                ++stats_.failure_budget_exhausted;
+            }
+            return true;
+        };
         for (uint32_t attempt = 0; attempt < config_.max_retries_per_event && !done; ++attempt) {
             ++result.attempted_count;
             ++stats_.events_attempted;
@@ -165,19 +180,30 @@ EdgeFleetFeedPassResult EdgeFleetFeedConnector::processOnce(
                 case EdgeFleetDeliveryResult::TransientFailure:
                     ++result.transient_failure_count;
                     ++stats_.transient_failures;
+                    if (failure_budget_exhausted()) {
+                        stop_pass = true;
+                        done = true;
+                    } else if (config_.retry_backoff_ms > 0 &&
+                               attempt + 1 < config_.max_retries_per_event) {
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(config_.retry_backoff_ms));
+                    }
                     break;
                 case EdgeFleetDeliveryResult::PermanentFailure:
                     ++result.permanent_failure_count;
                     ++stats_.permanent_failures;
+                    stop_pass = failure_budget_exhausted();
                     done = true;
                     break;
                 case EdgeFleetDeliveryResult::AppliedButAckFailed:
                     ++result.ack_boundary_failure_count;
                     ++stats_.ack_boundary_failures;
+                    stop_pass = failure_budget_exhausted();
                     done = true;
                     break;
             }
         }
+        if (stop_pass) break;
     }
 
     result.acked_after = acked_event_ids_.size();
@@ -327,6 +353,9 @@ std::string EdgeFleetFeedConnector::formatPrometheus(
     line("zepto_edge_fleet_feed_rejected_events_total", stats.rejected_events);
     out << "# TYPE zepto_edge_fleet_feed_max_inflight_observed gauge\n";
     line("zepto_edge_fleet_feed_max_inflight_observed", stats.max_inflight_observed);
+    out << "# TYPE zepto_edge_fleet_feed_failure_budget_exhausted_total counter\n";
+    line("zepto_edge_fleet_feed_failure_budget_exhausted_total",
+         stats.failure_budget_exhausted);
     return out.str();
 }
 

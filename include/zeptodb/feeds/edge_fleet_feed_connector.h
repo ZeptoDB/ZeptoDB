@@ -55,14 +55,19 @@ struct EdgeFleetFeedEvent {
     std::string payload_json;
 };
 
-/// Experimental connector limits and optional persistence.
+/// Experimental connector limits, retry pacing, and optional persistence.
 ///
-/// `batch_limit` and `max_inflight` bound each process pass. `checkpoint_path`
-/// stores acknowledged event ids and the highest acknowledged stream sequence.
+/// `batch_limit` and `max_inflight` bound each process pass.
+/// `max_failures_per_pass` stops a pass after repeated sink failures, and
+/// `retry_backoff_ms` optionally paces retries after transient failures.
+/// `checkpoint_path` stores acknowledged event ids and the highest
+/// acknowledged stream sequence.
 struct EdgeFleetFeedConfig {
     size_t batch_limit = 128;
     size_t max_inflight = 128;
     uint32_t max_retries_per_event = 1;
+    uint32_t max_failures_per_pass = 16;
+    uint64_t retry_backoff_ms = 0;
     bool allow_late_events = true;
     std::string checkpoint_path;
 };
@@ -83,6 +88,7 @@ struct EdgeFleetFeedStats {
     uint64_t checkpoint_saves = 0;
     uint64_t checkpoint_failures = 0;
     uint64_t max_inflight_observed = 0;
+    uint64_t failure_budget_exhausted = 0;
 };
 
 /// Per-pass result returned by `processOnce`.
@@ -100,6 +106,7 @@ struct EdgeFleetFeedPassResult {
     size_t acked_before = 0;
     size_t acked_after = 0;
     uint64_t highest_acked_stream_seq = 0;
+    bool failure_budget_exhausted = false;
 };
 
 using EdgeFleetFeedSink =
