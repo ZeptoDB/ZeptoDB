@@ -23,8 +23,9 @@ Classification: experimental runtime path.
 This result validates the bounded Action-Outcome operational-table placement
 and JOIN replay hypothesis. It does not promote runtime table placement,
 bounded small-table JOIN, or full-data window materialization into broad product
-contracts. Promotion still requires persisted placement metadata, restart and
-rebalance semantics, explicit limits, and operator guidance as defined in
+contracts. Devlog 217 adds persisted placement metadata and coordinator
+restart re-apply. Promotion still requires rebalance semantics, explicit
+limits, and operator guidance as defined in
 `docs/research/EXPERIMENT_GOVERNANCE.md`.
 
 ## Placement Policy
@@ -108,6 +109,6 @@ silently fall back to an unbounded distributed planner.
 
 ## Next Best Step
 
-Promote placement policy from an admin-only runtime knob to a persisted
-table option or catalog record, then add a row-cap alerting example for
-`zepto_small_table_join_row_cap_rejections_total`.
+Devlog 217 promotes placement policy from an admin-only runtime knob to a
+persisted table option/catalog record. The next best step is a row-cap
+alerting example for `zepto_small_table_join_row_cap_rejections_total`.

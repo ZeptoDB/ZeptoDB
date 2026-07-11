@@ -828,10 +828,16 @@ TEST_F(MetricsProviderTest, ActionOutcomeSupervisorAdminLifecycleAndMetrics) {
     EXPECT_NE(post.body.find("\"configured\":true"), std::string::npos);
     EXPECT_NE(post.body.find("\"enabled\":true"), std::string::npos);
     EXPECT_NE(post.body.find("\"mode\":\"shadow\""), std::string::npos);
+    EXPECT_NE(post.body.find("\"rollout_stage\":\"controlled_shadow_pilot\""),
+              std::string::npos);
     EXPECT_NE(post.body.find("\"batch_limit\":9"), std::string::npos);
 
     const std::string metrics = http_get(test_port_, "/metrics");
     EXPECT_NE(metrics.find("zepto_action_outcome_supervisor_enabled{supervisor=\"test-action-outcome\"} 1"),
+              std::string::npos);
+    EXPECT_NE(metrics.find(
+                  "zepto_action_outcome_supervisor_rollout_stage"
+                  "{supervisor=\"test-action-outcome\",stage=\"controlled_shadow_pilot\"} 1"),
               std::string::npos);
     EXPECT_NE(metrics.find("zepto_action_outcome_proposals_processed_total{supervisor=\"test-action-outcome\"} 0"),
               std::string::npos);
@@ -980,6 +986,17 @@ TEST_F(MetricsProviderTest,
 }
 
 TEST_F(MetricsProviderTest,
+       ActionOutcomeSupervisorRejectsPromotedOperatorRolloutStage) {
+    const auto rejected = http_request(
+        test_port_,
+        "POST",
+        "/admin/action-outcome-supervisor",
+        R"({"name":"operator-rollout","rollout_stage":"promoted_operator_feature"})");
+    EXPECT_EQ(rejected.status, 400);
+    EXPECT_NE(rejected.body.find("controlled_shadow_pilot"), std::string::npos);
+}
+
+TEST_F(MetricsProviderTest,
        ActionOutcomeSupervisorSqlAdapterConfigPersistsAndReloadsAfterHttpRestart) {
     pipeline_->start();
     const auto config_path =
@@ -1032,6 +1049,8 @@ TEST_F(MetricsProviderTest,
         return status.find("\"name\":\"durable-action-sql-worker\"") !=
                    std::string::npos &&
                status.find("\"enabled\":false") != std::string::npos &&
+               status.find("\"rollout_stage\":\"controlled_shadow_pilot\"") !=
+                   std::string::npos &&
                status.find("\"worker_hooks_configured\":true") !=
                    std::string::npos;
     }));

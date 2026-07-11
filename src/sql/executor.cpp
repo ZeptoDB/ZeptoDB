@@ -31,6 +31,7 @@
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -463,6 +464,59 @@ static storage::ColumnType ddl_type_from_str(const std::string& t) {
     throw std::runtime_error("Unknown DDL column type: " + t);
 }
 
+static std::string lower_ascii_copy(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+static std::optional<storage::TablePlacementOptions>
+create_table_placement_options(const CreateTableStmt& stmt,
+                               std::string* error) {
+    if (!stmt.placement_policy) {
+        return storage::TablePlacementOptions{};
+    }
+
+    storage::TablePlacementOptions placement;
+    const std::string policy = lower_ascii_copy(*stmt.placement_policy);
+    if (policy == "hash_by_table_and_symbol" || policy == "default") {
+        if (stmt.placement_node_id) {
+            if (error) {
+                *error = "placement node_id is only valid for pinned_node";
+            }
+            return std::nullopt;
+        }
+        return placement;
+    }
+    placement.configured = true;
+    if (policy == "hash_by_table") {
+        if (stmt.placement_node_id) {
+            if (error) {
+                *error = "placement node_id is only valid for pinned_node";
+            }
+            return std::nullopt;
+        }
+        placement.mode = storage::TablePlacementMode::HashByTable;
+        return placement;
+    }
+    if (policy == "pinned_node") {
+        if (!stmt.placement_node_id || *stmt.placement_node_id == 0) {
+            if (error) *error = "pinned_node placement requires node_id";
+            return std::nullopt;
+        }
+        placement.mode = storage::TablePlacementMode::PinnedNode;
+        placement.node_id = *stmt.placement_node_id;
+        return placement;
+    }
+
+    if (error) {
+        *error = "unsupported table placement policy: " + *stmt.placement_policy;
+    }
+    return std::nullopt;
+}
+
 static QueryResultSet ddl_ok(const std::string& msg) {
     QueryResultSet r;
     r.column_names = {"result"};
@@ -654,7 +708,18 @@ QueryResultSet QueryExecutor::exec_create_table(const CreateTableStmt& stmt) {
     for (auto& c : stmt.columns)
         cols.push_back({c.column, ddl_type_from_str(c.type_str)});
 
-    bool ok = pipeline_.schema_registry().create(stmt.table_name, std::move(cols));
+    std::string placement_error;
+    auto placement = create_table_placement_options(stmt, &placement_error);
+    if (!placement) {
+        QueryResultSet err;
+        err.error = placement_error.empty()
+            ? "Invalid table placement option"
+            : placement_error;
+        return err;
+    }
+
+    bool ok = pipeline_.schema_registry().create(
+        stmt.table_name, std::move(cols), *placement);
     if (!ok) {
         if (stmt.if_not_exists)
             return ddl_ok("Table '" + stmt.table_name + "' already exists (IF NOT EXISTS)");

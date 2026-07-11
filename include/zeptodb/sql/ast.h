@@ -15,6 +15,7 @@
 // ============================================================================
 
 #include "zeptodb/storage/column_store.h"  // ColumnType
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -364,6 +365,8 @@ struct CreateTableStmt {
     std::string               table_name;
     std::vector<DdlColumnDef> columns;
     bool                      if_not_exists = false;
+    std::optional<std::string> placement_policy;
+    std::optional<uint32_t>    placement_node_id;
 };
 
 // ============================================================================

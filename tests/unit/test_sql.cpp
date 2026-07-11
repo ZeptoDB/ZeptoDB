@@ -2581,6 +2581,26 @@ TEST_F(SqlExecutorTest, CreateTable_IfNotExists) {
     EXPECT_FALSE(r2.ok());
 }
 
+TEST_F(SqlExecutorTest, CreateTable_WithPlacementOptions) {
+    auto r = executor->execute(
+        "CREATE TABLE operational_controls "
+        "(symbol INT64, value INT64, timestamp TIMESTAMP_NS) "
+        "WITH (placement = pinned_node, node_id = 8)");
+    ASSERT_TRUE(r.ok()) << r.error;
+    auto schema = pipeline->schema_registry().get("operational_controls");
+    ASSERT_TRUE(schema.has_value());
+    EXPECT_TRUE(schema->placement.configured);
+    EXPECT_EQ(schema->placement.mode, TablePlacementMode::PinnedNode);
+    EXPECT_EQ(schema->placement.node_id, 8u);
+
+    auto invalid = executor->execute(
+        "CREATE TABLE bad_controls "
+        "(symbol INT64, value INT64) "
+        "WITH (placement = hash_by_table, node_id = 8)");
+    EXPECT_FALSE(invalid.ok());
+    EXPECT_NE(invalid.error.find("node_id"), std::string::npos);
+}
+
 TEST_F(SqlExecutorTest, DropTable_Basic) {
     executor->execute("CREATE TABLE temp_tbl (x INT64)");
     EXPECT_TRUE(pipeline->schema_registry().exists("temp_tbl"));

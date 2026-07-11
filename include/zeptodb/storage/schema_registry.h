@@ -41,6 +41,18 @@ struct ColumnDef {
     ColumnType  type = ColumnType::INT64;
 };
 
+enum class TablePlacementMode : uint8_t {
+    HashByTableAndSymbol = 0,
+    HashByTable          = 1,
+    PinnedNode           = 2,
+};
+
+struct TablePlacementOptions {
+    bool configured = false;
+    TablePlacementMode mode = TablePlacementMode::HashByTableAndSymbol;
+    uint32_t node_id = 0;
+};
+
 // ============================================================================
 // TableSchema: schema for one named table
 // ============================================================================
@@ -50,6 +62,7 @@ struct TableSchema {
     int64_t                ttl_ns = 0;  // 0 = no retention limit
     bool                   has_data = false;  // set true on first INSERT
     uint16_t               table_id = 0;  // stable name-derived id (0 = legacy/default)
+    TablePlacementOptions  placement;
 };
 
 // ============================================================================
@@ -69,7 +82,9 @@ public:
     }
 
     // Create a new table. Returns false if the table already exists.
-    bool create(const std::string& name, std::vector<ColumnDef> cols) {
+    bool create(const std::string& name,
+                std::vector<ColumnDef> cols,
+                TablePlacementOptions placement = {}) {
         std::unique_lock lk(mu_);
         if (tables_.count(name)) return false;
         const uint16_t table_id = allocate_table_id_locked_(name);
@@ -80,6 +95,7 @@ public:
         s.table_name = name;
         s.columns    = std::move(cols);
         s.table_id   = table_id;
+        s.placement  = placement;
         if (next_table_id_ <= table_id &&
             table_id < std::numeric_limits<uint16_t>::max()) {
             next_table_id_ = static_cast<uint16_t>(table_id + 1);
@@ -144,6 +160,19 @@ public:
         return true;
     }
 
+    bool set_placement(const std::string& name,
+                       TablePlacementOptions placement) {
+        std::unique_lock lk(mu_);
+        auto it = tables_.find(name);
+        if (it == tables_.end()) return false;
+        it->second.placement = placement;
+        return true;
+    }
+
+    bool clear_placement(const std::string& name) {
+        return set_placement(name, TablePlacementOptions{});
+    }
+
     // Returns the minimum TTL in nanoseconds across all tables with TTL set.
     // Returns 0 if no table has a TTL configured.
     [[nodiscard]] int64_t min_ttl_ns() const {
@@ -206,7 +235,8 @@ public:
     // names, enum-int column types, int64 ttl, uint16 table_id), so we skip
     // a full JSON dep. Format:
     //   {"next_table_id":N,"tables":[{"name":"...","table_id":T,"ttl_ns":L,
-    //     "has_data":0|1,"columns":[{"name":"c","type":N},...]},...]}
+    //     "has_data":0|1,"placement_configured":0|1,"placement_policy":N,
+    //     "placement_node_id":N,"columns":[{"name":"c","type":N},...]},...]}
 
     bool save_to(const std::string& path) const {
         // devlog 088: DDL hot-path optimization.
@@ -244,6 +274,12 @@ public:
                 << ",\"table_id\":" << s.table_id
                 << ",\"ttl_ns\":"   << s.ttl_ns
                 << ",\"has_data\":" << (s.has_data ? 1 : 0)
+                << ",\"placement_configured\":"
+                << (s.placement.configured ? 1 : 0)
+                << ",\"placement_policy\":"
+                << static_cast<int>(s.placement.mode)
+                << ",\"placement_node_id\":"
+                << s.placement.node_id
                 << ",\"columns\":[";
             for (size_t i = 0; i < s.columns.size(); ++i) {
                 if (i) out << ",";
@@ -300,6 +336,20 @@ public:
             uint32_t hd_val = 0;
             json_find_int_(obj, "has_data", 0, hd_val);
             ts.has_data = (hd_val != 0);
+            uint32_t placement_configured = 0;
+            json_find_int_(obj, "placement_configured", 0,
+                           placement_configured);
+            ts.placement.configured = (placement_configured != 0);
+            uint32_t placement_policy = 0;
+            json_find_int_(obj, "placement_policy", 0, placement_policy);
+            if (placement_policy <=
+                static_cast<uint32_t>(TablePlacementMode::PinnedNode)) {
+                ts.placement.mode =
+                    static_cast<TablePlacementMode>(placement_policy);
+            }
+            uint32_t placement_node_id = 0;
+            json_find_int_(obj, "placement_node_id", 0, placement_node_id);
+            ts.placement.node_id = placement_node_id;
             // columns
             size_t cpos = obj.find("\"columns\"");
             if (cpos != std::string::npos) {

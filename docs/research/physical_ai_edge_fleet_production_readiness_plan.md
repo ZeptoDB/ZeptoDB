@@ -29,7 +29,7 @@ fleet-global audit memory:
 | Persisted connector configuration | Done, devlog 213 | Server-local versioned config persistence reloads SQL/HTTP hooks and enabled state; ACK/cursor state persists separately through `checkpoint_path`. |
 | Idempotent sink contract | Done, devlog 213 | HTTP/design docs define `feed_event_id` idempotency, ACK-boundary replay, duplicate final-row behavior, and ACK-ledger source-of-truth rules. |
 | Backpressure and rate limits | Done, devlog 213 | Worker has explicit max rows, max bytes, retry/backoff, and per-pass failure-budget behavior. |
-| Live restart/fault tests | Partial, devlogs 203 and 213 | Standalone two-node replay covers live outage/fault cases; server tests now cover HTTP restart config reload and checkpoint replay skip over live tables. Remaining promotion evidence needs longer soak and node-replacement over the server runtime. |
+| Live restart/fault tests | Done, devlogs 203, 213, and 215 | Standalone two-node replay covers live outage/fault cases; server tests cover HTTP restart config reload and checkpoint replay skip over live tables; devlog 215 adds server-runtime restart soak, node-replacement, and two-live-HTTP-node convergence through the built-in SQL/HTTP adapter. |
 | Security and audit | Done, devlog 213 | Admin endpoints are RBAC/rate-limit gated and mutating edge/fleet config/start/stop/clear outcomes emit audit-buffer events without adapter secrets. |
 | Cross-architecture verification | Done, devlogs 212-213 | x86_64 and aarch64 focused/broad builds/tests pass with matching connector semantics. |
 | Promotion documentation | Partial, devlog 213 | API/design docs describe supported scope, limits, idempotency, and rollback/disable procedure. README-level GA positioning remains intentionally conservative while the path is experimental. |
@@ -69,6 +69,7 @@ The server path is now suitable for controlled experimental pilots behind the
 admin-gated runtime: durable config reload, checkpoint cursor reload,
 ACK-ledger paging for bounded SQL loads, idempotent sink docs,
 retry/failure-budget controls, restart regressions, and admin audit coverage
-are in place. The remaining promotion
-work is long-running soak/fault validation and node-replacement evidence over
-the server runtime before declaring a promoted ZeptoDB replication feature.
+are in place. Devlog 215 adds the missing server-runtime soak, node-replacement,
+and two-live-HTTP-node convergence evidence. The remaining promotion work is an
+explicit GA/operator rollout decision, public positioning update, and
+release-grade cross-architecture validation for the chosen supported scope.

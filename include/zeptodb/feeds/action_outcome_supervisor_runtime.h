@@ -76,11 +76,13 @@ struct ActionOutcomeSupervisorRuntimeHooks {
 
 /// Server-managed configuration for the experimental Action-Outcome supervisor.
 ///
-/// Thread-safety: value type. The first promoted path is shadow-only and
-/// admin-gated; actuator enforcement is intentionally out of scope.
+/// Thread-safety: value type. The supported rollout stage is an admin-gated
+/// controlled shadow pilot; promoted operator use and actuator enforcement are
+/// intentionally out of scope until the GA gates explicitly change.
 struct ActionOutcomeSupervisorRuntimeConfig {
     std::string name = "physical_ai_action_outcome";
     std::string mode = "shadow";
+    std::string rollout_stage = "controlled_shadow_pilot";
     std::string history_table = "physical_ai_action_history";
     std::string proposal_table = "physical_ai_action_proposals";
     std::string decision_table = "physical_ai_supervision_decisions";
@@ -122,6 +124,7 @@ struct ActionOutcomeSupervisorRuntimeSnapshot {
     bool failure_budget_exhausted = false;
     std::string name;
     std::string mode;
+    std::string rollout_stage;
     std::string history_table;
     std::string proposal_table;
     std::string decision_table;

@@ -68,12 +68,17 @@ TEST(ActionOutcomeSupervisorRuntimeTest, ConfigureStartStopExposeSnapshotAndMetr
     EXPECT_TRUE(snap.configured);
     EXPECT_TRUE(snap.enabled);
     EXPECT_EQ(snap.mode, "shadow");
+    EXPECT_EQ(snap.rollout_stage, "controlled_shadow_pilot");
     EXPECT_EQ(snap.history_table, "history");
     EXPECT_EQ(snap.batch_limit, 7u);
     EXPECT_EQ(snap.start_total, 1u);
 
     const std::string metrics = runtime.formatPrometheus();
     EXPECT_NE(metrics.find("zepto_action_outcome_supervisor_enabled{supervisor=\"runtime-test\"} 1"),
+              std::string::npos);
+    EXPECT_NE(metrics.find(
+                  "zepto_action_outcome_supervisor_rollout_stage"
+                  "{supervisor=\"runtime-test\",stage=\"controlled_shadow_pilot\"} 1"),
               std::string::npos);
     EXPECT_NE(metrics.find("zepto_action_outcome_supervisor_worker_passes_total{supervisor=\"runtime-test\"} 0"),
               std::string::npos);
@@ -91,6 +96,11 @@ TEST(ActionOutcomeSupervisorRuntimeTest, RejectsInvalidModeAndLimits) {
     EXPECT_NE(error.find("shadow"), std::string::npos);
 
     config.mode = "shadow";
+    config.rollout_stage = "promoted_operator_feature";
+    EXPECT_FALSE(runtime.configure(config, &error));
+    EXPECT_NE(error.find("controlled_shadow_pilot"), std::string::npos);
+
+    config.rollout_stage = "controlled_shadow_pilot";
     config.batch_limit = 0;
     EXPECT_FALSE(runtime.configure(config, &error));
     EXPECT_NE(error.find("batch_limit"), std::string::npos);

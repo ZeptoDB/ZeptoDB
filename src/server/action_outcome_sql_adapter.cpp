@@ -616,6 +616,20 @@ bool validateActionOutcomeSqlAdapterConfig(
     const ActionOutcomeSqlAdapterConfig& config,
     std::string* error) {
     const auto& runtime = config.runtime;
+    if (runtime.name.empty()) {
+        if (error) *error = "supervisor name is required";
+        return false;
+    }
+    if (runtime.mode != "shadow") {
+        if (error) *error = "only shadow mode is supported";
+        return false;
+    }
+    if (runtime.rollout_stage != "controlled_shadow_pilot") {
+        if (error) {
+            *error = "only rollout_stage=controlled_shadow_pilot is supported";
+        }
+        return false;
+    }
     const std::vector<std::pair<std::string, std::string>> identifiers = {
         {runtime.history_table, "history_table"},
         {runtime.proposal_table, "proposal_table"},

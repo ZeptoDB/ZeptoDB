@@ -685,6 +685,7 @@ static std::string action_outcome_supervisor_persisted_config_json(
        << json_bool_literal(persisted.create_tables_if_missing) << ",\n"
        << "  \"name\": " << json_quote(runtime.name) << ",\n"
        << "  \"mode\": " << json_quote(runtime.mode) << ",\n"
+       << "  \"rollout_stage\": " << json_quote(runtime.rollout_stage) << ",\n"
        << "  \"history_table\": " << json_quote(runtime.history_table) << ",\n"
        << "  \"proposal_table\": " << json_quote(runtime.proposal_table) << ",\n"
        << "  \"decision_table\": " << json_quote(runtime.decision_table) << ",\n"
@@ -825,6 +826,8 @@ static bool parse_persisted_action_outcome_supervisor_config(
     auto& runtime = sql.runtime;
     runtime.name = json_string_field(body, "name", runtime.name);
     runtime.mode = json_string_field(body, "mode", runtime.mode);
+    runtime.rollout_stage =
+        json_string_field(body, "rollout_stage", runtime.rollout_stage);
     runtime.history_table =
         json_string_field(body, "history_table", runtime.history_table);
     runtime.proposal_table =
@@ -1209,6 +1212,7 @@ static std::string action_outcome_supervisor_status_json(
        << (snap.failure_budget_exhausted ? "true" : "false")
        << ",\"name\":" << json_quote(snap.name)
        << ",\"mode\":" << json_quote(snap.mode)
+       << ",\"rollout_stage\":" << json_quote(snap.rollout_stage)
        << ",\"history_table\":" << json_quote(snap.history_table)
        << ",\"proposal_table\":" << json_quote(snap.proposal_table)
        << ",\"decision_table\":" << json_quote(snap.decision_table)
@@ -4409,13 +4413,44 @@ void HttpServer::setup_routes() {
             json += ",\"accepted\":" + std::to_string(st.accepted);
             json += ",\"rejected_row_cap\":" +
                     std::to_string(st.rejected_row_cap);
+            json += ",\"rejected_byte_cap\":" +
+                    std::to_string(st.rejected_byte_cap);
+            json += ",\"rejected_latency_cap\":" +
+                    std::to_string(st.rejected_latency_cap);
             json += ",\"errors\":" + std::to_string(st.errors);
             json += ",\"rows_materialized\":" +
                     std::to_string(st.rows_materialized);
+            json += ",\"bytes_materialized\":" +
+                    std::to_string(st.bytes_materialized);
             json += ",\"last_left_rows\":" +
                     std::to_string(st.last_left_rows);
             json += ",\"last_right_rows\":" +
                     std::to_string(st.last_right_rows);
+            json += ",\"last_materialized_bytes\":" +
+                    std::to_string(st.last_materialized_bytes);
+            json += ",\"last_latency_us\":" +
+                    std::to_string(st.last_latency_us);
+            json += "}";
+            const auto wt = coordinator_->window_materialization_stats();
+            json += ",\"window_materialization\":{";
+            json += "\"candidates\":" + std::to_string(wt.candidates);
+            json += ",\"accepted\":" + std::to_string(wt.accepted);
+            json += ",\"rejected_row_cap\":" +
+                    std::to_string(wt.rejected_row_cap);
+            json += ",\"rejected_byte_cap\":" +
+                    std::to_string(wt.rejected_byte_cap);
+            json += ",\"rejected_latency_cap\":" +
+                    std::to_string(wt.rejected_latency_cap);
+            json += ",\"errors\":" + std::to_string(wt.errors);
+            json += ",\"rows_materialized\":" +
+                    std::to_string(wt.rows_materialized);
+            json += ",\"bytes_materialized\":" +
+                    std::to_string(wt.bytes_materialized);
+            json += ",\"last_rows\":" + std::to_string(wt.last_rows);
+            json += ",\"last_materialized_bytes\":" +
+                    std::to_string(wt.last_materialized_bytes);
+            json += ",\"last_latency_us\":" +
+                    std::to_string(wt.last_latency_us);
             json += "}}";
         }
         res.set_content(json, "application/json");
@@ -5176,6 +5211,17 @@ void HttpServer::setup_routes() {
             (cached_ps.create_table || cached_ps.drop_table ||
              cached_ps.alter_table)) {
             coordinator_->forward_ddl_to_remotes(req.body);
+            std::string placement_error;
+            if (!coordinator_->apply_catalog_table_placements(
+                    &placement_error)) {
+                res.status = 400;
+                res.set_content(
+                    build_error_json(placement_error.empty()
+                        ? "failed to apply catalog table placement"
+                        : placement_error),
+                    "application/json");
+                return;
+            }
         }
 
         // ----------------------------------------------------------------
@@ -6309,7 +6355,8 @@ void HttpServer::setup_admin_routes() {
     // -------------------------------------------------------------------------
     // POST /admin/action-outcome-supervisor - configure and optionally enable
     // Body: {"name":"physical_ai_action_outcome","enabled":true,
-    //        "mode":"shadow","history_table":"...",
+    //        "mode":"shadow","rollout_stage":"controlled_shadow_pilot",
+    //        "history_table":"...",
     //        "proposal_table":"...","decision_table":"...",
     //        "evidence_table":"...","fail_closed_action":"manual_review",
     //        "worker_enabled":false,"worker_poll_interval_ms":1000,
@@ -6327,6 +6374,8 @@ void HttpServer::setup_admin_routes() {
         zeptodb::feeds::ActionOutcomeSupervisorRuntimeConfig config;
         config.name = json_string_field(req.body, "name", config.name);
         config.mode = json_string_field(req.body, "mode", config.mode);
+        config.rollout_stage =
+            json_string_field(req.body, "rollout_stage", config.rollout_stage);
         config.history_table = json_string_field(
             req.body, "history_table", config.history_table);
         config.proposal_table = json_string_field(
@@ -7908,7 +7957,17 @@ std::string HttpServer::build_prometheus_metrics() const {
         os << "zepto_small_table_join_row_cap_rejections_total "
            << join_stats.rejected_row_cap << "\n\n";
 
-        os << "# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside row-cap rejection\n";
+        os << "# HELP zepto_small_table_join_byte_cap_rejections_total Bounded small-table JOINs rejected because estimated materialized bytes exceeded the cap\n";
+        os << "# TYPE zepto_small_table_join_byte_cap_rejections_total counter\n";
+        os << "zepto_small_table_join_byte_cap_rejections_total "
+           << join_stats.rejected_byte_cap << "\n\n";
+
+        os << "# HELP zepto_small_table_join_latency_cap_rejections_total Bounded small-table JOINs rejected because coordinator-local latency exceeded the cap\n";
+        os << "# TYPE zepto_small_table_join_latency_cap_rejections_total counter\n";
+        os << "zepto_small_table_join_latency_cap_rejections_total "
+           << join_stats.rejected_latency_cap << "\n\n";
+
+        os << "# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside configured cap rejections\n";
         os << "# TYPE zepto_small_table_join_errors_total counter\n";
         os << "zepto_small_table_join_errors_total "
            << join_stats.errors << "\n\n";
@@ -7917,6 +7976,11 @@ std::string HttpServer::build_prometheus_metrics() const {
         os << "# TYPE zepto_small_table_join_rows_materialized_total counter\n";
         os << "zepto_small_table_join_rows_materialized_total "
            << join_stats.rows_materialized << "\n\n";
+
+        os << "# HELP zepto_small_table_join_bytes_materialized_total Estimated bytes materialized into coordinator-local temporary tables for accepted bounded small-table JOINs\n";
+        os << "# TYPE zepto_small_table_join_bytes_materialized_total counter\n";
+        os << "zepto_small_table_join_bytes_materialized_total "
+           << join_stats.bytes_materialized << "\n\n";
 
         os << "# HELP zepto_small_table_join_last_left_rows Last bounded small-table JOIN left-side row count\n";
         os << "# TYPE zepto_small_table_join_last_left_rows gauge\n";
@@ -7927,6 +7991,72 @@ std::string HttpServer::build_prometheus_metrics() const {
         os << "# TYPE zepto_small_table_join_last_right_rows gauge\n";
         os << "zepto_small_table_join_last_right_rows "
            << join_stats.last_right_rows << "\n\n";
+
+        os << "# HELP zepto_small_table_join_last_materialized_bytes Last bounded small-table JOIN estimated materialized bytes\n";
+        os << "# TYPE zepto_small_table_join_last_materialized_bytes gauge\n";
+        os << "zepto_small_table_join_last_materialized_bytes "
+           << join_stats.last_materialized_bytes << "\n\n";
+
+        os << "# HELP zepto_small_table_join_last_latency_us Last bounded small-table JOIN coordinator-local latency in microseconds\n";
+        os << "# TYPE zepto_small_table_join_last_latency_us gauge\n";
+        os << "zepto_small_table_join_last_latency_us "
+           << join_stats.last_latency_us << "\n\n";
+
+        const auto window_stats = coordinator_->window_materialization_stats();
+        os << "# HELP zepto_window_materialization_candidates_total Cluster full-data window materialization candidates seen by the coordinator\n";
+        os << "# TYPE zepto_window_materialization_candidates_total counter\n";
+        os << "zepto_window_materialization_candidates_total "
+           << window_stats.candidates << "\n\n";
+
+        os << "# HELP zepto_window_materialization_accepted_total Cluster full-data window materializations accepted and executed by the coordinator\n";
+        os << "# TYPE zepto_window_materialization_accepted_total counter\n";
+        os << "zepto_window_materialization_accepted_total "
+           << window_stats.accepted << "\n\n";
+
+        os << "# HELP zepto_window_materialization_row_cap_rejections_total Cluster full-data window materializations rejected because rows exceeded the cap\n";
+        os << "# TYPE zepto_window_materialization_row_cap_rejections_total counter\n";
+        os << "zepto_window_materialization_row_cap_rejections_total "
+           << window_stats.rejected_row_cap << "\n\n";
+
+        os << "# HELP zepto_window_materialization_byte_cap_rejections_total Cluster full-data window materializations rejected because estimated materialized bytes exceeded the cap\n";
+        os << "# TYPE zepto_window_materialization_byte_cap_rejections_total counter\n";
+        os << "zepto_window_materialization_byte_cap_rejections_total "
+           << window_stats.rejected_byte_cap << "\n\n";
+
+        os << "# HELP zepto_window_materialization_latency_cap_rejections_total Cluster full-data window materializations rejected because coordinator-local latency exceeded the cap\n";
+        os << "# TYPE zepto_window_materialization_latency_cap_rejections_total counter\n";
+        os << "zepto_window_materialization_latency_cap_rejections_total "
+           << window_stats.rejected_latency_cap << "\n\n";
+
+        os << "# HELP zepto_window_materialization_errors_total Cluster full-data window materialization errors outside configured cap rejections\n";
+        os << "# TYPE zepto_window_materialization_errors_total counter\n";
+        os << "zepto_window_materialization_errors_total "
+           << window_stats.errors << "\n\n";
+
+        os << "# HELP zepto_window_materialization_rows_materialized_total Rows materialized into coordinator-local temporary tables for accepted full-data window queries\n";
+        os << "# TYPE zepto_window_materialization_rows_materialized_total counter\n";
+        os << "zepto_window_materialization_rows_materialized_total "
+           << window_stats.rows_materialized << "\n\n";
+
+        os << "# HELP zepto_window_materialization_bytes_materialized_total Estimated bytes materialized into coordinator-local temporary tables for accepted full-data window queries\n";
+        os << "# TYPE zepto_window_materialization_bytes_materialized_total counter\n";
+        os << "zepto_window_materialization_bytes_materialized_total "
+           << window_stats.bytes_materialized << "\n\n";
+
+        os << "# HELP zepto_window_materialization_last_rows Last full-data window materialization row count\n";
+        os << "# TYPE zepto_window_materialization_last_rows gauge\n";
+        os << "zepto_window_materialization_last_rows "
+           << window_stats.last_rows << "\n\n";
+
+        os << "# HELP zepto_window_materialization_last_materialized_bytes Last full-data window materialization estimated bytes\n";
+        os << "# TYPE zepto_window_materialization_last_materialized_bytes gauge\n";
+        os << "zepto_window_materialization_last_materialized_bytes "
+           << window_stats.last_materialized_bytes << "\n\n";
+
+        os << "# HELP zepto_window_materialization_last_latency_us Last full-data window materialization coordinator-local latency in microseconds\n";
+        os << "# TYPE zepto_window_materialization_last_latency_us gauge\n";
+        os << "zepto_window_materialization_last_latency_us "
+           << window_stats.last_latency_us << "\n\n";
     }
 
     os << "# HELP zepto_rows_scanned_total Total number of rows scanned\n";

@@ -44,6 +44,20 @@ static const uint16_t PORT_OFF = static_cast<uint16_t>(
          std::chrono::steady_clock::now().time_since_epoch().count())) % 30000);
 static inline uint16_t P(uint16_t n) { return static_cast<uint16_t>(n + PORT_OFF); }
 
+static std::string request_stats_until_contains(const std::string& host,
+                                                uint16_t port,
+                                                const std::string& needle) {
+    std::string last;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    do {
+        zeptodb::cluster::TcpRpcClient client(host, port);
+        last = client.request_stats();
+        if (last.find(needle) != std::string::npos) return last;
+        std::this_thread::sleep_for(20ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    return last;
+}
+
 // Helper: load an all-features Enterprise license into the global singleton
 static void ensure_enterprise_license() {
     static bool loaded = false;
@@ -1086,7 +1100,8 @@ TEST(HttpCluster, DataNodeStats_IncludesIdHostPort) {
     TestNode data_node;
     data_node.ingest(50);
 
-    uint16_t rpc_port = P(18803);
+    uint16_t rpc_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(rpc_port, 0u);
     zeptodb::cluster::TcpRpcServer rpc_srv;
     rpc_srv.set_stats_callback([&]() {
         const auto& s = data_node.pipeline->stats();
@@ -1102,11 +1117,9 @@ TEST(HttpCluster, DataNodeStats_IncludesIdHostPort) {
     rpc_srv.start(rpc_port, [&](const std::string& sql) {
         return data_node.executor->execute(sql);
     });
-    std::this_thread::sleep_for(50ms);
 
     // Request stats via RPC client
-    zeptodb::cluster::TcpRpcClient client("127.0.0.1", rpc_port);
-    auto stats = client.request_stats();
+    auto stats = request_stats_until_contains("127.0.0.1", rpc_port, "\"id\":42");
     EXPECT_NE(stats.find("\"id\":42"), std::string::npos);
     EXPECT_NE(stats.find("\"host\":\"127.0.0.1\""), std::string::npos);
     EXPECT_NE(stats.find("\"port\":" + std::to_string(rpc_port)), std::string::npos);
@@ -1120,7 +1133,8 @@ TEST(HttpCluster, TcpRpcClient_ResolvesHostname) {
     TestNode data_node;
     data_node.ingest(10);
 
-    uint16_t rpc_port = P(18804);
+    uint16_t rpc_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(rpc_port, 0u);
     zeptodb::cluster::TcpRpcServer rpc_srv;
     rpc_srv.set_stats_callback([]() {
         return std::string("{\"id\":99,\"state\":\"ACTIVE\"}");
@@ -1128,16 +1142,13 @@ TEST(HttpCluster, TcpRpcClient_ResolvesHostname) {
     rpc_srv.start(rpc_port, [&](const std::string& sql) {
         return data_node.executor->execute(sql);
     });
-    std::this_thread::sleep_for(50ms);
 
     // "localhost" should resolve via getaddrinfo fallback
-    zeptodb::cluster::TcpRpcClient client("localhost", rpc_port);
-    auto stats = client.request_stats();
+    auto stats = request_stats_until_contains("localhost", rpc_port, "\"id\":99");
     EXPECT_NE(stats.find("\"id\":99"), std::string::npos);
 
     // "127.0.0.1" should still work via inet_pton
-    zeptodb::cluster::TcpRpcClient client2("127.0.0.1", rpc_port);
-    auto stats2 = client2.request_stats();
+    auto stats2 = request_stats_until_contains("127.0.0.1", rpc_port, "\"id\":99");
     EXPECT_NE(stats2.find("\"id\":99"), std::string::npos);
 
     rpc_srv.stop();

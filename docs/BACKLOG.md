@@ -6,14 +6,61 @@
 > Latest live S3 opt-in smoke passed separately, 2/2, with temporary bucket
 > cleanup verified. aarch64 is covered by the Graviton CI gate on PR/main.
 >
-> Last cleaned: 2026-07-10
+> Last cleaned: 2026-07-11
 >
-> Devlog: last `214_release_docker_multiarch_and_perf_smoke.md` -> next `215_*.md`
+> Devlog: last `221_aarch64_cluster_stats_test_port_hardening.md`
+> -> next `222_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **aarch64 cluster stats test port hardening** (devlog 221) —
+  switched the cluster stats RPC and hostname-resolution tests to
+  kernel-assigned test ports plus bounded stats-readiness retries after the
+  Graviton release gate exposed a single parallel CTest race.
+- ✅ **P3 Agent Memory ANN production policy gate** (devlog 220) —
+  `bench_agent_memory` now supports tenant-filter-heavy production evaluation
+  with `--tenant-count` and `--query-tenant-index`, then prints an explicit
+  policy status using recall, latency, ANN build-time, and optional ANN-memory
+  thresholds. Exact scan remains the default until a real embedding dump passes
+  those gates.
+- ✅ **P3 cluster window materialization product policy and limits**
+  (devlog 219) — promoted the coordinator-local full-data window
+  materialization path for declared operational/control tables under explicit
+  guardrails. `WindowMaterializationConfig` now disables the path or enforces
+  row, estimated-byte, and optional latency caps, failing closed instead of
+  falling back to partial scatter semantics. `/stats` and Prometheus expose
+  candidate, accepted, cap rejection, materialized row/byte, and last-attempt
+  latency telemetry.
+- ✅ **P3 bounded small-table JOIN product policy and limits**
+  (devlog 218) — promoted the coordinator-local small-table hash JOIN path for
+  its documented operational/control-table scope. `SmallTableJoinConfig` now
+  acts as the feature policy, can disable matching candidates explicitly, and
+  enforces per-side row, estimated materialized-byte, and optional latency
+  caps. `/stats` and Prometheus expose row/byte/latency cap rejections,
+  materialized-byte totals, and last-attempt latency/byte gauges.
+- ✅ **P3 Operational table placement catalog and DDL persistence**
+  (devlog 217) — promoted Experiment 012 placement metadata from runtime-only
+  control state into schema-catalog metadata and `CREATE TABLE ... WITH`
+  options. Coordinators re-apply catalog placement after node registration and
+  DDL, and successful admin placement updates persist back to the local schema
+  catalog. Placement remains experimental until rebalance/failover semantics
+  are promoted separately.
+- ✅ **P0 Physical AI Action-Outcome supervisor rollout decision**
+  (devlog 216) — added explicit runtime/API rollout-stage gating. The only
+  accepted stage is now `controlled_shadow_pilot`; attempts to configure
+  `promoted_operator_feature` are rejected until GA/operator gates are
+  deliberately reopened. Status, metrics, server-local config persistence, and
+  SQL catalog-backed config now carry the rollout stage.
+- ✅ **P3 Physical AI edge/fleet live promotion validation** (devlog 215) —
+  added server-runtime restart soak, node-replacement, and two-live-HTTP-node
+  regressions for the built-in SQL/HTTP adapter. The remote ACK lookup now
+  narrows by numeric `stream_seq` and verifies `feed_event_id` client-side, so
+  remote HTTP string-column comparison drift cannot starve bounded replay past
+  ACKed prefixes. This closes the remaining edge/fleet promotion-evidence gap;
+  the next step is the explicit GA/operator rollout decision and public
+  positioning update.
 - ✅ **Release Docker multi-arch and perf smoke closure** (devlog 214) —
   converted Kafka, MQTT, and OPC-UA hot-path perf harnesses into default
   CI-safe smoke tests; the local CTest gate now runs 1727 tests with no
@@ -25,9 +72,10 @@
   checkpoint-backed ACK/cursor reload, idempotent sink docs, explicit
   `outbox_query_limit`/`max_outbox_bytes` SQL load bounds with ACK-ledger paging,
   `max_failures_per_pass` and `retry_backoff_ms` runtime controls, and
-  mutating admin audit/rate-limit regression coverage. The connector remains
-  experimental while long-running server-runtime soak/fault validation and
-  node-replacement evidence remain before promotion.
+  mutating admin audit/rate-limit regression coverage. Devlog 215 closes the
+  remaining server-runtime restart soak and node-replacement evidence gap; the
+  connector remains experimental until the GA/operator rollout decision is
+  recorded.
 - ✅ **P3 Physical AI edge/fleet built-in SQL/HTTP adapter** (devlog 212) —
   added `EdgeFleetSqlHttpAdapterConfig`, local table bootstrap, SQL/HTTP
   outbox loading, fleet inbox/final/ACK/telemetry sinks, and
@@ -108,9 +156,9 @@
   lifecycle counters, last-pass telemetry, HTTP status fields, Prometheus
   worker metrics, and admin lifecycle tests with installed hooks. This closes
   the server-owned worker lifecycle gap; devlog 212 adds the built-in SQL/HTTP
-  adapter. The remaining product-promotion blockers are persisted connector
-  config, idempotent sink documentation, long-running soak/fault tests,
-  backpressure, and cross-architecture verification.
+  adapter. Devlogs 213 and 215 close the persisted config, idempotent sink,
+  backpressure, cross-architecture, restart soak, and node-replacement evidence
+  gaps; only the GA/operator rollout decision remains.
 - ✅ **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
   added `EdgeFleetConnectorRuntime` and admin endpoints for the experimental
   connector lifecycle: `GET`, `POST`, and `DELETE`
@@ -127,9 +175,9 @@
   through native SQL, materializes fleet inbox/final/ACK/telemetry rows through
   SQL inserts, and validates outage, dropped, duplicate, late, restart, ACK
   convergence, recovery JOIN, and suppression audit JOIN behavior. This closes
-  the SQL/HTTP source-sink adapter validation gap, while product promotion
-  still needs server lifecycle hooks, RBAC/admin controls, catalog or documented
-  runtime persistence, and operator docs.
+  the standalone SQL/HTTP source-sink adapter validation gap; devlogs 204-215
+  add the server lifecycle, RBAC/admin controls, persistence, operator-facing
+  docs, and live server-runtime promotion evidence.
 - ✅ **P3 Physical AI edge/fleet runtime connector** (devlog 202) —
   promoted the bounded edge-to-fleet feed semantics into an experimental C++
   runtime connector. `EdgeFleetFeedConnector` now owns bounded passes,
@@ -182,9 +230,9 @@
   operational/Action-Outcome tables, exposed admin-only runtime placement
   through `POST /admin/table-placement`, and surfaced bounded small-table JOIN
   candidates, accepted joins, row-cap rejections, errors, materialized rows,
-  and last-side row counts through `/stats` and Prometheus. Product promotion
-  still requires persisted catalog/DDL placement and broader operational
-  semantics.
+  and last-side row counts through `/stats` and Prometheus. Devlog 217 closes
+  the catalog/DDL persistence gap; product promotion still requires broader
+  rebalance/failover semantics.
 - ✅ **P3 experimental small-table distributed hash JOIN validation**
   (devlog 195) — added a bounded coordinator-local hash JOIN path for small
   operational tables. Experiment 011 now reports `suppression_join` as pass
@@ -505,12 +553,9 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
-| **Persisted operational table placement option** | Devlog 196 validates the experimental runtime control-plane path and Experiment 012 telemetry proof. The next product step is to persist placement in the catalog/DDL layer, e.g. a table option for `hash_by_table`, default table+symbol hashing, or pinned operational tables, instead of relying on an admin-only runtime override. | M |
-| **Productize bounded small-table JOIN policy** | Devlog 195 validates coordinator-local small-table JOIN under a strict row cap. Before promotion, decide whether it stays automatic, becomes a feature flag, or moves behind an optimizer rule with cost checks, and document memory/latency limits for operational/control tables. | M |
-| **Bounded distributed window materialization policy** | Devlog 194 fixes correctness for the validated Action-Outcome window replay shape. Product promotion needs explicit row/memory limits, telemetry for full-data materialization, and fallback/error semantics for large tables. | M |
-| **Physical AI edge/fleet promotion validation** | Devlogs 212-213 add the server-owned SQL/HTTP outbox-loader plus fleet-sink adapter, local contract bootstrap, config persistence, checkpoint reload coverage, idempotent sink docs, bounded SQL/backpressure controls, and admin audit/rate-limit coverage. Product promotion still needs long-running server-runtime soak/fault injection and node-replacement validation over live edge/fleet tables before a GA/operator rollout decision. | M |
-| **Productize Physical AI Action-Outcome supervisor** | Devlogs 206-211 add the admin-gated shadow runtime, hook contract, SQL-backed proposal/history/decision/evidence adapter, server-local and SQL catalog-backed durable config, live HTTP restart reinstall regressions, atomic commit-ledger sink repair, managed SQL worker lease/heartbeat with owner id/epoch fencing, admin RBAC/audit/rate-limit coverage, per-pass decision/sink error budgets, a SQL-backed soak/fault harness, matching x86_64/aarch64 CTest verification, node-replacement handoff validation, and commit-ledger stress validation. Product promotion now needs an explicit GA/operator rollout decision; the current design keeps the SQL lease supervisor-specific rather than consensus, and keeps generic multi-table transactions as a separate future SQL capability. | M |
+| **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172/220 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint; the benchmark now has tenant-heavy policy-gate thresholds. Next: run larger production embedding dumps through that gate before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
+| **Physical AI edge/fleet GA/operator rollout decision** | Devlogs 212-215 add the server-owned SQL/HTTP outbox-loader plus fleet-sink adapter, local and HTTP contract validation, config persistence, checkpoint reload coverage, idempotent sink docs, bounded SQL/backpressure controls, admin audit/rate-limit coverage, restart soak, node-replacement validation, two-live-HTTP-node convergence, and full local x86_64/aarch64 CTest evidence. Next: decide GA/operator scope, update public/API positioning, and verify GitHub Actions after push. | S |
+| **Promote Physical AI Action-Outcome supervisor operator feature** | Devlogs 206-216 now make the production decision explicit: the supported path is a `controlled_shadow_pilot` runtime only. The code rejects `promoted_operator_feature`, keeps the runtime shadow-only, persists the rollout stage in server-local/catalog config, and exposes it in status/metrics. Future operator promotion needs a new GA gate decision, public/operator docs, release-grade x86_64/aarch64 validation, and a documented consensus/transaction stance rather than relying on the supervisor-specific SQL lease and commit ledger. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.
@@ -639,7 +684,7 @@ No open P9 backlog items remain.
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 1 + 4 manual | Demo video → Show HN → Reddit |
-| **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
+| **P3** | Agent Memory / AI Context | 4 | Edge/fleet rollout decision → ANN policy → supervisor operator gate |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
 | **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
@@ -648,8 +693,8 @@ No open P9 backlog items remain.
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 32 items + 4 manual tasks**
+**Total open: 36 items + 4 manual tasks**
 
-**Critical path: P5 CDC connector → P2 demo video / launch collateral**
+**Critical path: P3 experiment promotions → P5 CDC connector → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) the MPP-cluster vs replication-cluster distinction is now captured in `docs/design/phase_c_distributed.md` (devlog 181) as a launch and enterprise-sales artefact. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.
