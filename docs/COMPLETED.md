@@ -1,10 +1,72 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 ---
 
 ## Latest
+
+- [x] **aarch64 cluster stats test port hardening** (devlog 221) —
+  Hardened the cluster stats RPC and hostname-resolution tests against
+  parallel Graviton CTest races by switching them to kernel-assigned test ports
+  and a bounded stats-readiness retry.
+
+- [x] **P3 Agent Memory ANN production policy gate** (devlog 220) —
+  Extended `bench_agent_memory` for production ANN default-policy evaluation:
+  `--tenant-count` and `--query-tenant-index` model tenant-filter-heavy real
+  embedding dumps, while recall, latency, ANN build-time, and optional
+  ANN-memory thresholds produce an explicit policy status. This keeps exact
+  scan as the default until a real production dump passes the documented gates.
+
+- [x] **P3 cluster window materialization product policy and limits**
+  (devlog 219) — Promoted coordinator-local full-data materialization for
+  distributed window, `FIRST`/`LAST`, `COUNT(DISTINCT)`, and similar
+  declared-table operational/control queries under explicit guardrails.
+  `WindowMaterializationConfig` can disable the path, enforce row and
+  estimated-byte caps, and optionally reject attempts over a latency cap.
+  Rejections fail closed with clear errors instead of falling back to partial
+  scatter semantics, and `/stats` plus Prometheus expose success, cap
+  rejection, materialized row/byte, and last-attempt latency telemetry.
+
+- [x] **P3 bounded small-table JOIN product policy and limits**
+  (devlog 218) — Promoted the coordinator-local small-table hash JOIN path for
+  simple declared-table JOINs over small operational/control tables. The path
+  is now governed by `SmallTableJoinConfig`: operators can disable it
+  explicitly, enforce per-side row caps, reject estimated materialized-byte
+  overages, and optionally reject attempts that exceed a latency cap. `/stats`
+  and Prometheus now expose row/byte/latency cap rejections plus materialized
+  byte and latency gauges. This does not promote arbitrary distributed JOIN
+  planning or cost-based broadcast JOIN optimization.
+
+- [x] **P3 Operational table placement catalog and DDL persistence**
+  (devlog 217) — Added persisted placement metadata to `TableSchema` and the
+  schema catalog, plus `CREATE TABLE ... WITH (placement = hash_by_table)` and
+  `WITH (placement = pinned_node, node_id = N)` support. `QueryCoordinator`
+  now re-applies catalog placement after node registration and DDL, while
+  successful admin placement updates persist back to the local schema catalog.
+  This closes the placement persistence blocker while keeping placement
+  experimental until rebalance/failover semantics are promoted separately.
+
+- [x] **P0 Physical AI Action-Outcome supervisor rollout decision**
+  (devlog 216) — Added explicit rollout-stage gating to the shadow-only
+  supervisor runtime and HTTP API. `controlled_shadow_pilot` is now the only
+  accepted stage; `promoted_operator_feature` is rejected until a future
+  GA/operator gate deliberately changes the policy. The rollout stage is
+  exposed in status and metrics and persists through server-local and SQL
+  catalog-backed SQL adapter config.
+
+- [x] **P3 Physical AI edge/fleet live promotion validation**
+  (devlog 215) — Added CI-safe server-runtime soak, restart, node-replacement,
+  and two-live-HTTP-node regressions for the built-in SQL/HTTP edge/fleet
+  adapter. The adapter now checks fleet ACK idempotency by numeric
+  `stream_seq` plus client-side `feed_event_id` comparison, fixing remote HTTP
+  string-column ACK lookup drift while preserving the ACK ledger as source of
+  truth. Focused edge/fleet SQL/HTTP adapter tests pass 10/10 locally, and the
+  production branch passes full x86_64 and aarch64 CTest gates with 1742/1742
+  on each architecture plus a 2/2 live S3 opt-in smoke with temporary-bucket
+  cleanup verified. The connector has the promotion evidence needed for an
+  explicit GA/operator rollout decision; public positioning and GitHub Actions
+  verification remain required before changing rollout status.
 
 - [x] **P3 Physical AI edge/fleet production hardening**
   (devlog 213) — Added server-local SQL/HTTP adapter config persistence,
@@ -15,9 +77,9 @@ Last updated: 2026-07-10
   mutating admin audit/rate-limit regression coverage. The connector remains
   experimental; focused tests pass 33/33, x86_64/aarch64 CTest each report
   0 failed out of 1724 run tests, and live S3 opt-in smoke passes 2/2 with
-  temporary bucket cleanup verified. Remaining promotion evidence is
-  long-running server-runtime soak/fault testing and node-replacement
-  validation over live edge/fleet tables.
+  temporary bucket cleanup verified. Devlog 215 closes the remaining
+  server-runtime restart soak and node-replacement evidence gap; GA status now
+  depends on the explicit operator rollout decision and release-grade gates.
 
 - [x] **P3 Physical AI edge/fleet built-in SQL/HTTP adapter**
   (devlog 212) — Added `EdgeFleetSqlHttpAdapterConfig`, local Experiment 016
@@ -135,9 +197,10 @@ Last updated: 2026-07-10
   Prometheus worker metrics, and HTTP status fields. Focused tests pass for
   bounded worker passes, background convergence across batches, loader outage
   recovery, missing-hook rejection, HTTP admin lifecycle with installed hooks,
-  and worker metrics. This remains experimental until the built-in SQL/HTTP
-  adapter, persisted config, soak/fault tests, and cross-architecture
-  verification are complete.
+  and worker metrics. Devlogs 212-215 add the built-in SQL/HTTP adapter,
+  persisted config, soak/restart and node-replacement validation, and
+  cross-architecture verification; the path remains experimental until the
+  GA/operator rollout decision is recorded.
 
 - [x] **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
   Added `EdgeFleetConnectorRuntime`, plus admin endpoints for
@@ -169,8 +232,9 @@ Last updated: 2026-07-10
   for final-table success followed by ACK failure, and Prometheus formatting.
   Focused C++ tests pass for bounded processing, dropped/outage-style retry,
   duplicate handling, late delivery, restart reload, malformed input,
-  ACK-boundary failure, and metrics. This is experimental and still needs
-  concrete SQL/HTTP source/sink adapters before product promotion.
+  ACK-boundary failure, and metrics. Devlogs 203 and 212-215 add concrete
+  SQL/HTTP source/sink adapters plus server-runtime promotion evidence; the
+  remaining step is the GA/operator rollout decision.
 
 - [x] **P3 Physical AI bounded edge/fleet feed replay** (devlog 201) —
   Added Experiment 016, a research-only explicit edge-to-fleet feed replay.
@@ -225,8 +289,8 @@ Last updated: 2026-07-10
   errors, and materialized rows. Experiment 012 pins Action-Outcome
   query/recommendation/retrieval tables to node 8 and suppressions to node 1,
   then verifies strict SQL/JOIN/window replay with telemetry status pass. This
-  is not yet a promoted product placement feature because placement is not
-  persisted in DDL/catalog metadata.
+  is not yet a promoted product placement feature; devlog 217 adds
+  DDL/catalog persistence, while rebalance/failover semantics remain separate.
 
 - [x] **P3 experimental small-table distributed hash JOIN validation**
   (devlog 195) — Added a bounded coordinator-local hash JOIN path for small

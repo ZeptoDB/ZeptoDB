@@ -189,9 +189,15 @@ deterministic center-plus-noise embeddings and fixture-matched query vectors,
 while `real` loads precomputed vector-only embedding files with
 `--embedding-file PATH`. The real fixture accepts comma, semicolon, or
 whitespace-separated finite floats with optional brackets and comments, then
-uses the loaded vectors for memories, cache entries, and recall queries. The
-compare table includes sparse, IVF, and HNSW profiles plus ANN memory bytes and
-snapshot sidecar bytes so recall/latency decisions can include footprint.
+uses the loaded vectors for memories, cache entries, and recall queries.
+Production policy evaluation can set `--tenant-count` and
+`--query-tenant-index` to simulate tenant-filter-heavy distributions where only
+a small slice of the global embedding dump is visible to a request. The compare
+table includes sparse, IVF, and HNSW profiles plus tenant count, ANN memory
+bytes, snapshot sidecar bytes, recall thresholds, build thresholds, optional
+memory thresholds, and an explicit policy status (`scan_ok`, `needs_ann`,
+`eligible`, or a named rejection reason). This keeps exact scan as the default
+until a real production dump passes recall, latency, build, and footprint gates.
 
 ## Eviction
 
@@ -651,8 +657,8 @@ Add cluster-aware metrics:
 
 ## Next Steps
 
-- Extend sparse/HNSW/IVF evaluation with larger production embedding dumps and
-  tenant-filter-heavy workloads before choosing a default ANN policy.
+- Run larger production embedding dumps through the tenant-heavy ANN policy gate
+  before choosing a default ANN policy.
 - Revisit persisted ANN index sidecars only if rebuild time becomes the
   operational bottleneck after production-dump testing.
 - Optional enterprise embedding provider integration.

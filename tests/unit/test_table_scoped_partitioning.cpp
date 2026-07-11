@@ -253,7 +253,14 @@ TEST(TableScopedPartitioning, SchemaRegistryPersistsAcrossRestart) {
     {
         SchemaRegistry r;
         ASSERT_TRUE(r.create("t_a", {{"x", ColumnType::INT64}}));
-        ASSERT_TRUE(r.create("t_b", {{"y", ColumnType::INT64}, {"z", ColumnType::INT32}}));
+        TablePlacementOptions placement;
+        placement.configured = true;
+        placement.mode = TablePlacementMode::PinnedNode;
+        placement.node_id = 8;
+        ASSERT_TRUE(r.create("t_b",
+                             {{"y", ColumnType::INT64},
+                              {"z", ColumnType::INT32}},
+                             placement));
         ASSERT_TRUE(r.set_ttl("t_b", 3600LL * 1'000'000'000LL));
         r.mark_has_data("t_a");
         ASSERT_TRUE(r.save_to(path));
@@ -272,6 +279,9 @@ TEST(TableScopedPartitioning, SchemaRegistryPersistsAcrossRestart) {
         EXPECT_TRUE(a->has_data);
         EXPECT_FALSE(b->has_data);
         EXPECT_EQ(b->ttl_ns, 3600LL * 1'000'000'000LL);
+        EXPECT_TRUE(b->placement.configured);
+        EXPECT_EQ(b->placement.mode, TablePlacementMode::PinnedNode);
+        EXPECT_EQ(b->placement.node_id, 8u);
         EXPECT_EQ(b->columns.size(), 2u);
         EXPECT_EQ(b->columns[0].name, "y");
         // next_table_id_ must be > max(loaded table_id); creating a new one

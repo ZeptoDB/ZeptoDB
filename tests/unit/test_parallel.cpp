@@ -12,6 +12,7 @@
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/storage/column_store.h"
 #include "zeptodb/storage/arena_allocator.h"
+#include "test_port_helper.h"
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -19,7 +20,6 @@
 #include <latch>
 #include <numeric>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 using namespace zeptodb::execution;
@@ -739,10 +739,7 @@ TEST(DistributedScheduler, ScatterGather_WithRpcServer) {
     pipeline.drain_sync(10);
 
     zeptodb::cluster::TcpRpcServer srv;
-    uint16_t sched_port = 19940 + static_cast<uint16_t>(
-        ((static_cast<unsigned>(::getpid()) * 2654435761u) ^
-         static_cast<unsigned>(
-             std::chrono::steady_clock::now().time_since_epoch().count())) % 30000);
+    const uint16_t sched_port = zepto_test_util::pick_free_port();
     srv.start(sched_port, [&](const std::string& sql) {
         QueryExecutor ex(pipeline);
         return ex.execute(sql);

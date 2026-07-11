@@ -655,8 +655,9 @@ runtime.stop();
 - Missing checkpoint files start with empty ACK state.
 - Existing checkpoint parse/load failures block `start()`.
 - Configuration is process-local and experimental.
-- Built-in SQL/HTTP polling and fleet sink execution are not promoted product
-  APIs yet; embeddings must supply idempotent hooks.
+- Built-in SQL/HTTP polling and fleet sink execution are available through the
+  HTTP server adapter and remain experimental until the GA/operator rollout
+  scope is approved.
 
 The HTTP server exposes this runtime through
 `/admin/edge-fleet-connector` and appends its metrics to `/metrics`.
@@ -680,6 +681,7 @@ using namespace zeptodb::feeds;
 ActionOutcomeSupervisorRuntimeConfig cfg;
 cfg.name = "physical_ai_action_outcome";
 cfg.mode = "shadow";
+cfg.rollout_stage = "controlled_shadow_pilot";
 cfg.history_table = "physical_ai_action_history";
 cfg.proposal_table = "physical_ai_action_proposals";
 cfg.decision_table = "physical_ai_supervision_decisions";
@@ -719,7 +721,7 @@ if (!runtime.setWorkerHooks(std::move(hooks), &error)) {
     // stop before changing hooks on an enabled runtime
 }
 if (!runtime.configure(cfg, &error)) {
-    // invalid mode, missing table names, or invalid limits
+    // invalid mode/rollout stage, missing table names, or invalid limits
 }
 if (!runtime.start(&error)) {
     // missing config or missing worker hooks for worker mode
@@ -736,6 +738,8 @@ runtime.stop();
 - `configure()`, `setWorkerHooks()`, `start()`, `stop()`, `clear()`,
   `runOnce()`, and `snapshot()` are internally synchronized.
 - Only `mode="shadow"` is accepted.
+- Only `rollout_stage="controlled_shadow_pilot"` is accepted; promoted
+  operator-feature rollout is rejected until the GA gates explicitly change.
 - Each worker pass sorts proposals by `source_ts_ns` and `proposal_id`, skips
   already-decided proposals before consuming the batch budget, then caps
   non-duplicate candidate work at `batch_limit`.
@@ -1300,15 +1304,11 @@ derived from text.
 
 ### Experimental operational table placement
 
-Declared tables can use an explicit runtime placement policy through
-`PartitionRouter` or `QueryCoordinator`. This is an experimental runtime
-control-plane path intended for small operational/control tables that do not
-expose a natural symbol column.
-
-Placement updates are not yet persisted in DDL or catalog metadata, and they
-are not a rebalance/failover policy. Treat them as a bounded operational
-override until the product-promotion gates in
-`docs/research/EXPERIMENT_GOVERNANCE.md` are met.
+Declared tables can use an explicit placement policy through `CREATE TABLE`
+options, `PartitionRouter`, or `QueryCoordinator`. This is an experimental
+path intended for small operational/control tables that do not expose a natural
+symbol column. `QueryCoordinator` persists admin placement updates into the
+local schema catalog and can re-apply catalog placement after restart.
 
 ```cpp
 #include "zeptodb/cluster/query_coordinator.h"
@@ -1320,16 +1320,23 @@ coord.add_remote_node({"127.0.0.1", 8224, 8});
 auto ddl = coord.execute_sql(
     "CREATE TABLE action_outcome_vendor_suppressions_010 ("
     "query_id STRING, candidate_id STRING, action_class STRING, "
-    "reasons STRING, timestamp_ns TIMESTAMP_NS)"
+    "reasons STRING, timestamp_ns TIMESTAMP_NS) "
+    "WITH (placement = pinned_node, node_id = 1)"
 );
 if (!ddl.ok()) throw std::runtime_error(ddl.error);
 
 std::string error;
-if (!coord.set_table_placement(
-        "action_outcome_vendor_suppressions_010",
-        zeptodb::cluster::TablePlacementPolicy::PinnedNode,
-        1,
-        &error)) {
+if (!coord.apply_catalog_table_placements(&error)) {
+    throw std::runtime_error(error);
+}
+
+zeptodb::cluster::QueryCoordinator::SmallTableJoinConfig join_cfg;
+join_cfg.policy =
+    zeptodb::cluster::QueryCoordinator::SmallTableJoinPolicy::BoundedBroadcast;
+join_cfg.row_limit = 4096;                  // per JOIN side
+join_cfg.max_materialized_bytes = 8 << 20;  // estimated bytes across both sides
+join_cfg.max_latency_us = 0;                // 0 disables latency rejection
+if (!coord.set_small_table_join_config(join_cfg, &error)) {
     throw std::runtime_error(error);
 }
 
@@ -1341,13 +1348,56 @@ auto join_stats = coord.small_table_join_stats();
 for a table through one table-level hash key. `TablePlacementPolicy::PinnedNode`
 routes all rows for a table to the provided node id. Use
 `clear_table_placement(table_name, &error)` to remove the override.
+Use `set_table_placement(table_name, policy, node_id, &error)` for admin
+updates; successful updates are persisted to the local schema catalog.
+Persisted placement metadata is not a rebalance/failover policy.
+
+### Bounded small-table JOIN policy
+
+`SmallTableJoinConfig` is the supported feature policy for this path. The
+default `BoundedBroadcast` policy keeps the path enabled for small
+operational/control-table hash JOINs under row and estimated-byte caps.
+`Disabled` rejects matching candidates explicitly instead of falling through to
+unsafe scatter-gather semantics. `max_latency_us` is optional and returns a
+clear error when a completed coordinator-local attempt exceeds the cap.
 
 `SmallTableJoinTelemetrySnapshot` reports bounded coordinator-local JOIN
-activity: candidates, accepted joins, row-cap rejections, non-cap errors,
-materialized rows, and the last left/right row counts. `reset_small_table_join_stats()`
-is intended for focused tests and replay harnesses. The telemetry describes the
-bounded small-table JOIN path only; it does not imply arbitrary distributed JOIN
-support.
+activity: candidates, accepted joins, row/byte/latency cap rejections, non-cap
+errors, materialized rows and bytes, last left/right row counts, last estimated
+materialized bytes, and last latency in microseconds.
+`reset_small_table_join_stats()` is intended for focused tests and replay
+harnesses. The telemetry describes the bounded small-table JOIN path only; it
+does not imply arbitrary distributed JOIN support.
+
+### Bounded window materialization policy
+
+`WindowMaterializationConfig` is the supported feature policy for distributed
+queries that need all base rows on the coordinator, including window functions,
+`FIRST`/`LAST`, `COUNT(DISTINCT)`, and non-decomposable statistical aggregates.
+The default `BoundedCoordinatorLocal` policy keeps the path enabled for
+declared operational/control tables under row and estimated-byte caps.
+`Disabled` rejects matching candidates explicitly. `max_latency_us` is optional
+and returns a clear error when a completed coordinator-local attempt exceeds
+the cap.
+
+```cpp
+zeptodb::cluster::QueryCoordinator::WindowMaterializationConfig window_cfg;
+window_cfg.row_limit = 65536;
+window_cfg.max_materialized_bytes = 64 << 20;
+window_cfg.max_latency_us = 0;  // 0 disables latency rejection
+if (!coord.set_window_materialization_config(window_cfg, &error)) {
+    throw std::runtime_error(error);
+}
+
+auto window_stats = coord.window_materialization_stats();
+```
+
+`WindowMaterializationTelemetrySnapshot` reports candidates, accepted
+materializations, row/byte/latency cap rejections, non-cap errors,
+materialized rows and bytes, last row count, last estimated bytes, and last
+latency in microseconds. Cap rejections fail closed; the coordinator does not
+fall back to partial scatter semantics because that can produce incorrect
+window state.
 
 ### Feed handlers
 

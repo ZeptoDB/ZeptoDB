@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <climits>
+#include <limits>
 
 namespace zeptodb::sql {
 
@@ -261,6 +262,37 @@ CreateTableStmt Parser::parse_create_table() {
     } while (match(TokenType::COMMA));
 
     expect(TokenType::RPAREN, ")");
+    if (match(TokenType::WITH)) {
+        expect(TokenType::LPAREN, "(");
+        do {
+            const std::string key =
+                to_upper_str(expect(TokenType::IDENT, "table option name").value);
+            expect(TokenType::EQ, "=");
+            if (key == "PLACEMENT" || key == "PLACEMENT_POLICY") {
+                if (current().type == TokenType::STRING ||
+                    current().type == TokenType::IDENT) {
+                    stmt.placement_policy = current().value;
+                    advance();
+                } else {
+                    throw std::runtime_error(
+                        "Expected placement policy string or identifier");
+                }
+            } else if (key == "NODE_ID" || key == "PLACEMENT_NODE_ID") {
+                const int64_t node_id = parse_integer_literal();
+                if (node_id <= 0 ||
+                    node_id > static_cast<int64_t>(
+                        std::numeric_limits<uint32_t>::max())) {
+                    throw std::runtime_error(
+                        "placement node_id must be a positive uint32");
+                }
+                stmt.placement_node_id = static_cast<uint32_t>(node_id);
+            } else {
+                throw std::runtime_error(
+                    "Unsupported CREATE TABLE option: " + key);
+            }
+        } while (match(TokenType::COMMA));
+        expect(TokenType::RPAREN, ")");
+    }
     return stmt;
 }
 

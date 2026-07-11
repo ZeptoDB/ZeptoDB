@@ -1040,20 +1040,44 @@ curl http://localhost:8123/stats \
 | `last_ingest_latency_ns` | Latency of the most recent ingest (nanoseconds) |
 
 When the HTTP server is wired to a `QueryCoordinator`, `/stats` also includes
-experimental bounded small-table JOIN telemetry:
+bounded small-table JOIN telemetry:
 
 | Field | Description |
 |-------|-------------|
 | `small_table_join.candidates` | Bounded small-table JOIN candidates seen by the coordinator |
 | `small_table_join.accepted` | Candidates accepted and executed through coordinator-local materialization |
 | `small_table_join.rejected_row_cap` | Candidates rejected because a JOIN side exceeded the row cap |
-| `small_table_join.errors` | Non-row-cap failures in the bounded small-table JOIN path |
+| `small_table_join.rejected_byte_cap` | Candidates rejected because estimated materialized bytes exceeded the byte cap |
+| `small_table_join.rejected_latency_cap` | Candidates rejected because coordinator-local execution exceeded the latency cap |
+| `small_table_join.errors` | Non-cap failures in the bounded small-table JOIN path |
 | `small_table_join.rows_materialized` | Rows replayed into temporary coordinator-local JOIN tables |
+| `small_table_join.bytes_materialized` | Estimated bytes replayed into temporary coordinator-local JOIN tables for accepted JOINs |
 | `small_table_join.last_left_rows` | Left-side row count from the most recent bounded JOIN attempt |
 | `small_table_join.last_right_rows` | Right-side row count from the most recent bounded JOIN attempt |
+| `small_table_join.last_materialized_bytes` | Estimated materialized bytes from the most recent bounded JOIN attempt |
+| `small_table_join.last_latency_us` | Coordinator-local latency of the most recent bounded JOIN attempt, in microseconds |
 
 These fields describe the narrow coordinator-local small-table JOIN path. They
 are not a signal that arbitrary distributed JOIN planning is supported.
+
+`/stats` also includes bounded full-data window materialization telemetry:
+
+| Field | Description |
+|-------|-------------|
+| `window_materialization.candidates` | Full-data materialization candidates seen by the coordinator |
+| `window_materialization.accepted` | Candidates accepted and executed through coordinator-local materialization |
+| `window_materialization.rejected_row_cap` | Candidates rejected because fetched rows exceeded the row cap |
+| `window_materialization.rejected_byte_cap` | Candidates rejected because estimated materialized bytes exceeded the byte cap |
+| `window_materialization.rejected_latency_cap` | Candidates rejected because coordinator-local execution exceeded the latency cap |
+| `window_materialization.errors` | Non-cap failures in the full-data materialization path |
+| `window_materialization.rows_materialized` | Rows replayed into temporary coordinator-local tables for accepted attempts |
+| `window_materialization.bytes_materialized` | Estimated bytes replayed into temporary coordinator-local tables for accepted attempts |
+| `window_materialization.last_rows` | Base row count from the most recent materialization attempt |
+| `window_materialization.last_materialized_bytes` | Estimated materialized bytes from the most recent materialization attempt |
+| `window_materialization.last_latency_us` | Coordinator-local latency of the most recent materialization attempt, in microseconds |
+
+Cap rejections fail closed with an explicit SQL error. The coordinator does not
+fall back to partial scatter semantics for these queries.
 
 ---
 
@@ -1094,13 +1118,25 @@ zepto_small_table_join_accepted_total 4
 # TYPE zepto_small_table_join_row_cap_rejections_total counter
 zepto_small_table_join_row_cap_rejections_total 0
 
-# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside row-cap rejection
+# HELP zepto_small_table_join_byte_cap_rejections_total Bounded small-table JOINs rejected because estimated materialized bytes exceeded the cap
+# TYPE zepto_small_table_join_byte_cap_rejections_total counter
+zepto_small_table_join_byte_cap_rejections_total 0
+
+# HELP zepto_small_table_join_latency_cap_rejections_total Bounded small-table JOINs rejected because coordinator-local latency exceeded the cap
+# TYPE zepto_small_table_join_latency_cap_rejections_total counter
+zepto_small_table_join_latency_cap_rejections_total 0
+
+# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside configured cap rejections
 # TYPE zepto_small_table_join_errors_total counter
 zepto_small_table_join_errors_total 0
 
 # HELP zepto_small_table_join_rows_materialized_total Rows materialized into coordinator-local temporary tables for bounded small-table JOINs
 # TYPE zepto_small_table_join_rows_materialized_total counter
 zepto_small_table_join_rows_materialized_total 327
+
+# HELP zepto_small_table_join_bytes_materialized_total Estimated bytes materialized into coordinator-local temporary tables for accepted bounded small-table JOINs
+# TYPE zepto_small_table_join_bytes_materialized_total counter
+zepto_small_table_join_bytes_materialized_total 65536
 
 # HELP zepto_small_table_join_last_left_rows Last bounded small-table JOIN left-side row count
 # TYPE zepto_small_table_join_last_left_rows gauge
@@ -1109,6 +1145,58 @@ zepto_small_table_join_last_left_rows 72
 # HELP zepto_small_table_join_last_right_rows Last bounded small-table JOIN right-side row count
 # TYPE zepto_small_table_join_last_right_rows gauge
 zepto_small_table_join_last_right_rows 6
+
+# HELP zepto_small_table_join_last_materialized_bytes Last bounded small-table JOIN estimated materialized bytes
+# TYPE zepto_small_table_join_last_materialized_bytes gauge
+zepto_small_table_join_last_materialized_bytes 8192
+
+# HELP zepto_small_table_join_last_latency_us Last bounded small-table JOIN coordinator-local latency in microseconds
+# TYPE zepto_small_table_join_last_latency_us gauge
+zepto_small_table_join_last_latency_us 2100
+
+# HELP zepto_window_materialization_candidates_total Cluster full-data window materialization candidates seen by the coordinator
+# TYPE zepto_window_materialization_candidates_total counter
+zepto_window_materialization_candidates_total 3
+
+# HELP zepto_window_materialization_accepted_total Cluster full-data window materializations accepted and executed by the coordinator
+# TYPE zepto_window_materialization_accepted_total counter
+zepto_window_materialization_accepted_total 3
+
+# HELP zepto_window_materialization_row_cap_rejections_total Cluster full-data window materializations rejected because rows exceeded the cap
+# TYPE zepto_window_materialization_row_cap_rejections_total counter
+zepto_window_materialization_row_cap_rejections_total 0
+
+# HELP zepto_window_materialization_byte_cap_rejections_total Cluster full-data window materializations rejected because estimated materialized bytes exceeded the cap
+# TYPE zepto_window_materialization_byte_cap_rejections_total counter
+zepto_window_materialization_byte_cap_rejections_total 0
+
+# HELP zepto_window_materialization_latency_cap_rejections_total Cluster full-data window materializations rejected because coordinator-local latency exceeded the cap
+# TYPE zepto_window_materialization_latency_cap_rejections_total counter
+zepto_window_materialization_latency_cap_rejections_total 0
+
+# HELP zepto_window_materialization_errors_total Cluster full-data window materialization errors outside configured cap rejections
+# TYPE zepto_window_materialization_errors_total counter
+zepto_window_materialization_errors_total 0
+
+# HELP zepto_window_materialization_rows_materialized_total Rows materialized into coordinator-local temporary tables for accepted full-data window queries
+# TYPE zepto_window_materialization_rows_materialized_total counter
+zepto_window_materialization_rows_materialized_total 144
+
+# HELP zepto_window_materialization_bytes_materialized_total Estimated bytes materialized into coordinator-local temporary tables for accepted full-data window queries
+# TYPE zepto_window_materialization_bytes_materialized_total counter
+zepto_window_materialization_bytes_materialized_total 32768
+
+# HELP zepto_window_materialization_last_rows Last full-data window materialization row count
+# TYPE zepto_window_materialization_last_rows gauge
+zepto_window_materialization_last_rows 48
+
+# HELP zepto_window_materialization_last_materialized_bytes Last full-data window materialization estimated bytes
+# TYPE zepto_window_materialization_last_materialized_bytes gauge
+zepto_window_materialization_last_materialized_bytes 8192
+
+# HELP zepto_window_materialization_last_latency_us Last full-data window materialization coordinator-local latency in microseconds
+# TYPE zepto_window_materialization_last_latency_us gauge
+zepto_window_materialization_last_latency_us 2600
 
 # HELP zepto_rows_scanned_total Total rows scanned
 # TYPE zepto_rows_scanned_total counter
@@ -1629,9 +1717,11 @@ Requires cluster mode (`set_coordinator()` must be called). Idempotent — addin
 
 #### `POST /admin/table-placement` — Set experimental declared table placement
 
-Sets or clears an experimental runtime placement policy for a declared table in
-cluster mode. This is intended for small operational/control tables whose rows
-often use `symbol_id=0`.
+Sets or clears an experimental placement policy for a declared table in cluster
+mode. This is intended for small operational/control tables whose rows often
+use `symbol_id=0`. Successful updates are now persisted into the local schema
+catalog, so a coordinator can re-apply the placement after restart when the
+schema catalog is loaded.
 
 ```bash
 curl -X POST http://localhost:8123/admin/table-placement \
@@ -1653,11 +1743,21 @@ Supported `policy` values:
 | `pinned_node` | All rows for the table route to `node_id`; `node_id` is required |
 | `clear` | Remove the override and return to default routing |
 
-The table must already exist in the local schema registry. Placement updates are
-admin-only runtime control-plane state; they are not yet persisted in DDL or the
-catalog, are not replayed automatically after restart, and are not a
-rebalance/failover policy. Promote this endpoint only after the product gates in
-`docs/research/EXPERIMENT_GOVERNANCE.md` are met.
+The table must already exist in the local schema registry. Placement can also
+be declared at create time:
+
+```sql
+CREATE TABLE action_outcome_vendor_suppressions_010 (
+  query_id STRING,
+  candidate_id STRING,
+  timestamp_ns TIMESTAMP_NS
+) WITH (placement = pinned_node, node_id = 1)
+```
+
+Supported DDL placement values are `hash_by_table`,
+`hash_by_table_and_symbol`, and `pinned_node` with `node_id`. This remains an
+experimental placement feature: persisted metadata is available, but it is not
+a rebalance/failover policy.
 
 #### `GET /admin/edge-fleet-connector` — Experimental connector lifecycle status
 
@@ -1790,6 +1890,10 @@ Idempotent sink contract:
 - The fleet ACK table is the durable delivery ledger. The SQL/HTTP sink checks
   it before applying fleet final rows and inserts an ACK only after the final
   row succeeds.
+- Remote SQL/HTTP ACK checks narrow by numeric `stream_seq` and compare
+  `feed_event_id` client-side, so bounded replay can page past ACKed prefixes
+  even when the remote SQL string-column comparison path differs from local
+  symbol encoding.
 - If final-row materialization succeeds but ACK insertion fails, the sink
   returns `AppliedButAckFailed`; the next pass replays the event and must be
   safe for duplicate final-row attempts.
@@ -1837,6 +1941,7 @@ curl http://localhost:8123/admin/action-outcome-supervisor \
   "failure_budget_exhausted": false,
   "name": "physical_ai_action_outcome",
   "mode": "shadow",
+  "rollout_stage": "controlled_shadow_pilot",
   "history_table": "physical_ai_action_history",
   "proposal_table": "physical_ai_action_proposals",
   "decision_table": "physical_ai_supervision_decisions",
@@ -1893,6 +1998,7 @@ curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
     "name": "physical_ai_action_outcome",
     "enabled": true,
     "mode": "shadow",
+    "rollout_stage": "controlled_shadow_pilot",
     "history_table": "physical_ai_action_history",
     "proposal_table": "physical_ai_action_proposals",
     "decision_table": "physical_ai_supervision_decisions",
@@ -1916,7 +2022,10 @@ curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
   }'
 ```
 
-Only `mode="shadow"` is accepted. `batch_limit`,
+Only `mode="shadow"` and `rollout_stage="controlled_shadow_pilot"` are
+accepted. `rollout_stage="promoted_operator_feature"` is intentionally rejected
+until the GA/operator gates in `docs/research/EXPERIMENT_GOVERNANCE.md` are
+explicitly reopened. `batch_limit`,
 `worker_poll_interval_ms`, `max_consecutive_failures`,
 `max_decision_errors_per_pass`, and `max_sink_errors_per_pass` must be
 positive. The decision and sink error budgets bound one pass during

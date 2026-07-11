@@ -621,16 +621,6 @@ private:
         return query_http(url, sql, context, error);
     }
 
-    std::string stringEqualsFilter(const std::string& url,
-                                   const std::string& column,
-                                   const std::string& value) {
-        if (!url.empty()) {
-            return column + " = " + sql_string_literal(value);
-        }
-        const auto code = executor_.intern_symbol_for_ingest(value);
-        return column + " = " + std::to_string(static_cast<int64_t>(code));
-    }
-
     std::string outboxSelectSql(uint64_t after_stream_seq) const {
         std::ostringstream sql;
         sql << "SELECT " << join_columns(outbox_columns())
@@ -755,12 +745,14 @@ private:
     std::optional<bool> isFleetAcked(const FeedOutboxRow& row, std::string* error) {
         std::ostringstream sql;
         sql << "SELECT feed_event_id FROM " << config_.runtime.fleet_ack_table
-            << " WHERE "
-            << stringEqualsFilter(fleetUrl(), "feed_event_id", row.feed_event_id)
-            << " LIMIT 1";
+            << " WHERE stream_seq = " << row.stream_seq;
         auto rows = query(fleetUrl(), sql.str(), "fleet ACK lookup", error);
         if (!rows) return std::nullopt;
-        return !rows->rows.empty();
+        return std::any_of(rows->rows.begin(), rows->rows.end(),
+                           [&](const std::vector<std::string>& ack_row) {
+                               return !ack_row.empty() &&
+                                      ack_row[0] == row.feed_event_id;
+                           });
     }
 
     std::string inboxInsertSql(const FeedOutboxRow& row,

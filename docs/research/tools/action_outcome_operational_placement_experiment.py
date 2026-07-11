@@ -380,8 +380,9 @@ def render_report(
         "",
         "## Next Best Step",
         "",
-        "Promote placement policy from an admin-only runtime knob to a persisted",
-        "table option or catalog record, then add a row-cap alerting example for",
+        "Devlog 217 promotes placement policy from an admin-only runtime knob",
+        "to a persisted table option/catalog record. The next best step is a",
+        "row-cap alerting example for",
         "`zepto_small_table_join_row_cap_rejections_total`.",
     ]
     return "\n".join(lines) + "\n"
