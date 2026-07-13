@@ -32,7 +32,7 @@ fleet-global audit memory:
 | Live restart/fault tests | Done, devlogs 203, 213, and 215 | Standalone two-node replay covers live outage/fault cases; server tests cover HTTP restart config reload and checkpoint replay skip over live tables; devlog 215 adds server-runtime restart soak, node-replacement, and two-live-HTTP-node convergence through the built-in SQL/HTTP adapter. |
 | Security and audit | Done, devlog 213 | Admin endpoints are RBAC/rate-limit gated and mutating edge/fleet config/start/stop/clear outcomes emit audit-buffer events without adapter secrets. |
 | Cross-architecture verification | Done, devlogs 212-213 | x86_64 and aarch64 focused/broad builds/tests pass with matching connector semantics. |
-| Promotion documentation | Partial, devlog 213 | API/design docs describe supported scope, limits, idempotency, and rollback/disable procedure. README-level GA positioning remains intentionally conservative while the path is experimental. |
+| Promotion documentation | Controlled pilot approved, devlog 222 | API/design/operations docs describe the supported controlled-pilot scope, limits, idempotency, monitoring, fault validation, rollback/disable procedure, and promotion criteria. README-level GA positioning remains intentionally conservative. |
 
 ## Implementation Sequence
 
@@ -65,11 +65,14 @@ fleet-global audit memory:
 
 ## Current Recommendation
 
-The server path is now suitable for controlled experimental pilots behind the
-admin-gated runtime: durable config reload, checkpoint cursor reload,
-ACK-ledger paging for bounded SQL loads, idempotent sink docs,
-retry/failure-budget controls, restart regressions, and admin audit coverage
-are in place. Devlog 215 adds the missing server-runtime soak, node-replacement,
-and two-live-HTTP-node convergence evidence. The remaining promotion work is an
-explicit GA/operator rollout decision, public positioning update, and
-release-grade cross-architecture validation for the chosen supported scope.
+The explicit rollout decision is **Controlled Pilot**. The server path is
+approved only for admin-gated, opt-in pilot environments using the documented
+SQL/HTTP edge/fleet contract: durable config reload, checkpoint cursor reload,
+ACK-ledger paging for bounded SQL loads, idempotent sink behavior,
+retry/failure-budget controls, restart regressions, node-replacement evidence,
+two-live-HTTP-node convergence, and admin audit coverage are in place.
+
+This is not a broad GA/operator release. Limited Operator Feature promotion
+requires completed pilot soak/fault evidence, operator dashboards/alerts,
+public support-boundary wording, and a new production gate that explicitly
+changes the status.

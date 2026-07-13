@@ -197,9 +197,9 @@ print(df)
 | `POST` | `/admin/nodes` | admin | Add remote node to cluster |
 | `DELETE` | `/admin/nodes/:id` | admin | Remove node from cluster |
 | `GET` | `/admin/cluster` | admin | Cluster overview |
-| `GET` | `/admin/edge-fleet-connector` | admin | Experimental Physical AI edge/fleet connector lifecycle status |
-| `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the experimental connector |
-| `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the experimental connector config |
+| `GET` | `/admin/edge-fleet-connector` | admin | Controlled-pilot Physical AI edge/fleet connector lifecycle status |
+| `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the controlled-pilot connector |
+| `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the controlled-pilot connector config |
 | `GET` | `/admin/action-outcome-supervisor` | admin | Experimental Physical AI Action-Outcome supervisor lifecycle status |
 | `POST` | `/admin/action-outcome-supervisor` | admin | Configure and optionally enable the experimental supervisor |
 | `DELETE` | `/admin/action-outcome-supervisor` | admin | Disable and clear the experimental supervisor config |
@@ -1759,10 +1759,12 @@ Supported DDL placement values are `hash_by_table`,
 experimental placement feature: persisted metadata is available, but it is not
 a rebalance/failover policy.
 
-#### `GET /admin/edge-fleet-connector` — Experimental connector lifecycle status
+#### `GET /admin/edge-fleet-connector` — Controlled-pilot connector lifecycle status
 
-Returns server-owned lifecycle state for the experimental Physical AI
-edge/fleet connector.
+Returns server-owned lifecycle state for the Physical AI edge/fleet connector.
+The supported rollout status is controlled pilot only: admin-gated, opt-in,
+SQL/HTTP contract deployments that follow
+`docs/operations/PHYSICAL_AI_EDGE_FLEET_CONTROLLED_PILOT.md`.
 
 ```bash
 curl http://localhost:8123/admin/edge-fleet-connector \
@@ -1914,8 +1916,10 @@ checkpoint path is configured, clears the process-local runtime config, and
 removes the persisted SQL/HTTP adapter config file when config persistence is
 enabled.
 
-This lifecycle surface is experimental. The server runtime can run a bounded
-worker with embedding-provided hooks or with the built-in SQL/HTTP adapter.
+This lifecycle surface is controlled-pilot only. The server runtime can run a
+bounded worker with embedding-provided hooks or with the built-in SQL/HTTP
+adapter, but broad GA/operator positioning remains blocked until a later
+production gate explicitly changes the rollout status.
 Connector configuration is file-persisted when enabled by embedding code, but
 the path is still experimental and should not be described as a promoted
 replication feature until the promotion gates in

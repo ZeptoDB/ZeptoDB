@@ -7,6 +7,7 @@
 - [4. Backup & Recovery](#4-backup--recovery)
 - [5. Automation](#5-automation)
 - [6. Troubleshooting](#6-troubleshooting)
+- [Physical AI controlled pilots](PHYSICAL_AI_EDGE_FLEET_CONTROLLED_PILOT.md)
 
 ---
 

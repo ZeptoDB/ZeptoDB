@@ -1,20 +1,25 @@
 # ZeptoDB Backlog
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | latest local C++ gate:
-> x86_64 reported 0 failed out of 1727 run tests
+> x86_64 reported 0 failed out of 1742 run tests
 > (`ctest -E "Benchmark\.|K8s"`); the default suite has no disabled tests.
 > Latest live S3 opt-in smoke passed separately, 2/2, with temporary bucket
 > cleanup verified. aarch64 is covered by the Graviton CI gate on PR/main.
 >
-> Last cleaned: 2026-07-11
+> Last cleaned: 2026-07-12
 >
-> Devlog: last `221_aarch64_cluster_stats_test_port_hardening.md`
-> -> next `222_*.md`
+> Devlog: last `222_physical_ai_edge_fleet_controlled_pilot_rollout.md`
+> -> next `223_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 Physical AI edge/fleet controlled pilot rollout scope**
+  (devlog 222) — recorded the product decision as controlled pilot only and
+  added the operator runbook covering supported scope, non-goals, required
+  configuration, idempotency, monitoring/alerts, fault/restart validation,
+  rollback, and promotion criteria.
 - ✅ **aarch64 cluster stats test port hardening** (devlog 221) —
   switched the cluster stats RPC and hostname-resolution tests to
   kernel-assigned test ports plus bounded stats-readiness retries after the
@@ -58,9 +63,8 @@
   regressions for the built-in SQL/HTTP adapter. The remote ACK lookup now
   narrows by numeric `stream_seq` and verifies `feed_event_id` client-side, so
   remote HTTP string-column comparison drift cannot starve bounded replay past
-  ACKed prefixes. This closes the remaining edge/fleet promotion-evidence gap;
-  the next step is the explicit GA/operator rollout decision and public
-  positioning update.
+  ACKed prefixes. Devlog 222 records the controlled-pilot rollout decision and
+  keeps Limited Operator Feature promotion as future soak/fault evidence work.
 - ✅ **Release Docker multi-arch and perf smoke closure** (devlog 214) —
   converted Kafka, MQTT, and OPC-UA hot-path perf harnesses into default
   CI-safe smoke tests; the local CTest gate now runs 1727 tests with no
@@ -73,9 +77,8 @@
   `outbox_query_limit`/`max_outbox_bytes` SQL load bounds with ACK-ledger paging,
   `max_failures_per_pass` and `retry_backoff_ms` runtime controls, and
   mutating admin audit/rate-limit regression coverage. Devlog 215 closes the
-  remaining server-runtime restart soak and node-replacement evidence gap; the
-  connector remains experimental until the GA/operator rollout decision is
-  recorded.
+  remaining server-runtime restart soak and node-replacement evidence gap;
+  devlog 222 records controlled pilot as the supported rollout scope.
 - ✅ **P3 Physical AI edge/fleet built-in SQL/HTTP adapter** (devlog 212) —
   added `EdgeFleetSqlHttpAdapterConfig`, local table bootstrap, SQL/HTTP
   outbox loading, fleet inbox/final/ACK/telemetry sinks, and
@@ -554,7 +557,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | Task | Why | Effort |
 |------|-----|--------|
 | **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172/220 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint; the benchmark now has tenant-heavy policy-gate thresholds. Next: run larger production embedding dumps through that gate before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
-| **Physical AI edge/fleet GA/operator rollout decision** | Devlogs 212-215 add the server-owned SQL/HTTP outbox-loader plus fleet-sink adapter, local and HTTP contract validation, config persistence, checkpoint reload coverage, idempotent sink docs, bounded SQL/backpressure controls, admin audit/rate-limit coverage, restart soak, node-replacement validation, two-live-HTTP-node convergence, and full local x86_64/aarch64 CTest evidence. Next: decide GA/operator scope, update public/API positioning, and verify GitHub Actions after push. | S |
+| **Physical AI edge/fleet controlled-pilot soak and promotion evidence** | Devlog 222 records the rollout decision as controlled pilot only and adds the operator runbook. Next: run 24h+ pilot soak/fault windows, prove dashboard/alert coverage, collect node-replacement/restart evidence from real pilot environments, and only then open a new production gate for Limited Operator Feature promotion. | M |
 | **Promote Physical AI Action-Outcome supervisor operator feature** | Devlogs 206-216 now make the production decision explicit: the supported path is a `controlled_shadow_pilot` runtime only. The code rejects `promoted_operator_feature`, keeps the runtime shadow-only, persists the rollout stage in server-local/catalog config, and exposes it in status/metrics. Future operator promotion needs a new GA gate decision, public/operator docs, release-grade x86_64/aarch64 validation, and a documented consensus/transaction stance rather than relying on the supervisor-specific SQL lease and commit ledger. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
