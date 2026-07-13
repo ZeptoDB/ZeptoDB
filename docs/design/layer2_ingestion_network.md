@@ -190,7 +190,7 @@ Kinesis because it is a cloud/IoT streaming connector. Metrics are exposed
 through `PulsarConsumer::format_prometheus` and can be appended to `/metrics`
 with `HttpServer::add_metrics_provider()`.
 
-## Experimental Physical AI edge/fleet connector (devlogs 202-205, 212-215)
+## Experimental Physical AI edge/fleet connector (devlogs 202-205, 212-215, 222)
 
 `EdgeFleetFeedConnector` adds an experimental runtime state machine for bounded
 Physical AI edge-to-fleet Action-Outcome evidence transfer. It is deliberately
@@ -271,12 +271,15 @@ it. ZeptoDB's default bootstrap tables are append-only, so operators should use
 the ACK ledger as source of truth and add external uniqueness/dedupe policy for
 fleet projections when the deployment target supports it.
 
-This is not yet a promoted ZeptoDB replication feature. The validated SQL/HTTP
-adapter is now available both as the standalone experiment tool and as a
-server-owned runtime adapter, but the path remains experimental. Product
-promotion now requires an explicit GA/operator rollout decision, public
-positioning updates for the supported scope, and release-grade validation;
-generic multi-table transactions remain out of scope for this connector.
+The product rollout decision is controlled pilot only. The validated SQL/HTTP
+adapter is available both as the standalone experiment tool and as a
+server-owned runtime adapter for admin-gated, opt-in pilot environments that
+follow `docs/operations/PHYSICAL_AI_EDGE_FLEET_CONTROLLED_PILOT.md`. This is
+not a promoted ZeptoDB replication feature, not default-on operator behavior,
+and not a GA/SLA commitment. Generic multi-table transactions remain out of
+scope for this connector. Limited Operator Feature promotion requires pilot
+soak/fault evidence, dashboard/alert coverage, public support-boundary wording,
+and a new production gate.
 
 ## Experimental Physical AI Action-Outcome supervisor (devlog 206)
 

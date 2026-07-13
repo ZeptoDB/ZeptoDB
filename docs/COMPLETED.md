@@ -1,10 +1,18 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-11
+Last updated: 2026-07-12
 
 ---
 
 ## Latest
+
+- [x] **P3 Physical AI edge/fleet controlled pilot rollout scope**
+  (devlog 222) — Recorded the product decision as controlled pilot only for
+  the server-owned SQL/HTTP edge/fleet connector. Added the operator runbook
+  with supported scope, non-goals, required configuration, idempotency
+  contract, monitoring/alert requirements, fault/restart validation, rollback,
+  and promotion criteria. API/design/research docs now say the path is
+  admin-gated and opt-in, not broad GA or default-on operator behavior.
 
 - [x] **aarch64 cluster stats test port hardening** (devlog 221) —
   Hardened the cluster stats RPC and hostname-resolution tests against
@@ -64,9 +72,9 @@ Last updated: 2026-07-11
   truth. Focused edge/fleet SQL/HTTP adapter tests pass 10/10 locally, and the
   production branch passes full x86_64 and aarch64 CTest gates with 1742/1742
   on each architecture plus a 2/2 live S3 opt-in smoke with temporary-bucket
-  cleanup verified. The connector has the promotion evidence needed for an
-  explicit GA/operator rollout decision; public positioning and GitHub Actions
-  verification remain required before changing rollout status.
+  cleanup verified. Devlog 222 records controlled pilot as the supported
+  rollout scope; broader operator promotion remains blocked on real pilot
+  soak/fault evidence and a new production gate.
 
 - [x] **P3 Physical AI edge/fleet production hardening**
   (devlog 213) — Added server-local SQL/HTTP adapter config persistence,
@@ -199,8 +207,8 @@ Last updated: 2026-07-11
   recovery, missing-hook rejection, HTTP admin lifecycle with installed hooks,
   and worker metrics. Devlogs 212-215 add the built-in SQL/HTTP adapter,
   persisted config, soak/restart and node-replacement validation, and
-  cross-architecture verification; the path remains experimental until the
-  GA/operator rollout decision is recorded.
+  cross-architecture verification; devlog 222 records controlled pilot as the
+  supported rollout scope.
 
 - [x] **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
   Added `EdgeFleetConnectorRuntime`, plus admin endpoints for
@@ -233,8 +241,8 @@ Last updated: 2026-07-11
   Focused C++ tests pass for bounded processing, dropped/outage-style retry,
   duplicate handling, late delivery, restart reload, malformed input,
   ACK-boundary failure, and metrics. Devlogs 203 and 212-215 add concrete
-  SQL/HTTP source/sink adapters plus server-runtime promotion evidence; the
-  remaining step is the GA/operator rollout decision.
+  SQL/HTTP source/sink adapters plus server-runtime promotion evidence, and
+  devlog 222 records controlled pilot as the supported rollout scope.
 
 - [x] **P3 Physical AI bounded edge/fleet feed replay** (devlog 201) —
   Added Experiment 016, a research-only explicit edge-to-fleet feed replay.
