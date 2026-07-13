@@ -25,7 +25,7 @@ if(NOT CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
 endif()
 
 project(zeptodb
-    VERSION 0.1.4
+    VERSION 0.1.7
     DESCRIPTION "Ultra-Low Latency In-Memory Database for HFT"
     LANGUAGES CXX C
 )
