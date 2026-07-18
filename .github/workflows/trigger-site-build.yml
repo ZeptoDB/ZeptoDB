@@ -19,3 +19,4 @@ jobs:
           token: ${{ secrets.SITE_DEPLOY_TOKEN }}
           repository: ZeptoDB/zeptodb.github.io
           event-type: docs-updated
+          client-payload: '{"source_sha":"${{ github.sha }}","source_ref":"${{ github.ref_name }}"}'
