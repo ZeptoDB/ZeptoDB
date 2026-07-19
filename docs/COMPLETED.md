@@ -1,10 +1,99 @@
 # ZeptoDB — Completed Features
 
-Last updated: 2026-07-12
+Last updated: 2026-07-19
 
 ---
 
 ## Latest
+
+- [x] **P3 Physical AI VLA trajectory-window preflight, Experiment 035**
+  (devlog 234) — The exact Experiment 034 trace and two pinned source metadata
+  contracts passed a research-only feasibility diagnostic but stopped before
+  bank/VLA/EKS work. The frozen source exposes neither authoritative contact nor
+  source-aligned semantic phase. Independently, suite task 0 already converts
+  all 127 observations eligible under the frozen Experiment 034 precheck mask
+  into candidates, and one-step cooldown caps them at 65/377 (17.24%), below the
+  required 76/377 (20%). No source rows/images, models, VLA calls, retrieved
+  actions, threshold grids, paired comparisons, or AWS resources were used.
+  This is a completed negative progression result, not a risk-free-action or
+  safety result.
+- [x] **P3 Physical AI VLA task-attribution correction, Experiments 033-034**
+  (devlogs 232-233) — Experiment 033's candidate telemetry was retained but its
+  suite-keyed source table was invalidated. Experiment 034 reproduced 595
+  shadow steps and all 127 candidate row values with the exact suite 0 ->
+  manifest 5 and suite 5 -> manifest 9 map. The actual coverage gap is
+  suite-task-5 open-hold demand against manifest-task-9 open-hold count zero.
+  No retrieved action executed and all temporary AWS resources were removed.
+  The four separated rows remain underpowered and source/time confounded, so
+  this is a completed research correction, not router, risk-free-action, or
+  physical-safety evidence.
+- [x] **P3 Physical AI VLA calibration failure attribution, Experiment 032**
+  (devlog 231) — A forced-shadow 595-step replication matched all five
+  preserved Experiment 031 anchors and recorded all 48 counterfactual grid
+  rows. Cooldown capped 127 candidates at 65/595 (10.9%), below the 20% reuse
+  floor; the configured negative veto matched 123/127 and left two accepted
+  actions after cooldown. ZeptoDB search p95 was 7.741 ms. Diagnostic
+  acceptance and AWS cleanup passed with zero routed actions, while calibration
+  remained non-viable. This is attribution evidence, not a routing or safety
+  result.
+- [x] **P3 Physical AI risk-partitioned free-space calibration, Experiment 031**
+  (devlog 230) — A 595-observation calibration shadow admitted only 127
+  contact-free stable-hold observations. None of 48 confidence/margin regions
+  passed the reuse, action-error, and projected-latency gate, so held-out and
+  routed execution correctly did not start. ZeptoDB combined search p95 was
+  6.871 ms and all temporary AWS resources were removed. This is a completed
+  research-only negative result, not action-reuse or safety evidence.
+- [x] **P3 Physical AI confidence-safety dual gate, Experiment 030**
+  (devlog 229) — A VLA-free safety gate found 136/619 low-risk shadow
+  observations, but confidence, safety, and cooldown jointly admitted only
+  10/619 (1.6%). Accepted action MAE p95 was 0.0981, yet the slice was too
+  small for compute savings, so routed execution correctly did not start.
+  This is a completed research-only negative result, not safety certification.
+- [x] **P3 Physical AI VLA trajectory-cause validation, Experiment 029**
+  (devlog 228) — Fourteen exact-state counterfactual forks showed that one
+  historical action caused measurable state/pixel drift and action error
+  correlated with state drift at 0.960, but control and historical branches
+  both retained 94.6% retrieval eligibility with only -0.0002 mean confidence
+  delta. This completed research-only negative result rejects immediate
+  one-action confidence collapse as the cause of Experiment 028's lower skip
+  rate.
+- [x] **P3 Physical AI VLA skip-region discovery, Experiment 028**
+  (devlog 227) — Task-partitioned on-policy shadow calibration found a
+  confidence 0.76, margin 0.01 region with 28.8% projected skips, mean/p95
+  action MAE 0.1640/0.2612, and 25.8% projected latency reduction. The
+  two-task closed-loop pilot had zero paired regressions but only 13.3% actual
+  skips, so it stopped before the remaining tasks. This is a completed
+  research-only negative result, not a promoted routing policy.
+- [x] **P3 Physical AI VLA closed-loop validation, Experiment 027**
+  (devlog 226) — Ran pinned SmolVLA and the guarded ZeptoDB route through all
+  ten paired LIBERO-10 simulator tasks on NVIDIA L40S. Both paths succeeded on
+  5/10 tasks with zero paired regressions and ZeptoDB search p95 of 2.671 ms,
+  but the fixed offline threshold produced zero skips, 100% fallback, 3.4%
+  higher mean latency, and 2.6% more GPU time. The experiment completed as a
+  research-only negative result; it did not pass compute-savings acceptance.
+- [x] **P3 Physical AI real-VLA early exit, Experiment 026**
+  (devlog 225) — Added a research-only LIBERO replay with pinned SmolVLA,
+  SigLIP retrieval, exact ZeptoDB Agent Memory search, and disjoint
+  calibration/evaluation splits on NVIDIA L40S. The routed path skipped 50/50
+  evaluation VLA calls, reduced mean decision latency from 475.572 ms to
+  10.205 ms and online GPU time by 98.5%, while normalized action MAE improved
+  from 0.107831 to 0.099922. This is offline evidence, not closed-loop task
+  success or a production routing claim.
+- [x] **P3 Physical AI real-vision EKS retrieval, Experiment 025**
+  (devlog 224) — Added a research-only balanced LIBERO experiment with 190
+  memory episodes, 100 held-out queries, real SigLIP embeddings on NVIDIA L40S,
+  and real ZeptoDB Agent Memory insert/search. Image-plus-instruction retrieval
+  reached 0.90 Recall@1, 1.00 Recall@5, and 1.361 ms search p95; encoding
+  averaged 1.478 ms/image. All acceptance and temporary-resource cleanup checks
+  passed.
+- [x] **P3 Physical AI Agent Memory EKS replay, Experiment 024**
+  (devlog 223) — Added a research-only cross-architecture replay harness that
+  loads 20 historical robot episodes into real ZeptoDB Agent Memory EKS pods
+  and evaluates 5 held-out decisions. Deterministic observation embeddings
+  keep action/outcome labels out of retrieval. amd64 and arm64 both reached
+  1.00 context-gated recovery Top-1 with 0.00 hazardous top-action rate; warm
+  search p95 was 8.519 ms and 18.023 ms respectively through kubectl
+  port-forward. This is retrieval-layer evidence, not an end-to-end VLA claim.
 
 - [x] **P3 Physical AI edge/fleet controlled pilot rollout scope**
   (devlog 222) — Recorded the product decision as controlled pilot only for

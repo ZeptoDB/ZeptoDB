@@ -1,0 +1,443 @@
+{
+  "acceptance": {
+    "candidate_groups_consistent": true,
+    "counterfactuals_consistent": true,
+    "detail_rows_consistent": true,
+    "phase_attribution_consistent": true,
+    "routed_actions_zero": true,
+    "source_admission_consistent": true,
+    "support_attribution_consistent": true,
+    "task_structural_consistent": true,
+    "aws_resources_deleted": true
+  },
+  "completion_reason": "veto_separability_complete",
+  "detail": {
+    "rows": 127,
+    "sha256": "67994a36b2335a1a46fde4992a5c42bfda6d45758a38c7cd6507ee342bd32561"
+  },
+  "diagnostic_kind": "veto_separability",
+  "diagnostics": {
+    "candidate_phases": [
+      [
+        0,
+        0,
+        0,
+        62,
+        0,
+        1,
+        61,
+        15,
+        125150,
+        124759,
+        183306,
+        -22468,
+        3
+      ],
+      [
+        0,
+        1,
+        0,
+        65,
+        0,
+        3,
+        62,
+        11,
+        114022,
+        107910,
+        215102,
+        -4604,
+        3
+      ]
+    ],
+    "counterfactuals": [
+      [
+        0,
+        0,
+        21,
+        106,
+        79355,
+        72036,
+        107910,
+        0
+      ],
+      [
+        5000,
+        0,
+        7,
+        120,
+        67790,
+        66438,
+        102781,
+        0
+      ],
+      [
+        10000,
+        0,
+        4,
+        123,
+        55657,
+        53466,
+        67481,
+        0
+      ],
+      [
+        20000,
+        0,
+        2,
+        125,
+        50559,
+        47652,
+        53466,
+        0
+      ]
+    ],
+    "groups": [
+      [
+        0,
+        0,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+        null
+      ],
+      [
+        1,
+        4,
+        0,
+        55657,
+        53466,
+        67481,
+        798911,
+        797079,
+        803309,
+        778270,
+        775330,
+        783158,
+        20641,
+        16255,
+        27979,
+        785190,
+        18991,
+        75174,
+        74754,
+        75760,
+        1,
+        1000000
+      ],
+      [
+        2,
+        123,
+        26,
+        121529,
+        121003,
+        185638,
+        738801,
+        741049,
+        786215,
+        752424,
+        756193,
+        784535,
+        -13623,
+        -15800,
+        1992,
+        724082,
+        11890,
+        75057,
+        74994,
+        76121,
+        3,
+        609756
+      ]
+    ],
+    "high_error_threshold": 150000,
+    "metric_scale": 1000000,
+    "minimum_group_samples": 20,
+    "pooled_structural": [
+      595,
+      127,
+      65,
+      65,
+      123,
+      4,
+      2,
+      99678,
+      -6454
+    ],
+    "query_support": [
+      [
+        0,
+        0,
+        0,
+        174,
+        62,
+        0
+      ],
+      [
+        0,
+        2,
+        1,
+        30,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        2,
+        2,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        1,
+        22,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        149,
+        65,
+        0
+      ],
+      [
+        5,
+        0,
+        2,
+        1,
+        0,
+        0
+      ],
+      [
+        5,
+        0,
+        1,
+        105,
+        0,
+        0
+      ],
+      [
+        5,
+        0,
+        0,
+        68,
+        0,
+        58
+      ],
+      [
+        5,
+        1,
+        1,
+        44,
+        0,
+        0
+      ]
+    ],
+    "schema": 1,
+    "task_structural": [
+      [
+        0,
+        377,
+        127,
+        65,
+        65,
+        123,
+        4,
+        2,
+        157092,
+        -10171
+      ],
+      [
+        5,
+        218,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "veto_margin": 10000
+  },
+  "execution": {
+    "diagnostic_only": true,
+    "routed_started": false
+  },
+  "experiment": 33,
+  "finding": {
+    "high_error_rate_delta": 211382,
+    "per_task_structural_viable": false,
+    "pooled_structural_viable": false,
+    "query_support_complete": false,
+    "replication_032": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "separated_high_error_rate": 0,
+    "separation_status": "underpowered",
+    "support_sufficient": false,
+    "vetoed_high_error_rate": 211382
+  },
+  "harness_bundle_sha256": "292fde8b56ccd40b0c80ef71d0ce272f1c77aec39a7aa7778b319da9592cdc2b",
+  "manifest_semantic_sha256": "0624630ce232f33c36dbe20159ce3e88729ab0feffb6b67905f4bd2b180e85ba",
+  "memory": {
+    "admission": [
+      [
+        0,
+        [
+          13,
+          1,
+          1,
+          0,
+          4,
+          0
+        ],
+        [
+          [
+            0,
+            14
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            4,
+            4
+          ]
+        ]
+      ],
+      [
+        5,
+        [
+          9,
+          0,
+          1,
+          7,
+          2,
+          0
+        ],
+        [
+          [
+            0,
+            9
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            6
+          ],
+          [
+            4,
+            2
+          ],
+          [
+            10,
+            1
+          ]
+        ]
+      ]
+    ],
+    "availability": {
+      "0": {
+        "closed_hold": 1,
+        "open_hold": 13,
+        "suppression": 5
+      },
+      "5": {
+        "closed_hold": 0,
+        "open_hold": 9,
+        "suppression": 10
+      }
+    },
+    "records": 190
+  },
+  "run_id": "2137990792",
+  "scope": {
+    "calibration_seed": 28,
+    "source_phase_observable": false,
+    "steps": 595,
+    "tasks": [
+      0,
+      5
+    ]
+  },
+  "shadow": {
+    "action_accounting": [
+      595,
+      0
+    ],
+    "task_precheck": [
+      [
+        0,
+        377,
+        [
+          127,
+          0,
+          242,
+          1,
+          7,
+          0,
+          0,
+          0
+        ]
+      ],
+      [
+        5,
+        218,
+        [
+          0,
+          0,
+          148,
+          1,
+          5,
+          0,
+          6,
+          58
+        ]
+      ]
+    ],
+    "timing": {
+      "encoder_mean": 10.881891346456694,
+      "policy_mean": 429.28052545378154,
+      "positive_search_mean": 4.9061238582677165,
+      "search_p95": 9.617713,
+      "suppression_search_mean": 4.362833858267716
+    }
+  },
+  "siglip_model": "google/siglip-base-patch16-224",
+  "siglip_sha": "7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed",
+  "status": "pass",
+  "suite": "libero_10",
+  "vla_sha": "6721902bc4d61e50a3bfdb11dfb4cb626f05d102"
+}
