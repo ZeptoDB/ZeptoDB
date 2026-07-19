@@ -6,15 +6,83 @@
 > Latest live S3 opt-in smoke passed separately, 2/2, with temporary bucket
 > cleanup verified. aarch64 is covered by the Graviton CI gate on PR/main.
 >
-> Last cleaned: 2026-07-12
+> Last cleaned: 2026-07-19
 >
-> Devlog: last `222_physical_ai_edge_fleet_controlled_pilot_rollout.md`
-> -> next `223_*.md`
+> Devlog: last `234_physical_ai_vla_trajectory_window_preflight.md`
+> -> next `235_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 Physical AI VLA trajectory-window preflight, Experiment 035**
+  (devlog 234) — exact Experiment 034 evidence and pinned source metadata
+  contracts passed a local research diagnostic, then failed closed before
+  bank/VLA/EKS work.
+  Source contact and source-aligned semantic phase are not observable, and
+  suite task 0's candidate-plus-cooldown ceiling under the frozen Experiment
+  034 precheck mask is 65/377 (17.24%), below its required
+  76/377. No cloud resources or retrieved actions were used; this is not safety
+  evidence.
+- ✅ **P3 Physical AI VLA task-attribution correction, Experiments 033-034**
+  (devlogs 232-233) — Experiment 034 reproduced all 595 shadow steps and 127
+  candidate rows while correcting suite 0 -> manifest 5 and suite 5 ->
+  manifest 9. The 58 missing-memory outcomes are suite-task-5 open-hold demand
+  against manifest-task-9 open-hold count zero. No retrieved action executed
+  and AWS cleanup passed. Separability remains underpowered and source/time
+  confounded; this is not routing or safety evidence.
+- ✅ **P3 Physical AI VLA calibration failure attribution, Experiment 032**
+  (devlog 231) — all 48 counterfactual grid rows failed reuse and projected
+  latency. Cooldown capped 127 candidates at 65/595 (10.9%), while the
+  configured negative veto matched 123/127 and left two actions after
+  cooldown. All candidates came from task 0 `open_hold`; ZeptoDB search p95
+  was 7.741 ms. The diagnostic passed with zero routed actions and complete
+  AWS cleanup; calibration remained non-viable.
+- ✅ **P3 Physical AI risk-partitioned calibration, Experiment 031**
+  (devlog 230) — only 127/595 observations passed precheck and none of 48
+  confidence/margin regions was viable, so held-out and routed execution did
+  not start. Experiment 032 reproduced its preserved anchors and showed that
+  the observed structural ceilings and configured gates precluded the target.
+- ✅ **P3 Physical AI confidence-safety dual gate, Experiment 030**
+  (devlog 229) — safety alone classified 22.0% of shadow observations low
+  risk, but confidence, safety, and cooldown overlapped on only 1.6%.
+  Accepted action MAE p95 was 0.0981; routed execution stopped at preflight
+  because the slice was too small for practical compute savings.
+- ✅ **P3 Physical AI VLA trajectory-cause validation, Experiment 029**
+  (devlog 228) — 14 exact-state forks found measurable state/pixel drift and
+  0.960 action-error/state-drift correlation, but no retrieval effect:
+  control and historical branches both remained eligible 94.6% of the time.
+  Immediate one-action confidence collapse does not explain Experiment 028.
+- ✅ **P3 Physical AI VLA skip-region discovery, Experiment 028**
+  (devlog 227) — task-partitioned shadow calibration found a region with 28.8%
+  projected skips and 25.8% projected latency reduction. The two-task
+  closed-loop pilot had zero paired regressions but only 13.3% actual skips,
+  so the staged gate stopped before the remaining eight tasks. The pilot
+  latency comparison had a timer-scope mismatch and is not evidence.
+- ✅ **P3 Physical AI VLA closed-loop validation, Experiment 027**
+  (devlog 226) — completed paired real-simulator execution on all ten
+  LIBERO-10 tasks. Direct and routed paths both succeeded 5/10 with zero
+  paired regressions, but the fixed offline threshold produced zero skips and
+  100% fallback; routed mean latency was 3.4% higher and GPU time 2.6% higher.
+  This is a completed negative research result, not a promoted router.
+- ✅ **P3 Physical AI real-VLA early exit, Experiment 026**
+  (devlog 225) — the pinned SmolVLA baseline and ZeptoDB-routed path ran on an
+  NVIDIA L40S with disjoint 50-query calibration/evaluation splits. The routed
+  path skipped 50/50 evaluation VLA calls, reduced mean decision latency by
+  97.9% and online GPU time by 98.5%, and remained inside the offline
+  normalized-action-MAE limit. Closed-loop task success remains open.
+- ✅ **P3 Physical AI real-vision EKS retrieval, Experiment 025**
+  (devlog 224) — encoded 290 held-out/memory LIBERO frames with SigLIP on an
+  NVIDIA L40S and searched 190 memories through real ZeptoDB Agent Memory.
+  Image-plus-instruction retrieval reached 0.90 Recall@1 and 1.00 Recall@5
+  with 1.361 ms search p95; all temporary EKS/EC2 resources were removed.
+- ✅ **P3 Physical AI Agent Memory EKS replay, Experiment 024**
+  (devlog 223) — added a research-only amd64/arm64 EKS harness for 20 memory
+  episodes and 5 held-out robot decisions. Context-gated recovery Top-1 was
+  1.00 on both architectures, hazardous top-action rate was 0.00, and warm
+  search p95 through kubectl port-forward was 8.519 ms on amd64 and 18.023 ms
+  on arm64. The result does not include a real vision encoder, VLA model, GPU,
+  or simulator.
 - ✅ **P3 Physical AI edge/fleet controlled pilot rollout scope**
   (devlog 222) — recorded the product decision as controlled pilot only and
   added the operator runbook covering supported scope, non-goals, required
@@ -556,6 +624,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
+| **Physical AI VLA closed-loop router calibration and robustness** | Experiment 035 stopped the planned trajectory bank before source/VLA/EKS work. The frozen source provides neither authoritative historical contact nor source-aligned semantic phase, and the suite-task-0 ceiling under the frozen Experiment 034 precheck mask is 65/377 after cooldown (17.24%), below the required 20%; fixing manifest-task-9 open-hold coverage cannot repair that separate failure. Next, pre-register multi-seed direct-VLA simulator traces to measure contact eligibility and cooldown placement before any bank encoding or retrieval. Resume trajectory-bank work only if pooled and every task can reach the reuse/latency floors, and only after obtaining provenance-preserving contact plus source-aligned semantic labels, or a verified raw-demo replay map that reconstructs both. Keep the veto/cooldown unchanged; stale/corrupted/OOD stress, source-diversity analysis, held-out shadow, cost per successful episode, and routed execution remain later gates. Do not claim risk-free actions. | M |
 | **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172/220 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint; the benchmark now has tenant-heavy policy-gate thresholds. Next: run larger production embedding dumps through that gate before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
 | **Physical AI edge/fleet controlled-pilot soak and promotion evidence** | Devlog 222 records the rollout decision as controlled pilot only and adds the operator runbook. Next: run 24h+ pilot soak/fault windows, prove dashboard/alert coverage, collect node-replacement/restart evidence from real pilot environments, and only then open a new production gate for Limited Operator Feature promotion. | M |
 | **Promote Physical AI Action-Outcome supervisor operator feature** | Devlogs 206-216 now make the production decision explicit: the supported path is a `controlled_shadow_pilot` runtime only. The code rejects `promoted_operator_feature`, keeps the runtime shadow-only, persists the rollout stage in server-local/catalog config, and exposes it in status/metrics. Future operator promotion needs a new GA gate decision, public/operator docs, release-grade x86_64/aarch64 validation, and a documented consensus/transaction stance rather than relying on the supervisor-specific SQL lease and commit ledger. | M |
@@ -687,7 +756,7 @@ No open P9 backlog items remain.
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 1 + 4 manual | Demo video → Show HN → Reddit |
-| **P3** | Agent Memory / AI Context | 4 | Edge/fleet rollout decision → ANN policy → supervisor operator gate |
+| **P3** | Agent Memory / AI Context | 5 | VLA closed-loop validation → edge/fleet soak → ANN policy |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
 | **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
 | **P6** | Enterprise / Cloud | 3 | Marketplace |
@@ -696,7 +765,7 @@ No open P9 backlog items remain.
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 36 items + 4 manual tasks**
+**Total open: 37 items + 4 manual tasks**
 
 **Critical path: P3 experiment promotions → P5 CDC connector → P2 launch collateral**
 

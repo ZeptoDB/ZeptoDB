@@ -3177,3 +3177,665 @@ ZEPTO_S3_TEST_BUCKET=<temporary-bucket> \
 - The commit ledger is a supervisor-specific effectively-once sink boundary,
   not a generic multi-table SQL transaction primitive.
 - Product promotion still needs an explicit GA/operator rollout decision.
+
+## 2026-07-14 - Experiment 024 Physical AI Agent Memory EKS replay
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Connect the Physical AI Action-Outcome fixture to real ZeptoDB Agent Memory EKS
+pods and establish the first cross-architecture retrieval and compact-prior
+latency baseline for a future VLA experiment.
+
+### Work Completed
+
+1. Added deterministic 64-dimensional observation embeddings that exclude
+   action, outcome, expected-safe labels, and reflection text.
+2. Loaded 20 historical episodes and evaluated 5 held-out query episodes.
+3. Compared no memory, raw retrieval, outcome aggregation, and context-gated
+   outcome aggregation.
+4. Ran the same replay on current amd64 and arm64 ECR images.
+5. Added automatic namespace cleanup and EKS sleep handling.
+
+### Result Summary
+
+| Check | amd64 | arm64 |
+| --- | ---: | ---: |
+| Warm search p50 | 8.028 ms | 9.426 ms |
+| Warm search p95 | 8.519 ms | 18.023 ms |
+| Compact-prior compute p95 | 0.419 ms | 0.317 ms |
+| Context-gated recovery Top-1 | 1.00 | 1.00 |
+| Context-gated hazardous top action | 0.00 | 0.00 |
+
+All acceptance criteria passed and context-gated decisions matched 5/5 across
+architectures. The final x86 and arm64 NodePool limits were 0, experiment
+namespaces were deleted, and bench NodeClaims were removed.
+
+### Remaining Limit
+
+This run does not contain a real image encoder, VLA model, simulator, or GPU.
+It is retrieval-layer evidence only. The next experiment must measure
+end-to-end task success, model latency, GPU time, tokens, and cost per episode.
+
+## 2026-07-16 - Experiment 025 first EKS attempt
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Replace Experiment 024's proxy embedding with real LIBERO camera frames and a
+real SigLIP encoder on an NVIDIA L40S, then measure task retrieval through
+ZeptoDB Agent Memory.
+
+### Attempt
+
+1. Added a balanced 10-task split with 19 memory and 10 held-out query episodes
+   per task.
+2. Added image-only and image-plus-instruction retrieval variants.
+3. Created a temporary `g6e.xlarge` NodePool and verified the GPU node and
+   NVIDIA resource registered.
+4. Stopped before creating the ML Job because the current Intel-optimized
+   `bench-x86` ZeptoDB image exited with code 132 on the GPU node's AMD CPU.
+
+### Result Summary
+
+No encoder, retrieval-quality, GPU-memory, or ZeptoDB latency measurement was
+produced. The namespace, temporary NodePool, NodeClaim, Kubernetes node, and
+EC2 instance were deleted, and the shared bench NodePools remained at CPU
+limit 0.
+
+### Resolution
+
+The EKS runner now places ZeptoDB on a temporary Intel `c7i.xlarge` NodePool
+and the CUDA Job on a separate `g6e.xlarge` NodePool. This corrected topology
+avoids the CPU instruction-set mismatch.
+
+### Final Completion
+
+The completed run resolved dataset-server rows locally before AWS provisioning,
+mounted the resulting 290-image URL manifest into the GPU Job, and used the
+EKS path only for image CDN download, SigLIP encoding, and ZeptoDB retrieval.
+
+| Check | Result |
+| --- | ---: |
+| Image-only ZeptoDB Recall@1 / Recall@5 | 0.70 / 0.98 |
+| Image-plus-instruction ZeptoDB Recall@1 / Recall@5 | 0.90 / 1.00 |
+| Image-plus-instruction MRR | 0.926 |
+| Image-plus-instruction search p50 / p95 | 1.032 / 1.361 ms |
+| SigLIP encoder time | 1.478 ms/image |
+| Peak allocated GPU memory | 539.2 MiB |
+
+All acceptance criteria passed. The temporary `c7i.xlarge` and `g6e.xlarge`
+instances reached `terminated`; the namespace, NodePools, NodeClaims, and nodes
+were deleted; shared bench NodePool CPU limits were 0. Experiment 026 is now
+unblocked.
+
+## 2026-07-17 - Experiment 026 Physical AI VLA early exit
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Measure whether confidence-gated historical action reuse through ZeptoDB
+reduces real VLA calls, latency, GPU time, and energy without materially
+degrading offline action quality.
+
+### Execution
+
+1. Resolved 190 memory, 50 calibration, and 50 evaluation middle-frame samples
+   from ten LIBERO tasks with a low-rate resumable manifest fetch.
+2. Loaded pinned `HuggingFaceVLA/smolvla_libero` and SigLIP on an NVIDIA L40S.
+3. Inserted historical action memories into exact ZeptoDB Agent Memory search.
+4. Calibrated one confidence threshold under a normalized-action-MAE limit.
+5. Compared direct VLA on all evaluation queries with the routed early-exit
+   path and measured CUDA-event time, wall latency, NVML energy, and quality.
+
+### Result Summary
+
+| Check | Direct VLA | ZeptoDB routed |
+| --- | ---: | ---: |
+| VLA calls | 50 | 0 |
+| Mean decision latency | 475.572 ms | 10.205 ms |
+| Total online GPU time | 23,728.155 ms | 365.314 ms |
+| Energy | 2,417.4 J | 60.7 J |
+| Normalized action MAE | 0.107831 | 0.099922 |
+
+ZeptoDB exact-search p95 was 2.565 ms. All acceptance criteria passed. The
+temporary `c7i.xlarge` and `g6e.xlarge` instances terminated, experiment
+Kubernetes resources were absent, and shared bench NodePool CPU limits were 0.
+
+### Remaining Limit
+
+This deterministic offline replay does not establish closed-loop LIBERO task
+success, safety under temporal drift, out-of-distribution fallback quality, or
+production routing readiness. Those remain the next experiment.
+
+## 2026-07-17 - Experiment 027 Physical AI VLA closed-loop validation
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Test whether the Experiment 026 historical-action route preserves real
+LIBERO-10 simulator success while reducing VLA calls, decision latency, GPU
+time, and energy.
+
+### Execution
+
+1. Ran direct and routed SmolVLA from paired initial states for all ten
+   LIBERO-10 tasks with a maximum of 520 control steps each.
+2. Loaded 190 historical action memories and searched exact ZeptoDB top-5
+   candidates using online SigLIP image, instruction, and state embeddings.
+3. Fixed the Experiment 026 confidence threshold at 0.890841 and required two
+   consecutive high-confidence observations, a matching task, and at most four
+   consecutive skips.
+4. Seeded policy sampling at each paired episode start and measured real
+   simulator success, CUDA time, wall latency, ZeptoDB latency, and NVML
+   energy.
+
+### Result Summary
+
+| Check | Direct VLA | ZeptoDB routed |
+| --- | ---: | ---: |
+| Simulator success | 5/10 | 5/10 |
+| VLA calls | 4,291 | 4,286 |
+| Historical-action skips | 0 | 0 |
+| Mean decision latency | 454.169 ms | 469.756 ms |
+| Online GPU time | 1,877,964.838 ms | 1,927,346.806 ms |
+| Energy | 200,326.4 J | 204,915.6 J |
+
+Paired regressions were zero and ZeptoDB exact-search p95 was 2.671 ms. The
+routed confidence p50 was 0.737856, below the fixed threshold, so fallback was
+100%. The 0.1% call-count difference came from five fewer simulator steps on
+one routed episode, not from memory reuse. Compute-savings acceptance failed:
+mean latency was 3.4% higher and online GPU time was 2.6% higher.
+
+The temporary `c7i.xlarge` and `g6e.xlarge` instances terminated, experiment
+Kubernetes resources were absent, and shared bench NodePool CPU limits were
+zero.
+
+### Decision
+
+Do not promote the Experiment 026 offline threshold to an online routing
+default. The next experiment must calibrate on sequential on-policy
+observations and demonstrate a non-trivial skip/fallback slice before a full
+multi-seed closed-loop run.
+
+## 2026-07-17 - Experiment 028 Physical AI VLA skip-region discovery started
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Find task-aware sequential observation regions where historical actions can
+replace real SmolVLA calls with at least 20% actual skips and 15% lower mean
+decision latency while retaining bounded paired LIBERO simulator quality.
+
+### Staged Gate
+
+The run first collects shadow traces on tasks 0 and 5 and freezes a confidence
+and top-1/top-2-margin region under normalized action-error limits. It then
+runs a two-task closed-loop pilot. Any regression, skip rate below 20%, or
+latency reduction below 15% stops the experiment before the remaining eight
+tasks. Task-specific ZeptoDB namespaces eliminate the 27.3% top-result task
+mismatch observed in Experiment 027.
+
+### Result Summary
+
+Task-partitioned shadow calibration evaluated 60 threshold/margin candidates
+over 801 observations. It selected confidence `0.76` and minimum margin `0.01`,
+which produced 28.8% guarded shadow skips, mean/p95 normalized candidate action
+MAE of 0.1640/0.2612, and 25.8% projected latency reduction. Exact ZeptoDB
+search p95 was 2.593 ms.
+
+The two-task closed-loop pilot had zero paired regressions, but actual skip
+eligibility fell to 13.3% after historical actions changed the trajectory.
+The run stopped before the remaining eight tasks. A post-run audit invalidated
+the pilot latency percentage because the routed timer included simulator
+execution while the shadow baseline did not; the harness was corrected. The
+skip-rate failure independently failed the gate.
+
+The experiment namespace, NodePools, and NodeClaims were deleted; temporary
+`c7i.xlarge` and `g6e.xlarge` instances terminated; shared bench NodePool CPU
+limits returned to zero.
+
+### Decision
+
+Do not broaden the confidence threshold or run all ten tasks yet. The next
+pilot must calibrate against post-skip trajectory divergence, use the corrected
+timer, and sustain at least 20% actual skips before expansion.
+
+## 2026-07-17 - Experiment 029 VLA trajectory-fork validation started
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Test whether one historical action causally shifts the next LIBERO
+observations and reduces subsequent ZeptoDB/SigLIP confidence or skip
+eligibility relative to a direct-VLA branch restored from the same MuJoCo
+state.
+
+### Method
+
+Tasks 0 and 5 run direct shadow trajectories. The first eligible early,
+middle, and late state for each broad, middle, and Experiment 028 selected
+region becomes a counterfactual fork. Both environments restore the same state;
+one executes the direct action and one executes the historical action, followed
+by up to four deterministically paired VLA steps. The experiment measures
+state drift, front-pixel drift, confidence delta, eligibility retention, and
+action-error/state-drift dose response.
+
+### Result Summary
+
+The run completed 14 paired forks across tasks 0 and 5 and all three
+trajectory phases. State restoration was exact. A historical action produced
+normalized state drift p50 0.0113 and front-pixel MAE p50 0.00413; intervention
+action error correlated with state drift at 0.960.
+
+The tested retrieval effect was absent. Control and historical branches were
+both eligible on 94.6% of post-action observations, with zero eligibility drop
+and mean branch-minus-control confidence of -0.0002. ZeptoDB search p95 was
+5.486 ms.
+
+Temporary experiment Kubernetes resources were deleted, the `c7i.xlarge` and
+`g6e.xlarge` instances terminated, and shared bench NodePool CPU limits were
+zero.
+
+### Decision
+
+Reject immediate one-action confidence collapse as the explanation for
+Experiment 028. Before another routed pilot, align SmolVLA randomness by
+absolute control step and test whether two consecutive historical actions or
+eligible-pocket sampling bias explains the lower online skip density.
+
+## 2026-07-17 - Experiment 030 confidence-safety dual gate started
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Evaluate whether high retrieval confidence and an independent low-risk safety
+classification can jointly permit historical-action reuse without using VLA
+output inside the safety decision.
+
+### Method
+
+Tasks 0 and 5 first run in shadow mode. Confidence uses the Experiment 028
+threshold and margin, while safety independently checks robot contact, gripper
+hold versus transition, candidate consensus, bounded translation/rotation,
+neighbor action disagreement, and state-distribution distance. Routed
+execution starts only if at least 20% of shadow observations are eligible and
+low risk with bounded candidate-to-VLA error. Direct and routed VLA calls use
+absolute control-step seeds, and every historical action is followed by a
+mandatory VLA cooldown.
+
+### Result Summary
+
+The shadow run completed 619 observations across tasks 0 and 5. Safety
+classified 136 observations (22.0%) as low risk, 483 as high risk, and none as
+medium risk. Confidence, safety, and cooldown jointly admitted only 10
+observations (1.6%), below the required 20% preflight gate.
+
+Accepted candidate-to-VLA normalized action MAE p95 was 0.0981 and ZeptoDB
+search p95 was 4.337 ms. The runner stopped before any routed historical action
+was executed. Temporary experiment Kubernetes resources were deleted, both
+temporary EC2 instances terminated, and shared bench NodePool CPU limits were
+zero.
+
+### Decision
+
+Do not loosen the safety gate to chase skip rate. First add component-level
+hard-risk telemetry, separate expected grasp contact from collision, and
+validate gripper transition inference. The current 1.6% confidence-safe slice
+cannot produce practical compute savings.
+
+## 2026-07-18 - Experiment 031 risk-partitioned free-space harness prepared
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Test practical VLA compute reduction only in contact-free, stable-gripper
+states while using incompatible memories as suppression evidence rather than
+executable actions.
+
+### Method
+
+The harness partitions the existing midpoint demonstration memories by task
+and gripper hold state. Only bounded, gripper-consistent records enter an
+executable candidate partition; all other records enter a task-specific
+suppression partition. A cheap runtime precheck blocks retrieval during robot
+contact, gripper movement, ambiguous width, state outliers, or missing
+partitions. A close suppression match vetoes otherwise eligible action reuse.
+
+Calibration uses seed 28. Frozen thresholds must independently pass held-out
+shadow episodes at seed 1028 before paired routed execution starts. Both
+shadows require at least 20% reuse, action MAE p95 at most 0.15, and at least
+15% projected latency reduction. Routed execution additionally requires no
+paired regression, at least 15% measured latency and GPU reduction, and zero
+post-reuse contact/state proxy hazards.
+
+### Current Status
+
+The EKS calibration shadow completed 595 observations across tasks 0 and 5.
+None of 48 confidence/margin regions passed calibration, so held-out and routed
+execution did not start. Precheck admitted 127 observations and rejected 390
+for finger contact, 58 for a missing executable partition, 12 for gripper
+movement, 6 for state outliers, and 2 as first observations. ZeptoDB combined
+search p95 was 6.871 ms. Temporary resources were deleted and the shared bench
+returned to zero CPU.
+
+### Decision
+
+Close Experiment 031 as a useful research-only negative result. Do not weaken
+safety limits to force routed execution. The compact result omitted individual
+metrics for the 48 regions, so collect that evidence in a new shadow-only
+Experiment 032. Manipulation-phase VLA feature caching remains separate.
+
+## 2026-07-18 - Experiment 032 calibration failure attribution started
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Run an instrumented replication of the Experiment 031 calibration setup with
+all 48 regions recorded, and separate precheck/cooldown density, configured
+safety and negative-veto ceilings, action quality, and projected compute
+without executing a retrieved action.
+
+### Method
+
+The dedicated Experiment 032 entry point forces both experiment identity and
+diagnostic-only execution. It reruns the same tasks, calibration seed, memory
+admission policy, and threshold/margin grid. A compact schema stores every
+point's reuse, mean/p95 normalized action MAE, projected latency, and gate mask;
+configured-gate counterfactual ceilings; first-failing route reasons; task/hold
+quality; timing; and provenance. Grid points share the same ordered trace and
+are not treated as independent trials. A replication fingerprint compares the
+new step count, precheck funnel, memory partitions, semantic manifest identity,
+and VLA revision with preserved Experiment 031 anchors.
+
+### Current Status
+
+The EKS diagnostic completed 595 shadow observations and all 48 grid rows under
+run ID `4639958745`. All five preserved Experiment 031 replication anchors
+matched. Diagnostic acceptance passed, zero retrieved actions executed, and
+all temporary AWS resources were deleted.
+
+Calibration remained non-viable. Every grid point failed both the 20% reuse
+floor and 15% projected-latency floor. Thirty points reused 2/595 actions; 18
+reused none and therefore could not demonstrate action quality. The precheck
+admitted 127 observations, the mandatory cooldown capped reuse at 65 (10.9%),
+and the configured negative veto matched 123/127 candidates. Candidate safety
+rejected none. All 127 candidates came from task 0 `open_hold`; task 5 has no
+`closed_hold` record and incurred 58 missing-partition rejections. Combined
+ZeptoDB search p95 was 7.741 ms.
+
+### Decision
+
+Close Experiment 032 as a successful diagnostic and a non-viable calibration.
+Threshold and margin tuning cannot clear the target because cooldown alone
+caps reuse below 20%; the 48 points collapse to two distinct outcomes and all
+three margins are inert. Do not loosen the negative veto on evidence from only
+two accepted actions.
+
+The next experiment must remain shadow-only and measure veto separability:
+positive/suppression similarity gaps, phase-local support, neighbor
+disagreement, admission reasons, and candidate-to-VLA error for vetoed and
+allowed candidates. Rebuild memory from contact-free trajectory windows,
+including task 5 `closed_hold`, and require a per-task structural
+density/latency preflight before another grid or any routed execution.
+
+## 2026-07-18 - Experiment 033 negative-veto separability started
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Capture exploratory per-candidate evidence about whether the configured
+suppression-memory veto is directionally associated with higher pinned-VLA
+action disagreement, and locate runtime task/query-phase/hold support gaps in
+the frozen Experiment 031-032 midpoint bank. The four non-veto candidates from
+Experiment 032 make the pre-registered minimum of 20 separated candidates
+unreachable under exact replication, so an `underpowered` conclusion is
+expected.
+
+### Scope Decision
+
+The current manifest contains one midpoint row per demonstration and no source
+phase, subgoal, contact-window, or dwell labels. Experiment 033 therefore keeps
+the bank unchanged and measures query-phase support only. A deterministic
+contact-free trajectory-window bank, including task 5 `closed_hold`, is moved to
+Experiment 034 so bank changes are not confounded with diagnosis of the current
+veto.
+
+### Method
+
+The dedicated entry point will force tasks 0 and 5, calibration seed 28, the
+frozen model and routing parameters, and diagnostic-only execution. Candidates
+will be partitioned into vetoed, separated, and `no_negative_support` groups.
+The report will retain group sample sizes, similarity gaps, neighbor
+disagreement, top-source concentration, candidate-to-VLA MAE, high-error
+contingency, query-phase/hold coverage, source admission reasons, and structural
+reuse/latency ceilings. No 48-point grid or retrieved action execution is
+permitted.
+
+### Pre-Run Status (superseded below)
+
+The Experiment 033 specification and devlog are pre-registered. The forced
+entry point, three-way veto attribution, admission masks, query-phase/hold
+support accounting, structural preflight, compact renderer, canonical
+candidate-detail artifact, actual model/processor revision pins, measured
+shadow-action accounting, EKS wrapper, shared-bench idle preflight, and
+integrity/ConfigMap guards are implemented. Sixteen new focused tests, 59
+combined risk-router/Experiment 033 tests, and 133 related Experiments 024-033
+Python tests pass. EKS execution is pending.
+
+### Decision
+
+Require at least 20 vetoed and 20 separated candidates before making a
+separability claim. Treat VLA agreement only as a reference proxy, never as
+risk-free-action or physical-safety evidence. Diagnostic completeness and AWS
+cleanup determine experiment pass status; separability and structural
+viability remain findings.
+
+### Post-Run Invalidation
+
+The EKS run completed 595 shadow steps, 595 VLA calls, zero retrieved actions,
+127 candidates, and 123 veto matches. Candidate telemetry was `underpowered`
+but directionally different: 0/4 separated and 26/123 vetoed candidates
+exceeded normalized MAE 0.15.
+
+Source-episode inspection then found an inherited task-identity reporting bug.
+Runtime search correctly resolved exact task text, but compact availability and
+admission output treated LIBERO suite IDs as manifest task indexes. Suite task 0
+actually maps to manifest task 5; suite task 5 maps to manifest task 9. The
+Experiment 033 result, compact payload, and candidate artifact are preserved as
+immutable invalidation evidence. No source-coverage conclusion is promoted from
+the mis-keyed 0/5 admission table.
+
+## 2026-07-18 - Experiment 034 task-mapping correction started
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Reproduce the frozen Experiment 033 shadow trace while making suite-to-manifest
+task identity explicit and correcting availability, admission, and hold-demand
+attribution.
+
+### Pre-Registered Mapping
+
+- LIBERO suite task 0 -> manifest task 5: open 9, closed 0, suppression 10.
+- LIBERO suite task 5 -> manifest task 9: open 0, closed 8, suppression 11.
+
+The 58 missing-executable-memory observations are therefore expected to be
+suite-task-5 demand for manifest-task-9 `open_hold`. The earlier task-5
+closed-hold interpretation is withdrawn.
+
+### Method
+
+Experiment 034 retains the exact models, manifest, seeds, episode limits, veto,
+and shadow-only behavior. Schema 2 records `scope.suite_tasks`, an exact task
+map, manifest-indexed source admission, suite-indexed query/structural tables,
+and a self-describing candidate artifact. Existing result paths are fail-closed
+against overwrite. The Experiment 032 legacy mis-keyed availability fingerprint
+is labeled as historical payload compatibility only.
+
+### Decision
+
+Do not overwrite Experiment 033 or treat this correction as a routed retry.
+Separability remains expected to be `underpowered`; diagnostic pass depends on
+mapping/accounting integrity, zero retrieved actions, and complete AWS cleanup.
+The trajectory-window bank moves to Experiment 035.
+
+### Current Status
+
+EKS run `1321011761` passed all diagnostic gates. It reproduced 595 shadow
+steps, 127 candidate rows, veto groups 0/4/123, the frozen precheck vector, and
+the Experiment 033 schema-independent row SHA-256
+`466467ef024f62bc815069dfa849838cd3a2ec3408319c022fa88a85b6f4552a`.
+All 595 actions came from the pinned VLA and no routed execution started.
+
+The exact task map is suite 0 -> manifest 5 and suite 5 -> manifest 9. Actual
+open/closed/suppression counts are 9/0/10 and 0/8/11. Suite task 5 observed 68
+early open-hold steps and 58 missing-executable-memory outcomes against
+manifest task 9's zero open-hold records. This supersedes every earlier
+process-log reference to task-5 closed-hold coverage or an Experiment 034
+trajectory bank; the trajectory bank is Experiment 035.
+
+The corrected candidate artifact has 127 rows and SHA-256
+`f41225183345e526503bc24576567a7c461e348f4927486bb6b339ab2c84de56`.
+The canonical compact result was 3,229 payload bytes and is preserved with
+SHA-256 `6320991252857db66ae06f2772a6654813327a09944ac0c39ef37fb1c5be733d`.
+The owned namespace, NodePools,
+NodeClaims, nodes, and both EC2 instances were removed; shared x86/arm bench
+NodePools remained at CPU 0 with zero nodes.
+
+### Failure-Attribution Insight
+
+Experiment 034 leaves the Experiment 032 calibration result intact. All 48
+grid points still fail reuse and projected latency: cooldown caps the optimistic
+candidate ceiling at 65/595 (10.9%), and configured veto plus cooldown leaves
+2/595. The correction changes only which source partition explains task 5's
+zero-candidate path.
+
+The veto association is not independently interpretable. All four separated
+rows occur at adjacent steps 173, 174, 177, and 178 with positive source episode
+363. Negative source episode 181 contributes 121/123 vetoes and all 26
+high-error vetoed rows. Treat the 21.1-point high-error-rate delta as
+source/time-confounded descriptive evidence, not veto effectiveness or safety.
+The full synthesis is
+[`results/physical_ai_vla_failure_root_cause_synthesis_032_034.md`](results/physical_ai_vla_failure_root_cause_synthesis_032_034.md).
+
+### Decision
+
+Close Experiment 034 as a successful research-only attribution correction.
+Do not rerun the threshold grid, weaken the veto/cooldown, or execute retrieved
+actions. Experiment 035 must rebuild deterministic contact-free trajectory
+windows with suite-task-5/manifest-task-9 open-hold coverage, a frozen-bank
+paired control, source-diversity diagnostics, and pooled/per-task structural
+abort gates before any new separability or grid analysis.
+
+## 2026-07-19 - Experiment 035 trajectory-window preflight completed
+
+### Classification
+
+Research-only.
+
+### Goal
+
+Admit a contact-observable trajectory-window bank only if source-label
+provenance and the frozen pooled/per-task structural ceilings can meet the
+existing 20% reuse and 15% projected-latency floors before any image, model,
+VLA, or cloud work.
+
+### Pre-Registered Gates
+
+Historical windows may be called `contact-free` only when the source contains
+authoritative simulator contact or an exact source replay matches recorded
+state within `1e-4`. State/action bounds and temporal thirds remain proxies.
+The frozen trace must reach both floors pooled and for each suite task after
+the mandatory one-step cooldown. Any bank-independent failure under the frozen
+Experiment 034 precheck mask blocks source extraction, paired comparison,
+threshold grids, and routed execution.
+
+### Method
+
+The dedicated preflight validated the exact Experiment 034 compact SHA-256,
+semantic manifest, candidate detail, harness, task map, memory availability,
+precheck vectors, and structural rows. It then validated immutable revisions,
+top-level feature-name sets, and episode/frame counts for
+`lerobot/libero_10_image` and `lerobot/libero_10_image_subtask` through bounded
+network requests. Exact ceil counts and eligible/candidate/missing-memory
+conservation determine whether a task ceiling is changeable by rebuilding the
+bank under the frozen mask.
+
+### Result
+
+The diagnostic passed and stopped at `pre_vla_structural_abort`.
+
+- Neither source top-level feature-name set exposes authoritative contact. The
+  auxiliary source adds `subtask_index`, but its 500 episodes are not aligned
+  to the frozen 379-episode source. It establishes neither frozen-source
+  semantic phase nor contact provenance. No historical replay mapping was
+  provided or validated by this run.
+- Suite task 0 already had candidates for all 127 precheck-eligible rows and
+  zero missing-memory outcomes. Cooldown leaves 65/377 (17.24%), below the
+  required 76/377. Candidate projected latency was 15.961%, so task-0 reuse is
+  a bank-independent blocker under the frozen precheck mask.
+- The pooled frozen control remains 65/595 (10.92%) and 10.133% projected
+  latency reduction.
+- Suite task 5 retains 58 potentially repairable manifest-task-9 open-hold
+  gaps, but they cannot repair the independent suite-task-0 gate.
+
+Source trajectory rows/images, models, VLA calls, retrieved actions, paired
+comparisons, separability analysis, threshold grids, and AWS resources all
+remained zero. Cleanup was not required.
+
+### Evidence
+
+- Canonical JSON SHA-256:
+  `572f04026bb83bc4742b322831625493d361148148742b2842b042c92bff47d8`.
+- Canonical report SHA-256:
+  `5a28913b28ed6a0ff266196e677b37d6d24c9a742fea354e7156a239339fcfce`.
+- Preflight tool SHA-256:
+  `d73452da16fcc714a4dd3372ee5756e830017816db5193ed68969cdae8cc694e`;
+  pinned dataset-contract SHA-256:
+  `f18d9d3fbc67ffa315d441d72cc3c8203ff9d28c1f11daf3bdfcec2f61e03ea2`.
+- New focused tests: 20 passed; all Physical AI VLA Python tests: 144 passed.
+
+### Decision
+
+Close Experiment 035 as a diagnostic-valid negative progression result. Do
+not build the bank or rerun the same serial trace. The next experiment should
+freeze multiple new query seeds and use pinned direct-VLA actions to measure
+simulator contact eligibility plus cooldown placement before bank encoding or
+retrieval. Trajectory-bank work also remains blocked until authoritative source
+contact plus source-aligned semantic labels are available, or a verified
+raw-demo replay map reconstructs both. No result supports a risk-free-action or
+physical-safety claim.

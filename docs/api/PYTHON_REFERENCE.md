@@ -13,9 +13,9 @@ Two Python interfaces are available:
 
 ## Table of Contents
 
-- [zeptodb — pybind11 binding](#apex--pybind11-binding)
-  - [zeptodb.Pipeline](#zeptopipeline)
-  - [zeptodb.sql.QueryExecutor](#zeptosqlqueryexecutor)
+- [zeptodb — pybind11 binding](#zeptodb--pybind11-binding)
+  - [zeptodb.Pipeline](#zeptodbpipeline)
+  - [zeptodb.sql.QueryExecutor](#zeptodbsqlqueryexecutor)
 - [zepto_py.connection — HTTP client](#zepto_pyconnection--http-client)
 - [Agent Memory and Cache](#agent-memory-and-cache)
 - [zepto_py.dataframe — bulk ingest/export](#zepto_pydataframe--bulk-ingestexport)
