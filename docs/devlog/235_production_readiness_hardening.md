@@ -280,9 +280,12 @@ shipped separately in site PR 11.
 Hosted-runner triage also removed unavailable distro-level PyArrow packaging,
 installs Python binding and Flight dependencies before configure/CTest, makes
 structured logging fall back to stdout on a read-only log path, and isolates
-the DDL replication test with kernel-assigned ports. The focused local CTest
-selection for the logger fallback, parallel HTTP cluster paths, HTTP production
-CLI, and Flight TLS passes 13/13.
+the DDL replication test with kernel-assigned ports. The CXL latency-injection
+regression now verifies a measurable configured minimum without imposing a
+shared-runner performance ceiling; upper-bound latency remains benchmark
+evidence rather than a unit-test correctness condition. The focused local
+CTest selection for the logger fallback, parallel HTTP cluster paths, HTTP
+production CLI, and Flight TLS passes 13/13.
 
 Hosted ARM64 repeats the full production-profile build and CTest suite in the
 required `Production gate`; cross-architecture completion is not claimed from
