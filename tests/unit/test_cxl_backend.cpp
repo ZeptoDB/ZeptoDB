@@ -6,8 +6,9 @@
 #include "shm_backend.h"
 #include "zeptodb/cluster/transport.h"
 #include <gtest/gtest.h>
-#include <vector>
+#include <chrono>
 #include <numeric>
+#include <vector>
 
 using namespace zeptodb::cluster;
 
@@ -100,11 +101,15 @@ TEST(CXLBackend, BulkDataIntegrity) {
 }
 
 TEST(CXLBackend, LatencyInjection) {
-    // 레이턴시 주입 ON: ~200ns per operation
+    // Use a measurable aggregate delay. Shared CI runners can add arbitrary
+    // scheduling latency, so only the configured minimum is a correctness
+    // property; an upper bound belongs in a benchmark.
+    constexpr uint32_t kLatencyNs = 50'000;
+    constexpr int kOperations = 40;
     CXLConfig config{
         .pool_size = 1024 * 1024,
         .inject_latency = true,
-        .latency_ns = 200
+        .latency_ns = kLatencyNs
     };
     CXLBackend cxl(config);
     cxl.init(NodeAddress{"localhost", 9000, 1});
@@ -112,16 +117,14 @@ TEST(CXLBackend, LatencyInjection) {
     auto region = cxl.register_memory(nullptr, 1024);
     int64_t val = 99;
 
-    auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < 1000; ++i) {
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < kOperations; ++i) {
         cxl.remote_write(&val, region, 0, sizeof(int64_t));
     }
-    auto elapsed = std::chrono::steady_clock::now() - t0;
-    auto ns_per_op = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count() / 1000;
-
-    // 200ns 주입 → 실제로 200ns 이상이어야 함
-    EXPECT_GE(ns_per_op, 150);  // 약간의 오차 허용
-    EXPECT_LE(ns_per_op, 500);  // 너무 느리면 안 됨
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    const auto configured_minimum = std::chrono::nanoseconds{
+        static_cast<int64_t>(kOperations) * kLatencyNs};
+    EXPECT_GE(elapsed, configured_minimum);
 
     cxl.shutdown();
 }
