@@ -267,7 +267,9 @@ recovery filter passes 10/10. The live `test_http_hdb.sh` process restart also
 passes catalog and general SQL row recovery.
 
 The Python suite passes 408/408. The Web gate passes 83/83 tests, lint, the
-Next.js production build, and `pnpm audit --prod` with no known vulnerabilities.
+Next.js production build, and the full `pnpm audit` with no known
+vulnerabilities. Patched overrides cover vulnerable transitive development
+dependencies as well as production dependencies.
 Thirteen offline Helm security tests pass; the chart lints strictly, default,
 existing-secret, and three-node cluster profiles render and pass Kubernetes
 client dry-run, and the legacy manifest passes client dry-run. `actionlint`

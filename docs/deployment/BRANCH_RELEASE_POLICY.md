@@ -65,7 +65,7 @@ The active repository configuration must include:
   - Target: `refs/heads/main`.
   - Rules: deletion protection, non-fast-forward protection, pull request
     requirement, one approving review, stale review dismissal, review-thread
-    resolution.
+    resolution, and a strict required `Production gate` status check.
 - Ruleset `Release tags`:
   - Target: `refs/tags/v*`.
   - Rules: creation protection, deletion protection, non-fast-forward
@@ -106,8 +106,5 @@ For a release:
 
 ## Current Follow-ups
 
-- Add `RELEASE_BOT_TOKEN` as a repository secret.
 - Replace repository-admin bypass with a narrower release bot bypass after the
   bot identity is selected.
-- Decide whether `main` should require named CI checks once the required check
-  list is stable.
