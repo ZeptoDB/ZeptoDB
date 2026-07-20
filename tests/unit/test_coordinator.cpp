@@ -4112,17 +4112,19 @@ TEST(DistributedString, TwoNode_MixedIntAndString) {
 // ============================================================================
 
 TEST(TcpRpc, MetricsRequestRoundTrip) {
+    const uint16_t port = P(20020);
     TcpRpcServer server;
     server.set_metrics_callback([](int64_t since_ms, uint32_t limit) {
         (void)since_ms; (void)limit;
         return R"([{"timestamp_ms":1000,"node_id":2,"ticks_ingested":500,"ticks_stored":490,"ticks_dropped":10,"queries_executed":5,"total_rows_scanned":1000,"partitions_created":1,"last_ingest_latency_ns":100}])";
     });
-    server.start(RPC_TEST_PORT_BASE + 20, [](const std::string&) {
+    server.start(port, [](const std::string&) {
         return QueryResultSet{};
     });
+    ASSERT_TRUE(server.is_running());
     std::this_thread::sleep_for(20ms);
 
-    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 20);
+    TcpRpcClient client("127.0.0.1", port);
     auto json = client.request_metrics(0, 100);
     EXPECT_FALSE(json.empty());
     EXPECT_NE(json.find("\"node_id\":2"), std::string::npos);
@@ -4133,13 +4135,15 @@ TEST(TcpRpc, MetricsRequestRoundTrip) {
 }
 
 TEST(TcpRpc, MetricsRequest_NoCallback_ReturnsEmptyArray) {
+    const uint16_t port = P(20021);
     TcpRpcServer server;
-    server.start(RPC_TEST_PORT_BASE + 21, [](const std::string&) {
+    server.start(port, [](const std::string&) {
         return QueryResultSet{};
     });
+    ASSERT_TRUE(server.is_running());
     std::this_thread::sleep_for(20ms);
 
-    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 21);
+    TcpRpcClient client("127.0.0.1", port);
     auto json = client.request_metrics(0, 0);
     EXPECT_EQ(json, "[]");
 
@@ -4147,12 +4151,13 @@ TEST(TcpRpc, MetricsRequest_NoCallback_ReturnsEmptyArray) {
 }
 
 TEST(TcpRpc, MetricsRequest_ServerDown_ReturnsEmpty) {
-    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 22);
+    TcpRpcClient client("127.0.0.1", P(20022));
     auto json = client.request_metrics(0, 10);
     EXPECT_TRUE(json.empty());
 }
 
 TEST(TcpRpc, MetricsRequest_PassesSinceAndLimit) {
+    const uint16_t port = P(20023);
     int64_t received_since = -1;
     uint32_t received_limit = 999;
 
@@ -4162,12 +4167,13 @@ TEST(TcpRpc, MetricsRequest_PassesSinceAndLimit) {
         received_limit = limit;
         return "[]";
     });
-    server.start(RPC_TEST_PORT_BASE + 23, [](const std::string&) {
+    server.start(port, [](const std::string&) {
         return QueryResultSet{};
     });
+    ASSERT_TRUE(server.is_running());
     std::this_thread::sleep_for(20ms);
 
-    TcpRpcClient client("127.0.0.1", RPC_TEST_PORT_BASE + 23);
+    TcpRpcClient client("127.0.0.1", port);
     auto json = client.request_metrics(42000, 50);
     EXPECT_EQ(json, "[]");
     EXPECT_EQ(received_since, 42000);
@@ -4201,18 +4207,20 @@ TEST(RpcProtocol, MetricsRequestDeserialize_TooShort) {
 // ── QueryCoordinator: collect_remote_metrics ────────────────────────────────
 
 TEST(QueryCoordinator, CollectRemoteMetrics_SingleNode) {
+    const uint16_t port = P(20024);
     // Set up a remote node with metrics callback
     TcpRpcServer server;
     server.set_metrics_callback([](int64_t, uint32_t) {
         return R"([{"timestamp_ms":2000,"node_id":1,"ticks_ingested":100,"ticks_stored":100,"ticks_dropped":0,"queries_executed":10,"total_rows_scanned":500,"partitions_created":2,"last_ingest_latency_ns":50}])";
     });
-    server.start(RPC_TEST_PORT_BASE + 24, [](const std::string&) {
+    server.start(port, [](const std::string&) {
         return QueryResultSet{};
     });
+    ASSERT_TRUE(server.is_running());
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
-    coord.add_remote_node({"127.0.0.1", static_cast<uint16_t>(RPC_TEST_PORT_BASE + 24), 1});
+    coord.add_remote_node({"127.0.0.1", port, 1});
 
     auto results = coord.collect_remote_metrics(0, 100);
     ASSERT_EQ(results.size(), 1u);
@@ -4231,10 +4239,12 @@ TEST(QueryCoordinator, CollectRemoteMetrics_TwoNodes) {
         return R"([{"timestamp_ms":1000,"node_id":2,"ticks_ingested":200,"ticks_stored":200,"ticks_dropped":0,"queries_executed":8,"total_rows_scanned":400,"partitions_created":2,"last_ingest_latency_ns":40}])";
     });
 
-    uint16_t port1 = RPC_TEST_PORT_BASE + 25;
-    uint16_t port2 = RPC_TEST_PORT_BASE + 26;
+    const uint16_t port1 = P(20025);
+    const uint16_t port2 = P(20026);
     srv1.start(port1, [](const std::string&) { return QueryResultSet{}; });
     srv2.start(port2, [](const std::string&) { return QueryResultSet{}; });
+    ASSERT_TRUE(srv1.is_running());
+    ASSERT_TRUE(srv2.is_running());
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coord;
