@@ -283,9 +283,11 @@ structured logging fall back to stdout on a read-only log path, and isolates
 the DDL replication test with kernel-assigned ports. The CXL latency-injection
 regression now verifies a measurable configured minimum without imposing a
 shared-runner performance ceiling; upper-bound latency remains benchmark
-evidence rather than a unit-test correctness condition. The focused local
-CTest selection for the logger fallback, parallel HTTP cluster paths, HTTP
-production CLI, and Flight TLS passes 13/13.
+evidence rather than a unit-test correctness condition. The remaining RPC
+metrics tests now use the same kernel-assigned port map as the rest of the
+coordinator suite and assert successful server startup before connecting. The
+focused local CTest selection for the logger fallback, parallel HTTP cluster
+paths, HTTP production CLI, and Flight TLS passes 13/13.
 
 Hosted ARM64 repeats the full production-profile build and CTest suite in the
 required `Production gate`; cross-architecture completion is not claimed from
