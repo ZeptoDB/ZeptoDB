@@ -4,6 +4,13 @@
 **Status**: Completed
 **P8-Critical**: Internal RPC Security
 
+> Superseded on 2026-07-19 by
+> [`235_production_readiness_hardening.md`](235_production_readiness_hardening.md).
+> The original one-message keyed-FNV handshake described below is retained as
+> historical context only. Current code uses OpenSSL HMAC-SHA256 mutual
+> challenge-response with fresh client and server nonces; legacy payloads are
+> rejected.
+
 ---
 
 ## Background

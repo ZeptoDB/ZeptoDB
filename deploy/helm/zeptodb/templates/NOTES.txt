@@ -1,19 +1,57 @@
-ZeptoDB has been deployed!
+ZeptoDB has been deployed with a {{ .Values.service.type }} Service.
 
-1. Get the service URL:
-{{- if eq .Values.service.type "LoadBalancer" }}
-   export SERVICE_IP=$(kubectl get svc {{ include "zeptodb.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-   echo "http://$SERVICE_IP:{{ .Values.service.port }}"
+{{- if .Values.persistence.enabled }}
+WARNING: persistence.acknowledgeIncompleteDurability is an evaluation gate, not
+a durability guarantee. Hot-partition WAL/recovery and HDB rows in general SQL
+reads remain release blockers. Do not treat the mounted PVC as proof of
+SQL-visible restart durability.
 {{- else }}
-   kubectl port-forward svc/{{ include "zeptodb.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }} -n {{ .Release.Namespace }}
-   echo "http://localhost:{{ .Values.service.port }}"
+WARNING: persistence is disabled. This deployment is in-memory and does not
+survive process or pod replacement.
 {{- end }}
 
-2. Run a test query:
-   curl -X POST http://$SERVICE_IP:{{ .Values.service.port }}/ -d 'SELECT 1'
+1. Reach the HTTP endpoint without exposing it publicly:
 
-3. Check health:
-   curl http://$SERVICE_IP:{{ .Values.service.port }}/health
+   kubectl port-forward svc/{{ include "zeptodb.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }} -n {{ .Release.Namespace }}
 
-4. Rolling upgrade:
-   helm upgrade {{ .Release.Name }} ./helm/zeptodb --set image.tag=NEW_VERSION
+{{- if .Values.auth.enabled }}
+
+2. Retrieve the bootstrap admin credential explicitly, then run a query:
+
+   export ZEPTO_ADMIN_KEY="$(kubectl get secret {{ include "zeptodb.authSecretName" . }} -n {{ .Release.Namespace }} -o jsonpath=\"{.data['{{ .Values.auth.adminKeyKey }}']}\" | base64 --decode)"
+   curl -H "Authorization: Bearer ${ZEPTO_ADMIN_KEY}" -X POST http://127.0.0.1:{{ .Values.service.port }}/ -d 'SELECT 1'
+{{- else }}
+
+2. WARNING: authentication is explicitly disabled. Use this mode only in an
+   isolated development or benchmark namespace.
+
+   curl -X POST http://127.0.0.1:{{ .Values.service.port }}/ -d 'SELECT 1'
+{{- end }}
+
+3. Check public health endpoints:
+
+   curl http://127.0.0.1:{{ .Values.service.port }}/health
+
+4. Production exposure requires an operator-managed ingress or load balancer
+   that terminates TLS. The chart intentionally does not create a public TLS
+   endpoint. Its default NetworkPolicy admits HTTP only from the release
+   namespace; configure networkPolicy.http.additionalSources for the approved
+   ingress/Prometheus pods. Cluster RPC shared-secret authentication does not
+   encrypt data, so keep peer traffic on a private or encrypted network.
+
+5. Rolling upgrade:
+
+   helm upgrade {{ .Release.Name }} ./deploy/helm/zeptodb -n {{ .Release.Namespace }} --set image.tag=NEW_VERSION
+
+   After the release image is published, prefer an immutable reference with
+   --set-string image.digest=sha256:PUBLISHED_DIGEST.
+
+The process loads key material only at startup. After an externally managed API
+key Secret is updated, force a rollout by changing an opaque value:
+
+   helm upgrade {{ .Release.Name }} ./deploy/helm/zeptodb -n {{ .Release.Namespace }} --reuse-values --set-string auth.rolloutChecksum=ROTATION_ID
+
+Use an overlap rotation for API keys (old and new hashes together, roll, move
+clients, remove the old hash, roll again). Cluster peer secrets do not support
+overlap; rotate `cluster.security.rolloutChecksum` only in a coordinated
+maintenance window because mixed old/new processes cannot authenticate.

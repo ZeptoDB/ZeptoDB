@@ -10,8 +10,12 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/async.h>
 #include <chrono>
-#include <iomanip>
+#include <exception>
 #include <filesystem>
+#include <iomanip>
+#include <iostream>
+#include <utility>
+#include <vector>
 
 namespace zeptodb::util {
 
@@ -22,6 +26,9 @@ namespace fs = std::filesystem;
 // ============================================================================
 class Logger::Impl {
 public:
+    // Keep the async pool alive at least as long as the logger. The global
+    // spdlog pool may otherwise be destroyed first during process shutdown.
+    std::shared_ptr<spdlog::details::thread_pool> thread_pool_;
     std::shared_ptr<spdlog::logger> logger_;
     LogLevel current_level_ = LogLevel::INFO;
 
@@ -32,26 +39,35 @@ public:
     {
         current_level_ = level;
 
-        // 로그 디렉토리 생성
-        fs::create_directories(log_dir);
-
-        // 파일 경로
-        std::string log_path = log_dir + "/zeptodb.log";
-
-        // Rotating file sink (자동 로테이션)
-        size_t max_size = max_file_size_mb * 1024 * 1024;
-        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-            log_path, max_size, max_files);
-
         // Stdout sink (콘솔 출력)
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        std::vector<spdlog::sink_ptr> sinks{console_sink};
+
+        // File logging is optional at process bootstrap. Containers commonly
+        // run with a read-only root filesystem, and a logging permission error
+        // must not mask a more useful startup or recovery error. Keep stdout
+        // available for the platform log collector when the rotating sink
+        // cannot be created.
+        try {
+            fs::create_directories(log_dir);
+            const std::string log_path = log_dir + "/zeptodb.log";
+            const size_t max_size = max_file_size_mb * 1024 * 1024;
+            auto file_sink =
+                std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+                    log_path, max_size, max_files);
+            sinks.insert(sinks.begin(), std::move(file_sink));
+        } catch (const std::exception& error) {
+            std::cerr << "Warning: file logging is unavailable for '"
+                      << log_dir << "'; continuing with stdout only: "
+                      << error.what() << '\n';
+        }
 
         // 비동기 로거 생성
         spdlog::init_thread_pool(8192, 1);  // 큐 크기 8192, 스레드 1개
-        std::vector<spdlog::sink_ptr> sinks{file_sink, console_sink};
+        thread_pool_ = spdlog::thread_pool();
         logger_ = std::make_shared<spdlog::async_logger>(
             "zeptodb", sinks.begin(), sinks.end(),
-            spdlog::thread_pool(),
+            thread_pool_,
             spdlog::async_overflow_policy::block);
 
         // 패턴 설정 (JSON 형식)

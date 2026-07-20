@@ -6,7 +6,7 @@
 //   - 백그라운드 스레드로 메모리 압력 모니터링
 //   - 임계치(기본 80%) 초과 시 SEALED 파티션 HDB로 비동기 플러시
 //   - 핫패스(인제스션) 완전 비차단 — SEALED 파티션만 처리
-//   - 플러시 후 ArenaAllocator 리셋으로 메모리 회수
+//   - Optional post-flush arena reclamation for HDB-aware consumers
 //   - Lock-free 원칙: 핫패스에 mutex 없음
 // ============================================================================
 
@@ -19,7 +19,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -48,8 +50,9 @@ struct FlushConfig {
     /// LZ4 압축 사용 여부 (BINARY 형식)
     bool     enable_compression  = true;
 
-    /// 플러시 후 아레나 리셋 (메모리 회수 여부)
-    bool     reclaim_after_flush = true;
+    /// Whether to reclaim the arena after a successful flush. The default is
+    /// false; ZeptoPipeline rejects true until general SQL merges HDB rows.
+    bool     reclaim_after_flush = false;
 
     /// 파티션을 자동 봉인하는 나이 기준 (시간 단위)
     int64_t  auto_seal_age_hours = 1;
@@ -74,16 +77,16 @@ struct FlushConfig {
     bool delete_local_after_s3 = false;
 
     // -----------------------------------------------------------------------
-    // 스냅샷 옵션 (장중 크래시 복구)
+    // Snapshot options (graceful restart; not an abrupt-crash guarantee)
     // -----------------------------------------------------------------------
 
-    /// 주기적 스냅샷 활성화 — ACTIVE 파티션 포함 전체를 snapshot_path에 저장
+    /// Publish periodic RDB generations, including ACTIVE partitions.
     bool        enable_auto_snapshot = false;
 
-    /// 스냅샷 주기 (밀리초, 기본 60초)
+    /// Snapshot interval in milliseconds (default: 60 seconds).
     uint32_t    snapshot_interval_ms = 60'000;
 
-    /// 스냅샷 저장 경로 (빈 문자열이면 비활성화)
+    /// Snapshot root containing CURRENT and immutable generations.
     std::string snapshot_path        = "";
 
     // -----------------------------------------------------------------------
@@ -122,17 +125,39 @@ struct FlushStats {
     int64_t  last_flush_ns       = 0;  // 마지막 플러시 타임스탬프 (ns)
 };
 
+/// Result of resolving an atomically published snapshot generation.
+/// `Missing` means no generation has been published yet; `Invalid` means a
+/// snapshot root exists but its CURRENT/complete manifest is inconsistent.
+enum class SnapshotResolutionStatus : uint8_t {
+    Missing,
+    Ready,
+    Invalid,
+};
+
+struct SnapshotResolution {
+    SnapshotResolutionStatus status = SnapshotResolutionStatus::Missing;
+    std::string generation_path;
+    size_t partition_count = 0;
+    size_t row_count = 0;
+    std::string error;
+};
+
 // ============================================================================
 // FlushManager: 백그라운드 HDB 플러시 관리자
 // ============================================================================
 class FlushManager {
 public:
+    using EvictBeforeCallback = std::function<size_t(int64_t)>;
+
     /// @param pm      PartitionManager 참조 (소유권 없음)
     /// @param writer  HDBWriter 참조 (소유권 없음)
     /// @param config  플러시 설정
+    /// @param evict_before Optional pipeline-owned eviction callback used to
+    ///                     keep secondary partition indexes synchronized.
     FlushManager(PartitionManager& pm,
                  HDBWriter&         writer,
-                 FlushConfig        config = {});
+                 FlushConfig        config = {},
+                 EvictBeforeCallback evict_before = {});
 
     ~FlushManager();
 
@@ -150,9 +175,22 @@ public:
     /// @return 플러시된 파티션 수
     size_t flush_now();
 
-    /// 수동 즉시 스냅샷 — 모든 파티션(ACTIVE 포함)을 snapshot_path에 저장
-    /// @return 스냅샷된 파티션 수 (스냅샷 비활성화 시 0)
+    /// Publish one generation containing all current partitions, including
+    /// ACTIVE partitions.
+    /// @return Number of non-empty snapshotted partitions, or zero on failure
+    ///         and for a valid empty generation. Check last_snapshot_succeeded().
     size_t snapshot_now();
+
+    /// Whether the most recent snapshot attempt published a complete
+    /// generation. Empty snapshots can succeed while snapshot_now() returns 0.
+    [[nodiscard]] bool last_snapshot_succeeded() const {
+        return last_snapshot_succeeded_.load(std::memory_order_acquire);
+    }
+
+    /// Resolve CURRENT under a snapshot root without accepting legacy partial
+    /// directory layouts. Recovery must fail closed on `Invalid`.
+    [[nodiscard]] static SnapshotResolution resolve_snapshot(
+        const std::string& snapshot_path);
 
     /// Set TTL for automated partition eviction (0 = disabled).
     /// Thread-safe; takes effect on the next flush_loop() tick.
@@ -202,6 +240,7 @@ private:
     PartitionManager&  pm_;
     HDBWriter&         writer_;
     FlushConfig        config_;
+    EvictBeforeCallback evict_before_;
 
     // Parquet / S3 (선택적 — 설정에 따라 초기화)
     std::unique_ptr<ParquetWriter> parquet_writer_;
@@ -219,6 +258,8 @@ private:
 
     // 스냅샷 타이머
     std::atomic<int64_t>  last_snapshot_ns_{0};
+    std::atomic<bool>     last_snapshot_succeeded_{false};
+    std::mutex            snapshot_mu_;
 
     // TTL-based eviction (0 = disabled)
     std::atomic<int64_t>  ttl_ns_{0};

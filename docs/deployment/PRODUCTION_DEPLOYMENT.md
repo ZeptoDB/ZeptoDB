@@ -2,7 +2,7 @@
 
 > Choose **bare metal** or **cloud-native** deployment based on your workload.
 
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-07-19
 
 ---
 
@@ -231,7 +231,7 @@ watch -n 1 'cat /proc/$(pidof zepto_server)/status | grep VmHWM'
     +────────+─────────+
     |                  |
 +───v────+      +─────v───+
-│ Pod 1  │      │ Pod 2   │    ... (Auto-scaling)
+│ Pod 1  │      │ Pod 2   │    ... (reviewed static topology)
 │ APEX   │      │ APEX    │
 +───+────+      +────+────+
     |                |
@@ -324,6 +324,11 @@ docker push your-registry/zeptodb:v1.0.0
 
 `deploy/k8s/deployment.yaml`:
 
+The excerpt below is topology-only. Do not copy it as a production manifest;
+apply the version-controlled file, which also contains fail-closed API-key and
+cluster-secret mounts, explicit container binding, tiered-storage arguments,
+nonroot `fsGroup`, RWO-safe rollout policy, and probes.
+
 ```yaml
 apiVersion: v1
 kind: Namespace
@@ -348,7 +353,8 @@ metadata:
   name: zeptodb
   namespace: zeptodb
 spec:
-  replicas: 3
+  # Standalone mode must remain one replica. Use Helm cluster mode for scale-out.
+  replicas: 1
   selector:
     matchLabels:
       app: zeptodb
@@ -432,7 +438,8 @@ metadata:
   name: zeptodb-service
   namespace: zeptodb
 spec:
-  type: LoadBalancer
+  # Expose through a separate TLS-terminating ingress/load balancer.
+  type: ClusterIP
   selector:
     app: zeptodb
   ports:
@@ -440,33 +447,11 @@ spec:
     targetPort: 8123
     protocol: TCP
     name: http
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: zeptodb-hpa
-  namespace: zeptodb
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: zeptodb
-  minReplicas: 3
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
 ```
+
+The standalone manifest intentionally contains no HPA. The Helm chart also
+rejects HPA rendering for cluster mode until dynamic StatefulSet peer discovery
+and membership convergence are implemented.
 
 Deploy:
 
@@ -486,7 +471,7 @@ kubectl logs -f deployment/zeptodb -n zeptodb
 `helm/zeptodb/values.yaml`:
 
 ```yaml
-replicaCount: 3
+replicaCount: 1
 
 image:
   repository: your-registry/zeptodb
@@ -502,14 +487,12 @@ resources:
     memory: 32Gi
 
 autoscaling:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
+  enabled: false
 
 persistence:
   enabled: true
+  # Evaluation gate only. This does not assert SQL-visible restart durability.
+  acknowledgeIncompleteDurability: true
   storageClass: gp3
   size: 500Gi
 
@@ -518,10 +501,13 @@ config:
   analyticsMode: true
   cloudNative: true
 
-monitoring:
-  prometheus:
-    enabled: true
-  grafana:
+prometheus:
+  # Annotation scraping cannot attach the required Bearer token.
+  scrape: false
+
+serviceMonitor:
+  enabled: true
+  authorization:
     enabled: true
 ```
 
@@ -534,12 +520,17 @@ helm install zeptodb ./deploy/helm/zeptodb \
     --values values-prod.yaml
 ```
 
+This tiered-storage profile is not data-durable production. Hot-partition
+WAL/recovery coverage and HDB-row merge into general SQL queries remain release
+blockers; the chart rejects `persistence.enabled=true` unless the evaluation
+acknowledgement is explicit.
+
 #### 4. Monitoring (Prometheus + Grafana)
 
 `deploy/k8s/monitoring.yaml`:
 
 ```yaml
-apiVersion: v1
+apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: zeptodb-metrics
@@ -552,6 +543,11 @@ spec:
   - port: http
     path: /metrics
     interval: 15s
+    authorization:
+      type: Bearer
+      credentials:
+        name: zeptodb-auth
+        key: metrics-api-key
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -603,7 +599,7 @@ data:
 | **Latency p99** | **550us** | 800us | +45% |
 | **Jitter** | **+/-5us** | +/-30us | 6x worse |
 | **Throughput** | **6M/sec** | 4.5M/sec | -25% |
-| **Scalability** | Manual (add servers) | Auto (HPA) | Auto |
+| **Scalability** | Manual (add servers) | Reviewed static replicas | HPA blocked until dynamic membership |
 | **Cost (annual)** | $100K (fixed) | $50K-$200K (variable) | Usage-dependent |
 | **Suitable workloads** | HFT, real-time | Analytics, backtesting | — |
 
@@ -646,7 +642,10 @@ Development -> Docker local test -> K8s staging -> Validation
 - [ ] K8s cluster ready
 - [ ] Persistent Volume configured
 - [ ] Monitoring set up (Prometheus, Grafana)
-- [ ] Auto-scaling policy configured
+- [ ] HPA remains disabled; any static replica change has a reviewed membership plan
+- [ ] API-key and cluster-peer Secrets configured; `--no-auth` is not used
+- [ ] Service remains `ClusterIP` until a TLS-terminating ingress/load balancer is ready
+- [ ] Horizontal scaling uses `cluster.enabled=true`, not standalone Deployment replicas
 
 ---
 

@@ -598,7 +598,7 @@
 - ✅ **Agent Memory Layer** (devlog 120) — additive AI memory/context subsystem on top of ZeptoDB Core. Adds in-memory `MemoryRecord` storage, parallel exact top-K filtered embedding search, token-budget context assembly, exact prompt cache, semantic cache fallback, sidecar persistence with configurable flush cadence, bounded eviction, optional sparse-projection ANN candidate indexing, `/api/ai/stats` and Prometheus metrics, HTTP `/api/ai/*` endpoints, Python `connection.memory` / `connection.cache` helpers, provider-cache and LangGraph-style examples, optional OpenAI/Anthropic/LangGraph adapters, production-shaped AgentOps telemetry demo, and `bench_agent_memory` baseline/sweep harness. Current-instance 128-dim exact scan is under the 10 ms target at 100K and 300K records and ~16.7 ms at 1M; non-TTL 1M fixture load now completes in seconds instead of rescanning on every write. Sparse projection is faster but recall-sensitive. v0 uses client-supplied `float32[]` embeddings and deliberately avoids server-side LLM or embedding-provider calls.
 - ✅ **Arrow IPC query response** (devlog 119) — `POST /` (port 8123) now honours Arrow IPC content negotiation: `Accept: application/vnd.apache.arrow.stream`, `?default_format=Arrow` (ClickHouse-style), or `?format=arrow` returns an Arrow IPC RecordBatchStream (~2–3× faster than JSON on large result sets, same DuckDB engine). JSON remains the default. Errors stay JSON regardless of Accept (matches ClickHouse). Built with `ZEPTO_USE_FLIGHT=ON` (default) → working; built without → `406 Not Acceptable` with JSON error. Pulled the Arrow encoder out of `flight_server.cpp` into a shared `zepto_arrow_ipc` static lib so HTTP and Flight share one `to_arrow_type` / `build_schema` / `result_to_batch`; encoder also now maps `SYMBOL` columns to Arrow `utf8` via `symbol_dict` (was returning raw int64 codes). +7 tests in new `test_http_arrow_ipc.cpp`. Closes P4 "Arrow IPC query response" (S effort).
 - ✅ **S3 Parquet sink connector** (devlog 118) — operator-facing surface for the cold-tier S3 Parquet path that has shipped as C++ infra since devlog 012. New `S3Layout::HIVE` (default) emits Athena/DuckDB/Polars/Spark auto-discoverable `year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].parquet` keys; FLAT kept byte-identical for backward compat. New Helm `coldTier:` block, matching `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars (Helm interop), per-pod hostname-hash filename collision protection, new operator recipe doc (`docs/operations/COLD_TIER_S3.md`). +14 tests (`test_s3_sink.cpp`, `test_parquet_writer.cpp`, `test_cold_tier.cpp`). Closes the P5 row.
-- ✅ **Ingest-rate HPA** (devlog 117) — `zepto_ingest_ticks_per_sec` per-pod gauge on `/metrics`, wired into the Helm HPA as a custom `Pods` metric (`autoscaling.ingestRateEnabled`). Kubernetes now autoscales on real ingest load instead of CPU/memory proxies; CPU/memory remain configured as the safety net. Closes P8-I4.
+- ✅ **Ingest-rate HPA metric wiring** (devlog 117) — `zepto_ingest_ticks_per_sec` per-pod gauge on `/metrics`, wired into the retained Helm HPA template as a custom `Pods` metric (`autoscaling.ingestRateEnabled`). Automatic deployment is blocked until the dynamic membership item below is complete. Closes the metric-wiring portion of P8-I4.
 - ✅ **Marketing site rebrand** (devlog 115) — 5-page IA (`/home`, `/solutions`, `/features`, `/performance`, `/pricing`) pivots the site from "HFT/quant-only" to "general-purpose industry time-series DB" serving Physical AI, Finance, Game, IoT/Smart Factory, and real-time observability. WEBSITE_PRD.md updated to the Next.js + MUI stack that actually shipped. Unblocks the P2 demo-video item.
 - ✅ **Python cluster hook** (devlog 114) — `Pipeline.enable_cluster_routing(self_id, peers, …)` pybind11 method. In-process cluster front-door finally wired. Closes P8-I5.
 - ✅ **Stateless `zepto_ingest_node`** (devlog 113) — ingest-only binary, forwards all ticks to storage pods. Helm opt-in. Closes P8-I3.
@@ -673,6 +673,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **Cloud Marketplace** | AWS/GCP one-click | M |
 | **Geo-replication** | Multi-region trading desks | L |
 | **SAML 2.0** | Bank/insurance SAML-only environments | L |
+| **OIDC CLI role/group policy configuration** | The standalone CLI currently requires a signed `zepto_role` claim and fails closed otherwise. Expose explicit role-claim name, group-claim/map, default-role, and multi-IdP configuration without reintroducing implicit read access. | M |
 
 ---
 
@@ -702,6 +703,11 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
+| **Native TCP RPC TLS/mTLS and hot secret rotation** | The shipped HMAC-SHA256 mutual challenge authenticates peers and blocks proof replay but does not encrypt payloads. Until native TLS/mTLS and connection-draining rotation land, production must use private networking plus an encrypted overlay/service mesh and coordinated restarts. | M |
+| **Dynamic StatefulSet peer discovery and HPA membership convergence** | The Helm StatefulSet currently builds a static peer list from `replicaCount`, so HPA-created ordinals cannot discover a complete topology. Helm rejects all HPA rendering until discovery, join/leave convergence, and scale-down safety are verified. | M |
+| **Abrupt HTTP SQL restart durability** | A PVC plus `--storage-mode tiered --hdb-dir` is not yet a full durability guarantee. Graceful stop now publishes a complete RDB generation and the HTTP CLI reloads it before binding, with focused write → stop → destroy/restart → general SQL `COUNT`/`SUM` proof. Remaining promotion work is hot-partition WAL replay for abrupt node loss, per-column checksums, complete file/directory `fsync` evidence, durable `StringDictionary` metadata, and full HDB-row merge into general SQL reads. | L |
+| **End-to-end bounded/cancellable distributed HTTP SELECT** | Multi-node coordinator SELECT does not carry the HTTP request-owned AST limit or cancellation token across RPC. Production HTTP rejects it by default; `--allow-experimental-distributed-queries` is an isolated-test opt-in until per-node/global row+byte budgets, distributed cancellation, telemetry, and failure tests land. | M |
+| **Atomic Arrow Flight DoPut** | The compatibility writer commits rows individually and cannot roll back a later stream failure. DoPut is disabled by default; `--allow-non-atomic-put` is an isolated-test opt-in until atomic commit, retry/idempotency, crash recovery, and partial-failure telemetry are implemented. | M |
 | **Tier C cold query offload** | Historical data → DuckDB on S3. **Elevated importance after Arc analysis (2026-05-13)**: Parquet+S3 is now the de-facto cold-tier standard, and shipping this neutralises the "vendor lock-in" critique without sacrificing our hot-tier differentiation. | M |
 | **Global symbol registry** | Distributed string symbol routing | M |
 
@@ -709,9 +715,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
+| **Shared authentication for `zepto_ingest_node`** | The Helm tier now defaults to fail-closed, but the ingest binary does not load the shared API-key store/session/JWT configuration. Production use needs the common `AuthManager` bootstrap (or an explicitly documented authenticated proxy) before the tier can accept protected writes. | S |
 | **Bench: symbol-aware / batched HTTP client** | Current HTTP bench is latency-bound at ~90/s under N≥2 (RPC hop per non-local INSERT). Need a driver that either batches or computes ownership client-side. | S |
 
-> ✅ Done: P8-I4 ingest-rate HPA (devlog 117), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103), and full cross-arch EKS live rebalance integrity closure (devlog 158). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
+> ✅ Done: P8-I4 ingest-rate metric and HPA-template wiring (devlog 117; deployment remains blocked on dynamic membership), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113; authenticated production ingress remains above), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103), and full cross-arch EKS live rebalance integrity closure (devlog 158). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
 
 ---
 
@@ -759,13 +766,13 @@ No open P9 backlog items remain.
 | **P3** | Agent Memory / AI Context | 5 | VLA closed-loop validation → edge/fleet soak → ANN policy |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
 | **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
-| **P6** | Enterprise / Cloud | 3 | Marketplace |
+| **P6** | Enterprise / Cloud | 4 | OIDC CLI policy configuration → Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 37 items + 4 manual tasks**
+**Total open: 38 items + 4 manual tasks**
 
 **Critical path: P3 experiment promotions → P5 CDC connector → P2 launch collateral**
 

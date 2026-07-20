@@ -9,7 +9,7 @@
 //   if (decision.status != AuthStatus::OK) { return 401/403; }
 //   if (!decision.context.has_permission(Permission::READ)) { return 403; }
 //
-// Auth priority:  JWT Bearer > API Key Bearer > unauthenticated
+// Auth priority:  SSO/JWT Bearer > API Key Bearer > session cookie > unauthenticated
 // Public paths:   /ping /health /ready  — always allowed (no auth required)
 // ============================================================================
 
@@ -28,6 +28,7 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <atomic>
 
 namespace zeptodb::auth {
 
@@ -37,7 +38,7 @@ namespace zeptodb::auth {
 struct AuthContext {
     std::string              subject;          // user id or key id
     std::string              name;             // display name
-    Role                     role = Role::READER;
+    Role                     role = Role::UNKNOWN;
     std::string              source;           // "api_key" | "jwt" | "anonymous"
     std::vector<std::string> allowed_symbols;  // empty = unrestricted
     std::string              tenant_id;        // empty = no tenant (unrestricted)
@@ -130,8 +131,8 @@ public:
 
         // Paths that never require authentication
         std::vector<std::string> public_paths = {
-            "/ping", "/health", "/ready",
-            "/auth/login", "/auth/callback", "/auth/logout"
+            "/ping", "/health", "/ready", "/api/license",
+            "/auth/login", "/auth/callback", "/auth/logout", "/auth/session"
         };
     };
 
@@ -145,7 +146,17 @@ public:
     AuthDecision check(const std::string& method,
                        const std::string& path,
                        const std::string& auth_header,
-                       const std::string& remote_addr = "") const;
+                       const std::string& remote_addr = "",
+                       const std::string& cookie_header = "") const;
+
+    // Validate credentials even when path is public. Self-authenticating
+    // handlers such as the OIDC callback and session-creation endpoint use
+    // this after pre-routing deliberately allows the unauthenticated request.
+    AuthDecision authenticate(const std::string& method,
+                              const std::string& path,
+                              const std::string& auth_header,
+                              const std::string& remote_addr = "",
+                              const std::string& cookie_header = "") const;
 
     // ---------------------------------------------------------------------------
     // Admin API: manage keys
@@ -217,6 +228,7 @@ private:
     std::unique_ptr<SessionStore>  session_store_;
     std::optional<OidcMetadata>    oidc_meta_;
     mutable AuditBuffer            audit_buffer_;
+    mutable std::atomic<uint64_t>  rate_limit_checks_{0};
 
     AuthDecision check_api_key(const std::string& token) const;
     AuthDecision check_jwt(const std::string& token) const;
@@ -231,11 +243,12 @@ private:
 // ============================================================================
 struct TlsConfig {
     bool        enabled   = false;
+    std::string bind_host = "0.0.0.0";  // listener address
     std::string cert_path;       // path to server certificate (PEM)
     std::string key_path;        // path to private key (PEM)
     std::string ca_cert_path;    // optional: CA cert for mTLS client verification
     uint16_t    https_port = 8443;
-    bool        also_serve_http = true;  // keep HTTP on original port when true
+    bool        also_serve_http = false; // reserved; one listener is currently served
 };
 
 } // namespace zeptodb::auth

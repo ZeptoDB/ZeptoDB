@@ -27,7 +27,7 @@ jobs:
       }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -73,8 +73,14 @@ jobs:
       - name: Commit version bump
         if: steps.head_tag.outputs.skip != 'true'
         run: |
-          git add CMakeLists.txt zepto_py/__init__.py web/package.json
-          git commit -m "chore(release): v${{ steps.version.outputs.version }}"
+          git add CMakeLists.txt zepto_py/__init__.py web/package.json \
+            deploy/helm/zeptodb/Chart.yaml \
+            deploy/docker/Dockerfile deploy/docker/Dockerfile.arm64
+          if git diff --cached --quiet; then
+            echo "Version files already match v${{ steps.version.outputs.version }}; tagging the current main commit."
+          else
+            git commit -m "chore(release): v${{ steps.version.outputs.version }}"
+          fi
 
       - name: Create release tag
         if: steps.head_tag.outputs.skip != 'true'

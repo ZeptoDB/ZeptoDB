@@ -1,12 +1,18 @@
 # ZeptoDB Kubernetes Failure Scenarios & Recovery Guide
 
-Last updated: 2026-03-24
+Last updated: 2026-07-19
 
 ---
 
 ## Overview
 
 This document covers failure scenarios and auto/manual recovery procedures when operating ZeptoDB in Kubernetes cluster mode.
+
+> **Release boundary:** This is a failure-response guide, not a production SLO.
+> The current pipeline proves SQL row recovery only after a graceful stop that
+> successfully publishes a final RDB generation. Abrupt pod/node loss has no
+> proven maximum RPO until pipeline WAL replay, payload checksums, and complete
+> file/directory `fsync` coverage ship.
 
 ### ZeptoDB Built-in Protection Mechanisms
 
@@ -29,7 +35,7 @@ This document covers failure scenarios and auto/manual recovery procedures when 
 │  WalReplicator ─── async/sync ─── RF=2 data redundancy      │
 │       │                                                      │
 │       ▼                                                      │
-│  Auto-Snapshot ─── 60s interval ─── crash recovery           │
+│  RDB Snapshot ─── graceful stop ─── restart recovery         │
 │       │                                                      │
 │       ▼                                                      │
 │  K8s Lease ─── split-brain defense ─── single leader         │
@@ -59,7 +65,8 @@ One data node pod is OOMKilled or crashes during data ingestion.
 
 ### Impact Scope
 - Ingestion paused for symbols where this node is primary
-- Possible loss of in-flight ticks (in ring buffer but not written to WAL)
+- Possible loss of hot or queued rows; the HTTP pipeline has no proven WAL
+  replay path for abrupt termination
 
 ### Auto Recovery Flow
 
@@ -89,13 +96,12 @@ PartitionMigrator: new Pod-1'data to Replication (RF=2 Restore)
 ```
 
 ### Data Loss Scope
-| Data State | Loss? |
+| Data state | Current evidence |
 |---|---|
-| WALat Record + replicatransfer complete | ✅ Safe |
-| WALat Record + replica not transferred | ✅ WAL replayas Recovery |
-| Ring bufferexists only in (WAL Unwritten) | ❌ Lost (max A few ms Worth) |
-| Auto-snapshot data after | ✅ snapshot replay |
-| Auto-snapshot data before | ❌ max 60s Lost |
+| Final graceful-stop generation published successfully | Restored before the next HTTP listener binds; focused general SQL `COUNT`/`SUM` restart proof passes |
+| Abruptly terminated hot rows, including queued ingest | No end-to-end pipeline WAL replay or maximum-loss bound is proven |
+| Structurally valid snapshot payload with silent bit corruption | Not detected without per-column checksums |
+| Host/power loss around snapshot publication | Not guaranteed without complete file and directory `fsync` coverage |
 
 ### Manual Actions
 ```bash
@@ -190,24 +196,22 @@ K8s: PDB Check → minAvailable: 2 check if satisfied
 
 ### Precautions
 - Cannot drain 2 nodes simultaneously in 3-replica setup (PDB blocks)
-- HDB snapshot recommended before drain
+- Drain only after confirming the process receives its graceful termination
+  signal and the final RDB snapshot path is writable. ZeptoDB does not expose
+  an `/admin/snapshot` HTTP endpoint.
 
 ```bash
 # Safe Drain Procedure
 # 1. current Status Check
 kubectl get pods -n zeptodb -o wide
 
-# 2. Snapshot trigger (possible case)
-curl -X POST http://$LB:8123/admin/snapshot \
-  -H "Authorization: Bearer $ADMIN_KEY"
-
-# 3. Drain
+# 2. Drain; the server shutdown path must complete successfully
 kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 
-# 4. Verify new pod is healthy
+# 3. Verify new pod is healthy and recovery did not fail startup
 kubectl rollout status deployment/zeptodb -n zeptodb
 
-# 5. Uncordon
+# 4. Uncordon
 kubectl uncordon <node>
 ```
 
@@ -408,7 +412,8 @@ curl -X POST http://$LB:8123/ \
 
 | Metric | Value | Basis |
 |--------|-------|------|
-| RPO (Data Loss) | ≤ 60s | auto-snapshot interval |
+| RPO (abrupt data loss) | Not established | pipeline WAL replay and complete `fsync` evidence are open blockers |
+| RPO (graceful restart) | Final successful stop snapshot | verified write → stop → restart → general SQL read path |
 | RPO (S3 backup) | ≤ 24h | daily backup CronJob |
 | RTO (pod crash) | ~60s | K8s Auto restart |
 | RTO (node failure) | ~10s | FailoverManager + replica promotion |
@@ -496,7 +501,7 @@ Pod scheduling on new node → Service Recovery
 
 | # | Scenario | Detection | Auto Recovery | Data Loss | RTO |
 |---|----------|------|-----------|------------|-----|
-| 1 | Data node crash | HealthMonitor 10s | ✅ replica promotion | ≤ 60s (snapshot) | ~10s |
+| 1 | Data node crash | HealthMonitor 10s | Replica promotion path exists; end-to-end durability gate open | No proven maximum RPO | ~10s target |
 | 2 | Coordinator crash | CoordinatorHA | ✅ standby promotion | None | ~5s |
 | 3 | Node drain | K8s PDB | ✅ reschedule | None | ~60s |
 | 4 | Split-brain | K8s Lease + Fencing | ✅ Minority partition demotion | None | ~10s |
@@ -504,4 +509,4 @@ Pod scheduling on new node → Service Recovery
 | 6 | Bad upgrade | readiness failed | ✅ rollout stopped | None | ~30s (rollback) |
 | 7 | full cluster | External monitoring | ❌ Manual DR | ≤ 24h (S3) | ~30min |
 | 8 | HPA Over-scaling | Empty query results | ❌ Manual adjustment | None | ~1min |
-| 9 | Spot Reclamation | AWS 2min Notice | ✅ Karpenter Replacement | ≤ 60s (snapshot) | ~60s |
+| 9 | Spot Reclamation | AWS 2min Notice | Replacement path exists; graceful completion must be observed | No proven maximum RPO | ~60s target |

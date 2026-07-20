@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -26,6 +28,7 @@
 #include <gtest/gtest.h>
 
 #include "test_port_helper.h"
+#include "zeptodb/auth/auth_manager.h"
 #include "zeptodb/auth/tenant_manager.h"
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/server/http_server.h"
@@ -222,13 +225,45 @@ protected:
         std::this_thread::sleep_for(80ms);
     }
 
-    void TearDown() override { server_->stop(); }
+    std::string restart_with_auth(
+        const std::vector<std::string>& allowed_tables = {},
+        const std::string& tenant_id = "") {
+        server_->stop();
+        key_file_ = zepto_test_util::unique_test_path("msgpack_auth_keys");
+        std::ofstream{key_file_}.close();
+        zeptodb::auth::AuthManager::Config config;
+        config.enabled = true;
+        config.api_keys_file = key_file_.string();
+        config.rate_limit_enabled = false;
+        config.audit_enabled = false;
+        config.audit_buffer_enabled = false;
+        auth_ = std::make_shared<zeptodb::auth::AuthManager>(config);
+        const auto key = auth_->create_api_key(
+            "msgpack-writer", zeptodb::auth::Role::WRITER, {},
+            allowed_tables, tenant_id);
+        server_ = std::make_unique<zeptodb::server::HttpServer>(
+            *executor_, port_, zeptodb::auth::TlsConfig{}, auth_);
+        server_->set_tenant_manager(tenant_);
+        server_->start_async();
+        std::this_thread::sleep_for(80ms);
+        return key;
+    }
+
+    void TearDown() override {
+        server_->stop();
+        if (!key_file_.empty()) {
+            std::error_code error;
+            std::filesystem::remove(key_file_, error);
+        }
+    }
 
     uint16_t port_{};
     std::unique_ptr<ZeptoPipeline> pipeline_;
     std::unique_ptr<QueryExecutor> executor_;
     std::unique_ptr<zeptodb::server::HttpServer> server_;
     std::shared_ptr<zeptodb::auth::TenantManager> tenant_;
+    std::shared_ptr<zeptodb::auth::AuthManager> auth_;
+    std::filesystem::path key_file_;
 };
 
 } // namespace
@@ -356,9 +391,10 @@ TEST_F(HttpMsgpackIngestTest, TableAclDenied_Returns403) {
         {"volume", mp_array({mp_i64(10)})},
     });
 
-    auto r = http_post(port_, body, "/insert/msgpack?table=trades",
-                       "application/msgpack",
-                       "X-Zepto-Allowed-Tables: quotes\r\n");
+    const auto key = restart_with_auth({"quotes"});
+    auto r = http_post(
+        port_, body, "/insert/msgpack?table=trades", "application/msgpack",
+        "Authorization: Bearer " + key + "\r\n");
     EXPECT_EQ(r.status, 403);
     EXPECT_NE(r.body.find("not in allowed list"), std::string::npos);
 }
@@ -375,9 +411,10 @@ TEST_F(HttpMsgpackIngestTest, TenantNamespaceDenied_Returns403) {
         {"volume", mp_array({mp_i64(10)})},
     });
 
-    auto r = http_post(port_, body, "/insert/msgpack?table=trades",
-                       "application/msgpack",
-                       "X-Zepto-Tenant-Id: tenant_a\r\n");
+    const auto key = restart_with_auth({}, "tenant_a");
+    auto r = http_post(
+        port_, body, "/insert/msgpack?table=trades", "application/msgpack",
+        "Authorization: Bearer " + key + "\r\n");
     EXPECT_EQ(r.status, 403);
     EXPECT_NE(r.body.find("cannot access table"), std::string::npos);
 }

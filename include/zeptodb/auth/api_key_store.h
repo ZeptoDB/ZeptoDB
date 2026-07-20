@@ -31,7 +31,7 @@ struct ApiKeyEntry {
     std::string              id;              // short id, e.g. "ak_7f3k"
     std::string              name;            // human label, e.g. "trading-desk-1"
     std::string              key_hash;        // sha256 hex of the full key
-    Role                     role = Role::READER;
+    Role                     role = Role::UNKNOWN;
     std::vector<std::string> allowed_symbols; // empty = unrestricted
     std::vector<std::string> allowed_tables;  // empty = unrestricted
     std::string              tenant_id;       // empty = no tenant

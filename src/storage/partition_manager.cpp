@@ -89,7 +89,7 @@ Partition& PartitionManager::get_or_create(uint16_t table_id, SymbolId symbol, T
         .use_hugepages = true,
         .numa_node = -1,
     });
-    auto partition = std::make_unique<Partition>(key, std::move(arena));
+    auto partition = std::make_shared<Partition>(key, std::move(arena));
     auto& ref = *partition;
     partitions_.emplace(key, std::move(partition));
 
@@ -136,6 +136,24 @@ std::vector<Partition*> PartitionManager::get_all_partitions() {
         result.push_back(partition.get());
     }
     return result;
+}
+
+bool PartitionManager::visit_partitions_stable(
+    const std::function<bool(Partition&)>& visitor) {
+    std::vector<std::shared_ptr<Partition>> pinned;
+    {
+        std::shared_lock lock(mutex_);
+        pinned.reserve(partitions_.size());
+        for (const auto& entry : partitions_) {
+            pinned.push_back(entry.second);
+        }
+    }
+    for (const auto& partition : pinned) {
+        if (!visitor(*partition)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::vector<Partition*> PartitionManager::get_partitions_for_symbol(uint16_t table_id, SymbolId symbol) {

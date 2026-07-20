@@ -1738,7 +1738,13 @@ protected:
         port_ = zepto_test_util::pick_free_port();
         pipeline_ = make_pipeline();
         executor_ = std::make_unique<QueryExecutor>(*pipeline_);
-        server_ = std::make_unique<zeptodb::server::HttpServer>(*executor_, port_);
+        zeptodb::auth::AuthManager::Config auth_config;
+        auth_config.enabled = false;
+        auth_config.rate_limit_enabled = false;
+        auth_config.audit_enabled = false;
+        auth_ = std::make_shared<zeptodb::auth::AuthManager>(auth_config);
+        server_ = std::make_unique<zeptodb::server::HttpServer>(
+            *executor_, port_, zeptodb::auth::TlsConfig{}, auth_);
         server_->start_async();
         std::this_thread::sleep_for(80ms);
     }
@@ -1750,6 +1756,7 @@ protected:
     uint16_t port_ = 0;
     std::unique_ptr<ZeptoPipeline> pipeline_;
     std::unique_ptr<QueryExecutor> executor_;
+    std::shared_ptr<zeptodb::auth::AuthManager> auth_;
     std::unique_ptr<zeptodb::server::HttpServer> server_;
 };
 

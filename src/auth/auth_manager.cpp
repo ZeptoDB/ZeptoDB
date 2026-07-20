@@ -8,10 +8,76 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string_view>
 
 namespace zeptodb::auth {
 
 namespace {
+
+constexpr size_t kMaxInternalAuthValueBytes = 4096;
+constexpr size_t kMaxInternalAuthListItems = 256;
+constexpr size_t kMaxInternalAuthListBytes = 8192;
+
+bool is_safe_internal_auth_value(std::string_view value) {
+    if (value.size() > kMaxInternalAuthValueBytes) return false;
+    return std::none_of(value.begin(), value.end(), [](const char value_char) {
+        const auto byte = static_cast<unsigned char>(value_char);
+        return byte < 0x20U || byte == 0x7fU;
+    });
+}
+
+bool is_safe_internal_auth_list(const std::vector<std::string>& values) {
+    if (values.size() > kMaxInternalAuthListItems) return false;
+    size_t serialized_bytes = values.empty() ? 0 : values.size() - 1;
+    for (const auto& value : values) {
+        // HTTP authorization middleware serializes these lists with commas.
+        // Empty or comma-containing entries would change the restriction's
+        // meaning after serialization and therefore must fail closed.
+        if (value.empty() || value.find(',') != std::string::npos ||
+            !is_safe_internal_auth_value(value) ||
+            value.size() > kMaxInternalAuthListBytes -
+                std::min(serialized_bytes, kMaxInternalAuthListBytes)) {
+            return false;
+        }
+        serialized_bytes += value.size();
+    }
+    return serialized_bytes <= kMaxInternalAuthListBytes;
+}
+
+bool is_safe_internal_auth_context(const AuthContext& context) {
+    return !context.subject.empty() &&
+        is_safe_internal_auth_value(context.subject) &&
+        is_safe_internal_auth_value(context.name) &&
+        !context.source.empty() &&
+        is_safe_internal_auth_value(context.source) &&
+        is_safe_internal_auth_value(context.tenant_id) &&
+        is_safe_internal_auth_list(context.allowed_symbols) &&
+        is_safe_internal_auth_list(context.allowed_tables);
+}
+
+std::string audit_log_value(std::string_view value) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const unsigned char byte : value) {
+        switch (byte) {
+            case '\\': escaped += "\\\\"; break;
+            case '"': escaped += "\\\""; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (byte < 0x20U || byte == 0x7fU) {
+                    escaped += "\\x";
+                    escaped.push_back(kHex[byte >> 4U]);
+                    escaped.push_back(kHex[byte & 0x0fU]);
+                } else {
+                    escaped.push_back(static_cast<char>(byte));
+                }
+        }
+    }
+    return escaped;
+}
 
 // Shared audit logger (initialized once)
 std::shared_ptr<spdlog::logger> get_audit_logger(const std::string& log_file) {
@@ -86,6 +152,9 @@ AuthManager::AuthManager(Config config)
             oidc_idp.issuer   = oidc_meta_->issuer;
             oidc_idp.jwks_url = oidc_meta_->jwks_uri;
             oidc_idp.audience = config_.oidc_audience;
+            oidc_idp.tenant_claim = config_.jwt.tenant_claim;
+            oidc_idp.symbols_claim = config_.jwt.symbols_claim;
+            oidc_idp.tables_claim = config_.jwt.tables_claim;
             sso_provider_->add_idp(std::move(oidc_idp));
 
             // Also configure JWT validator with JWKS if not already set
@@ -119,7 +188,63 @@ AuthManager::AuthManager(Config config)
 AuthDecision AuthManager::check(const std::string& method,
                                  const std::string& path,
                                  const std::string& auth_header,
-                                 const std::string& remote_addr) const
+                                 const std::string& remote_addr,
+                                 const std::string& cookie_header) const
+{
+    if (!config_.enabled) {
+        return authenticate(method, path, auth_header, remote_addr,
+                            cookie_header);
+    }
+
+    // /auth/session always performs credential validation in its handler.
+    // Treat it as pre-routing-public even when an operator replaces the
+    // configurable public_paths list, avoiding duplicate rate/audit charges.
+    if (path == "/auth/session" || is_public_path(path)) {
+        // OIDC login/callback are public by protocol, but callback performs an
+        // outbound token exchange. Charge the source-IP bucket before either
+        // endpoint so attackers cannot mint states and drive unbounded IdP
+        // requests without credentials.
+        if (rate_limiter_ &&
+            (path == "/auth/login" || path == "/auth/callback")) {
+            const uint64_t check_number =
+                rate_limit_checks_.fetch_add(1, std::memory_order_relaxed);
+            if ((check_number & 0xfffU) == 0xfffU) {
+                rate_limiter_->cleanup();
+            }
+            if (rate_limiter_->check_ip(remote_addr) ==
+                RateDecision::RATE_LIMITED) {
+                AuthContext context;
+                context.subject = "anonymous";
+                context.name = "anonymous";
+                context.role = Role::METRICS;
+                context.source = "oidc-public";
+                if (config_.audit_enabled) {
+                    audit(context, method + " " + path,
+                          "oidc-public-rate-limit-forbidden", remote_addr);
+                }
+                return {AuthStatus::FORBIDDEN, std::move(context),
+                        "Rate limit exceeded"};
+            }
+        }
+        AuthContext ctx;
+        ctx.subject = "anonymous";
+        ctx.name    = "anonymous";
+        ctx.role    = Role::METRICS;
+        ctx.source  = "public";
+        return {AuthStatus::OK, ctx, ""};
+    }
+
+    return authenticate(method, path, auth_header, remote_addr, cookie_header);
+}
+
+// ============================================================================
+// authenticate
+// ============================================================================
+AuthDecision AuthManager::authenticate(const std::string& method,
+                                        const std::string& path,
+                                        const std::string& auth_header,
+                                        const std::string& remote_addr,
+                                        const std::string& cookie_header) const
 {
     // Auth disabled → allow everything as anonymous admin
     if (!config_.enabled) {
@@ -131,18 +256,69 @@ AuthDecision AuthManager::check(const std::string& method,
         return {AuthStatus::OK, ctx, ""};
     }
 
-    // Public paths → allow without credentials
-    if (is_public_path(path)) {
-        AuthContext ctx;
-        ctx.subject = "anonymous";
-        ctx.name    = "anonymous";
-        ctx.role    = Role::METRICS;
-        ctx.source  = "public";
-        return {AuthStatus::OK, ctx, ""};
+    // Charge the source-IP bucket before JWT/JWKS/API-key verification so
+    // invalid-token floods cannot bypass throttling while consuming crypto.
+    if (rate_limiter_) {
+        const uint64_t check_number =
+            rate_limit_checks_.fetch_add(1, std::memory_order_relaxed);
+        if ((check_number & 0xfffU) == 0xfffU) {
+            rate_limiter_->cleanup();
+        }
+        if (rate_limiter_->check_ip(remote_addr) ==
+            RateDecision::RATE_LIMITED) {
+            AuthContext context;
+            context.subject = "anonymous";
+            context.name = "anonymous";
+            context.role = Role::METRICS;
+            context.source = "pre-auth";
+            if (config_.audit_enabled) {
+                audit(context, method + " " + path,
+                      "pre-auth-rate-limit-forbidden", remote_addr);
+            }
+            return {AuthStatus::FORBIDDEN, std::move(context),
+                    "Rate limit exceeded"};
+        }
     }
 
-    // No auth header → check session cookie before rejecting
+    auto finish_authenticated = [this, &method, &path, &remote_addr](
+        AuthDecision decision, const std::string& audit_detail) {
+        if (decision.status != AuthStatus::OK) return decision;
+        if (!is_safe_internal_auth_context(decision.context)) {
+            return AuthDecision{
+                AuthStatus::FORBIDDEN, {},
+                "Authenticated identity contains an invalid authorization scope"};
+        }
+        if (rate_limiter_) {
+            const auto identity_decision =
+                rate_limiter_->check_identity(decision.context.subject);
+            if (identity_decision == RateDecision::RATE_LIMITED) {
+                if (config_.audit_enabled) {
+                    audit(decision.context, method + " " + path,
+                          "rate-limit-forbidden", remote_addr);
+                }
+                return AuthDecision{AuthStatus::FORBIDDEN,
+                                    std::move(decision.context),
+                                    "Rate limit exceeded"};
+            }
+        }
+        if (config_.audit_enabled) {
+            audit(decision.context, method + " " + path, audit_detail,
+                  remote_addr);
+        }
+        return decision;
+    };
+
+    // No Bearer header: authenticate a server-side session cookie if present.
     if (auth_header.empty()) {
+        if (!cookie_header.empty()) {
+            auto context = check_session(cookie_header);
+            if (context) {
+                return finish_authenticated(
+                    {AuthStatus::OK, std::move(*context), ""},
+                    "session-auth");
+            }
+            return {AuthStatus::UNAUTHORIZED, {}, "Invalid or expired session"};
+        }
         return {AuthStatus::UNAUTHORIZED, {}, "No Authorization header"};
     }
 
@@ -156,15 +332,7 @@ AuthDecision AuthManager::check(const std::string& method,
         token[0] == 'e' && token[1] == 'y') {
         auto decision = check_sso(token);
         if (decision.status == AuthStatus::OK) {
-            if (rate_limiter_) {
-                auto rd = rate_limiter_->check_identity(decision.context.subject);
-                if (rd == RateDecision::RATE_LIMITED)
-                    return {AuthStatus::FORBIDDEN, {}, "Rate limit exceeded"};
-                rate_limiter_->check_ip(remote_addr);
-            }
-            if (config_.audit_enabled)
-                audit(decision.context, method + " " + path, "sso-auth", remote_addr);
-            return decision;
+            return finish_authenticated(std::move(decision), "sso-auth");
         }
     }
 
@@ -173,17 +341,7 @@ AuthDecision AuthManager::check(const std::string& method,
         token[0] == 'e' && token[1] == 'y') {
         auto decision = check_jwt(token);
         if (decision.status == AuthStatus::OK) {
-            // Rate limit check
-            if (rate_limiter_) {
-                auto rd = rate_limiter_->check_identity(decision.context.subject);
-                if (rd == RateDecision::RATE_LIMITED) {
-                    return {AuthStatus::FORBIDDEN, {}, "Rate limit exceeded"};
-                }
-                rate_limiter_->check_ip(remote_addr);
-            }
-            if (config_.audit_enabled)
-                audit(decision.context, method + " " + path, "jwt-auth", remote_addr);
-            return decision;
+            return finish_authenticated(std::move(decision), "jwt-auth");
         }
     }
 
@@ -191,17 +349,7 @@ AuthDecision AuthManager::check(const std::string& method,
     if (key_store_) {
         auto decision = check_api_key(token);
         if (decision.status == AuthStatus::OK) {
-            // Rate limit check
-            if (rate_limiter_) {
-                auto rd = rate_limiter_->check_identity(decision.context.subject);
-                if (rd == RateDecision::RATE_LIMITED) {
-                    return {AuthStatus::FORBIDDEN, {}, "Rate limit exceeded"};
-                }
-                rate_limiter_->check_ip(remote_addr);
-            }
-            if (config_.audit_enabled)
-                audit(decision.context, method + " " + path, "apikey-auth", remote_addr);
-            return decision;
+            return finish_authenticated(std::move(decision), "apikey-auth");
         }
         return decision;  // propagate the failure reason
     }
@@ -224,6 +372,7 @@ AuthDecision AuthManager::check_api_key(const std::string& token) const {
     ctx.role            = entry->role;
     ctx.source          = "api_key";
     ctx.allowed_symbols = entry->allowed_symbols;
+    ctx.tenant_id       = entry->tenant_id;
     ctx.allowed_tables  = entry->allowed_tables;
 
     return {AuthStatus::OK, ctx, ""};
@@ -243,6 +392,7 @@ AuthDecision AuthManager::check_sso(const std::string& token) const {
     ctx.source          = "sso:" + identity->idp_id;
     ctx.allowed_symbols = identity->allowed_symbols;
     ctx.tenant_id       = identity->tenant_id;
+    ctx.allowed_tables  = identity->allowed_tables;
     return {AuthStatus::OK, ctx, ""};
 }
 
@@ -261,6 +411,8 @@ AuthDecision AuthManager::check_jwt(const std::string& token) const {
     ctx.role            = claims->role;
     ctx.source          = "jwt";
     ctx.allowed_symbols = claims->allowed_symbols;
+    ctx.tenant_id       = claims->tenant_id;
+    ctx.allowed_tables  = claims->allowed_tables;
 
     return {AuthStatus::OK, ctx, ""};
 }
@@ -316,20 +468,31 @@ std::optional<AuthContext> AuthManager::check_session(
 {
     if (!session_store_ || cookie_header.empty()) return std::nullopt;
 
-    // Parse cookie header for session cookie
+    // Parse complete cookie pairs. A substring search can mistake another
+    // cookie's value (for example `other=zepto_sid=...`) for the session.
     const auto& name = session_store_->config().cookie_name;
-    std::string search = name + "=";
-    auto pos = cookie_header.find(search);
-    if (pos == std::string::npos) return std::nullopt;
-
-    auto val_start = pos + search.size();
-    auto val_end = cookie_header.find(';', val_start);
-    std::string sid = (val_end != std::string::npos)
-        ? cookie_header.substr(val_start, val_end - val_start)
-        : cookie_header.substr(val_start);
-
-    // Trim whitespace
-    while (!sid.empty() && sid.back() == ' ') sid.pop_back();
+    std::string sid;
+    size_t start = 0;
+    while (start < cookie_header.size()) {
+        while (start < cookie_header.size() &&
+               (cookie_header[start] == ' ' || cookie_header[start] == ';')) {
+            ++start;
+        }
+        const size_t end = cookie_header.find(';', start);
+        const size_t equals = cookie_header.find('=', start);
+        if (equals != std::string::npos &&
+            (end == std::string::npos || equals < end) &&
+            cookie_header.compare(start, equals - start, name) == 0) {
+            sid = cookie_header.substr(
+                equals + 1,
+                end == std::string::npos ? std::string::npos
+                                          : end - equals - 1);
+            break;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    if (sid.empty()) return std::nullopt;
 
     auto session = session_store_->get(sid);
     if (!session) return std::nullopt;
@@ -341,6 +504,7 @@ std::optional<AuthContext> AuthManager::check_session(
     ctx.source          = session->source;
     ctx.allowed_symbols = session->allowed_symbols;
     ctx.tenant_id       = session->tenant_id;
+    ctx.allowed_tables  = session->allowed_tables;
     return ctx;
 }
 
@@ -355,11 +519,11 @@ void AuthManager::audit(const AuthContext& ctx,
     if (!config_.audit_enabled) return;
     auto logger = get_audit_logger(config_.audit_log_file);
     logger->info("subject={} role={} action=\"{}\" detail=\"{}\" from={}",
-                 ctx.subject,
+                 audit_log_value(ctx.subject),
                  role_to_string(ctx.role),
-                 action,
-                 detail,
-                 remote_addr.empty() ? "-" : remote_addr);
+                 audit_log_value(action),
+                 audit_log_value(detail),
+                 audit_log_value(remote_addr.empty() ? "-" : remote_addr));
 
     // Push to in-memory ring buffer for /admin/audit endpoint
     if (config_.audit_buffer_enabled) {

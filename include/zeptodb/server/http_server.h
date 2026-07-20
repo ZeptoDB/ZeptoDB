@@ -19,7 +19,7 @@
 //   POST /insert/msgpack
 //                 — Ingest a MessagePack map of column arrays into ZeptoDB
 //                    ticks with the same mapping/scaling query params.
-//   GET  /        — Execute SQL via `?query=` param (always JSON)
+//   GET  /        — Execute read-only SQL via `?query=` param (always JSON)
 //   GET  /ping    — Health check (ClickHouse compatible)
 //   GET  /health  — Kubernetes liveness probe
 //   GET  /ready   — Kubernetes readiness probe
@@ -55,8 +55,10 @@
 #include "zeptodb/feeds/action_outcome_supervisor_runtime.h"
 #include "zeptodb/feeds/edge_fleet_connector_runtime.h"
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <memory>
 #include <thread>
@@ -138,8 +140,9 @@ public:
     /// Start blocking (uses calling thread).
     void start();
 
-    /// Start on a background thread.
-    void start_async();
+    /// Bind synchronously, then serve on a background thread.
+    /// Returns false when the listener cannot be bound.
+    bool start_async();
 
     /// Stop the server.
     void stop();
@@ -152,6 +155,22 @@ public:
 
     /// Set query execution timeout (0 = disabled).
     void set_query_timeout_ms(uint32_t ms) { query_timeout_ms_ = ms; }
+
+    /// Allow the legacy distributed SELECT path, which has per-RPC transport
+    /// caps but no end-to-end request-owned row bound or cancellation. It is
+    /// disabled by default for production-facing HTTP listeners.
+    void set_allow_experimental_distributed_queries(bool allow) {
+        allow_experimental_distributed_queries_ = allow;
+    }
+
+    /// Bound HTTP request bodies before routing/authentication work.
+    void set_max_request_body_bytes(size_t bytes);
+
+    /// Bound materialized result rows and serialized response bytes.
+    void set_result_limits(size_t max_rows, size_t max_response_bytes) {
+        max_result_rows_ = max_rows;
+        max_response_bytes_ = max_response_bytes;
+    }
 
     /// Serve static files from directory (Web UI).
     /// Must be called before start(). Mounts at "/".
@@ -339,6 +358,14 @@ public:
             metrics_collector_->set_node_id(node_id);
     }
 
+    /// Control whether POST /admin/nodes may create an unauthenticated
+    /// cluster RPC client. Production binaries set this to false unless the
+    /// operator explicitly passes --allow-insecure-cluster. The embedding
+    /// default remains true for backward-compatible local/test use.
+    void set_allow_insecure_cluster(bool allow) {
+        allow_insecure_cluster_ = allow;
+    }
+
     /// Set rebalance manager for /admin/rebalance/* endpoints.
     void set_rebalance_manager(zeptodb::cluster::RebalanceManager* mgr) {
         rebalance_mgr_ = mgr;
@@ -447,7 +474,10 @@ private:
     // Execute a query with optional timeout and QueryTracker registration.
     // subject is the identity string (remote_addr when auth is off).
     zeptodb::sql::QueryResultSet run_query_with_tracking(
-        const std::string& sql, const std::string& subject);
+        const std::string& sql, const std::string& subject,
+        const std::string& tenant_id = "",
+        std::optional<zeptodb::sql::ParsedStatement> statement =
+            std::nullopt);
 
     static std::string build_json_response(
         const zeptodb::sql::QueryResultSet& result);
@@ -469,7 +499,11 @@ private:
     std::thread                              thread_;
     std::atomic<bool>                        running_{false};
     std::atomic<bool>                        ready_{false};
-    uint32_t                                 query_timeout_ms_{0};
+    uint32_t                                 query_timeout_ms_{30000};
+    bool allow_experimental_distributed_queries_{false};
+    size_t                                   max_request_body_bytes_{64U * 1024U * 1024U};
+    size_t                                   max_result_rows_{100000};
+    size_t                                   max_response_bytes_{64U * 1024U * 1024U};
     zeptodb::auth::QueryTracker                 query_tracker_;
 
     // Multi-tenancy
@@ -512,6 +546,7 @@ private:
 
     // Cluster coordinator (null = standalone mode)
     zeptodb::cluster::QueryCoordinator*                     coordinator_ = nullptr;
+    bool                                                     allow_insecure_cluster_ = true;
 
     // Rebalance manager (null = rebalance not available)
     zeptodb::cluster::RebalanceManager*                     rebalance_mgr_ = nullptr;

@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstring>
+#include <fstream>
+#include <future>
 #include <thread>
 #include <chrono>
 
@@ -15,6 +17,7 @@
 #include "zeptodb/storage/flush_manager.h"
 #include "zeptodb/storage/partition_manager.h"
 #include "zeptodb/core/pipeline.h"
+#include "zeptodb/sql/executor.h"
 #include "zeptodb/common/logger.h"
 
 namespace fs = std::filesystem;
@@ -339,6 +342,24 @@ TEST_F(HDBTest, FlushEmptyPartition_NoFiles) {
     EXPECT_EQ(writer.partitions_flushed(), 0u);
 }
 
+TEST_F(HDBTest, SnapshotRejectsZeroFirstColumnWithNonEmptyPeer) {
+    HDBWriter writer(temp_dir_, false);
+    auto arena = std::make_unique<ArenaAllocator>(ArenaConfig{
+        .total_size = 1024 * 1024,
+        .use_hugepages = false,
+    });
+    Partition inconsistent({0, 1, 0}, std::move(arena));
+    inconsistent.add_column("timestamp", ColumnType::TIMESTAMP_NS);
+    auto& price = inconsistent.add_column("price", ColumnType::INT64);
+    ASSERT_TRUE(price.append<int64_t>(42));
+
+    const auto result = writer.snapshot_partition_checked(
+        inconsistent, (fs::path(temp_dir_) / "bad_snapshot").string());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.bytes_written, 0u);
+    EXPECT_EQ(result.rows_written, 0u);
+}
+
 // ============================================================================
 // 8. 존재하지 않는 컬럼 읽기 (엣지 케이스)
 // ============================================================================
@@ -532,6 +553,300 @@ TEST_F(HDBTest, Recovery_ReloadsData) {
 
         pipeline->stop();
     }
+}
+
+TEST_F(HDBTest, TieredPipelineRejectsPostFlushReclaim) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::TIERED;
+    cfg.hdb_base_path = (fs::path(temp_dir_) / "reclaim_hdb").string();
+    cfg.flush_config.reclaim_after_flush = true;
+
+    EXPECT_THROW(ZeptoPipeline pipeline(cfg), std::invalid_argument);
+}
+
+TEST_F(HDBTest, PipelineRejectsUnsafeDurabilityConfiguration) {
+    PipelineConfig missing_hdb_path;
+    missing_hdb_path.storage_mode = StorageMode::TIERED;
+    missing_hdb_path.hdb_base_path.clear();
+    EXPECT_THROW(ZeptoPipeline pipeline(missing_hdb_path), std::invalid_argument);
+
+    PipelineConfig bounded_tiered;
+    bounded_tiered.storage_mode = StorageMode::TIERED;
+    bounded_tiered.hdb_base_path =
+        (fs::path(temp_dir_) / "bounded_hdb").string();
+    bounded_tiered.max_memory_bytes = 1;
+    EXPECT_THROW(ZeptoPipeline pipeline(bounded_tiered), std::invalid_argument);
+
+    PipelineConfig zero_interval;
+    zero_interval.flush_config.enable_auto_snapshot = true;
+    zero_interval.flush_config.snapshot_path =
+        (fs::path(temp_dir_) / "zero_interval").string();
+    zero_interval.flush_config.snapshot_interval_ms = 0;
+    EXPECT_THROW(ZeptoPipeline pipeline(zero_interval), std::invalid_argument);
+}
+
+TEST_F(HDBTest, SnapshotVisitorPinsPartitionAcrossConcurrentEviction) {
+    PartitionManager manager(1024 * 1024);
+    Partition& partition = manager.get_or_create(5, 7, 0);
+    partition.add_column("value", ColumnType::INT64);
+    ASSERT_TRUE(partition.get_column("value")->append<int64_t>(42));
+
+    std::promise<void> visitor_entered;
+    std::promise<void> release_visitor;
+    auto release_future = release_visitor.get_future().share();
+    auto visit = std::async(std::launch::async, [&]() {
+        return manager.visit_partitions_stable([&](Partition& pinned) {
+            visitor_entered.set_value();
+            release_future.wait();
+            return pinned.num_rows() == 1;
+        });
+    });
+
+    const auto entered_status =
+        visitor_entered.get_future().wait_for(std::chrono::seconds(1));
+    EXPECT_EQ(entered_status, std::future_status::ready);
+    if (entered_status != std::future_status::ready) {
+        release_visitor.set_value();
+        EXPECT_TRUE(visit.get());
+        return;
+    }
+    EXPECT_EQ(manager.evict_older_than(1), 1u);
+    EXPECT_EQ(manager.partition_count(), 0u);
+    release_visitor.set_value();
+    EXPECT_TRUE(visit.get());
+}
+
+TEST_F(HDBTest, GracefulStopSnapshotRestoresGeneralSqlRows) {
+    const fs::path hdb_dir = fs::path(temp_dir_) / "restart_hdb";
+    const fs::path snapshot_dir = fs::path(temp_dir_) / "restart_snapshots";
+    constexpr int64_t kBaseTimestamp = 1'700'000'000'000'000'000LL;
+
+    {
+        PipelineConfig cfg;
+        cfg.storage_mode = StorageMode::TIERED;
+        cfg.hdb_base_path = hdb_dir.string();
+        cfg.flush_config.snapshot_path = snapshot_dir.string();
+        cfg.flush_config.auto_seal_age_hours = 999;
+        ZeptoPipeline pipeline(cfg);
+        pipeline.start();
+        zeptodb::sql::QueryExecutor executor(pipeline);
+
+        auto create = executor.execute(
+            "CREATE TABLE durable_ticks "
+            "(symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)");
+        ASSERT_TRUE(create.ok()) << create.error;
+        auto first = executor.execute(
+            "INSERT INTO durable_ticks VALUES (7, 101, 10, " +
+            std::to_string(kBaseTimestamp) + ")");
+        auto second = executor.execute(
+            "INSERT INTO durable_ticks VALUES (7, 202, 20, " +
+            std::to_string(kBaseTimestamp + 1'000'000) + ")");
+        ASSERT_TRUE(first.ok()) << first.error;
+        ASSERT_TRUE(second.ok()) << second.error;
+        ASSERT_TRUE(pipeline.stop());
+    }
+
+    const auto published = FlushManager::resolve_snapshot(snapshot_dir.string());
+    ASSERT_EQ(published.status, SnapshotResolutionStatus::Ready);
+    EXPECT_EQ(published.partition_count, 1u);
+    EXPECT_EQ(published.row_count, 2u);
+
+    {
+        PipelineConfig cfg;
+        cfg.storage_mode = StorageMode::TIERED;
+        cfg.hdb_base_path = hdb_dir.string();
+        cfg.flush_config.snapshot_path = snapshot_dir.string();
+        cfg.enable_recovery = true;
+        cfg.recovery_snapshot_path = snapshot_dir.string();
+        ZeptoPipeline pipeline(cfg);
+        pipeline.start();
+        zeptodb::sql::QueryExecutor executor(pipeline);
+
+        auto count = executor.execute("SELECT count(*) FROM durable_ticks");
+        ASSERT_TRUE(count.ok()) << count.error;
+        ASSERT_EQ(count.rows.size(), 1u);
+        ASSERT_EQ(count.rows[0].size(), 1u);
+        EXPECT_EQ(count.rows[0][0], 2);
+
+        auto sum = executor.execute("SELECT sum(price) FROM durable_ticks");
+        ASSERT_TRUE(sum.ok()) << sum.error;
+        ASSERT_EQ(sum.rows.size(), 1u);
+        EXPECT_EQ(sum.rows[0][0], 303);
+        ASSERT_TRUE(pipeline.stop());
+    }
+}
+
+TEST_F(HDBTest, GracefulStopReportsSnapshotPublicationFailure) {
+    const fs::path blocked_snapshot =
+        fs::path(temp_dir_) / "snapshot_path_is_a_file";
+    std::ofstream(blocked_snapshot, std::ios::binary) << "not a directory";
+
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::TIERED;
+    cfg.hdb_base_path = (fs::path(temp_dir_) / "failure_hdb").string();
+    cfg.flush_config.snapshot_path = blocked_snapshot.string();
+    ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+
+    TickMessage message{};
+    message.symbol_id = 1;
+    message.recv_ts = 1'700'000'000'000'000'000LL;
+    message.price = 100;
+    message.volume = 1;
+    pipeline.store_tick_direct(message);
+
+    EXPECT_FALSE(pipeline.stop());
+    ASSERT_NE(pipeline.flush_manager(), nullptr);
+    EXPECT_FALSE(pipeline.flush_manager()->last_snapshot_succeeded());
+}
+
+TEST_F(HDBTest, GracefulStopRejectsDictionarySnapshot) {
+    const fs::path snapshot_dir = fs::path(temp_dir_) / "dictionary_snapshots";
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::TIERED;
+    cfg.hdb_base_path = (fs::path(temp_dir_) / "dictionary_hdb").string();
+    cfg.flush_config.snapshot_path = snapshot_dir.string();
+    ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+    zeptodb::sql::QueryExecutor executor(pipeline);
+
+    ASSERT_TRUE(executor.execute(
+        "CREATE TABLE dictionary_ticks "
+        "(symbol INT64, label STRING, timestamp TIMESTAMP_NS)").ok());
+    ASSERT_TRUE(executor.execute(
+        "INSERT INTO dictionary_ticks VALUES "
+        "(3, 'alpha', 1700000000000000000)").ok());
+
+    EXPECT_FALSE(pipeline.stop());
+    EXPECT_EQ(FlushManager::resolve_snapshot(snapshot_dir.string()).status,
+              SnapshotResolutionStatus::Missing);
+}
+
+TEST_F(HDBTest, RecoveryRejectsCorruptPublishedGeneration) {
+    const fs::path hdb_dir = fs::path(temp_dir_) / "corrupt_hdb";
+    const fs::path snapshot_dir = fs::path(temp_dir_) / "corrupt_snapshots";
+    constexpr int64_t kTimestamp = 1'700'000'000'000'000'000LL;
+
+    {
+        PipelineConfig cfg;
+        cfg.storage_mode = StorageMode::TIERED;
+        cfg.hdb_base_path = hdb_dir.string();
+        cfg.flush_config.snapshot_path = snapshot_dir.string();
+        ZeptoPipeline pipeline(cfg);
+        pipeline.start();
+        zeptodb::sql::QueryExecutor executor(pipeline);
+        ASSERT_TRUE(executor.execute(
+            "CREATE TABLE corrupt_ticks "
+            "(symbol INT64, price INT64, volume INT64, timestamp TIMESTAMP_NS)").ok());
+        ASSERT_TRUE(executor.execute(
+            "INSERT INTO corrupt_ticks VALUES (9, 100, 3, " +
+            std::to_string(kTimestamp) + ")").ok());
+        ASSERT_TRUE(pipeline.stop());
+    }
+
+    const auto published = FlushManager::resolve_snapshot(snapshot_dir.string());
+    ASSERT_EQ(published.status, SnapshotResolutionStatus::Ready);
+    fs::path volume_file;
+    for (const auto& entry : fs::recursive_directory_iterator(
+             published.generation_path)) {
+        if (entry.path().filename() == "volume.bin") {
+            volume_file = entry.path();
+            break;
+        }
+    }
+    ASSERT_FALSE(volume_file.empty());
+    fs::resize_file(volume_file, HDB_HEADER_V2_SIZE + 1);
+
+    PipelineConfig recovery_cfg;
+    recovery_cfg.storage_mode = StorageMode::TIERED;
+    recovery_cfg.hdb_base_path = hdb_dir.string();
+    recovery_cfg.enable_recovery = true;
+    recovery_cfg.recovery_snapshot_path = snapshot_dir.string();
+    ZeptoPipeline recovered(recovery_cfg);
+    EXPECT_THROW(recovered.start(), std::runtime_error);
+    EXPECT_EQ(recovered.drain_thread_count(), 0u);
+}
+
+TEST_F(HDBTest, RecoveryIgnoresUnpublishedPartialGeneration) {
+    const fs::path snapshot_dir = fs::path(temp_dir_) / "atomic_snapshots";
+    {
+        PipelineConfig cfg;
+        cfg.storage_mode = StorageMode::TIERED;
+        cfg.hdb_base_path = (fs::path(temp_dir_) / "atomic_hdb").string();
+        cfg.flush_config.snapshot_path = snapshot_dir.string();
+        ZeptoPipeline pipeline(cfg);
+        pipeline.start();
+        TickMessage message{};
+        message.symbol_id = 11;
+        message.recv_ts = 1'700'000'000'000'000'000LL;
+        message.price = 123;
+        message.volume = 4;
+        pipeline.store_tick_direct(message);
+        ASSERT_TRUE(pipeline.stop());
+    }
+
+    const fs::path partial = snapshot_dir / "generations" /
+        "gen-999999999999999999-999-999";
+    fs::create_directories(partial);
+    std::ofstream(partial / "timestamp.bin", std::ios::binary) << "partial";
+
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    cfg.enable_recovery = true;
+    cfg.recovery_snapshot_path = snapshot_dir.string();
+    ZeptoPipeline recovered(cfg);
+    ASSERT_NO_THROW(recovered.start());
+    EXPECT_EQ(recovered.total_stored_rows(), 1u);
+    EXPECT_TRUE(recovered.stop());
+}
+
+TEST_F(HDBTest, RecoveryRejectsUnexpectedPublishedContent) {
+    const fs::path snapshot_dir = fs::path(temp_dir_) / "unexpected_snapshots";
+    {
+        PipelineConfig cfg;
+        cfg.storage_mode = StorageMode::TIERED;
+        cfg.hdb_base_path = (fs::path(temp_dir_) / "unexpected_hdb").string();
+        cfg.flush_config.snapshot_path = snapshot_dir.string();
+        ZeptoPipeline pipeline(cfg);
+        pipeline.start();
+        ASSERT_TRUE(pipeline.stop());
+    }
+
+    const auto published = FlushManager::resolve_snapshot(snapshot_dir.string());
+    ASSERT_EQ(published.status, SnapshotResolutionStatus::Ready);
+    fs::create_directories(fs::path(published.generation_path) / "t999");
+
+    PipelineConfig recovery_cfg;
+    recovery_cfg.enable_recovery = true;
+    recovery_cfg.recovery_snapshot_path = snapshot_dir.string();
+    ZeptoPipeline recovered(recovery_cfg);
+    EXPECT_THROW(recovered.start(), std::runtime_error);
+    EXPECT_EQ(recovered.drain_thread_count(), 0u);
+}
+
+TEST_F(HDBTest, EmptyGracefulSnapshotSupersedesPriorState) {
+    const fs::path snapshot_dir = fs::path(temp_dir_) / "empty_snapshots";
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::TIERED;
+    cfg.hdb_base_path = (fs::path(temp_dir_) / "empty_hdb").string();
+    cfg.flush_config.snapshot_path = snapshot_dir.string();
+    ZeptoPipeline pipeline(cfg);
+    pipeline.start();
+    ASSERT_TRUE(pipeline.stop());
+
+    const auto published = FlushManager::resolve_snapshot(snapshot_dir.string());
+    ASSERT_EQ(published.status, SnapshotResolutionStatus::Ready);
+    EXPECT_EQ(published.partition_count, 0u);
+    EXPECT_EQ(published.row_count, 0u);
+
+    PipelineConfig recovery_cfg;
+    recovery_cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    recovery_cfg.enable_recovery = true;
+    recovery_cfg.recovery_snapshot_path = snapshot_dir.string();
+    ZeptoPipeline recovered(recovery_cfg);
+    ASSERT_NO_THROW(recovered.start());
+    EXPECT_EQ(recovered.total_stored_rows(), 0u);
+    EXPECT_TRUE(recovered.stop());
 }
 
 int main(int argc, char** argv) {

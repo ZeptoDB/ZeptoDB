@@ -30,54 +30,127 @@
 #include "zeptodb/common/logger.h"  // ZEPTO_INFO (engine logger, devlog 118 cold-tier)
 
 #include <csignal>
+#include <charconv>
 #include <cstdlib>
 #include <cctype>
+#include <algorithm>
 #include <iostream>
 #include <atomic>
 #include <fstream>
 #include <filesystem>
+#include <limits>
 #include <memory>
+#include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
-
-#ifdef __linux__
-#include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#endif
 
 static std::atomic<bool> g_running{true};
 static void signal_handler(int) { g_running.store(false); }
 
-#ifdef __linux__
-static bool is_port_in_use(uint16_t port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return false;
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int ret = connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    close(fd);
-    return ret == 0;
-}
-#endif
-
 struct RemoteNodeSpec { uint32_t id; std::string host; uint16_t port; };
+
+template <typename UInt>
+static bool parse_unsigned_cli(std::string_view text, UInt* output) {
+    static_assert(std::is_unsigned_v<UInt>);
+    if (output == nullptr || text.empty()) return false;
+    uint64_t value = 0;
+    const auto [end, error] = std::from_chars(
+        text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size() ||
+        value > static_cast<uint64_t>(std::numeric_limits<UInt>::max())) {
+        return false;
+    }
+    *output = static_cast<UInt>(value);
+    return true;
+}
+
+static bool is_loopback_bind_host(std::string_view host) {
+    return host == "127.0.0.1" || host == "localhost" || host == "::1";
+}
+
+static bool is_loopback_http_url(std::string_view url) {
+    constexpr std::string_view scheme = "http://";
+    if (!url.starts_with(scheme)) return false;
+    url.remove_prefix(scheme.size());
+    const size_t authority_end = url.find_first_of("/?#");
+    std::string_view authority = url.substr(0, authority_end);
+    if (authority.empty() || authority.find('@') != std::string_view::npos) {
+        return false;
+    }
+
+    std::string_view host;
+    std::string_view port;
+    bool has_port_delimiter = false;
+    if (authority.front() == '[') {
+        const size_t close = authority.find(']');
+        if (close == std::string_view::npos) return false;
+        host = authority.substr(1, close - 1);
+        const auto remainder = authority.substr(close + 1);
+        if (!remainder.empty()) {
+            if (remainder.front() != ':') return false;
+            has_port_delimiter = true;
+            port = remainder.substr(1);
+        }
+    } else {
+        const size_t colon = authority.rfind(':');
+        if (colon == std::string_view::npos) {
+            host = authority;
+        } else {
+            host = authority.substr(0, colon);
+            has_port_delimiter = true;
+            port = authority.substr(colon + 1);
+        }
+    }
+    if (host != "localhost" && host != "127.0.0.1" && host != "::1") {
+        return false;
+    }
+    if (has_port_delimiter && port.empty()) {
+        return false;
+    }
+    if (!port.empty()) {
+        uint16_t parsed_port = 0;
+        if (!parse_unsigned_cli(port, &parsed_port) || parsed_port == 0) {
+            return false;
+        }
+    }
+    return true;
+}
 
 int main(int argc, char* argv[]) {
     zeptodb::auth::license().load();
 
     uint16_t port = 8123;
     uint16_t rpc_port = 0;  // RPC port for HA peer communication
-    int num_ticks = 10000;
+    int num_ticks = 0;
     bool no_auth = false;
+    bool allow_insecure_cluster = false;
+    bool allow_plaintext_http = false;
+    bool bootstrap_dev_keys = false;
+    bool no_bootstrap_dev_keys = false;
+    bool disable_rate_limit = false;
+    bool disable_audit = false;
+    bool secure_cookie = false;
+    bool allow_experimental_distributed_queries = false;
+    bool acknowledge_incomplete_durability = false;
     uint32_t node_id = 0;
     std::vector<RemoteNodeSpec> remote_nodes;
     std::string log_level = "info";
     std::string ha_role_str;   // "active" or "standby"
     std::string peer_spec;     // "host:port"
+    std::string bind_host = "127.0.0.1";
+    std::string tls_cert_path;
+    std::string tls_key_path;
+    std::string tls_ca_path;
+    std::string api_keys_file;
+    std::string audit_log_file;
+    size_t max_request_bytes = 64ULL * 1024ULL * 1024ULL;
+    uint32_t query_timeout_ms = 30'000;
+
+    if (const char* value = std::getenv("ZEPTO_API_KEYS_FILE");
+        value && *value) {
+        api_keys_file = value;
+    }
 
     // JWT / SSO settings
     std::string jwt_issuer;
@@ -85,6 +158,14 @@ int main(int argc, char* argv[]) {
     std::string jwt_secret;       // HS256
     std::string jwt_public_key;   // RS256 PEM file path
     std::string jwks_url;         // JWKS endpoint URL
+    std::string oidc_issuer;
+    std::string oidc_client_id;
+    std::string oidc_client_secret;
+    std::string oidc_client_secret_env;
+    std::string oidc_client_secret_file;
+    std::string oidc_redirect_uri;
+    std::string oidc_audience;
+    bool oidc_secret_from_argv = false;
     std::string web_dir;          // Web UI static files directory
 
     // Storage mode (devlog 086 D4): allow operators to persist data to HDB
@@ -165,16 +246,78 @@ int main(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "--port" || arg == "-p") && i + 1 < argc)
-            port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (arg == "--rpc-port" && i + 1 < argc)
-            rpc_port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if ((arg == "--ticks" || arg == "-n") && i + 1 < argc)
-            num_ticks = std::atoi(argv[++i]);
+        if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &port) || port == 0) {
+                std::cerr << "Error: --port expects an integer in [1, 65535]\n";
+                return 1;
+            }
+        }
+        else if (arg == "--rpc-port" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &rpc_port) || rpc_port == 0) {
+                std::cerr << "Error: --rpc-port expects an integer in [1, 65535]\n";
+                return 1;
+            }
+        }
+        else if ((arg == "--ticks" || arg == "-n") && i + 1 < argc) {
+            uint32_t parsed = 0;
+            if (!parse_unsigned_cli(argv[++i], &parsed) ||
+                parsed > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+                std::cerr << "Error: --ticks expects a non-negative integer\n";
+                return 1;
+            }
+            num_ticks = static_cast<int>(parsed);
+        }
         else if (arg == "--no-auth")
             no_auth = true;
-        else if (arg == "--node-id" && i + 1 < argc)
-            node_id = static_cast<uint32_t>(std::atoi(argv[++i]));
+        else if (arg == "--allow-insecure-cluster")
+            allow_insecure_cluster = true;
+        else if (arg == "--allow-plaintext-http")
+            allow_plaintext_http = true;
+        else if (arg == "--bootstrap-dev-keys")
+            bootstrap_dev_keys = true;
+        else if (arg == "--no-bootstrap-dev-keys")
+            no_bootstrap_dev_keys = true;
+        else if (arg == "--disable-rate-limit")
+            disable_rate_limit = true;
+        else if (arg == "--disable-audit")
+            disable_audit = true;
+        else if (arg == "--secure-cookie")
+            secure_cookie = true;
+        else if (arg == "--allow-experimental-distributed-queries")
+            allow_experimental_distributed_queries = true;
+        else if (arg == "--acknowledge-incomplete-durability")
+            acknowledge_incomplete_durability = true;
+        else if (arg == "--node-id" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &node_id)) {
+                std::cerr << "Error: --node-id expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--bind" && i + 1 < argc)
+            bind_host = argv[++i];
+        else if (arg == "--tls-cert" && i + 1 < argc)
+            tls_cert_path = argv[++i];
+        else if (arg == "--tls-key" && i + 1 < argc)
+            tls_key_path = argv[++i];
+        else if (arg == "--tls-ca" && i + 1 < argc)
+            tls_ca_path = argv[++i];
+        else if (arg == "--api-keys-file" && i + 1 < argc)
+            api_keys_file = argv[++i];
+        else if (arg == "--audit-log-file" && i + 1 < argc)
+            audit_log_file = argv[++i];
+        else if (arg == "--max-request-bytes" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &max_request_bytes) ||
+                max_request_bytes == 0) {
+                std::cerr << "Error: --max-request-bytes expects a positive integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--query-timeout-ms" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &query_timeout_ms)) {
+                std::cerr << "Error: --query-timeout-ms expects an unsigned integer\n";
+                return 1;
+            }
+        }
         else if (arg == "--log-level" && i + 1 < argc)
             log_level = argv[++i];
         else if (arg == "--ha" && i + 1 < argc)
@@ -192,6 +335,22 @@ int main(int argc, char* argv[]) {
             jwt_public_key = argv[++i];
         else if (arg == "--jwks-url" && i + 1 < argc)
             jwks_url = argv[++i];
+        else if (arg == "--oidc-issuer" && i + 1 < argc)
+            oidc_issuer = argv[++i];
+        else if (arg == "--oidc-client-id" && i + 1 < argc)
+            oidc_client_id = argv[++i];
+        else if (arg == "--oidc-client-secret" && i + 1 < argc) {
+            oidc_client_secret = argv[++i];
+            oidc_secret_from_argv = true;
+        }
+        else if (arg == "--oidc-client-secret-env" && i + 1 < argc)
+            oidc_client_secret_env = argv[++i];
+        else if (arg == "--oidc-client-secret-file" && i + 1 < argc)
+            oidc_client_secret_file = argv[++i];
+        else if (arg == "--oidc-redirect-uri" && i + 1 < argc)
+            oidc_redirect_uri = argv[++i];
+        else if (arg == "--oidc-audience" && i + 1 < argc)
+            oidc_audience = argv[++i];
         else if (arg == "--web-dir" && i + 1 < argc)
             web_dir = argv[++i];
         else if (arg == "--hdb-dir" && i + 1 < argc)
@@ -200,40 +359,100 @@ int main(int argc, char* argv[]) {
             storage_mode = argv[++i];
         else if (arg == "--agent-memory-dir" && i + 1 < argc)
             agent_memory_dir = argv[++i];
-        else if (arg == "--agent-memory-flush-every" && i + 1 < argc)
-            agent_memory_flush_every = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--agent-memory-max-memories" && i + 1 < argc)
-            agent_memory_max_memories = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--agent-memory-max-cache-entries" && i + 1 < argc)
-            agent_memory_max_cache_entries = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-flush-every" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_flush_every)) {
+                std::cerr << "Error: --agent-memory-flush-every expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--agent-memory-max-memories" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_max_memories)) {
+                std::cerr << "Error: --agent-memory-max-memories expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--agent-memory-max-cache-entries" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_max_cache_entries)) {
+                std::cerr << "Error: --agent-memory-max-cache-entries expects an unsigned integer\n";
+                return 1;
+            }
+        }
         else if (arg == "--agent-memory-replication-mode" && i + 1 < argc)
             agent_memory_replication_mode = argv[++i];
         else if (arg == "--agent-memory-ann" && i + 1 < argc)
             agent_memory_ann = argv[++i];
-        else if (arg == "--agent-memory-ann-min-records" && i + 1 < argc)
-            agent_memory_ann_min_records = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--agent-memory-ann-max-candidates" && i + 1 < argc)
-            agent_memory_ann_max_candidates = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--agent-memory-ann-ivf-centroids" && i + 1 < argc)
-            agent_memory_ann_ivf_centroids = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--agent-memory-ann-ivf-probe" && i + 1 < argc)
-            agent_memory_ann_ivf_probe = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--agent-memory-ring-epoch" && i + 1 < argc)
-            agent_memory_ring_epoch = static_cast<uint64_t>(std::atoll(argv[++i]));
+        else if (arg == "--agent-memory-ann-min-records" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_ann_min_records)) {
+                std::cerr << "Error: --agent-memory-ann-min-records expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--agent-memory-ann-max-candidates" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_ann_max_candidates)) {
+                std::cerr << "Error: --agent-memory-ann-max-candidates expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--agent-memory-ann-ivf-centroids" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_ann_ivf_centroids)) {
+                std::cerr << "Error: --agent-memory-ann-ivf-centroids expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--agent-memory-ann-ivf-probe" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_ann_ivf_probe)) {
+                std::cerr << "Error: --agent-memory-ann-ivf-probe expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--agent-memory-ring-epoch" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &agent_memory_ring_epoch)) {
+                std::cerr << "Error: --agent-memory-ring-epoch expects an unsigned integer\n";
+                return 1;
+            }
+        }
         else if (arg == "--failover-enabled")
             failover_enabled = true;
-        else if (arg == "--health-heartbeat-port" && i + 1 < argc)
-            health_heartbeat_port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (arg == "--health-tcp-port" && i + 1 < argc)
-            health_tcp_port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (arg == "--health-suspect-ms" && i + 1 < argc)
-            health_suspect_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
-        else if (arg == "--health-dead-ms" && i + 1 < argc)
-            health_dead_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
-        else if (arg == "--drain-threads" && i + 1 < argc)
-            drain_threads_cfg = static_cast<size_t>(std::atoll(argv[++i]));
-        else if (arg == "--ring-buffer-capacity" && i + 1 < argc)
-            ring_buffer_capacity_cfg = static_cast<size_t>(std::atoll(argv[++i]));
+        else if (arg == "--health-heartbeat-port" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &health_heartbeat_port) ||
+                health_heartbeat_port == 0) {
+                std::cerr << "Error: --health-heartbeat-port expects an integer in [1, 65535]\n";
+                return 1;
+            }
+        }
+        else if (arg == "--health-tcp-port" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &health_tcp_port) ||
+                health_tcp_port == 0) {
+                std::cerr << "Error: --health-tcp-port expects an integer in [1, 65535]\n";
+                return 1;
+            }
+        }
+        else if (arg == "--health-suspect-ms" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &health_suspect_ms) ||
+                health_suspect_ms == 0) {
+                std::cerr << "Error: --health-suspect-ms expects a positive integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--health-dead-ms" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &health_dead_ms) ||
+                health_dead_ms == 0) {
+                std::cerr << "Error: --health-dead-ms expects a positive integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--drain-threads" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &drain_threads_cfg)) {
+                std::cerr << "Error: --drain-threads expects an unsigned integer\n";
+                return 1;
+            }
+        }
+        else if (arg == "--ring-buffer-capacity" && i + 1 < argc) {
+            if (!parse_unsigned_cli(argv[++i], &ring_buffer_capacity_cfg)) {
+                std::cerr << "Error: --ring-buffer-capacity expects an unsigned integer\n";
+                return 1;
+            }
+        }
         // --- devlog 118: cold-tier S3 Parquet sink CLI flags ---
         else if (arg == "--cold-tier-enabled")
             cold_tier_enabled = true;
@@ -241,8 +460,15 @@ int main(int argc, char* argv[]) {
             cold_tier_format = argv[++i];
         else if (arg == "--cold-tier-layout" && i + 1 < argc)
             cold_tier_layout = argv[++i];
-        else if (arg == "--cold-tier-age-hours" && i + 1 < argc)
-            cold_tier_age_hours = std::atoi(argv[++i]);
+        else if (arg == "--cold-tier-age-hours" && i + 1 < argc) {
+            uint32_t parsed = 0;
+            if (!parse_unsigned_cli(argv[++i], &parsed) || parsed == 0 ||
+                parsed > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+                std::cerr << "Error: --cold-tier-age-hours expects a positive integer\n";
+                return 1;
+            }
+            cold_tier_age_hours = static_cast<int>(parsed);
+        }
         else if (arg == "--cold-tier-delete-local-after-s3")
             cold_tier_delete_local = true;
         else if (arg == "--cold-tier-s3-bucket" && i + 1 < argc)
@@ -269,29 +495,70 @@ int main(int argc, char* argv[]) {
             std::string spec = argv[++i];
             auto p1 = spec.find(':');
             auto p2 = spec.find(':', p1 + 1);
-            if (p1 != std::string::npos && p2 != std::string::npos) {
-                remote_nodes.push_back({
-                    static_cast<uint32_t>(std::stoi(spec.substr(0, p1))),
-                    spec.substr(p1 + 1, p2 - p1 - 1),
-                    static_cast<uint16_t>(std::stoi(spec.substr(p2 + 1)))
-                });
+            uint32_t remote_id = 0;
+            uint16_t remote_port = 0;
+            if (p1 == std::string::npos || p2 == std::string::npos ||
+                p1 == 0 || p2 == p1 + 1 || p2 + 1 >= spec.size() ||
+                !parse_unsigned_cli(
+                    std::string_view(spec).substr(0, p1), &remote_id) ||
+                !parse_unsigned_cli(
+                    std::string_view(spec).substr(p2 + 1), &remote_port) ||
+                remote_port == 0) {
+                std::cerr << "Error: --add-node expects id:host:port, got '"
+                          << spec << "'\n";
+                return 1;
             }
+            remote_nodes.push_back({
+                remote_id, spec.substr(p1 + 1, p2 - p1 - 1), remote_port});
         }
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0]
-                      << " [--port 8123] [--ticks 10000] [--no-auth]\n"
+                      << " [--port 8123] [--ticks 0] [--no-auth]\n"
                       << "       [--node-id 0] [--add-node id:host:port ...]\n"
                       << "       [--log-level info|debug|warn|error]\n"
                       << "       [--ha active|standby] [--peer host:port] [--rpc-port PORT]\n\n"
+                      << "HTTP security:\n"
+                      << "  --bind <host>             Listener address (default: 127.0.0.1)\n"
+                      << "  --allow-plaintext-http    Allow plaintext on a non-loopback listener\n"
+                      << "  --tls-cert <path>         Server certificate chain (PEM)\n"
+                      << "  --tls-key <path>          Server private key (PEM; required with cert)\n"
+                      << "  --tls-ca <path>           Require client certificates from this CA (mTLS)\n"
+                      << "  --secure-cookie           Mark session cookies Secure behind a TLS proxy\n"
+                      << "  --max-request-bytes <n>   HTTP body ceiling (default: 67108864)\n"
+                      << "  --query-timeout-ms <n>    Cooperative query timeout (default: 30000; 0 disables)\n\n"
+                      << "  --allow-experimental-distributed-queries\n"
+                      << "                            Enable distributed SELECT without end-to-end cap/cancel\n\n"
+                      << "Authentication:\n"
+                      << "  --api-keys-file <path>    API-key store (or ZEPTO_API_KEYS_FILE)\n"
+                      << "  --bootstrap-dev-keys      Create and print development keys (explicit opt-in)\n"
+                      << "  --no-bootstrap-dev-keys   Compatibility no-op; bootstrap is off by default\n"
+                      << "  --disable-rate-limit      Disable rate limiting (development only)\n"
+                      << "  --disable-audit           Disable audit logging (development only)\n"
+                      << "  --audit-log-file <path>   Dedicated audit log output path\n"
+                      << "  --no-auth                 Disable HTTP authentication (development only)\n\n"
+                      << "Cluster RPC:\n"
+                      << "  Set ZEPTO_CLUSTER_SECRET_FILE (recommended) or ZEPTO_CLUSTER_SECRET\n"
+                      << "  with at least 32 bytes whenever --ha or --add-node is used.\n"
+                      << "  --allow-insecure-cluster  Allow unauthenticated RPC (development only)\n\n"
                       << "JWT / SSO:\n"
                       << "  --jwt-issuer <url>       Expected issuer (iss claim)\n"
                       << "  --jwt-audience <aud>     Expected audience (aud claim)\n"
                       << "  --jwt-secret <secret>    HS256 shared secret\n"
                       << "  --jwt-public-key <path>  RS256 PEM public key file\n"
-                      << "  --jwks-url <url>         JWKS endpoint (auto-fetch RS256 keys)\n\n"
+                      << "  --jwks-url <url>         JWKS endpoint (auto-fetch RS256 keys)\n"
+                      << "  --oidc-issuer <url>      OIDC discovery issuer (HTTPS)\n"
+                      << "  --oidc-client-id <id>    OAuth2 client identifier\n"
+                      << "  --oidc-client-secret <s> Client secret (argv is visible; prefer env/file)\n"
+                      << "  --oidc-client-secret-env <name> Read client secret from an environment variable\n"
+                      << "  --oidc-client-secret-file <path> Read client secret from a mounted file\n"
+                      << "  --oidc-redirect-uri <url> Registered callback URL\n"
+                      << "  --oidc-audience <aud>    Optional token audience override\n"
+                      << "  ZEPTO_OIDC_CLIENT_SECRET is used when no explicit secret source is supplied.\n\n"
                       << "Storage:\n"
                       << "  --hdb-dir <path>         HDB base directory (implies --storage-mode tiered)\n"
-                      << "  --storage-mode <mode>    pure (in-memory, default) | tiered (RDB+HDB)\n\n"
+                      << "  --storage-mode <mode>    pure (in-memory, default) | tiered (requires --hdb-dir)\n\n"
+                      << "  --acknowledge-incomplete-durability\n"
+                      << "                            Required for tiered/cold storage until abrupt-loss recovery is complete\n\n"
                       << "  --agent-memory-dir <path> Persist Agent Memory sidecar files\n"
                       << "                            (routed mode uses node-{id}/shard-0 under this path;\n"
                       << "                             default: <hdb-dir>/agent_memory when HDB is enabled)\n\n"
@@ -355,15 +622,328 @@ int main(int argc, char* argv[]) {
                       << "  ./zepto_http_server --jwt-secret my-shared-secret --jwt-issuer https://auth.example.com\n";
             return 0;
         }
+        else {
+            std::cerr << "Error: unknown or incomplete option '" << arg
+                      << "'. Use --help for supported options.\n";
+            return 1;
+        }
+    }
+
+    if (bootstrap_dev_keys && no_bootstrap_dev_keys) {
+        std::cerr << "Error: --bootstrap-dev-keys and --no-bootstrap-dev-keys "
+                     "cannot be combined\n";
+        return 1;
+    }
+    if (bootstrap_dev_keys && no_auth) {
+        std::cerr << "Error: --bootstrap-dev-keys cannot be used with --no-auth\n";
+        return 1;
+    }
+    if (bind_host.empty()) {
+        std::cerr << "Error: --bind must not be empty\n";
+        return 1;
+    }
+    if (log_level != "debug" && log_level != "info" &&
+        log_level != "warn" && log_level != "error") {
+        std::cerr << "Error: --log-level must be debug, info, warn, or error\n";
+        return 1;
+    }
+    if (storage_mode != "pure" && storage_mode != "tiered") {
+        std::cerr << "Error: --storage-mode must be pure or tiered\n";
+        return 1;
+    }
+    if (cold_tier_format != "parquet" && cold_tier_format != "both") {
+        std::cerr << "Error: --cold-tier-format must be parquet or both\n";
+        return 1;
+    }
+    if (cold_tier_layout != "hive" && cold_tier_layout != "flat") {
+        std::cerr << "Error: --cold-tier-layout must be hive or flat\n";
+        return 1;
+    }
+    if (ha_role_str != "" && ha_role_str != "active" &&
+        ha_role_str != "standby") {
+        std::cerr << "Error: --ha must be active or standby\n";
+        return 1;
+    }
+    const bool tls_enabled = !tls_cert_path.empty() || !tls_key_path.empty();
+    if (tls_cert_path.empty() != tls_key_path.empty()) {
+        std::cerr << "Error: --tls-cert and --tls-key must be provided together\n";
+        return 1;
+    }
+    if (!tls_ca_path.empty() && !tls_enabled) {
+        std::cerr << "Error: --tls-ca requires --tls-cert and --tls-key\n";
+        return 1;
+    }
+    if (!tls_enabled && !is_loopback_bind_host(bind_host) &&
+        !allow_plaintext_http) {
+        std::cerr
+            << "Error: refusing a plaintext non-loopback HTTP listener. "
+               "Configure --tls-cert/--tls-key or explicitly pass "
+               "--allow-plaintext-http when TLS terminates at a trusted proxy.\n";
+        return 1;
+    }
+    const bool jwt_requested =
+        !jwt_secret.empty() || !jwt_public_key.empty() || !jwks_url.empty();
+    if (!jwt_secret.empty() && jwt_secret.size() < 32) {
+        std::cerr << "Error: --jwt-secret must contain at least 32 bytes\n";
+        return 1;
+    }
+    if (!jwt_public_key.empty() && !jwks_url.empty()) {
+        std::cerr << "Error: --jwt-public-key and --jwks-url are mutually exclusive\n";
+        return 1;
+    }
+    if (jwt_requested && (jwt_issuer.empty() || jwt_audience.empty())) {
+        std::cerr << "Error: JWT authentication requires both --jwt-issuer and "
+                     "--jwt-audience\n";
+        return 1;
+    }
+    if (!jwks_url.empty() && !jwks_url.starts_with("https://")) {
+        std::cerr << "Error: --jwks-url must use HTTPS\n";
+        return 1;
+    }
+    if (!jwt_issuer.empty() && !jwt_issuer.starts_with("https://")) {
+        std::cerr << "Error: --jwt-issuer must use HTTPS\n";
+        return 1;
+    }
+
+    const bool oidc_requested =
+        !oidc_issuer.empty() || !oidc_client_id.empty() ||
+        oidc_secret_from_argv || !oidc_client_secret_env.empty() ||
+        !oidc_client_secret_file.empty() || !oidc_redirect_uri.empty() ||
+        !oidc_audience.empty();
+    if (oidc_requested && no_auth) {
+        std::cerr << "Error: OIDC cannot be configured with --no-auth\n";
+        return 1;
+    }
+    const int explicit_oidc_secret_sources =
+        static_cast<int>(oidc_secret_from_argv) +
+        static_cast<int>(!oidc_client_secret_env.empty()) +
+        static_cast<int>(!oidc_client_secret_file.empty());
+    if (explicit_oidc_secret_sources > 1) {
+        std::cerr
+            << "Error: choose exactly one OIDC client-secret source: argv, "
+               "environment variable, or file\n";
+        return 1;
+    }
+    if (oidc_requested &&
+        (oidc_issuer.empty() || oidc_client_id.empty() ||
+         oidc_redirect_uri.empty())) {
+        std::cerr
+            << "Error: OIDC requires --oidc-issuer, --oidc-client-id, and "
+               "--oidc-redirect-uri\n";
+        return 1;
+    }
+    if (!oidc_issuer.empty() && !oidc_issuer.starts_with("https://")) {
+        std::cerr << "Error: --oidc-issuer must use HTTPS\n";
+        return 1;
+    }
+    const bool redirect_is_https = oidc_redirect_uri.starts_with("https://");
+    const bool redirect_is_loopback_http =
+        is_loopback_http_url(oidc_redirect_uri);
+    if (!oidc_redirect_uri.empty() && !redirect_is_https &&
+        !redirect_is_loopback_http) {
+        std::cerr
+            << "Error: --oidc-redirect-uri must use HTTPS, except for an "
+               "HTTP loopback development callback\n";
+        return 1;
+    }
+    if (oidc_requested && !tls_enabled && redirect_is_https &&
+        !secure_cookie) {
+        std::cerr
+            << "Error: an HTTPS OIDC redirect behind a TLS proxy requires "
+               "--secure-cookie\n";
+        return 1;
     }
 
     bool ha_mode = !ha_role_str.empty();
+    std::string ha_peer_host;
+    uint16_t ha_peer_port = 0;
     if (ha_mode && peer_spec.empty()) {
         std::cerr << "Error: --ha requires --peer host:port\n";
         return 1;
     }
     if (ha_mode && rpc_port == 0) {
+        if (port > std::numeric_limits<uint16_t>::max() - 1000) {
+            std::cerr << "Error: HTTP port is too high for the default HA RPC offset\n";
+            return 1;
+        }
         rpc_port = port + 1000;  // default: HTTP port + 1000
+    }
+    if (ha_mode) {
+        const auto colon = peer_spec.rfind(':');
+        if (colon == std::string::npos || colon == 0 ||
+            colon + 1 >= peer_spec.size() ||
+            !parse_unsigned_cli(
+                std::string_view(peer_spec).substr(colon + 1), &ha_peer_port) ||
+            ha_peer_port == 0) {
+            std::cerr << "Error: --peer expects host:port\n";
+            return 1;
+        }
+        ha_peer_host = peer_spec.substr(0, colon);
+    }
+    if (!remote_nodes.empty()) {
+        if (port > std::numeric_limits<uint16_t>::max() - 100) {
+            std::cerr << "Error: HTTP port is too high for the cluster RPC offset\n";
+            return 1;
+        }
+        for (const auto& remote : remote_nodes) {
+            if (remote.port > std::numeric_limits<uint16_t>::max() - 100) {
+                std::cerr << "Error: remote HTTP port is too high for the "
+                             "cluster RPC offset: " << remote.port << "\n";
+                return 1;
+            }
+        }
+    }
+
+    auto require_readable_file = [](const std::string& path,
+                                    const char* option) -> bool {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error) {
+            std::cerr << "Error: " << option << " is not a readable regular file: "
+                      << path << "\n";
+            return false;
+        }
+        std::ifstream input(path);
+        if (!input.good()) {
+            std::cerr << "Error: cannot read " << option << ": " << path << "\n";
+            return false;
+        }
+        return true;
+    };
+    if (tls_enabled) {
+        if (!require_readable_file(tls_cert_path, "--tls-cert") ||
+            !require_readable_file(tls_key_path, "--tls-key")) {
+            return 1;
+        }
+        if (!tls_ca_path.empty() &&
+            !require_readable_file(tls_ca_path, "--tls-ca")) {
+            return 1;
+        }
+    }
+    if (!jwt_public_key.empty() &&
+        !require_readable_file(jwt_public_key, "--jwt-public-key")) {
+        return 1;
+    }
+    if (!oidc_client_secret_env.empty()) {
+        const char* secret = std::getenv(oidc_client_secret_env.c_str());
+        if (!secret || !*secret) {
+            std::cerr
+                << "Error: OIDC client-secret environment variable is unset "
+                   "or empty\n";
+            return 1;
+        }
+        oidc_client_secret = secret;
+    } else if (!oidc_client_secret_file.empty()) {
+        if (!require_readable_file(
+                oidc_client_secret_file, "--oidc-client-secret-file")) {
+            return 1;
+        }
+        std::ifstream secret_file(oidc_client_secret_file, std::ios::binary);
+        oidc_client_secret.assign(
+            std::istreambuf_iterator<char>(secret_file),
+            std::istreambuf_iterator<char>());
+        while (!oidc_client_secret.empty() &&
+               (oidc_client_secret.back() == '\n' ||
+                oidc_client_secret.back() == '\r')) {
+            oidc_client_secret.pop_back();
+        }
+    } else if (oidc_requested && !oidc_secret_from_argv) {
+        if (const char* secret = std::getenv("ZEPTO_OIDC_CLIENT_SECRET");
+            secret && *secret) {
+            oidc_client_secret = secret;
+        }
+    }
+    if (oidc_requested && oidc_client_secret.empty()) {
+        std::cerr
+            << "Error: OIDC requires a non-empty client secret from "
+               "--oidc-client-secret, --oidc-client-secret-env, "
+               "--oidc-client-secret-file, or ZEPTO_OIDC_CLIENT_SECRET\n";
+        return 1;
+    }
+    if (oidc_requested && oidc_audience.empty()) {
+        oidc_audience = oidc_client_id;
+    }
+    if (oidc_secret_from_argv) {
+        std::cerr
+            << "WARNING: --oidc-client-secret may be visible in process "
+               "arguments; prefer --oidc-client-secret-env or "
+               "--oidc-client-secret-file\n";
+    }
+    if (allow_experimental_distributed_queries) {
+        std::cerr
+            << "WARNING: distributed SELECT lacks end-to-end row bounds and "
+               "cancellation and is experimental\n";
+    }
+    if (!api_keys_file.empty()) {
+        std::error_code error;
+        const bool exists = std::filesystem::exists(api_keys_file, error);
+        if (error || (!exists && !bootstrap_dev_keys)) {
+            std::cerr << "Error: API-key file does not exist: "
+                      << api_keys_file << "\n";
+            return 1;
+        }
+        if (exists && !require_readable_file(api_keys_file, "--api-keys-file")) {
+            return 1;
+        }
+    }
+    if (!no_auth && api_keys_file.empty() && !jwt_requested && !oidc_requested &&
+        !bootstrap_dev_keys) {
+        std::cerr
+            << "Error: authentication is enabled but no credential source is "
+               "configured. Supply --api-keys-file (or ZEPTO_API_KEYS_FILE), "
+               "configure JWT/OIDC, or explicitly use --bootstrap-dev-keys for "
+               "local development.\n";
+        return 1;
+    }
+
+    const bool durable_storage_requested =
+        storage_mode == "tiered" || !hdb_dir.empty() || cold_tier_enabled;
+    if (durable_storage_requested && !acknowledge_incomplete_durability) {
+        std::cerr
+            << "Error: tiered/cold storage is not fully crash durable; pass "
+               "--acknowledge-incomplete-durability only after accepting "
+               "the documented abrupt-loss limits\n";
+        return 1;
+    }
+    if (durable_storage_requested && hdb_dir.empty()) {
+        std::cerr << "Error: tiered/cold storage requires an explicit --hdb-dir "
+                     "on durable storage\n";
+        return 1;
+    }
+    if (!hdb_dir.empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(hdb_dir, error);
+        if (error || !std::filesystem::is_directory(hdb_dir)) {
+            std::cerr << "Error: cannot create or access --hdb-dir '" << hdb_dir
+                      << "': " << (error ? error.message() : "not a directory")
+                      << "\n";
+            return 1;
+        }
+        const std::string catalog_path = hdb_dir + "/_schema.json";
+        zeptodb::storage::SchemaRegistry catalog_validator;
+        if (catalog_validator.load_from_checked(catalog_path) ==
+            zeptodb::storage::SchemaCatalogLoadResult::Invalid) {
+            std::cerr << "Error: refusing to start with an invalid schema "
+                         "catalog: " << catalog_path << "\n";
+            return 1;
+        }
+    }
+
+    const bool cluster_rpc_required = ha_mode || !remote_nodes.empty();
+    auto rpc_security = zeptodb::cluster::RpcSecurityConfig::from_environment();
+    if (cluster_rpc_required) {
+        if (const auto error = rpc_security.validation_error(); !error.empty()) {
+            std::cerr << "Error: invalid cluster RPC security configuration: "
+                      << error << "\n";
+            return 1;
+        }
+        if (!rpc_security.enabled && !allow_insecure_cluster) {
+            std::cerr
+                << "Error: cluster RPC authentication is required for HA and "
+                   "remote nodes. Set ZEPTO_CLUSTER_SECRET_FILE (recommended) "
+                   "or ZEPTO_CLUSTER_SECRET (minimum 32 bytes). Use "
+                   "--allow-insecure-cluster only for isolated development.\n";
+            return 1;
+        }
     }
 
     std::signal(SIGINT, signal_handler);
@@ -375,21 +955,39 @@ int main(int argc, char* argv[]) {
     else if (log_level == "warn")  ll = zeptodb::util::LogLevel::WARN;
     else if (log_level == "error") ll = zeptodb::util::LogLevel::ERROR;
     zeptodb::util::Logger::instance().init("/var/log/zeptodb", ll);
-
-#ifdef __linux__
-    if (is_port_in_use(port)) {
-        std::cerr << "Error: port " << port << " is already in use.\n";
-        return 1;
+    if (no_auth) {
+        std::cerr << "Warning: HTTP authentication is disabled\n";
     }
-#endif
+    if (!tls_enabled && !is_loopback_bind_host(bind_host)) {
+        std::cerr << "Warning: serving plaintext HTTP on non-loopback address "
+                  << bind_host << "; TLS must terminate at a trusted proxy\n";
+    }
+    if (disable_rate_limit) {
+        std::cerr << "Warning: HTTP rate limiting is disabled\n";
+    }
+    if (disable_audit) {
+        std::cerr << "Warning: HTTP audit logging is disabled\n";
+    }
 
     // Pipeline
     zeptodb::core::PipelineConfig cfg;
-    // devlog 086 (D4): --hdb-dir or --storage-mode tiered switches to on-disk
-    // HDB tier. Default stays PURE_IN_MEMORY for HFT dev-server parity.
+    // --hdb-dir or --storage-mode tiered switches to the on-disk HDB tier.
+    // Validation above requires an explicit durable path for this mode.
     if (storage_mode == "tiered" || !hdb_dir.empty()) {
         cfg.storage_mode  = zeptodb::core::StorageMode::TIERED;
-        cfg.hdb_base_path = hdb_dir.empty() ? std::string("/tmp/zepto_hdb") : hdb_dir;
+        cfg.hdb_base_path = hdb_dir;
+        // QueryExecutor is not yet HDB-aware for every SQL path. Keep flushed
+        // partitions resident so background persistence cannot make rows
+        // disappear from live SQL visibility.
+        cfg.flush_config.reclaim_after_flush = false;
+        // Publish a complete RDB snapshot on graceful shutdown and recover it
+        // before accepting traffic on the next start. The ordinary HDB flush
+        // path is not yet sufficient for general SQL restart visibility.
+        const std::string recovery_path =
+            (std::filesystem::path(hdb_dir) / "_rdb_snapshots").string();
+        cfg.flush_config.snapshot_path = recovery_path;
+        cfg.enable_recovery = true;
+        cfg.recovery_snapshot_path = recovery_path;
     } else {
         cfg.storage_mode  = zeptodb::core::StorageMode::PURE_IN_MEMORY;
     }
@@ -407,11 +1005,10 @@ int main(int argc, char* argv[]) {
                          "(or ZEPTO_COLD_TIER_S3_BUCKET)\n";
             return 1;
         }
-        // Cold-tier needs HDB on disk; switch to tiered if user hasn't
-        // already supplied a path.
+        // Cold-tier needs the validated local HDB staging directory.
         if (cfg.storage_mode == zeptodb::core::StorageMode::PURE_IN_MEMORY) {
             cfg.storage_mode  = zeptodb::core::StorageMode::TIERED;
-            if (cfg.hdb_base_path.empty()) cfg.hdb_base_path = "/tmp/zepto_hdb";
+            cfg.hdb_base_path = hdb_dir;
         }
         auto& fc = cfg.flush_config;
         fc.output_format = (cold_tier_format == "both")
@@ -441,10 +1038,24 @@ int main(int argc, char* argv[]) {
     }
 
     zeptodb::core::ZeptoPipeline pipeline(cfg);
+    try {
+        pipeline.start();
+    } catch (const std::exception& error) {
+        std::cerr << "Error: pipeline recovery/startup failed: "
+                  << error.what() << "\n";
+        return 1;
+    }
 
     // Register default trades schema
     zeptodb::sql::QueryExecutor bootstrap_ex(pipeline);
-    bootstrap_ex.execute("CREATE TABLE IF NOT EXISTS trades (symbol SYMBOL, price INT64, volume INT64, timestamp INT64)");
+    const auto bootstrap_schema = bootstrap_ex.execute(
+        "CREATE TABLE IF NOT EXISTS trades "
+        "(symbol SYMBOL, price INT64, volume INT64, timestamp INT64)");
+    if (!bootstrap_schema.ok()) {
+        std::cerr << "Error: failed to initialize the trades schema: "
+                  << bootstrap_schema.error << "\n";
+        return 1;
+    }
 
     // Seed sample data
     for (int i = 0; i < num_ticks; ++i) {
@@ -460,13 +1071,23 @@ int main(int argc, char* argv[]) {
     // Auth setup
     zeptodb::auth::AuthManager::Config auth_cfg;
     auth_cfg.enabled = !no_auth;
-    auth_cfg.api_keys_file = "dev_keys.txt";
-    auth_cfg.rate_limit_enabled = false;
-    auth_cfg.audit_enabled = false;
-    auth_cfg.audit_buffer_enabled = false;
+    if (bootstrap_dev_keys && api_keys_file.empty()) {
+        api_keys_file = "dev_keys.txt";
+    }
+    auth_cfg.api_keys_file = api_keys_file;
+    auth_cfg.rate_limit_enabled = !disable_rate_limit;
+    auth_cfg.audit_enabled = !disable_audit;
+    auth_cfg.audit_buffer_enabled = !disable_audit;
+    auth_cfg.audit_log_file = audit_log_file;
+    auth_cfg.session_config.cookie_secure = tls_enabled || secure_cookie;
+    auth_cfg.sessions_enabled = oidc_requested;
+    auth_cfg.oidc_issuer = oidc_issuer;
+    auth_cfg.oidc_client_id = oidc_client_id;
+    auth_cfg.oidc_client_secret = oidc_client_secret;
+    auth_cfg.oidc_redirect_uri = oidc_redirect_uri;
+    auth_cfg.oidc_audience = oidc_audience;
 
     // JWT / SSO — enabled if any jwt flag is provided
-    bool jwt_requested = !jwt_secret.empty() || !jwt_public_key.empty() || !jwks_url.empty();
     if (jwt_requested) {
         if (!jwt_secret.empty() && (!jwt_public_key.empty() || !jwks_url.empty())) {
             std::cerr << "Error: --jwt-secret (HS256) cannot be combined with --jwt-public-key or --jwks-url (RS256)\n";
@@ -486,24 +1107,68 @@ int main(int argc, char* argv[]) {
             auth_cfg.jwt.rs256_public_key_pem = std::string(
                 std::istreambuf_iterator<char>(pem_file), std::istreambuf_iterator<char>());
         }
-        // jwks_url is handled after JwksProvider is implemented (step 2)
         auth_cfg.jwks_url = jwks_url;
     } else {
         auth_cfg.jwt_enabled = false;
     }
 
-    auto auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
+    std::shared_ptr<zeptodb::auth::AuthManager> auth;
+    try {
+        auth = std::make_shared<zeptodb::auth::AuthManager>(auth_cfg);
+    } catch (const std::exception& error) {
+        std::cerr << "Error: failed to initialize HTTP authentication: "
+                  << error.what() << "\n";
+        return 1;
+    }
+    if (oidc_requested && !auth->oidc_metadata()) {
+        std::cerr
+            << "Error: OIDC discovery failed; refusing to start with an "
+               "inactive configured identity provider\n";
+        return 1;
+    }
 
-    // Only create dev keys if they don't already exist
+    // Development key creation is an explicit, one-time bootstrap path.
     auto existing = auth->list_api_keys();
     auto has_key = [&](const std::string& name) {
         return std::any_of(existing.begin(), existing.end(),
-            [&](const auto& e) { return e.name == name && e.enabled; });
+            [&](const auto& e) {
+                return e.name == name && e.enabled && !e.is_expired();
+            });
     };
     std::string admin_key, writer_key, reader_key;
-    if (!has_key("dev-admin"))  admin_key  = auth->create_api_key("dev-admin",  zeptodb::auth::Role::ADMIN);
-    if (!has_key("dev-writer")) writer_key = auth->create_api_key("dev-writer", zeptodb::auth::Role::WRITER);
-    if (!has_key("dev-reader")) reader_key = auth->create_api_key("dev-reader", zeptodb::auth::Role::READER);
+    if (bootstrap_dev_keys) {
+        try {
+            if (!has_key("dev-admin")) {
+                admin_key = auth->create_api_key(
+                    "dev-admin", zeptodb::auth::Role::ADMIN);
+            }
+            if (!has_key("dev-writer")) {
+                writer_key = auth->create_api_key(
+                    "dev-writer", zeptodb::auth::Role::WRITER);
+            }
+            if (!has_key("dev-reader")) {
+                reader_key = auth->create_api_key(
+                    "dev-reader", zeptodb::auth::Role::READER);
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "Error: failed to bootstrap development API keys: "
+                      << error.what() << "\n";
+            return 1;
+        }
+        existing = auth->list_api_keys();
+    }
+    const bool has_active_api_key = std::any_of(
+        existing.begin(), existing.end(), [](const auto& entry) {
+            return entry.enabled && !entry.is_expired();
+        });
+    if (!no_auth && !has_active_api_key && !jwt_requested && !oidc_requested) {
+        std::cerr
+            << "Error: authentication is enabled but no active API key or JWT "
+               "method is configured. Supply --api-keys-file, configure "
+               "JWT/OIDC, "
+               "or explicitly use --bootstrap-dev-keys for local development.\n";
+        return 1;
+    }
 
     // HTTP server
     zeptodb::sql::QueryExecutor executor(pipeline);
@@ -512,7 +1177,19 @@ int main(int argc, char* argv[]) {
     // later in main() and call executor.set_cluster_node(&adapter). Single-
     // pod deployments keep executor.cluster_node_ = nullptr (original direct-
     // to-pipeline behaviour).
-    zeptodb::server::HttpServer server(executor, port, zeptodb::auth::TlsConfig{}, auth);
+    zeptodb::auth::TlsConfig tls_config;
+    tls_config.enabled = tls_enabled;
+    tls_config.bind_host = bind_host;
+    tls_config.cert_path = tls_cert_path;
+    tls_config.key_path = tls_key_path;
+    tls_config.ca_cert_path = tls_ca_path;
+    tls_config.https_port = port;
+    zeptodb::server::HttpServer server(executor, port, tls_config, auth);
+    server.set_max_request_body_bytes(max_request_bytes);
+    server.set_query_timeout_ms(query_timeout_ms);
+    server.set_allow_experimental_distributed_queries(
+        allow_experimental_distributed_queries);
+    server.set_allow_insecure_cluster(allow_insecure_cluster);
     if (agent_memory_dir.empty() && cfg.storage_mode != zeptodb::core::StorageMode::PURE_IN_MEMORY) {
         agent_memory_dir = cfg.hdb_base_path + "/agent_memory";
     }
@@ -632,13 +1309,8 @@ int main(int argc, char* argv[]) {
             ? zeptodb::cluster::CoordinatorRole::ACTIVE
             : zeptodb::cluster::CoordinatorRole::STANDBY;
 
-        auto colon = peer_spec.find(':');
-        std::string peer_host = peer_spec.substr(0, colon);
-        uint16_t peer_port = static_cast<uint16_t>(
-            std::atoi(peer_spec.substr(colon + 1).c_str()));
-
         ha = std::make_unique<zeptodb::cluster::CoordinatorHA>();
-        ha->init(role, peer_host, peer_port);
+        ha->init(role, ha_peer_host, ha_peer_port);
 
         // Register local node
         zeptodb::cluster::NodeAddress self_addr{"localhost", port, node_id};
@@ -654,6 +1326,7 @@ int main(int argc, char* argv[]) {
 
         // Start RPC server for peer communication (ping/query forwarding)
         rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+        rpc_srv->set_security(rpc_security);
         rpc_srv->set_agent_memory_put_callback(
             [&server](const uint8_t* data, size_t len) {
                 return server.handle_agent_memory_put_rpc(data, len);
@@ -717,21 +1390,25 @@ int main(int argc, char* argv[]) {
         server.set_coordinator(coordinator.get(), static_cast<uint16_t>(node_id));
     }
 
-    std::cout << "ZeptoDB HTTP server: http://localhost:" << port
+    std::cout << "ZeptoDB HTTP server: "
+              << (tls_enabled ? "https://" : "http://")
+              << bind_host << ":" << port
               << "  (" << num_ticks << " sample ticks loaded, node_id=" << node_id << ")\n";
     if (!remote_nodes.empty()) {
         std::cout << "Remote nodes:\n";
         for (auto& rn : remote_nodes)
             std::cout << "  Node " << rn.id << " → " << rn.host << ":" << rn.port << "\n";
     }
-    if (!admin_key.empty() || !writer_key.empty() || !reader_key.empty()) {
-        std::cout << "\n=== Dev API Keys (shown once) ===\n";
-        if (!admin_key.empty())  std::cout << "  admin:  " << admin_key  << "\n";
-        if (!writer_key.empty()) std::cout << "  writer: " << writer_key << "\n";
-        if (!reader_key.empty()) std::cout << "  reader: " << reader_key << "\n";
-        std::cout << "=================================\n";
-    } else {
-        std::cout << "\n=== Dev API Keys: already exist (skipped creation) ===\n";
+    if (bootstrap_dev_keys) {
+        if (!admin_key.empty() || !writer_key.empty() || !reader_key.empty()) {
+            std::cout << "\n=== Dev API Keys (shown once) ===\n";
+            if (!admin_key.empty())  std::cout << "  admin:  " << admin_key  << "\n";
+            if (!writer_key.empty()) std::cout << "  writer: " << writer_key << "\n";
+            if (!reader_key.empty()) std::cout << "  reader: " << reader_key << "\n";
+            std::cout << "=================================\n";
+        } else {
+            std::cout << "Development API keys already exist; no secrets printed\n";
+        }
     }
 
     // ── Cluster wire-up (when remote nodes exist) ──
@@ -781,6 +1458,7 @@ int main(int argc, char* argv[]) {
             auto rpc = std::make_shared<zeptodb::cluster::TcpRpcClient>(
                 rn.host, static_cast<uint16_t>(rn.port + 100),
                 /*timeout_ms=*/2000);
+            rpc->set_security(rpc_security);
             peer_rpc.emplace(rn.id, rpc);
             agent_memory_rpc.emplace(static_cast<zeptodb::ai::AgentMemoryNodeId>(rn.id),
                                      rpc);
@@ -791,6 +1469,7 @@ int main(int argc, char* argv[]) {
         // symmetric one with a tick_cb for TICK_INGEST.
         if (!rpc_srv) {
             rpc_srv = std::make_unique<zeptodb::cluster::TcpRpcServer>();
+            rpc_srv->set_security(rpc_security);
             rpc_srv->set_ring_update_callback(
                 [&ring_consensus](const uint8_t* data, size_t len) {
                     return ring_consensus && ring_consensus->apply_update(data, len);
@@ -963,7 +1642,18 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    server.start_async();
+    if (!server.start_async()) {
+        std::cerr << "Error: failed to bind HTTP listener on " << bind_host
+                  << ":" << port << "\n";
+        if (health_monitor) health_monitor->stop();
+        if (ha) ha->stop();
+        if (rpc_srv) rpc_srv->stop();
+        if (!pipeline.stop()) {
+            std::cerr << "Error: graceful pipeline shutdown could not publish "
+                         "the final recovery snapshot\n";
+        }
+        return 1;
+    }
 
     while (g_running.load())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -972,5 +1662,10 @@ int main(int argc, char* argv[]) {
     if (ha) ha->stop();
     if (rpc_srv) rpc_srv->stop();
     server.stop();
+    if (!pipeline.stop()) {
+        std::cerr << "Error: graceful pipeline shutdown could not publish "
+                     "the final recovery snapshot\n";
+        return 1;
+    }
     return 0;
 }

@@ -28,6 +28,7 @@ add_executable(zepto_tests
     unit/test_opcua_integration.cpp
     unit/test_ros2.cpp
     unit/test_metrics_collector.cpp
+    unit/test_logger.cpp
     unit/test_flight_server.cpp
     unit/test_http_arrow_ipc.cpp
     unit/test_http_msgpack_ingest.cpp
@@ -160,3 +161,44 @@ target_link_libraries(test_migration PRIVATE
     GTest::gtest
 )
 gtest_discover_tests(test_migration)
+
+# --- Production boundary integration tests ---
+# These are deliberately part of CTest so the production gate cannot report a
+# green C++ suite while skipping real listener/TLS and ELF dependency checks.
+if(TARGET zepto_http_server)
+    add_test(
+        NAME integration_http_server_prod_cli
+        COMMAND ${CMAKE_COMMAND} -E env
+            "SERVER_BIN=$<TARGET_FILE:zepto_http_server>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/integration/test_http_server_prod_cli.sh")
+    set_tests_properties(integration_http_server_prod_cli PROPERTIES
+        LABELS "integration;production"
+        RUN_SERIAL TRUE
+        TIMEOUT 60)
+endif()
+
+if(TARGET zepto_flight_server)
+    add_test(
+        NAME integration_flight_server_tls
+        COMMAND ${CMAKE_COMMAND} -E env
+            "SERVER_BIN=$<TARGET_FILE:zepto_flight_server>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/integration/test_flight_server_tls.sh")
+    set_tests_properties(integration_flight_server_tls PROPERTIES
+        LABELS "integration;production;tls"
+        RUN_SERIAL TRUE
+        TIMEOUT 60)
+endif()
+
+if(TARGET zepto_http_server AND TARGET zepto_flight_server AND
+   TARGET zepto_data_node AND TARGET zepto_ingest_node AND
+   TARGET zepto_action_outcome_soak AND TARGET zepto-opcua-browse)
+    add_test(
+        NAME integration_openssl_dependency_order
+        COMMAND ${CMAKE_COMMAND} -E env
+            "BUILD_DIR=${CMAKE_BINARY_DIR}"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/integration/test_openssl_dependency_order.sh")
+    set_tests_properties(integration_openssl_dependency_order PROPERTIES
+        LABELS "integration;production;tls"
+        RUN_SERIAL TRUE
+        TIMEOUT 30)
+endif()

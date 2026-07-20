@@ -1,11 +1,13 @@
-# deploy/helm/values-seoul-prod.yaml — Seoul production deployment
+# deploy/helm/values-seoul-prod.yaml — Seoul release-candidate evaluation
+# NOT DATA-DURABLE: this explicitly acknowledges the current tiered-storage
+# blockers for controlled evaluation and must not be treated as production.
 # Usage: helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f deploy/helm/values-seoul-prod.yaml
 
 replicaCount: 3
 
 image:
   repository: "060795905711.dkr.ecr.ap-northeast-2.amazonaws.com/zeptodb"
-  tag: "0.0.2"
+  tag: "0.1.8"
   pullPolicy: IfNotPresent
 
 resources:
@@ -29,6 +31,7 @@ cluster:
 
 persistence:
   enabled: true
+  acknowledgeIncompleteDurability: true
   storageClass: gp3
   size: 100Gi
 
@@ -50,6 +53,7 @@ karpenter:
   enabled: false           # Install Karpenter separately later
 
 service:
-  type: LoadBalancer
+  # Expose only through an operator-managed TLS ingress/load balancer.
+  type: ClusterIP
   port: 8123
   sessionAffinity: None    # ClientIP not supported on EKS classic LB

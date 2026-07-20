@@ -25,7 +25,7 @@ if(NOT CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
 endif()
 
 project(zeptodb
-    VERSION 0.1.7
+    VERSION 0.1.8
     DESCRIPTION "Ultra-Low Latency In-Memory Database for HFT"
     LANGUAGES CXX C
 )
@@ -97,13 +97,18 @@ endif()
 # ============================================================================
 add_compile_options(-Wall -Wextra -Wpedantic -fno-omit-frame-pointer)
 
-# clang이 GCC 11 sysroot의 오래된 libstdc++ (6.0.29)를 먼저 찾는 문제 회피
-# GCC 14의 libstdc++ (6.0.33, GLIBCXX_3.4.30+) 경로를 우선 지정
+# Prevent Clang from selecting an older GCC 11 libstdc++ (6.0.29) before the
+# GCC 14 libstdc++ (6.0.33, GLIBCXX_3.4.30+) on Linux hosts.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     link_directories(BEFORE /usr/lib64)
 endif()
 
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+# Keep the default release profile portable. Deployment/release jobs may add a
+# deliberate architecture baseline through CMAKE_CXX_FLAGS(_RELEASE), while
+# local benchmark targets opt into native tuning independently.
+add_compile_options(
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-DNDEBUG>)
 set(CMAKE_CXX_FLAGS_DEBUG   "-g -O0 -fsanitize=address,undefined")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
 set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
@@ -627,6 +632,9 @@ add_library(zepto_common STATIC
 target_include_directories(zepto_common PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
+target_compile_definitions(zepto_common PUBLIC
+    ZEPTO_VERSION="${PROJECT_VERSION}"
+)
 target_link_libraries(zepto_common PUBLIC
     spdlog::spdlog
     fmt::fmt
@@ -905,6 +913,7 @@ target_include_directories(zepto_flight PUBLIC
 target_link_libraries(zepto_flight PUBLIC
     zepto_sql
     zepto_common
+    zepto_auth
     zepto_arrow_ipc
 )
 if(ZEPTO_HAS_FLIGHT)
@@ -928,6 +937,7 @@ endif()
 add_library(zepto_cluster STATIC
     src/cluster/shm_backend.cpp
     src/cluster/ucx_backend.cpp
+    src/cluster/rpc_security.cpp
     src/cluster/tcp_rpc.cpp
     src/cluster/query_coordinator.cpp
     src/cluster/wal_replicator.cpp
@@ -947,6 +957,10 @@ target_link_libraries(zepto_cluster PUBLIC
     zepto_core
     zepto_sql
 )
+if(ZEPTO_HAS_OPENSSL)
+    target_link_libraries(zepto_cluster PUBLIC OpenSSL::Crypto)
+    target_compile_definitions(zepto_cluster PRIVATE ZEPTO_RPC_OPENSSL=1)
+endif()
 # UCX 발견 시 ZEPTO_HAS_UCX 정의 + 링크
 if(ZEPTO_USE_UCX AND UCX_FOUND)
     target_compile_definitions(zepto_cluster PUBLIC ZEPTO_HAS_UCX=1)
@@ -1222,6 +1236,16 @@ endif()
 # ============================================================================
 # Tools
 # ============================================================================
+function(zepto_link_system_openssl target)
+    if(ZEPTO_HAS_OPENSSL)
+        # Make OpenSSL a direct executable dependency. Pyarrow wheels export
+        # private OpenSSL symbols from Arrow/Parquet DSOs; leaving OpenSSL only
+        # as a transitive dependency can put those DSOs first in ELF lookup
+        # order and interpose incompatible EVP/X509 implementations.
+        target_link_libraries(${target} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+endfunction()
+
 add_executable(zepto-migrate
     tools/zepto-migrate.cpp
 )
@@ -1245,6 +1269,7 @@ target_include_directories(zepto-opcua-browse PRIVATE
 target_link_libraries(zepto-opcua-browse PRIVATE
     zepto_opcua
 )
+zepto_link_system_openssl(zepto-opcua-browse)
 target_compile_options(zepto-opcua-browse PRIVATE -O2)
 
 # Telegraf external output writer. This is used from Telegraf's
@@ -1300,13 +1325,16 @@ add_executable(zepto_data_node tools/zepto_data_node.cpp)
 add_executable(zepto_http_server tools/zepto_http_server.cpp)
 target_include_directories(zepto_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_http_server PRIVATE
-    zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+    zepto_server zepto_sql zepto_execution zepto_core zepto_storage
+    zepto_ingestion zepto_cluster zepto_feeds)
+zepto_link_system_openssl(zepto_http_server)
 
 # SQL-backed Action-Outcome supervisor soak/fault-injection harness.
 add_executable(zepto_action_outcome_soak tools/zepto_action_outcome_soak.cpp)
 target_include_directories(zepto_action_outcome_soak PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_action_outcome_soak PRIVATE
     zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+zepto_link_system_openssl(zepto_action_outcome_soak)
 target_compile_options(zepto_action_outcome_soak PRIVATE -O2)
 
 # Stateless ingest node (P8-I3, devlog 113) — HTTP ingest-only pod that
@@ -1315,6 +1343,7 @@ add_executable(zepto_ingest_node tools/zepto_ingest_node.cpp)
 target_include_directories(zepto_ingest_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_ingest_node PRIVATE
     zepto_server zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+zepto_link_system_openssl(zepto_ingest_node)
 
 # Arrow Flight + HTTP server
 add_executable(zepto_flight_server tools/zepto_flight_server.cpp)
@@ -1322,15 +1351,17 @@ target_include_directories(zepto_flight_server PRIVATE ${CMAKE_SOURCE_DIR}/inclu
 target_link_libraries(zepto_flight_server PRIVATE
     zepto_flight zepto_server zepto_sql zepto_execution zepto_core
     zepto_storage zepto_ingestion zepto_cluster zepto_feeds)
+zepto_link_system_openssl(zepto_flight_server)
 target_include_directories(zepto_data_node PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(zepto_data_node PRIVATE
     zepto_cluster zepto_sql zepto_execution zepto_core zepto_storage zepto_ingestion)
+zepto_link_system_openssl(zepto_data_node)
 
 # License key generator
 add_executable(zepto-license-gen tools/zepto-license-gen.cpp)
 target_include_directories(zepto-license-gen PRIVATE ${CMAKE_SOURCE_DIR}/include)
 if(ZEPTO_HAS_OPENSSL)
-    target_link_libraries(zepto-license-gen PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    zepto_link_system_openssl(zepto-license-gen)
     target_compile_definitions(zepto-license-gen PRIVATE ZEPTO_AUTH_OPENSSL=1)
 endif()
 target_compile_options(zepto-license-gen PRIVATE -O2)
@@ -1578,7 +1609,7 @@ if(ZEPTO_BUILD_PYTHON)
         zepto_cluster
     )
     target_compile_options(zeptodb PRIVATE
-        -O3 -march=native
+        -O3
         # pybind11이 -Wpedantic에서 일부 경고 발생 → 억제
         -Wno-pedantic
         -Wno-unused-parameter

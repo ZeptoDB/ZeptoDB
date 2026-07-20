@@ -27,6 +27,10 @@
 #include "zeptodb/storage/column_store.h"
 #include "zeptodb/util/logger.h"
 #include "zeptodb/auth/license_validator.h"
+#include "../auth/json_claims.h"
+
+#include <openssl/crypto.h>
+#include <openssl/rand.h>
 
 #include <sstream>
 #include <iomanip>
@@ -40,6 +44,7 @@
 #include <atomic>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -64,11 +69,83 @@ static std::string gen_request_id() {
     return buf;
 }
 
+static std::string random_hex_token(size_t byte_count) {
+    std::vector<unsigned char> bytes(byte_count);
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
+        throw std::runtime_error("RAND_bytes failed");
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(byte_count * 2);
+    for (const auto byte : bytes) {
+        result.push_back(kHex[(byte >> 4) & 0x0f]);
+        result.push_back(kHex[byte & 0x0f]);
+    }
+    return result;
+}
+
+static std::string url_encode_query_component(std::string_view value) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(value.size());
+    for (const unsigned char c : value) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+            c == '~') {
+            result.push_back(static_cast<char>(c));
+        } else {
+            result.push_back('%');
+            result.push_back(kHex[(c >> 4) & 0x0f]);
+            result.push_back(kHex[c & 0x0f]);
+        }
+    }
+    return result;
+}
+
+static std::optional<std::string> cookie_value(std::string_view cookie_header,
+                                                std::string_view name) {
+    size_t start = 0;
+    while (start < cookie_header.size()) {
+        while (start < cookie_header.size() &&
+               (cookie_header[start] == ' ' || cookie_header[start] == ';')) {
+            ++start;
+        }
+        const size_t end = cookie_header.find(';', start);
+        const auto part = cookie_header.substr(
+            start, end == std::string_view::npos ? std::string_view::npos
+                                                  : end - start);
+        const size_t equals = part.find('=');
+        if (equals != std::string_view::npos && part.substr(0, equals) == name) {
+            return std::string{part.substr(equals + 1)};
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return std::nullopt;
+}
+
+static std::string oidc_state_cookie(std::string_view state, bool secure,
+                                     bool clear = false) {
+    std::string cookie = "zepto_oidc_state=" + std::string{state} +
+        "; Path=/auth/callback; SameSite=Lax; HttpOnly";
+    cookie += clear ? "; Max-Age=0" : "; Max-Age=300";
+    if (secure) cookie += "; Secure";
+    return cookie;
+}
+
+static void set_sensitive_auth_response_headers(httplib::Response* response) {
+    response->set_header("Cache-Control", "no-store, private");
+    response->set_header("Pragma", "no-cache");
+    response->set_header("X-Content-Type-Options", "nosniff");
+}
+
 /// Current epoch-microseconds
 static int64_t now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+static std::string json_quote(std::string_view s);
 
 /// Build a structured JSON access log line.
 /// Fields follow the OpenTelemetry semantic conventions for HTTP spans.
@@ -84,16 +161,16 @@ static std::string build_access_log(
     const std::string& subject)
 {
     std::ostringstream os;
-    os << "{\"request_id\":\"" << request_id << "\""
-       << ",\"method\":\"" << method << "\""
-       << ",\"path\":\"" << path << "\""
+    os << "{\"request_id\":" << json_quote(request_id)
+       << ",\"method\":" << json_quote(method)
+       << ",\"path\":" << json_quote(path)
        << ",\"status\":" << status
        << ",\"duration_us\":" << duration_us
        << ",\"request_bytes\":" << request_bytes
        << ",\"response_bytes\":" << response_bytes
-       << ",\"remote_addr\":\"" << remote_addr << "\"";
+       << ",\"remote_addr\":" << json_quote(remote_addr);
     if (!subject.empty())
-        os << ",\"subject\":\"" << subject << "\"";
+        os << ",\"subject\":" << json_quote(subject);
     os << "}";
     return os.str();
 }
@@ -104,7 +181,187 @@ static std::string build_402_json(const std::string& feature_name) {
            R"( requires Enterprise license","upgrade_url":"https://zeptodb.com/pricing"})";
 }
 
-static std::string json_escape(const std::string& s) {
+/// Return the permission required by a structurally valid parsed SQL statement.
+/// A missing AST arm is treated as unclassified so authenticated requests fail
+/// closed instead of inheriting a permissive default.
+static std::optional<zeptodb::auth::Permission> sql_statement_permission(
+    const zeptodb::sql::ParsedStatement& statement) {
+    using Kind = zeptodb::sql::ParsedStatement::Kind;
+    using Permission = zeptodb::auth::Permission;
+
+    switch (statement.kind) {
+        case Kind::SELECT:
+            return statement.select ? std::optional{Permission::READ} : std::nullopt;
+        case Kind::SHOW_TABLES:
+            return Permission::READ;
+        case Kind::DESCRIBE_TABLE:
+            return !statement.describe_table_name.empty()
+                ? std::optional{Permission::READ}
+                : std::nullopt;
+        case Kind::INSERT:
+            return statement.insert ? std::optional{Permission::WRITE} : std::nullopt;
+        case Kind::UPDATE:
+            return statement.update ? std::optional{Permission::WRITE} : std::nullopt;
+        case Kind::DELETE:
+            return statement.del ? std::optional{Permission::WRITE} : std::nullopt;
+        case Kind::CREATE_TABLE:
+            return statement.create_table
+                ? std::optional{Permission::ADMIN}
+                : std::nullopt;
+        case Kind::DROP_TABLE:
+            return statement.drop_table
+                ? std::optional{Permission::ADMIN}
+                : std::nullopt;
+        case Kind::ALTER_TABLE:
+            return statement.alter_table
+                ? std::optional{Permission::ADMIN}
+                : std::nullopt;
+        case Kind::CREATE_MV:
+            return statement.create_mv
+                ? std::optional{Permission::ADMIN}
+                : std::nullopt;
+        case Kind::DROP_MV:
+            return statement.drop_mv
+                ? std::optional{Permission::ADMIN}
+                : std::nullopt;
+    }
+    return std::nullopt;
+}
+
+static std::string_view sql_permission_name(zeptodb::auth::Permission permission) {
+    using Permission = zeptodb::auth::Permission;
+    switch (permission) {
+        case Permission::READ:  return "READ";
+        case Permission::WRITE: return "WRITE";
+        case Permission::ADMIN: return "ADMIN";
+        case Permission::METRICS: return "METRICS";
+        default:                return "UNKNOWN";
+    }
+}
+
+static void append_unique_table(std::vector<std::string>* tables,
+                                const std::string& table) {
+    if (table.empty() ||
+        std::find(tables->begin(), tables->end(), table) != tables->end()) {
+        return;
+    }
+    tables->push_back(table);
+}
+
+static void collect_select_tables(
+    const zeptodb::sql::SelectStmt& select,
+    std::unordered_set<std::string> cte_names,
+    std::vector<std::string>* tables);
+
+static void collect_expr_tables(
+    const std::shared_ptr<zeptodb::sql::Expr>& expression,
+    const std::unordered_set<std::string>& cte_names,
+    std::vector<std::string>* tables) {
+    if (!expression) return;
+    if (expression->subquery) {
+        collect_select_tables(*expression->subquery, cte_names, tables);
+    }
+    collect_expr_tables(expression->left, cte_names, tables);
+    collect_expr_tables(expression->right, cte_names, tables);
+}
+
+static void collect_select_tables(
+    const zeptodb::sql::SelectStmt& select,
+    std::unordered_set<std::string> cte_names,
+    std::vector<std::string>* tables) {
+    for (const auto& cte : select.cte_defs) {
+        if (cte.stmt) collect_select_tables(*cte.stmt, cte_names, tables);
+        cte_names.insert(cte.name);
+    }
+
+    if (!select.from_table.empty() && !cte_names.contains(select.from_table)) {
+        append_unique_table(tables, select.from_table);
+    }
+    if (select.join && !select.join->table.empty() &&
+        !cte_names.contains(select.join->table)) {
+        append_unique_table(tables, select.join->table);
+    }
+    if (select.from_subquery) {
+        collect_select_tables(*select.from_subquery, cte_names, tables);
+    }
+    if (select.rhs) collect_select_tables(*select.rhs, cte_names, tables);
+    if (select.where) collect_expr_tables(select.where->expr, cte_names, tables);
+    if (select.having) collect_expr_tables(select.having->expr, cte_names, tables);
+    for (const auto& column : select.columns) {
+        if (!column.case_when) continue;
+        for (const auto& branch : column.case_when->branches) {
+            collect_expr_tables(branch.when_cond, cte_names, tables);
+        }
+    }
+}
+
+/// Return every physical table touched by a statement. SELECT traversal is
+/// recursive so JOIN, CTE, subquery, and set-operation sources cannot bypass
+/// table ACL or tenant namespace enforcement.
+static std::vector<std::string> sql_statement_tables(
+    const zeptodb::sql::ParsedStatement& statement) {
+    std::vector<std::string> tables;
+    if (statement.select) {
+        collect_select_tables(*statement.select, {}, &tables);
+    } else if (statement.insert) {
+        append_unique_table(&tables, statement.insert->table_name);
+    } else if (statement.update) {
+        append_unique_table(&tables, statement.update->table_name);
+        if (statement.update->where) {
+            collect_expr_tables(statement.update->where->expr, {}, &tables);
+        }
+    } else if (statement.del) {
+        append_unique_table(&tables, statement.del->table_name);
+        if (statement.del->where) {
+            collect_expr_tables(statement.del->where->expr, {}, &tables);
+        }
+    } else if (statement.create_table) {
+        append_unique_table(&tables, statement.create_table->table_name);
+    } else if (statement.drop_table) {
+        append_unique_table(&tables, statement.drop_table->table_name);
+    } else if (statement.alter_table) {
+        append_unique_table(&tables, statement.alter_table->table_name);
+    } else if (statement.create_mv) {
+        append_unique_table(&tables, statement.create_mv->view_name);
+        if (statement.create_mv->query) {
+            collect_select_tables(*statement.create_mv->query, {}, &tables);
+        }
+    } else if (statement.drop_mv) {
+        append_unique_table(&tables, statement.drop_mv->view_name);
+    } else if (statement.kind ==
+               zeptodb::sql::ParsedStatement::Kind::DESCRIBE_TABLE) {
+        append_unique_table(&tables, statement.describe_table_name);
+    }
+    return tables;
+}
+
+static void bound_top_level_select_result(
+    zeptodb::sql::ParsedStatement* statement, size_t max_rows) {
+    if (!statement ||
+        statement->kind != zeptodb::sql::ParsedStatement::Kind::SELECT ||
+        !statement->select) {
+        return;
+    }
+    const size_t detection_limit =
+        max_rows == std::numeric_limits<size_t>::max()
+            ? max_rows
+            : max_rows + 1;
+    const int64_t bounded_limit = static_cast<int64_t>(std::min(
+        detection_limit,
+        static_cast<size_t>(std::numeric_limits<int64_t>::max())));
+    if (!statement->select->limit ||
+        *statement->select->limit > bounded_limit) {
+        statement->select->limit = bounded_limit;
+    }
+}
+
+enum class SqlTableAccess {
+    kAllowed,
+    kTableAclDenied,
+    kTenantDenied,
+};
+
+static std::string json_escape(std::string_view s) {
     std::string out;
     out.reserve(s.size() + 8);
     for (unsigned char c : s) {
@@ -125,7 +382,7 @@ static std::string json_escape(const std::string& s) {
     return out;
 }
 
-static std::string json_quote(const std::string& s) {
+static std::string json_quote(std::string_view s) {
     return "\"" + json_escape(s) + "\"";
 }
 
@@ -1989,6 +2246,21 @@ static bool apply_agent_memory_wal_mutation(
 // ============================================================================
 // Constructors
 // ============================================================================
+static void configure_listener_socket_options(httplib::Server& server) {
+#ifndef _WIN32
+    // cpp-httplib enables SO_REUSEPORT by default on Linux.  That can let a
+    // second process silently share a production listener instead of failing
+    // startup, so retain only SO_REUSEADDR for graceful restarts.
+    server.set_socket_options([](socket_t socket) {
+        int enabled = 1;
+        setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &enabled,
+                   static_cast<socklen_t>(sizeof(enabled)));
+    });
+#else
+    (void)server;
+#endif
+}
+
 HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor, uint16_t port)
     : executor_(executor)
     , port_(port)
@@ -1999,6 +2271,8 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor, uint16_t port)
     , agent_memory_wal_tx_counter_(
           static_cast<uint64_t>(zeptodb::ai::AgentMemoryStore::now_ns()))
 {
+    configure_listener_socket_options(*svr_);
+    svr_->set_payload_max_length(max_request_body_bytes_);
     setup_routes();
     setup_auth_middleware();
     setup_admin_routes();
@@ -2019,20 +2293,27 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
 {
 #ifdef ZEPTO_TLS_ENABLED
     if (tls_.enabled) {
-        svr_ = std::make_unique<httplib::SSLServer>(
-            tls_.cert_path.c_str(), tls_.key_path.c_str());
+        auto ssl_server = std::make_unique<httplib::SSLServer>(
+            tls_.cert_path.c_str(), tls_.key_path.c_str(),
+            tls_.ca_cert_path.empty() ? nullptr : tls_.ca_cert_path.c_str());
+        if (!ssl_server->is_valid()) {
+            throw std::runtime_error(
+                "HTTP TLS certificate, private key, or client CA is invalid");
+        }
+        svr_ = std::move(ssl_server);
         port_ = tls_.https_port;
     } else {
         svr_ = std::make_unique<httplib::Server>();
     }
 #else
     if (tls_.enabled) {
-        // TLS requested but not compiled in — fall back to HTTP with a warning
-        fprintf(stderr, "[ZeptoDB] WARNING: TLS requested but not compiled in "
-                        "(rebuild with ZEPTO_TLS_ENABLED). Falling back to HTTP.\n");
+        throw std::runtime_error(
+            "HTTP TLS requested but this build has no TLS support");
     }
     svr_ = std::make_unique<httplib::Server>();
 #endif
+    configure_listener_socket_options(*svr_);
+    svr_->set_payload_max_length(max_request_body_bytes_);
     setup_routes();
     setup_auth_middleware();
     setup_admin_routes();
@@ -2040,7 +2321,12 @@ HttpServer::HttpServer(zeptodb::sql::QueryExecutor& executor,
 }
 
 HttpServer::~HttpServer() {
-    if (running_.load()) stop();
+    if (running_.load() || thread_.joinable()) stop();
+}
+
+void HttpServer::set_max_request_body_bytes(size_t bytes) {
+    max_request_body_bytes_ = bytes;
+    svr_->set_payload_max_length(bytes);
 }
 
 zeptodb::ai::AgentMemoryStore& HttpServer::agent_memory_store() {
@@ -4167,28 +4453,89 @@ void HttpServer::setup_auth_middleware() {
     {
         // Stamp request start time + request ID for access logging
         auto& mutable_req = const_cast<httplib::Request&>(req);
+        const bool has_caller_tenant =
+            req.has_header("X-Zepto-Tenant-Id");
+        const std::string caller_tenant = has_caller_tenant
+            ? req.get_header_value("X-Zepto-Tenant-Id")
+            : std::string{};
+
+        // Internal authorization headers must never be accepted from clients.
+        // Request::set_header appends, so erase any caller-supplied values first.
+        mutable_req.headers.erase("X-Zepto-Start-Us");
+        mutable_req.headers.erase("X-Zepto-Request-Id");
+        mutable_req.headers.erase("X-Zepto-Subject");
+        mutable_req.headers.erase("X-Zepto-Role");
+        mutable_req.headers.erase("X-Zepto-Auth-Source");
+        mutable_req.headers.erase("X-Zepto-Allowed-Symbols");
+        mutable_req.headers.erase("X-Zepto-Allowed-Tables");
+        mutable_req.headers.erase("X-Zepto-Tenant-Id");
         mutable_req.set_header("X-Zepto-Start-Us", std::to_string(now_us()));
         mutable_req.set_header("X-Zepto-Request-Id", gen_request_id());
+
+        if (req.path == "/whoami" || req.path.starts_with("/auth/")) {
+            set_sensitive_auth_response_headers(&res);
+        }
 
         if (!auth_) {
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
+        // Multiple credential headers are ambiguous across proxies and HTTP
+        // libraries. Reject them before any component can select a different
+        // value and create a credential-smuggling boundary.
+        if (req.get_header_value_count("Authorization") > 1 ||
+            req.get_header_value_count("Cookie") > 1) {
+            res.status = 400;
+            res.set_content(
+                build_error_json("Ambiguous duplicate credential headers"),
+                "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+
         std::string auth_header;
         if (req.has_header("Authorization"))
             auth_header = req.get_header_value("Authorization");
+        std::string cookie_header;
+        if (auth_header.empty() && req.has_header("Cookie")) {
+            cookie_header = req.get_header_value("Cookie");
+        }
 
         std::string remote_addr = req.remote_addr;
 
         auto decision = auth_->check(req.method, req.path,
-                                     auth_header, remote_addr);
+                                     auth_header, remote_addr, cookie_header);
 
         if (decision.status == zeptodb::auth::AuthStatus::OK) {
+            if (!decision.context.tenant_id.empty() &&
+                (!tenant_mgr_ ||
+                 !tenant_mgr_->get_tenant(decision.context.tenant_id))) {
+                if (auth_) {
+                    auth_->audit(
+                        decision.context, req.method + " " + req.path,
+                        "tenant-scope-unconfigured-forbidden", remote_addr);
+                }
+                res.status = 403;
+                res.set_content(
+                    build_error_json(
+                        "Authenticated tenant scope is not configured"),
+                    "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
             // Stash subject for access log
             mutable_req.set_header("X-Zepto-Subject", decision.context.subject);
             mutable_req.set_header(
                 "X-Zepto-Role",
                 std::string(zeptodb::auth::role_to_string(decision.context.role)));
+            mutable_req.set_header("X-Zepto-Auth-Source", decision.context.source);
+            if (!decision.context.allowed_symbols.empty()) {
+                std::string symbols;
+                for (size_t i = 0; i < decision.context.allowed_symbols.size();
+                     ++i) {
+                    if (i > 0) symbols += ',';
+                    symbols += decision.context.allowed_symbols[i];
+                }
+                mutable_req.set_header("X-Zepto-Allowed-Symbols", symbols);
+            }
             // Stash allowed_tables for table-level ACL enforcement
             if (!decision.context.allowed_tables.empty()) {
                 std::string tables;
@@ -4198,9 +4545,15 @@ void HttpServer::setup_auth_middleware() {
                 }
                 mutable_req.set_header("X-Zepto-Allowed-Tables", tables);
             }
-            // Stash tenant_id for namespace enforcement
-            if (!decision.context.tenant_id.empty())
+            // In authenticated mode, tenant scope comes exclusively from the
+            // validated identity. Disabled-auth deployments preserve the
+            // documented caller-supplied tenant header contract.
+            if (!decision.context.tenant_id.empty()) {
                 mutable_req.set_header("X-Zepto-Tenant-Id", decision.context.tenant_id);
+            } else if (decision.context.source == "disabled" &&
+                       has_caller_tenant) {
+                mutable_req.set_header("X-Zepto-Tenant-Id", caller_tenant);
+            }
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
@@ -4339,6 +4692,255 @@ size_t HttpServer::evict_idle_sessions(int64_t timeout_ms) {
 // setup_routes
 // ============================================================================
 void HttpServer::setup_routes() {
+    auto require_permission = [this](
+                                  const httplib::Request& req,
+                                  httplib::Response& res,
+                                  zeptodb::auth::Permission permission,
+                                  std::string_view surface) {
+        if (!auth_) return true;
+        if (req.has_header("X-Zepto-Auth-Source") &&
+            req.get_header_value("X-Zepto-Auth-Source") == "disabled") {
+            return true;
+        }
+
+        const auto role = req.has_header("X-Zepto-Role")
+            ? zeptodb::auth::role_from_string(
+                  req.get_header_value("X-Zepto-Role"))
+            : zeptodb::auth::Role::UNKNOWN;
+        if (zeptodb::auth::role_permissions(role) & permission) return true;
+
+        zeptodb::auth::AuthContext context;
+        context.subject = req.has_header("X-Zepto-Subject")
+            ? req.get_header_value("X-Zepto-Subject")
+            : "unknown";
+        context.name = context.subject;
+        context.role = role;
+        context.source = "http";
+        auth_->audit(
+            context, req.method + " " + req.path,
+            std::string{surface} + "-" +
+                std::string{sql_permission_name(permission)} + "-forbidden",
+            req.remote_addr);
+        res.status = 403;
+        res.set_content(
+            build_error_json(
+                std::string{sql_permission_name(permission)} +
+                " permission required"),
+            "application/json");
+        return false;
+    };
+
+    // Symbol allowlists are persisted on identities but the executor does not
+    // yet accept an authorization context for row-level partition filtering.
+    // Never silently treat a configured restriction as unrestricted.
+    auto reject_unenforced_symbol_scope = [this](
+                                                 const httplib::Request& req,
+                                                 httplib::Response& res,
+                                                 std::string_view surface) {
+        if (!req.has_header("X-Zepto-Allowed-Symbols") ||
+            req.get_header_value("X-Zepto-Allowed-Symbols").empty()) {
+            return false;
+        }
+        if (auth_) {
+            zeptodb::auth::AuthContext context;
+            context.subject = req.has_header("X-Zepto-Subject")
+                ? req.get_header_value("X-Zepto-Subject")
+                : "unknown";
+            context.name = context.subject;
+            context.role = req.has_header("X-Zepto-Role")
+                ? zeptodb::auth::role_from_string(
+                      req.get_header_value("X-Zepto-Role"))
+                : zeptodb::auth::Role::UNKNOWN;
+            context.source = "http";
+            auth_->audit(context, req.method + " " + req.path,
+                         std::string{surface} +
+                             "-symbol-scope-unsupported-forbidden",
+                         req.remote_addr);
+        }
+        res.status = 403;
+        res.set_content(
+            build_error_json(
+                "Symbol-scoped data access is not available on this endpoint"),
+            "application/json");
+        return true;
+    };
+
+    auto sql_table_access = [this](const httplib::Request& req,
+                                   std::string_view table) {
+        if (req.has_header("X-Zepto-Allowed-Tables")) {
+            const std::string allowed =
+                req.get_header_value("X-Zepto-Allowed-Tables");
+            std::istringstream stream{allowed};
+            std::string allowed_table;
+            bool found = false;
+            while (std::getline(stream, allowed_table, ',')) {
+                if (allowed_table == table) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!allowed.empty() && !found) {
+                return SqlTableAccess::kTableAclDenied;
+            }
+        }
+
+        if (req.has_header("X-Zepto-Tenant-Id")) {
+            const std::string tenant_id =
+                req.get_header_value("X-Zepto-Tenant-Id");
+            if (!tenant_id.empty() &&
+                (!tenant_mgr_ ||
+                 !tenant_mgr_->can_access_table(tenant_id,
+                                                std::string{table}))) {
+                return SqlTableAccess::kTenantDenied;
+            }
+        }
+        return SqlTableAccess::kAllowed;
+    };
+
+    // Parse once at the HTTP boundary and authorize by AST statement kind.
+    // Authentication-disabled servers keep their historical executor errors;
+    // authenticated requests fail closed when parsing/classification fails.
+    auto authorize_sql = [this, sql_table_access,
+                          reject_unenforced_symbol_scope](
+                             const httplib::Request& req,
+                             httplib::Response& res,
+                             const std::string& sql,
+                             zeptodb::sql::ParsedStatement* parsed,
+                             bool* parsed_ok) -> bool {
+        *parsed_ok = false;
+        try {
+            zeptodb::sql::Parser parser;
+            *parsed = parser.parse_statement(sql);
+            *parsed_ok = true;
+        } catch (const std::exception&) {
+            const bool auth_enforced = auth_ &&
+                (!req.has_header("X-Zepto-Auth-Source") ||
+                 req.get_header_value("X-Zepto-Auth-Source") != "disabled");
+            if (!auth_enforced) return true;
+
+            zeptodb::auth::AuthContext context;
+            context.subject = req.has_header("X-Zepto-Subject")
+                ? req.get_header_value("X-Zepto-Subject")
+                : "unknown";
+            context.name = context.subject;
+            context.role = req.has_header("X-Zepto-Role")
+                ? zeptodb::auth::role_from_string(
+                    req.get_header_value("X-Zepto-Role"))
+                : zeptodb::auth::Role::UNKNOWN;
+            context.source = "http";
+            auth_->audit(context, req.method + " " + req.path,
+                         "sql-unclassified-forbidden", req.remote_addr);
+            res.status = 403;
+            res.set_content(
+                build_error_json("SQL statement could not be authorized"),
+                "application/json");
+            return false;
+        }
+
+        if (reject_unenforced_symbol_scope(req, res, "sql")) return false;
+
+        const bool auth_enforced = auth_ &&
+            (!req.has_header("X-Zepto-Auth-Source") ||
+             req.get_header_value("X-Zepto-Auth-Source") != "disabled");
+        const auto role = req.has_header("X-Zepto-Role")
+            ? zeptodb::auth::role_from_string(req.get_header_value("X-Zepto-Role"))
+            : zeptodb::auth::Role::UNKNOWN;
+        auto audit_forbidden = [this, &req, role](const std::string& detail) {
+            if (!auth_) return;
+            zeptodb::auth::AuthContext context;
+            context.subject = req.has_header("X-Zepto-Subject")
+                ? req.get_header_value("X-Zepto-Subject")
+                : "unknown";
+            context.name = context.subject;
+            context.role = role;
+            context.source = "http";
+            auth_->audit(context, req.method + " " + req.path, detail,
+                         req.remote_addr);
+        };
+
+        if (auth_enforced) {
+            const auto required = sql_statement_permission(*parsed);
+            if (!required ||
+                !(zeptodb::auth::role_permissions(role) & *required)) {
+                const std::string detail = required
+                    ? "sql-" + std::string(sql_permission_name(*required)) +
+                        "-forbidden"
+                    : "sql-unclassified-forbidden";
+                audit_forbidden(detail);
+
+                res.status = 403;
+                const std::string message = required
+                    ? std::string(sql_permission_name(*required)) +
+                        " permission required for SQL statement"
+                    : "SQL statement could not be authorized";
+                res.set_content(build_error_json(message), "application/json");
+                return false;
+            }
+        }
+
+        const auto touched_tables = sql_statement_tables(*parsed);
+        for (const auto& touched_table : touched_tables) {
+            switch (sql_table_access(req, touched_table)) {
+                case SqlTableAccess::kAllowed:
+                    break;
+                case SqlTableAccess::kTableAclDenied:
+                    audit_forbidden("sql-table-forbidden");
+                    res.status = 403;
+                    res.set_content(build_error_json(
+                        "Access denied: table '" + touched_table +
+                        "' not in allowed list"), "application/json");
+                    return false;
+                case SqlTableAccess::kTenantDenied: {
+                    const std::string tenant_id =
+                        req.get_header_value("X-Zepto-Tenant-Id");
+                    audit_forbidden("sql-tenant-table-forbidden");
+                    res.status = 403;
+                    res.set_content(build_error_json(
+                        "Tenant '" + tenant_id + "' cannot access table '" +
+                        touched_table + "'"), "application/json");
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    };
+
+    auto filter_show_tables = [sql_table_access](
+                                  const httplib::Request& req,
+                                  zeptodb::sql::QueryResultSet* result) {
+        if (result->string_rows.size() != result->rows.size()) {
+            // An unexpected result shape must not bypass table/tenant ACLs.
+            result->string_rows.clear();
+            result->rows.clear();
+            result->typed_rows.clear();
+            return;
+        }
+
+        std::vector<std::string> visible_names;
+        std::vector<std::vector<int64_t>> visible_rows;
+        std::vector<std::vector<zeptodb::sql::QueryResultSet::Value>>
+            visible_typed_rows;
+        visible_names.reserve(result->string_rows.size());
+        visible_rows.reserve(result->rows.size());
+        visible_typed_rows.reserve(result->typed_rows.size());
+        for (size_t index = 0; index < result->string_rows.size(); ++index) {
+            if (sql_table_access(req, result->string_rows[index]) !=
+                SqlTableAccess::kAllowed) {
+                continue;
+            }
+            visible_names.push_back(std::move(result->string_rows[index]));
+            visible_rows.push_back(std::move(result->rows[index]));
+            if (index < result->typed_rows.size()) {
+                visible_typed_rows.push_back(
+                    std::move(result->typed_rows[index]));
+            }
+        }
+        result->string_rows = std::move(visible_names);
+        result->rows = std::move(visible_rows);
+        result->typed_rows = std::move(visible_typed_rows);
+    };
+
     // GET /ping — health check (ClickHouse compatible)
     svr_->Get("/ping", [](const httplib::Request& /*req*/,
                            httplib::Response& res) {
@@ -4375,35 +4977,33 @@ void HttpServer::setup_routes() {
                             "application/json");
             return;
         }
-        std::string auth_hdr;
-        if (req.has_header("Authorization"))
-            auth_hdr = req.get_header_value("Authorization");
-        auto decision = auth_->check(req.method, req.path, auth_hdr, req.remote_addr);
-        if (decision.status != zeptodb::auth::AuthStatus::OK) {
+        if (!req.has_header("X-Zepto-Subject") ||
+            !req.has_header("X-Zepto-Role")) {
             res.status = 401;
-            res.set_content(build_error_json(decision.reason), "application/json");
+            res.set_content(build_error_json("Not authenticated"),
+                            "application/json");
             return;
         }
-        std::string role = "reader";
-        if (decision.context.has_permission(zeptodb::auth::Permission::ADMIN))
-            role = "admin";
-        else if (decision.context.has_permission(zeptodb::auth::Permission::WRITE))
-            role = "writer";
-        else if (decision.context.has_permission(zeptodb::auth::Permission::METRICS))
-            role = "metrics";
-        res.set_content("{\"role\":\"" + role + "\",\"subject\":\""
-                        + decision.context.subject + "\"}", "application/json");
+        res.set_content(
+            "{\"role\":" + json_quote(req.get_header_value("X-Zepto-Role")) +
+            ",\"subject\":" +
+            json_quote(req.get_header_value("X-Zepto-Subject")) + "}",
+            "application/json");
     });
 
     // GET /metrics — Prometheus metrics (OpenMetrics format)
-    svr_->Get("/metrics", [this](const httplib::Request& /*req*/,
+    svr_->Get("/metrics", [this, require_permission](const httplib::Request& req,
                                   httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::METRICS,
+                                "metrics")) return;
         res.set_content(build_prometheus_metrics(), "text/plain; version=0.0.4");
     });
 
     // GET /stats — pipeline statistics
-    svr_->Get("/stats", [this](const httplib::Request& /*req*/,
+    svr_->Get("/stats", [this, require_permission](const httplib::Request& req,
                                 httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::METRICS,
+                                "stats")) return;
         auto json = build_stats_json(executor_.stats());
         if (coordinator_ && json.size() >= 1 && json.back() == '}') {
             const auto st = coordinator_->small_table_join_stats();
@@ -4458,8 +5058,11 @@ void HttpServer::setup_routes() {
 
     // GET /api/ai/stats — Agent Memory counts, counters, and retention config.
     // Does not expose memory content, prompts, responses, or metadata.
-    svr_->Get("/api/ai/stats", [this](const httplib::Request& req,
+    svr_->Get("/api/ai/stats", [this, require_permission](
+                                       const httplib::Request& req,
                                        httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::METRICS,
+                                "agent-memory-stats")) return;
         const std::string scope = req.has_param("scope")
             ? req.get_param_value("scope")
             : "local";
@@ -4474,8 +5077,12 @@ void HttpServer::setup_routes() {
     });
 
     // GET /api/ai/memories/:id — point lookup, routed by owner-scoped id when enabled.
-    svr_->Get(R"(/api/ai/memories/([^/]+))", [this](const httplib::Request& req,
-                                                     httplib::Response& res) {
+    svr_->Get(R"(/api/ai/memories/([^/]+))",
+              [this, require_permission, reject_unenforced_symbol_scope](
+                  const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::READ,
+                                "agent-memory-read")) return;
+        if (reject_unenforced_symbol_scope(req, res, "agent-memory-read")) return;
         const std::string memory_id = req.matches[1];
         const std::string namespace_id = req.has_param("namespace")
             ? req.get_param_value("namespace")
@@ -4510,8 +5117,13 @@ void HttpServer::setup_routes() {
     });
 
     // DELETE /api/ai/memories/:id — remove one memory and append a WAL tombstone.
-    svr_->Delete(R"(/api/ai/memories/([^/]+))", [this](
-        const httplib::Request& req, httplib::Response& res) {
+    svr_->Delete(R"(/api/ai/memories/([^/]+))",
+                 [this, require_permission, reject_unenforced_symbol_scope](
+                     const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::WRITE,
+                                "agent-memory-delete")) return;
+        if (reject_unenforced_symbol_scope(req, res,
+                                           "agent-memory-delete")) return;
         const std::string memory_id = req.matches[1];
         const std::string namespace_id = req.has_param("namespace")
             ? req.get_param_value("namespace")
@@ -4598,8 +5210,12 @@ void HttpServer::setup_routes() {
     });
 
     // POST /api/ai/memories — upsert an agent memory object.
-    svr_->Post("/api/ai/memories", [this](const httplib::Request& req,
-                                           httplib::Response& res) {
+    svr_->Post("/api/ai/memories",
+               [this, require_permission, reject_unenforced_symbol_scope](
+                   const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::WRITE,
+                                "agent-memory-write")) return;
+        if (reject_unenforced_symbol_scope(req, res, "agent-memory-write")) return;
         if (req.body.empty()) {
             res.status = 400;
             res.set_content(build_error_json("Empty JSON body"), "application/json");
@@ -4674,8 +5290,13 @@ void HttpServer::setup_routes() {
     });
 
     // POST /api/ai/memories/search — filtered vector/metadata memory search.
-    svr_->Post("/api/ai/memories/search", [this](const httplib::Request& req,
-                                                  httplib::Response& res) {
+    svr_->Post("/api/ai/memories/search",
+               [this, require_permission, reject_unenforced_symbol_scope](
+                   const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::READ,
+                                "agent-memory-search")) return;
+        if (reject_unenforced_symbol_scope(req, res,
+                                           "agent-memory-search")) return;
         zeptodb::ai::MemoryQuery query;
         query.tenant_id    = json_string_field(req.body, "tenant_id");
         query.namespace_id = json_string_field(req.body, "namespace", "default");
@@ -4709,8 +5330,12 @@ void HttpServer::setup_routes() {
     });
 
     // POST /api/ai/context — assemble memories under a token budget.
-    svr_->Post("/api/ai/context", [this](const httplib::Request& req,
-                                          httplib::Response& res) {
+    svr_->Post("/api/ai/context",
+               [this, require_permission, reject_unenforced_symbol_scope](
+                   const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::READ,
+                                "agent-context-read")) return;
+        if (reject_unenforced_symbol_scope(req, res, "agent-context-read")) return;
         zeptodb::ai::ContextRequest query;
         query.tenant_id    = json_string_field(req.body, "tenant_id");
         query.namespace_id = json_string_field(req.body, "namespace", "default");
@@ -4749,8 +5374,12 @@ void HttpServer::setup_routes() {
     });
 
     // POST /api/ai/cache/store — store exact/semantic LLM cache entry.
-    svr_->Post("/api/ai/cache/store", [this](const httplib::Request& req,
-                                              httplib::Response& res) {
+    svr_->Post("/api/ai/cache/store",
+               [this, require_permission, reject_unenforced_symbol_scope](
+                   const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::WRITE,
+                                "agent-cache-write")) return;
+        if (reject_unenforced_symbol_scope(req, res, "agent-cache-write")) return;
         zeptodb::ai::CacheEntry entry;
         entry.cache_id      = json_string_field(req.body, "cache_id");
         entry.tenant_id     = json_string_field(req.body, "tenant_id");
@@ -4816,8 +5445,13 @@ void HttpServer::setup_routes() {
     });
 
     // DELETE /api/ai/cache — remove one exact cache entry and append a WAL tombstone.
-    svr_->Delete("/api/ai/cache", [this](const httplib::Request& req,
-                                          httplib::Response& res) {
+    svr_->Delete("/api/ai/cache",
+                 [this, require_permission, reject_unenforced_symbol_scope](
+                     const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::WRITE,
+                                "agent-cache-delete")) return;
+        if (reject_unenforced_symbol_scope(req, res,
+                                           "agent-cache-delete")) return;
         std::string tenant_id = req.has_param("tenant_id")
             ? req.get_param_value("tenant_id")
             : "";
@@ -4867,8 +5501,12 @@ void HttpServer::setup_routes() {
     });
 
     // POST /api/ai/cache/lookup — exact prompt cache first, semantic fallback.
-    svr_->Post("/api/ai/cache/lookup", [this](const httplib::Request& req,
-                                               httplib::Response& res) {
+    svr_->Post("/api/ai/cache/lookup",
+               [this, require_permission, reject_unenforced_symbol_scope](
+                   const httplib::Request& req, httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::READ,
+                                "agent-cache-read")) return;
+        if (reject_unenforced_symbol_scope(req, res, "agent-cache-read")) return;
         zeptodb::ai::CacheLookup lookup;
         lookup.tenant_id = json_string_field(req.body, "tenant_id");
         lookup.namespace_id = json_string_field(req.body, "namespace", "default");
@@ -4896,8 +5534,13 @@ void HttpServer::setup_routes() {
     });
 
     // POST /insert/arrow — ingest Arrow IPC RecordBatchStream payloads.
-    svr_->Post("/insert/arrow", [this](const httplib::Request& req,
+    svr_->Post("/insert/arrow", [this, require_permission,
+                                  reject_unenforced_symbol_scope](
+                                        const httplib::Request& req,
                                         httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::WRITE,
+                                "arrow-ingest")) return;
+        if (reject_unenforced_symbol_scope(req, res, "arrow-ingest")) return;
         if (!arrow_ipc_available()) {
             res.status = 406;
             res.set_content(
@@ -5013,8 +5656,13 @@ void HttpServer::setup_routes() {
     });
 
     // POST /insert/msgpack — ingest MessagePack map-of-column-arrays payloads.
-    svr_->Post("/insert/msgpack", [this](const httplib::Request& req,
+    svr_->Post("/insert/msgpack", [this, require_permission,
+                                    reject_unenforced_symbol_scope](
+                                          const httplib::Request& req,
                                           httplib::Response& res) {
+        if (!require_permission(req, res, zeptodb::auth::Permission::WRITE,
+                                "msgpack-ingest")) return;
+        if (reject_unenforced_symbol_scope(req, res, "msgpack-ingest")) return;
         auto param = [&req](const std::string& name,
                             const std::string& fallback = {}) {
             return req.has_param(name) ? req.get_param_value(name) : fallback;
@@ -5120,96 +5768,63 @@ void HttpServer::setup_routes() {
     });
 
     // POST / — execute SQL query (ClickHouse compatible)
-    svr_->Post("/", [this](const httplib::Request& req,
-                            httplib::Response& res) {
+    svr_->Post("/", [this, authorize_sql, filter_show_tables](
+                         const httplib::Request& req,
+                         httplib::Response& res) {
+        // Parse and authorize once at the HTTP boundary.
+        zeptodb::sql::ParsedStatement cached_ps;
+        bool have_parsed = false;
+        if (!authorize_sql(req, res, req.body, &cached_ps, &have_parsed)) {
+            return;
+        }
         if (req.body.empty()) {
             res.status = 400;
             res.set_content(build_error_json("Empty query body"), "application/json");
             return;
         }
-
-        // Table-level ACL + tenant namespace enforcement
-        // Parse once; resolve the touched table name across SELECT/DML/DDL/DESCRIBE.
-        std::string touched_table;
-        zeptodb::sql::ParsedStatement cached_ps;
-        bool have_parsed = false;
-        {
-            try {
-                zeptodb::sql::Parser parser;
-                cached_ps = parser.parse_statement(req.body);
-                have_parsed = true;
-                auto& ps = cached_ps;
-                if (ps.select)             touched_table = ps.select->from_table;
-                else if (ps.insert)        touched_table = ps.insert->table_name;
-                else if (ps.update)        touched_table = ps.update->table_name;
-                else if (ps.del)           touched_table = ps.del->table_name;
-                else if (ps.create_table)  touched_table = ps.create_table->table_name;
-                else if (ps.drop_table)    touched_table = ps.drop_table->table_name;
-                else if (ps.alter_table)   touched_table = ps.alter_table->table_name;
-                else if (ps.kind == zeptodb::sql::ParsedStatement::Kind::DESCRIBE_TABLE)
-                    touched_table = ps.describe_table_name;
-            } catch (...) {} // parse failure → let executor surface the error
-        }
-
-        // allowed_tables ACL (from API key / JWT claims)
-        if (!touched_table.empty() && req.has_header("X-Zepto-Allowed-Tables")) {
-            std::string allowed = req.get_header_value("X-Zepto-Allowed-Tables");
-            std::vector<std::string> allowed_tables;
-            std::istringstream ss(allowed);
-            std::string t;
-            while (std::getline(ss, t, ','))
-                if (!t.empty()) allowed_tables.push_back(t);
-
-            if (!allowed_tables.empty()) {
-                bool ok = false;
-                for (const auto& a : allowed_tables)
-                    if (a == touched_table) { ok = true; break; }
-                if (!ok) {
-                    res.status = 403;
-                    res.set_content(build_error_json(
-                        "Access denied: table '" + touched_table + "' not in allowed list"),
-                        "application/json");
-                    return;
-                }
-            }
-        }
-
-        // Tenant namespace enforcement
-        if (!touched_table.empty() && tenant_mgr_ &&
-            req.has_header("X-Zepto-Tenant-Id")) {
-            std::string tid = req.get_header_value("X-Zepto-Tenant-Id");
-            if (!tid.empty() && !tenant_mgr_->can_access_table(tid, touched_table)) {
-                res.status = 403;
-                res.set_content(build_error_json(
-                    "Tenant '" + tid + "' cannot access table '" + touched_table + "'"),
-                    "application/json");
-                return;
-            }
-        }
-
-        // Prime prepared-statement cache with the ACL parse (devlog 091 F4)
-        // so run_query_with_tracking → execute() hits the cache instead of
-        // re-parsing the same SQL.
         if (have_parsed) {
-            executor_.cache_prepared(req.body, std::move(cached_ps));
+            bound_top_level_select_result(&cached_ps, max_result_rows_);
         }
+        // Preserve classifications before moving the request-owned AST into
+        // execution. Inspecting optional statement arms after the move would
+        // silently disable remote DDL replication.
+        const bool is_show_tables = have_parsed &&
+            cached_ps.kind == zeptodb::sql::ParsedStatement::Kind::SHOW_TABLES;
+        const bool is_replicated_ddl = have_parsed &&
+            (cached_ps.create_table || cached_ps.drop_table ||
+             cached_ps.alter_table);
 
-        auto result = run_query_with_tracking(req.body, req.remote_addr);
+        const std::string subject = req.has_header("X-Zepto-Subject")
+            ? req.get_header_value("X-Zepto-Subject")
+            : req.remote_addr;
+        const std::string tenant_id = req.has_header("X-Zepto-Tenant-Id")
+            ? req.get_header_value("X-Zepto-Tenant-Id")
+            : std::string{};
+        auto result = run_query_with_tracking(
+            req.body, subject, tenant_id,
+            have_parsed
+                ? std::optional<zeptodb::sql::ParsedStatement>{
+                      std::move(cached_ps)}
+                : std::nullopt);
 
         if (!result.ok()) {
-            res.status = (result.error == "Query cancelled" ||
-                          result.error == "Query timed out") ? 408 : 400;
+            res.status = result.error.starts_with(
+                "Distributed HTTP SELECT is disabled")
+                ? 503
+                : ((result.error == "Query cancelled" ||
+                    result.error == "Query timed out") ? 408 : 400);
             res.set_content(build_error_json(result.error), "application/json");
             return;
+        }
+        if (is_show_tables) {
+            filter_show_tables(req, &result);
         }
 
         // DDL replication to remote pods (fire-and-forget — devlog 112).
         // Only runs in cluster mode (coordinator_ wired).  We rely on the
         // ACL-path pre-parse (`cached_ps`) to classify DDL — no extra parse,
         // no string matching.
-        if (coordinator_ && have_parsed &&
-            (cached_ps.create_table || cached_ps.drop_table ||
-             cached_ps.alter_table)) {
+        if (coordinator_ && is_replicated_ddl) {
             coordinator_->forward_ddl_to_remotes(req.body);
             std::string placement_error;
             if (!coordinator_->apply_catalog_table_placements(
@@ -5276,33 +5891,109 @@ void HttpServer::setup_routes() {
                                 "application/json");
                 return;
             }
+            if (body.size() > max_response_bytes_) {
+                res.status = 413;
+                res.set_content(
+                    build_error_json("Query response byte limit exceeded"),
+                    "application/json");
+                return;
+            }
             res.set_header("X-Zepto-Format", "arrow-stream");
             res.set_content(std::move(body),
                             "application/vnd.apache.arrow.stream");
             return;
         }
 
-        res.set_content(build_json_response(result), "application/json");
+        auto body = build_json_response(result);
+        if (body.size() > max_response_bytes_) {
+            res.status = 413;
+            res.set_content(
+                build_error_json("Query response byte limit exceeded"),
+                "application/json");
+            return;
+        }
+        res.set_content(std::move(body), "application/json");
     });
 
     // GET / — execute SQL query via query parameter
-    svr_->Get("/", [this](const httplib::Request& req,
-                           httplib::Response& res) {
+    svr_->Get("/", [this, authorize_sql, filter_show_tables](
+                        const httplib::Request& req,
+                        httplib::Response& res) {
         auto q = req.get_param_value("query");
         if (q.empty()) {
             res.set_content(R"({"status":"ok","engine":"ZeptoDB"})", "application/json");
             return;
         }
 
-        auto result = run_query_with_tracking(q, req.remote_addr);
+        zeptodb::sql::ParsedStatement parsed;
+        bool parsed_ok = false;
+        if (!authorize_sql(req, res, q, &parsed, &parsed_ok)) return;
+        const bool is_read_only = parsed_ok &&
+            (parsed.kind == zeptodb::sql::ParsedStatement::Kind::SELECT ||
+             parsed.kind == zeptodb::sql::ParsedStatement::Kind::SHOW_TABLES ||
+             parsed.kind == zeptodb::sql::ParsedStatement::Kind::DESCRIBE_TABLE);
+        if (!is_read_only) {
+            if (auth_) {
+                zeptodb::auth::AuthContext context;
+                context.subject = req.has_header("X-Zepto-Subject")
+                    ? req.get_header_value("X-Zepto-Subject")
+                    : "unknown";
+                context.name = context.subject;
+                context.role = req.has_header("X-Zepto-Role")
+                    ? zeptodb::auth::role_from_string(
+                        req.get_header_value("X-Zepto-Role"))
+                    : zeptodb::auth::Role::UNKNOWN;
+                context.source = "http";
+                auth_->audit(context, req.method + " " + req.path,
+                             "sql-get-mutation-forbidden",
+                             req.remote_addr);
+            }
+            res.status = 405;
+            res.set_header("Allow", "POST");
+            res.set_content(
+                build_error_json(
+                    "GET SQL is read-only; use POST / for DML or DDL"),
+                "application/json");
+            return;
+        }
+        const bool is_show_tables = parsed_ok &&
+            parsed.kind == zeptodb::sql::ParsedStatement::Kind::SHOW_TABLES;
+        if (parsed_ok) {
+            bound_top_level_select_result(&parsed, max_result_rows_);
+        }
+
+        const std::string subject = req.has_header("X-Zepto-Subject")
+            ? req.get_header_value("X-Zepto-Subject")
+            : req.remote_addr;
+        const std::string tenant_id = req.has_header("X-Zepto-Tenant-Id")
+            ? req.get_header_value("X-Zepto-Tenant-Id")
+            : std::string{};
+        auto result = run_query_with_tracking(
+            q, subject, tenant_id,
+            parsed_ok
+                ? std::optional<zeptodb::sql::ParsedStatement>{
+                      std::move(parsed)}
+                : std::nullopt);
         if (!result.ok()) {
-            res.status = (result.error == "Query cancelled" ||
-                          result.error == "Query timed out") ? 408 : 400;
+            res.status = result.error.starts_with(
+                "Distributed HTTP SELECT is disabled")
+                ? 503
+                : ((result.error == "Query cancelled" ||
+                    result.error == "Query timed out") ? 408 : 400);
             res.set_content(build_error_json(result.error), "application/json");
             return;
         }
+        if (is_show_tables) filter_show_tables(req, &result);
 
-        res.set_content(build_json_response(result), "application/json");
+        auto body = build_json_response(result);
+        if (body.size() > max_response_bytes_) {
+            res.status = 413;
+            res.set_content(
+                build_error_json("Query response byte limit exceeded"),
+                "application/json");
+            return;
+        }
+        res.set_content(std::move(body), "application/json");
     });
 }
 
@@ -5311,8 +6002,30 @@ void HttpServer::setup_routes() {
 // ============================================================================
 zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
     const std::string& sql,
-    const std::string& subject)
+    const std::string& subject,
+    const std::string& tenant_id,
+    std::optional<zeptodb::sql::ParsedStatement> statement)
 {
+    struct TenantSlotGuard {
+        zeptodb::auth::TenantManager* manager = nullptr;
+        const std::string* tenant = nullptr;
+        ~TenantSlotGuard() {
+            if (manager && tenant) manager->release_query_slot(*tenant);
+        }
+    };
+    zeptodb::auth::TenantManager* acquired_tenant_manager = nullptr;
+    if (!tenant_id.empty()) {
+        if (!tenant_mgr_ || !tenant_mgr_->acquire_query_slot(tenant_id)) {
+            zeptodb::sql::QueryResultSet rejected;
+            rejected.error = "Tenant query concurrency limit exceeded";
+            return rejected;
+        }
+        acquired_tenant_manager = tenant_mgr_.get();
+    }
+    const TenantSlotGuard tenant_slot{
+        acquired_tenant_manager,
+        acquired_tenant_manager ? &tenant_id : nullptr};
+
     auto token = std::make_shared<zeptodb::auth::CancellationToken>();
     std::string query_id = query_tracker_.register_query(subject, sql, token);
 
@@ -5328,10 +6041,26 @@ zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
             return false;
         }
     };
-    const bool route_select_via_coordinator = is_cluster_select();
-    auto execute_query = [this, &sql, &token, route_select_via_coordinator]() {
+    const bool route_select_via_coordinator =
+        is_cluster_select() && coordinator_->node_count() > 1;
+    if (route_select_via_coordinator &&
+        !allow_experimental_distributed_queries_) {
+        zeptodb::sql::QueryResultSet rejected;
+        rejected.error =
+            "Distributed HTTP SELECT is disabled: end-to-end row bounds and "
+            "cancellation are not implemented; use the explicit experimental "
+            "override only on an isolated test deployment";
+        query_tracker_.complete(query_id);
+        return rejected;
+    }
+    auto execute_query = [this, &sql, &token, route_select_via_coordinator,
+                          statement = std::move(statement)]() mutable {
         if (route_select_via_coordinator) {
             return coordinator_->execute_sql(sql);
+        }
+        if (statement) {
+            return executor_.execute_parsed(
+                sql, std::move(*statement), token.get());
         }
         return executor_.execute(sql, token.get());
     };
@@ -5352,6 +6081,14 @@ zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
         result = execute_query();
     }
 
+    const size_t materialized_rows = std::max(
+        result.rows.size(),
+        std::max(result.typed_rows.size(), result.string_rows.size()));
+    if (result.ok() && materialized_rows > max_result_rows_) {
+        result = {};
+        result.error = "Query result row limit exceeded";
+    }
+
     int64_t duration_us = now_us() - start;
     query_tracker_.complete(query_id);
 
@@ -5361,20 +6098,49 @@ zeptodb::sql::QueryResultSet HttpServer::run_query_with_tracking(
         auto level = !result.ok() ? zeptodb::util::LogLevel::WARN
                                   : zeptodb::util::LogLevel::INFO;
         std::ostringstream os;
-        os << "{\"query_id\":\"" << query_id << "\""
-           << ",\"subject\":\"" << subject << "\""
+        os << "{\"query_id\":" << json_quote(query_id)
+           << ",\"subject\":" << json_quote(subject)
            << ",\"duration_us\":" << duration_us
            << ",\"rows\":" << result.rows.size()
            << ",\"ok\":" << (result.ok() ? "true" : "false");
-        if (!result.ok())
-            os << ",\"error\":\"" << result.error << "\"";
-        // Truncate SQL to 200 chars for log safety
-        std::string sql_trunc = sql.substr(0, 200);
-        // Escape quotes
-        for (size_t p = 0; (p = sql_trunc.find('"', p)) != std::string::npos; p += 2)
-            sql_trunc.insert(p, "\\");
-        os << ",\"sql\":\"" << sql_trunc << "\""
-           << "}";
+        if (!result.ok()) os << ",\"error\":true";
+        std::string statement_kind = "unparsed";
+        try {
+            const auto parsed = zeptodb::sql::Parser{}.parse_statement(sql);
+            switch (parsed.kind) {
+                case zeptodb::sql::ParsedStatement::Kind::SELECT:
+                    statement_kind = "select";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::INSERT:
+                    statement_kind = "insert";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::UPDATE:
+                    statement_kind = "update";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::DELETE:
+                    statement_kind = "delete";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::CREATE_TABLE:
+                case zeptodb::sql::ParsedStatement::Kind::CREATE_MV:
+                    statement_kind = "create";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::DROP_TABLE:
+                case zeptodb::sql::ParsedStatement::Kind::DROP_MV:
+                    statement_kind = "drop";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::ALTER_TABLE:
+                    statement_kind = "alter";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::SHOW_TABLES:
+                    statement_kind = "show";
+                    break;
+                case zeptodb::sql::ParsedStatement::Kind::DESCRIBE_TABLE:
+                    statement_kind = "describe";
+                    break;
+            }
+        } catch (...) {
+        }
+        os << ",\"statement_kind\":\"" << statement_kind << "\"}";
         logger.log(level, os.str(), "query");
     }
 
@@ -5549,68 +6315,55 @@ void HttpServer::setup_admin_routes() {
             res.set_content(build_error_json("Auth not configured"), "application/json");
             return;
         }
-        // Minimal JSON parsing for string fields
-        auto extract_str = [&](const std::string& field) -> std::string {
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return "";
-            auto colon = req.body.find(':', pos + pat.size());
-            if (colon == std::string::npos) return "";
-            auto q1 = req.body.find('"', colon + 1);
-            if (q1 == std::string::npos) return "";
-            auto q2 = req.body.find('"', q1 + 1);
-            if (q2 == std::string::npos) return "";
-            return req.body.substr(q1 + 1, q2 - q1 - 1);
-        };
-        // Parse JSON array of strings: "field":["a","b"]
-        auto extract_arr = [&](const std::string& field) -> std::vector<std::string> {
-            std::vector<std::string> result;
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return result;
-            auto bracket = req.body.find('[', pos + pat.size());
-            if (bracket == std::string::npos) return result;
-            auto end_bracket = req.body.find(']', bracket);
-            if (end_bracket == std::string::npos) return result;
-            std::string arr = req.body.substr(bracket + 1, end_bracket - bracket - 1);
-            size_t p = 0;
-            while (p < arr.size()) {
-                auto q1 = arr.find('"', p);
-                if (q1 == std::string::npos) break;
-                auto q2 = arr.find('"', q1 + 1);
-                if (q2 == std::string::npos) break;
-                auto val = arr.substr(q1 + 1, q2 - q1 - 1);
-                if (!val.empty()) result.push_back(val);
-                p = q2 + 1;
-            }
-            return result;
-        };
-        // Parse integer field
-        auto extract_int = [&](const std::string& field) -> int64_t {
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return 0;
-            auto colon = req.body.find(':', pos + pat.size());
-            if (colon == std::string::npos) return 0;
-            size_t start = colon + 1;
-            while (start < req.body.size() && (req.body[start] == ' ' || req.body[start] == '\t')) ++start;
-            try { return std::stoll(req.body.substr(start)); } catch (...) { return 0; }
-        };
-
-        std::string name = extract_str("name");
-        std::string role_str = extract_str("role");
-        if (name.empty()) {
+        using zeptodb::auth::detail::JsonFieldStatus;
+        std::string name;
+        std::string role_str;
+        std::string tenant_id;
+        std::vector<std::string> symbols;
+        std::vector<std::string> tables;
+        int64_t expires_at_ns = 0;
+        const auto name_status = zeptodb::auth::detail::read_json_string(
+            req.body, "name", &name);
+        const auto role_status = zeptodb::auth::detail::read_json_string(
+            req.body, "role", &role_str);
+        const auto symbols_status = zeptodb::auth::detail::read_json_string_array(
+            req.body, "symbols", &symbols);
+        const auto tables_status = zeptodb::auth::detail::read_json_string_array(
+            req.body, "tables", &tables);
+        const auto tenant_status = zeptodb::auth::detail::read_json_string(
+            req.body, "tenant_id", &tenant_id);
+        const auto expiry_status = zeptodb::auth::detail::read_json_int64(
+            req.body, "expires_at_ns", &expires_at_ns);
+        if (name_status != JsonFieldStatus::Valid || name.empty()) {
             res.status = 400;
             res.set_content(build_error_json("Missing 'name' field"), "application/json");
             return;
         }
+        if (role_status != JsonFieldStatus::Valid ||
+            symbols_status == JsonFieldStatus::Invalid ||
+            tables_status == JsonFieldStatus::Invalid ||
+            tenant_status == JsonFieldStatus::Invalid ||
+            expiry_status == JsonFieldStatus::Invalid) {
+            res.status = 400;
+            res.set_content(build_error_json("Invalid API key JSON fields"),
+                            "application/json");
+            return;
+        }
         zeptodb::auth::Role role = zeptodb::auth::role_from_string(role_str);
-        auto symbols = extract_arr("symbols");
-        auto tables = extract_arr("tables");
-        std::string tenant_id = extract_str("tenant_id");
-        int64_t expires_at_ns = extract_int("expires_at_ns");
-
-        std::string key = auth_->create_api_key(name, role, symbols, tables, tenant_id, expires_at_ns);
+        std::string key;
+        try {
+            key = auth_->create_api_key(
+                name, role, symbols, tables, tenant_id, expires_at_ns);
+        } catch (const std::invalid_argument& error) {
+            res.status = 400;
+            res.set_content(build_error_json(error.what()), "application/json");
+            return;
+        } catch (const std::exception&) {
+            res.status = 500;
+            res.set_content(build_error_json("API key persistence failed"),
+                            "application/json");
+            return;
+        }
         res.set_content("{\"key\":\"" + key + "\"}", "application/json");
     });
 
@@ -5631,23 +6384,24 @@ void HttpServer::setup_admin_routes() {
         for (size_t i = 0; i < keys.size(); ++i) {
             if (i > 0) os << ",";
             const auto& k = keys[i];
-            os << "{\"id\":\"" << k.id << "\","
-               << "\"name\":\"" << k.name << "\","
-               << "\"role\":\"" << zeptodb::auth::role_to_string(k.role) << "\","
+            os << "{\"id\":" << json_quote(k.id) << ","
+               << "\"name\":" << json_quote(k.name) << ","
+               << "\"role\":"
+               << json_quote(zeptodb::auth::role_to_string(k.role)) << ","
                << "\"enabled\":" << (k.enabled ? "true" : "false") << ","
                << "\"created_at_ns\":" << k.created_at_ns << ","
                << "\"last_used_ns\":" << k.last_used_ns << ","
                << "\"expires_at_ns\":" << k.expires_at_ns << ","
-               << "\"tenant_id\":\"" << k.tenant_id << "\","
+               << "\"tenant_id\":" << json_quote(k.tenant_id) << ","
                << "\"allowed_symbols\":[";
             for (size_t si = 0; si < k.allowed_symbols.size(); ++si) {
                 if (si > 0) os << ",";
-                os << "\"" << k.allowed_symbols[si] << "\"";
+                os << json_quote(k.allowed_symbols[si]);
             }
             os << "],\"allowed_tables\":[";
             for (size_t ti = 0; ti < k.allowed_tables.size(); ++ti) {
                 if (ti > 0) os << ",";
-                os << "\"" << k.allowed_tables[ti] << "\"";
+                os << json_quote(k.allowed_tables[ti]);
             }
             os << "]}";
         }
@@ -5668,7 +6422,15 @@ void HttpServer::setup_admin_routes() {
             return;
         }
         std::string key_id = req.matches[1];
-        bool ok = auth_->revoke_api_key(key_id);
+        bool ok = false;
+        try {
+            ok = auth_->revoke_api_key(key_id);
+        } catch (const std::exception&) {
+            res.status = 500;
+            res.set_content(build_error_json("API key persistence failed"),
+                            "application/json");
+            return;
+        }
         if (ok) {
             res.set_content(R"({"revoked":true})", "application/json");
         } else {
@@ -5693,77 +6455,63 @@ void HttpServer::setup_admin_routes() {
         }
         std::string key_id = req.matches[1];
 
-        // Parse optional fields from body
-        auto has_field = [&](const std::string& f) {
-            return req.body.find("\"" + f + "\"") != std::string::npos;
-        };
-        auto extract_str = [&](const std::string& field) -> std::string {
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return "";
-            auto colon = req.body.find(':', pos + pat.size());
-            if (colon == std::string::npos) return "";
-            auto q1 = req.body.find('"', colon + 1);
-            if (q1 == std::string::npos) return "";
-            auto q2 = req.body.find('"', q1 + 1);
-            if (q2 == std::string::npos) return "";
-            return req.body.substr(q1 + 1, q2 - q1 - 1);
-        };
-        auto extract_arr = [&](const std::string& field) -> std::vector<std::string> {
-            std::vector<std::string> result;
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return result;
-            auto bracket = req.body.find('[', pos + pat.size());
-            if (bracket == std::string::npos) return result;
-            auto end_bracket = req.body.find(']', bracket);
-            if (end_bracket == std::string::npos) return result;
-            std::string arr = req.body.substr(bracket + 1, end_bracket - bracket - 1);
-            size_t p = 0;
-            while (p < arr.size()) {
-                auto q1 = arr.find('"', p);
-                if (q1 == std::string::npos) break;
-                auto q2 = arr.find('"', q1 + 1);
-                if (q2 == std::string::npos) break;
-                auto val = arr.substr(q1 + 1, q2 - q1 - 1);
-                if (!val.empty()) result.push_back(val);
-                p = q2 + 1;
-            }
-            return result;
-        };
-        auto extract_bool = [&](const std::string& field) -> bool {
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return false;
-            auto colon = req.body.find(':', pos + pat.size());
-            if (colon == std::string::npos) return false;
-            auto rest = req.body.substr(colon + 1);
-            return rest.find("true") < rest.find("false");
-        };
-        auto extract_int = [&](const std::string& field) -> int64_t {
-            std::string pat = "\"" + field + "\"";
-            auto pos = req.body.find(pat);
-            if (pos == std::string::npos) return 0;
-            auto colon = req.body.find(':', pos + pat.size());
-            if (colon == std::string::npos) return 0;
-            size_t start = colon + 1;
-            while (start < req.body.size() && (req.body[start] == ' ' || req.body[start] == '\t')) ++start;
-            try { return std::stoll(req.body.substr(start)); } catch (...) { return 0; }
-        };
-
+        using zeptodb::auth::detail::JsonFieldStatus;
+        std::vector<std::string> parsed_symbols;
+        std::vector<std::string> parsed_tables;
+        std::string parsed_tenant;
+        bool parsed_enabled = false;
+        int64_t parsed_expiry = 0;
+        const auto symbols_status = zeptodb::auth::detail::read_json_string_array(
+            req.body, "symbols", &parsed_symbols);
+        const auto tables_status = zeptodb::auth::detail::read_json_string_array(
+            req.body, "tables", &parsed_tables);
+        const auto enabled_status = zeptodb::auth::detail::read_json_bool(
+            req.body, "enabled", &parsed_enabled);
+        const auto tenant_status = zeptodb::auth::detail::read_json_string(
+            req.body, "tenant_id", &parsed_tenant);
+        const auto expiry_status = zeptodb::auth::detail::read_json_int64(
+            req.body, "expires_at_ns", &parsed_expiry);
+        if (symbols_status == JsonFieldStatus::Invalid ||
+            tables_status == JsonFieldStatus::Invalid ||
+            enabled_status == JsonFieldStatus::Invalid ||
+            tenant_status == JsonFieldStatus::Invalid ||
+            expiry_status == JsonFieldStatus::Invalid) {
+            res.status = 400;
+            res.set_content(build_error_json("Invalid API key JSON fields"),
+                            "application/json");
+            return;
+        }
         std::optional<std::vector<std::string>> symbols;
         std::optional<std::vector<std::string>> tables;
         std::optional<bool> enabled;
         std::optional<std::string> tenant_id;
         std::optional<int64_t> expires_at_ns;
 
-        if (has_field("symbols"))       symbols = extract_arr("symbols");
-        if (has_field("tables"))        tables = extract_arr("tables");
-        if (has_field("enabled"))       enabled = extract_bool("enabled");
-        if (has_field("tenant_id"))     tenant_id = extract_str("tenant_id");
-        if (has_field("expires_at_ns")) expires_at_ns = extract_int("expires_at_ns");
+        if (symbols_status == JsonFieldStatus::Valid)
+            symbols = std::move(parsed_symbols);
+        if (tables_status == JsonFieldStatus::Valid)
+            tables = std::move(parsed_tables);
+        if (enabled_status == JsonFieldStatus::Valid)
+            enabled = parsed_enabled;
+        if (tenant_status == JsonFieldStatus::Valid)
+            tenant_id = std::move(parsed_tenant);
+        if (expiry_status == JsonFieldStatus::Valid)
+            expires_at_ns = parsed_expiry;
 
-        bool ok = auth_->update_api_key(key_id, symbols, tables, enabled, tenant_id, expires_at_ns);
+        bool ok = false;
+        try {
+            ok = auth_->update_api_key(
+                key_id, symbols, tables, enabled, tenant_id, expires_at_ns);
+        } catch (const std::invalid_argument& error) {
+            res.status = 400;
+            res.set_content(build_error_json(error.what()), "application/json");
+            return;
+        } catch (const std::exception&) {
+            res.status = 500;
+            res.set_content(build_error_json("API key persistence failed"),
+                            "application/json");
+            return;
+        }
         if (ok) {
             res.set_content(R"({"updated":true})", "application/json");
         } else {
@@ -5837,21 +6585,12 @@ void HttpServer::setup_admin_routes() {
         for (size_t i = 0; i < events.size(); ++i) {
             if (i > 0) os << ",";
             const auto& e = events[i];
-            auto esc = [](const std::string& s) {
-                std::string out;
-                for (char c : s) {
-                    if (c == '"') out += "\\\"";
-                    else if (c == '\\') out += "\\\\";
-                    else out += c;
-                }
-                return out;
-            };
             os << "{\"ts\":" << e.timestamp_ns << ","
-               << "\"subject\":\"" << esc(e.subject) << "\","
-               << "\"role\":\"" << esc(e.role_str) << "\","
-               << "\"action\":\"" << esc(e.action) << "\","
-               << "\"detail\":\"" << esc(e.detail) << "\","
-               << "\"from\":\"" << esc(e.remote_addr) << "\"}";
+               << "\"subject\":" << json_quote(e.subject) << ","
+               << "\"role\":" << json_quote(e.role_str) << ","
+               << "\"action\":" << json_quote(e.action) << ","
+               << "\"detail\":" << json_quote(e.detail) << ","
+               << "\"from\":" << json_quote(e.remote_addr) << "}";
         }
         os << "]";
         res.set_content(os.str(), "application/json");
@@ -5870,8 +6609,8 @@ void HttpServer::setup_admin_routes() {
         for (size_t i = 0; i < sessions.size(); ++i) {
             if (i > 0) os << ",";
             const auto& s = sessions[i];
-            os << "{\"remote_addr\":\"" << s.remote_addr << "\","
-               << "\"user\":\"" << s.user << "\","
+            os << "{\"remote_addr\":" << json_quote(s.remote_addr) << ","
+               << "\"user\":" << json_quote(s.user) << ","
                << "\"connected_at_ns\":" << s.connected_at_ns << ","
                << "\"last_active_ns\":" << s.last_active_ns << ","
                << "\"query_count\":" << s.query_count << "}";
@@ -5888,7 +6627,8 @@ void HttpServer::setup_admin_routes() {
     {
         if (!require_admin(req, res)) return;
         res.set_content(
-            R"({"engine":"ZeptoDB","version":"0.1.0","build":")" __DATE__ R"("})",
+            std::string{R"({"engine":"ZeptoDB","version":")"} +
+                ZEPTO_VERSION + R"(","build":")" __DATE__ R"("})",
             "application/json");
     });
 
@@ -5976,6 +6716,26 @@ void HttpServer::setup_admin_routes() {
             res.status = 400;
             res.set_content(build_error_json("Not in cluster mode — set_coordinator() first"),
                             "application/json");
+            return;
+        }
+        const auto rpc_security =
+            zeptodb::cluster::RpcSecurityConfig::from_environment();
+        if (const auto error = rpc_security.validation_error();
+            !error.empty()) {
+            res.status = 503;
+            res.set_content(
+                build_error_json(
+                    "Invalid cluster RPC security configuration: " + error),
+                "application/json");
+            return;
+        }
+        if (!rpc_security.enabled && !allow_insecure_cluster_) {
+            res.status = 503;
+            res.set_content(
+                build_error_json(
+                    "Cluster RPC authentication is required; configure "
+                    "ZEPTO_CLUSTER_SECRET_FILE or ZEPTO_CLUSTER_SECRET"),
+                "application/json");
             return;
         }
         // Minimal JSON parsing
@@ -6805,13 +7565,13 @@ void HttpServer::setup_admin_routes() {
             return;
         }
         std::ostringstream os;
-        os << "{\"id\":\"" << target->id << "\","
-           << "\"name\":\"" << target->name << "\","
+        os << "{\"id\":" << json_quote(target->id) << ","
+           << "\"name\":" << json_quote(target->name) << ","
            << "\"last_used_ns\":" << target->last_used_ns << ","
            << "\"allowed_symbols\":[";
         for (size_t i = 0; i < target->allowed_symbols.size(); ++i) {
             if (i > 0) os << ",";
-            os << "\"" << target->allowed_symbols[i] << "\"";
+            os << json_quote(target->allowed_symbols[i]);
         }
         os << "]}";
         res.set_content(os.str(), "application/json");
@@ -6835,15 +7595,15 @@ void HttpServer::setup_admin_routes() {
         for (size_t i = 0; i < tenants.size(); ++i) {
             if (i > 0) os << ",";
             const auto& t = tenants[i];
-            const auto* usage = tenant_mgr_->usage(t.tenant_id);
-            os << "{\"tenant_id\":\"" << t.tenant_id << "\","
-               << "\"name\":\"" << t.name << "\","
-               << "\"table_namespace\":\"" << t.table_namespace << "\","
+            const auto usage = tenant_mgr_->usage(t.tenant_id);
+            os << "{\"tenant_id\":" << json_quote(t.tenant_id) << ","
+               << "\"name\":" << json_quote(t.name) << ","
+               << "\"table_namespace\":" << json_quote(t.table_namespace) << ","
                << "\"max_concurrent_queries\":" << t.max_concurrent_queries << ",";
             if (usage) {
-                os << "\"usage\":{\"active_queries\":" << usage->active_queries.load()
-                   << ",\"total_queries\":" << usage->total_queries.load()
-                   << ",\"rejected_queries\":" << usage->rejected_queries.load() << "}";
+                os << "\"usage\":{\"active_queries\":" << usage->active_queries
+                   << ",\"total_queries\":" << usage->total_queries
+                   << ",\"rejected_queries\":" << usage->rejected_queries << "}";
             } else {
                 os << "\"usage\":null";
             }
@@ -6985,6 +7745,7 @@ void HttpServer::setup_admin_routes() {
     svr_->Get("/auth/login", [this](
         const httplib::Request& /*req*/, httplib::Response& res)
     {
+        set_sensitive_auth_response_headers(&res);
         if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
             res.status = 402;
             res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
@@ -6996,15 +7757,29 @@ void HttpServer::setup_admin_routes() {
             return;
         }
         const auto* meta = auth_->oidc_metadata();
-        std::string state = std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count());
+        std::string state;
+        try {
+            state = random_hex_token(32);
+        } catch (const std::exception&) {
+            res.status = 500;
+            res.set_content(build_error_json("Failed to create OIDC state"),
+                            "application/json");
+            return;
+        }
+        const auto* session_store = auth_->session_store();
+        const bool secure_cookie = tls_.enabled ||
+            (session_store && session_store->config().cookie_secure);
+        res.set_header("Set-Cookie",
+                       oidc_state_cookie(state, secure_cookie));
 
         std::string url = meta->authorization_endpoint
             + "?response_type=code"
-            + "&client_id=" + auth_->oidc_client_id()
-            + "&redirect_uri=" + auth_->oidc_redirect_uri()
-            + "&scope=openid+email+profile"
-            + "&state=" + state;
+            + "&client_id=" +
+                url_encode_query_component(auth_->oidc_client_id())
+            + "&redirect_uri=" +
+                url_encode_query_component(auth_->oidc_redirect_uri())
+            + "&scope=" + url_encode_query_component("openid email profile")
+            + "&state=" + url_encode_query_component(state);
         res.set_redirect(url);
     });
 
@@ -7012,6 +7787,7 @@ void HttpServer::setup_admin_routes() {
     svr_->Get("/auth/callback", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        set_sensitive_auth_response_headers(&res);
         if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
             res.status = 402;
             res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
@@ -7020,6 +7796,34 @@ void HttpServer::setup_admin_routes() {
         if (!auth_ || !auth_->oidc_metadata()) {
             res.status = 503;
             res.set_content(build_error_json("OIDC not configured"), "application/json");
+            return;
+        }
+        if (!auth_->session_store()) {
+            res.status = 503;
+            res.set_content(
+                build_error_json(
+                    "OIDC callback requires server-side sessions"),
+                "application/json");
+            return;
+        }
+        const auto state_cookie = req.has_header("Cookie")
+            ? cookie_value(req.get_header_value("Cookie"), "zepto_oidc_state")
+            : std::nullopt;
+        const std::string state = req.has_param("state")
+            ? req.get_param_value("state")
+            : std::string{};
+        const auto* configured_store = auth_->session_store();
+        const bool secure_cookie = tls_.enabled ||
+            (configured_store &&
+             configured_store->config().cookie_secure);
+        res.set_header("Set-Cookie",
+                       oidc_state_cookie("", secure_cookie, true));
+        if (!state_cookie || state.empty() ||
+            state_cookie->size() != state.size() ||
+            CRYPTO_memcmp(state_cookie->data(), state.data(), state.size()) != 0) {
+            res.status = 400;
+            res.set_content(build_error_json("Invalid or missing OIDC state"),
+                            "application/json");
             return;
         }
         if (!req.has_param("code")) {
@@ -7047,8 +7851,8 @@ void HttpServer::setup_admin_routes() {
 
         // Resolve identity from id_token (or access_token)
         std::string jwt = !tokens->id_token.empty() ? tokens->id_token : tokens->access_token;
-        auto decision = auth_->check("GET", "/auth/callback",
-                                      "Bearer " + jwt, req.remote_addr);
+        auto decision = auth_->authenticate(
+            "GET", "/auth/callback", "Bearer " + jwt, req.remote_addr);
         if (decision.status != zeptodb::auth::AuthStatus::OK) {
             res.status = 401;
             res.set_content(build_error_json("Identity resolution failed: " + decision.reason),
@@ -7058,34 +7862,32 @@ void HttpServer::setup_admin_routes() {
 
         // Create server-side session
         auto* store = auth_->session_store();
-        if (store) {
-            auto sid = store->create(
+        std::string sid;
+        try {
+            sid = store->create(
                 decision.context.subject, decision.context.name,
                 decision.context.role, decision.context.source,
-                decision.context.allowed_symbols, decision.context.tenant_id,
-                tokens->refresh_token);
-            res.set_header("Set-Cookie", store->make_cookie(sid));
-            // Redirect to Web UI
-            res.set_redirect("/query");
-        } else {
-            // No session store — return tokens as JSON (API mode)
-            std::ostringstream os;
-            os << "{\"access_token\":\"" << tokens->access_token << "\""
-               << ",\"role\":\"" << zeptodb::auth::role_to_string(decision.context.role) << "\""
-               << ",\"subject\":\"" << decision.context.subject << "\"";
-            if (!tokens->refresh_token.empty())
-                os << ",\"refresh_token\":\"" << tokens->refresh_token << "\"";
-            if (tokens->expires_in > 0)
-                os << ",\"expires_in\":" << tokens->expires_in;
-            os << "}";
-            res.set_content(os.str(), "application/json");
+                decision.context.allowed_symbols,
+                decision.context.tenant_id, tokens->refresh_token,
+                decision.context.allowed_tables);
+        } catch (const std::exception&) {
+            res.status = 503;
+            res.set_content(
+                build_error_json("Session capacity unavailable"),
+                "application/json");
+            return;
         }
+        res.set_header("Set-Cookie", store->make_cookie(sid));
+        // Redirect to Web UI. Raw access and refresh tokens never enter an
+        // HTTP response body.
+        res.set_redirect("/query");
     });
 
     // POST /auth/session — create session from Bearer token (JWT/API key login)
     svr_->Post("/auth/session", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        set_sensitive_auth_response_headers(&res);
         if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
             res.status = 402;
             res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
@@ -7105,9 +7907,12 @@ void HttpServer::setup_admin_routes() {
             return;
         }
 
-        auto decision = auth_->check("POST", "/auth/session", auth_hdr, req.remote_addr);
+        auto decision = auth_->authenticate(
+            "POST", "/auth/session", auth_hdr, req.remote_addr);
         if (decision.status != zeptodb::auth::AuthStatus::OK) {
-            res.status = 401;
+            res.status = decision.status == zeptodb::auth::AuthStatus::FORBIDDEN
+                ? 403
+                : 401;
             res.set_content(build_error_json(decision.reason), "application/json");
             return;
         }
@@ -7119,15 +7924,26 @@ void HttpServer::setup_admin_routes() {
             return;
         }
 
-        auto sid = store->create(
-            decision.context.subject, decision.context.name,
-            decision.context.role, decision.context.source,
-            decision.context.allowed_symbols, decision.context.tenant_id);
+        std::string sid;
+        try {
+            sid = store->create(
+                decision.context.subject, decision.context.name,
+                decision.context.role, decision.context.source,
+                decision.context.allowed_symbols, decision.context.tenant_id,
+                "", decision.context.allowed_tables);
+        } catch (const std::exception&) {
+            res.status = 503;
+            res.set_content(
+                build_error_json("Session capacity unavailable"),
+                "application/json");
+            return;
+        }
         res.set_header("Set-Cookie", store->make_cookie(sid));
         std::ostringstream os;
         os << "{\"session\":true"
-           << ",\"role\":\"" << zeptodb::auth::role_to_string(decision.context.role) << "\""
-           << ",\"subject\":\"" << decision.context.subject << "\""
+           << ",\"role\":" << json_quote(
+                  zeptodb::auth::role_to_string(decision.context.role))
+           << ",\"subject\":" << json_quote(decision.context.subject)
            << "}";
         res.set_content(os.str(), "application/json");
     });
@@ -7136,6 +7952,7 @@ void HttpServer::setup_admin_routes() {
     svr_->Post("/auth/logout", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        set_sensitive_auth_response_headers(&res);
         auto* store = auth_ ? auth_->session_store() : nullptr;
         if (!store) {
             res.set_content("{\"ok\":true}", "application/json");
@@ -7144,20 +7961,10 @@ void HttpServer::setup_admin_routes() {
 
         // Extract session cookie
         if (req.has_header("Cookie")) {
-            auto ctx = auth_->check_session(req.get_header_value("Cookie"));
-            // Find and destroy the session
-            const auto& cookie = req.get_header_value("Cookie");
             const auto& name = store->config().cookie_name;
-            auto pos = cookie.find(name + "=");
-            if (pos != std::string::npos) {
-                auto val_start = pos + name.size() + 1;
-                auto val_end = cookie.find(';', val_start);
-                std::string sid = (val_end != std::string::npos)
-                    ? cookie.substr(val_start, val_end - val_start)
-                    : cookie.substr(val_start);
-                while (!sid.empty() && sid.back() == ' ') sid.pop_back();
-                store->destroy(sid);
-            }
+            const auto sid = cookie_value(
+                req.get_header_value("Cookie"), name);
+            if (sid) store->destroy(*sid);
         }
         res.set_header("Set-Cookie", store->make_clear_cookie());
         res.set_content("{\"ok\":true}", "application/json");
@@ -7167,6 +7974,7 @@ void HttpServer::setup_admin_routes() {
     svr_->Post("/auth/refresh", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        set_sensitive_auth_response_headers(&res);
         if (!zeptodb::auth::license().hasFeature(zeptodb::auth::Feature::SSO)) {
             res.status = 402;
             res.set_content(build_402_json("SSO/OIDC authentication"), "application/json");
@@ -7182,17 +7990,10 @@ void HttpServer::setup_admin_routes() {
         // Get current session from cookie
         std::string sid;
         if (req.has_header("Cookie")) {
-            const auto& cookie = req.get_header_value("Cookie");
             const auto& name = store->config().cookie_name;
-            auto pos = cookie.find(name + "=");
-            if (pos != std::string::npos) {
-                auto val_start = pos + name.size() + 1;
-                auto val_end = cookie.find(';', val_start);
-                sid = (val_end != std::string::npos)
-                    ? cookie.substr(val_start, val_end - val_start)
-                    : cookie.substr(val_start);
-                while (!sid.empty() && sid.back() == ' ') sid.pop_back();
-            }
+            const auto value = cookie_value(
+                req.get_header_value("Cookie"), name);
+            if (value) sid = *value;
         }
 
         auto session = store->get(sid);
@@ -7218,9 +8019,41 @@ void HttpServer::setup_admin_routes() {
             return;
         }
 
-        // Update refresh token if a new one was issued
-        if (!tokens->refresh_token.empty()) {
-            store->update_refresh_token(sid, tokens->refresh_token);
+        // Revalidate the refreshed identity and replace all authorization
+        // scopes. Keeping the old role/tenant after an IdP-side revocation is
+        // a privilege-retention bug.
+        const std::string refreshed_jwt = !tokens->id_token.empty()
+            ? tokens->id_token
+            : tokens->access_token;
+        auto refreshed = auth_->authenticate(
+            "POST", "/auth/refresh", "Bearer " + refreshed_jwt,
+            req.remote_addr);
+        if (refreshed.status != zeptodb::auth::AuthStatus::OK ||
+            refreshed.context.subject != session->subject ||
+            (!refreshed.context.tenant_id.empty() &&
+             (!tenant_mgr_ ||
+              !tenant_mgr_->get_tenant(refreshed.context.tenant_id)))) {
+            store->destroy(sid);
+            res.set_header("Set-Cookie", store->make_clear_cookie());
+            res.status = 401;
+            res.set_content(
+                build_error_json("Refreshed identity validation failed"),
+                "application/json");
+            return;
+        }
+
+        const std::string refresh_token = tokens->refresh_token.empty()
+            ? session->refresh_token
+            : tokens->refresh_token;
+        if (!store->update_identity(
+                sid, refreshed.context.name, refreshed.context.role,
+                refreshed.context.source, refreshed.context.allowed_symbols,
+                refreshed.context.tenant_id,
+                refreshed.context.allowed_tables, refresh_token)) {
+            res.status = 401;
+            res.set_content(build_error_json("Session expired"),
+                            "application/json");
+            return;
         }
 
         // Extend session cookie
@@ -7236,45 +8069,27 @@ void HttpServer::setup_admin_routes() {
     svr_->Get("/auth/me", [this](
         const httplib::Request& req, httplib::Response& res)
     {
+        set_sensitive_auth_response_headers(&res);
         if (!auth_) {
             res.status = 503;
             res.set_content(build_error_json("Auth not configured"), "application/json");
             return;
         }
 
-        // Try session cookie first
-        if (req.has_header("Cookie")) {
-            auto ctx = auth_->check_session(req.get_header_value("Cookie"));
-            if (ctx) {
-                std::ostringstream os;
-                os << "{\"subject\":\"" << ctx->subject << "\""
-                   << ",\"role\":\"" << zeptodb::auth::role_to_string(ctx->role) << "\""
-                   << ",\"source\":\"" << ctx->source << "\""
-                   << "}";
-                res.set_content(os.str(), "application/json");
-                return;
-            }
-        }
-
-        // Fall back to Bearer token
-        std::string auth_hdr;
-        if (req.has_header("Authorization"))
-            auth_hdr = req.get_header_value("Authorization");
-        if (auth_hdr.empty()) {
+        if (!req.has_header("X-Zepto-Subject") ||
+            !req.has_header("X-Zepto-Role") ||
+            !req.has_header("X-Zepto-Auth-Source")) {
             res.status = 401;
             res.set_content(build_error_json("Not authenticated"), "application/json");
             return;
         }
-        auto decision = auth_->check("GET", "/auth/me", auth_hdr, req.remote_addr);
-        if (decision.status != zeptodb::auth::AuthStatus::OK) {
-            res.status = 401;
-            res.set_content(build_error_json(decision.reason), "application/json");
-            return;
-        }
         std::ostringstream os;
-        os << "{\"subject\":\"" << decision.context.subject << "\""
-           << ",\"role\":\"" << zeptodb::auth::role_to_string(decision.context.role) << "\""
-           << ",\"source\":\"" << decision.context.source << "\""
+        os << "{\"subject\":"
+           << json_quote(req.get_header_value("X-Zepto-Subject"))
+           << ",\"role\":"
+           << json_quote(req.get_header_value("X-Zepto-Role"))
+           << ",\"source\":"
+           << json_quote(req.get_header_value("X-Zepto-Auth-Source"))
            << "}";
         res.set_content(os.str(), "application/json");
     });
@@ -7610,29 +8425,44 @@ void HttpServer::set_web_dir(const std::string& dir) {
 void HttpServer::start() {
     zeptodb::util::Logger::instance().info(
         "{\"event\":\"server_start\",\"port\":" + std::to_string(port_)
+        + ",\"host\":" + json_quote(tls_.bind_host)
         + ",\"tls\":" + (tls_.enabled ? "true" : "false")
         + ",\"auth\":" + (auth_ ? "true" : "false") + "}", "http");
     running_.store(true);
-    svr_->listen("0.0.0.0", static_cast<int>(port_));
+    svr_->listen(tls_.bind_host, static_cast<int>(port_));
     running_.store(false);
 }
 
 // ============================================================================
 // start_async() — background thread
 // ============================================================================
-void HttpServer::start_async() {
+bool HttpServer::start_async() {
+    if (!svr_->bind_to_port(tls_.bind_host, static_cast<int>(port_))) {
+        zeptodb::util::Logger::instance().error(
+            "{\"event\":\"server_bind_failed\",\"port\":" +
+            std::to_string(port_) + ",\"host\":" +
+            json_quote(tls_.bind_host) + "}", "http");
+        running_.store(false);
+        return false;
+    }
     zeptodb::util::Logger::instance().info(
         "{\"event\":\"server_start\",\"port\":" + std::to_string(port_)
+        + ",\"host\":" + json_quote(tls_.bind_host)
         + ",\"tls\":" + (tls_.enabled ? "true" : "false")
         + ",\"auth\":" + (auth_ ? "true" : "false")
         + ",\"async\":true}", "http");
     running_.store(true);
     thread_ = std::thread([this]() {
-        svr_->listen("0.0.0.0", static_cast<int>(port_));
+        svr_->listen_after_bind();
         running_.store(false);
     });
-    // Wait briefly for the server to start listening
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    svr_->wait_until_ready();
+    if (!svr_->is_running()) {
+        if (thread_.joinable()) thread_.join();
+        running_.store(false);
+        return false;
+    }
+    return true;
 }
 
 // ============================================================================
@@ -7756,7 +8586,7 @@ std::string HttpServer::build_json_response(
     os << "\"columns\":[";
     for (size_t i = 0; i < result.column_names.size(); ++i) {
         if (i > 0) os << ",";
-        os << "\"" << result.column_names[i] << "\"";
+        os << json_quote(result.column_names[i]);
     }
     os << "],";
 
@@ -7777,13 +8607,7 @@ std::string HttpServer::build_json_response(
     if (!result.string_rows.empty() && result.rows.empty()) {
         for (size_t i = 0; i < result.string_rows.size(); ++i) {
             if (i > 0) os << ",";
-            os << "[\"";
-            for (char ch : result.string_rows[i]) {
-                if (ch == '"') os << "\\\"";
-                else if (ch == '\\') os << "\\\\";
-                else os << ch;
-            }
-            os << "\"]";
+            os << "[" << json_quote(result.string_rows[i]) << "]";
         }
     }
     // ── String-result path (SHOW TABLES / DESCRIBE) ──
@@ -7801,14 +8625,7 @@ std::string HttpServer::build_json_response(
                     (result.column_types[c] == storage::ColumnType::SYMBOL ||
                      result.column_types[c] == storage::ColumnType::STRING) &&
                     str_idx < result.string_rows.size()) {
-                    // JSON-escape the string
-                    os << "\"";
-                    for (char ch : result.string_rows[str_idx]) {
-                        if (ch == '"') os << "\\\"";
-                        else if (ch == '\\') os << "\\\\";
-                        else os << ch;
-                    }
-                    os << "\"";
+                    os << json_quote(result.string_rows[str_idx]);
                     ++str_idx;
                 } else if (int_idx < result.rows[r].size()) {
                     os << result.rows[r][int_idx++];
@@ -7828,8 +8645,8 @@ std::string HttpServer::build_json_response(
             for (size_t c = 0; c < trow.size(); ++c) {
                 if (c > 0) os << ",";
                 if (is_str_col[c] && result.symbol_dict) {
-                    os << "\"" << result.symbol_dict->lookup(
-                        static_cast<uint32_t>(trow[c].i)) << "\"";
+                    os << json_quote(result.symbol_dict->lookup(
+                        static_cast<uint32_t>(trow[c].i)));
                 } else if (c < result.column_types.size() &&
                     (result.column_types[c] == storage::ColumnType::FLOAT64 ||
                      result.column_types[c] == storage::ColumnType::FLOAT32))
@@ -7842,8 +8659,8 @@ std::string HttpServer::build_json_response(
             for (size_t c = 0; c < row.size(); ++c) {
                 if (c > 0) os << ",";
                 if (is_str_col[c] && result.symbol_dict)
-                    os << "\"" << result.symbol_dict->lookup(
-                        static_cast<uint32_t>(row[c])) << "\"";
+                    os << json_quote(result.symbol_dict->lookup(
+                        static_cast<uint32_t>(row[c])));
                 else
                     os << row[c];
             }
@@ -7873,15 +8690,7 @@ std::string HttpServer::build_json_response(
 // Error JSON
 // ============================================================================
 std::string HttpServer::build_error_json(const std::string& msg) {
-    // 간단한 JSON 이스케이프 (따옴표 처리)
-    std::string escaped;
-    for (char c : msg) {
-        if (c == '"')       escaped += "\\\"";
-        else if (c == '\\') escaped += "\\\\";
-        else if (c == '\n') escaped += "\\n";
-        else                escaped += c;
-    }
-    return R"({"error":")" + escaped + R"("})";
+    return R"({"error":")" + json_escape(msg) + R"("})";
 }
 
 // ============================================================================

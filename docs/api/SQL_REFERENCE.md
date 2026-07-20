@@ -1080,7 +1080,9 @@ CREATE TABLE action_outcome_suppressions (
 Supported placement values are `hash_by_table`, `hash_by_table_and_symbol`
 (the default), and `pinned_node` with a positive `node_id`. The metadata is
 stored in the schema catalog and re-applied by the cluster coordinator, but it
-is not a rebalance/failover policy.
+is not a rebalance/failover policy. Durable modes fail `CREATE TABLE` and roll
+back the in-memory schema if the catalog cannot be saved. `PURE_IN_MEMORY`
+deliberately has no catalog write and succeeds as an in-memory-only operation.
 
 **Table-scoped partitioning & strict fallback (devlog 082, 083, 084, 085):**
 Once at least one `CREATE TABLE` has succeeded (i.e. `SchemaRegistry::table_count() > 0`), the executor switches to *strict* mode — a query referencing an unknown table name returns **zero rows** instead of falling back to a global partition scan. This ensures `SELECT * FROM empty_table` and `SELECT * FROM does_not_exist` both see 0 rows even when other tables contain data. Tables with no `CREATE TABLE` ever issued keep using the legacy per-symbol path (`table_id = 0`). In a distributed cluster this works on scatter-gather SELECTs too — each data node resolves `FROM <table>` via its own durable `_schema.json`, so the strict behavior is identical on every node.
@@ -1288,7 +1290,7 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | **A** | `WHERE symbol = X` | Direct routing to the owning node (zero scatter overhead) |
 | **A-1** | `WHERE symbol IN (1,2,3)` | Scatter to all nodes, each filters locally, merge results |
 | **A-2** | ASOF/WINDOW JOIN + symbol filter | Route to symbol's node (both tables co-located) |
-| **A-3** | Small-table equi hash JOIN | Fetch both operational tables under row/byte/latency caps, materialize typed temp tables, execute locally |
+| **A-3** | Small-table equi hash JOIN | Fetch both operational tables under cumulative cross-node row/byte budgets and a latency cap, materialize typed temp tables, execute locally |
 | **B** | No symbol filter | Scatter-gather to all nodes, merge with appropriate strategy |
 
 ### Merge strategies
@@ -1311,12 +1313,18 @@ In a multi-node cluster, the `QueryCoordinator` routes queries using a tiered st
 | `LIMIT` | ✅ Full | Applied post-merge after ORDER BY |
 | `AVG` | ✅ Full | Rewritten to SUM+COUNT, reconstructed post-merge |
 | `VWAP` | ✅ Full | Rewritten to SUM(price×vol)+SUM(vol), reconstructed |
-| `FIRST/LAST` | ✅ Bounded | Fetches all data under coordinator row/byte/latency caps, sorts by timestamp, executes locally |
-| `COUNT(DISTINCT)` | ✅ Bounded | Fetches all data under coordinator row/byte/latency caps, executes locally |
-| Window functions | ✅ Bounded | Fetches all data under coordinator row/byte/latency caps, materializes declared tables with typed rows, executes locally |
-| Small-table hash JOIN | ✅ Bounded | INNER/LEFT/RIGHT/FULL equi JOIN over declared operational tables; both sides must fit the coordinator row cap |
-| CTE / Subquery | ✅ Bounded | Fetches all data under coordinator row/byte/latency caps, executes locally |
-| `STDDEV/VARIANCE/MEDIAN/PERCENTILE` | ✅ Bounded | Fetches all data under coordinator row/byte/latency caps, executes locally |
+| `FIRST/LAST` | ✅ Bounded | Fetches under cumulative cross-node row/byte budgets, sorts by timestamp, executes locally |
+| `COUNT(DISTINCT)` | ✅ Bounded | Fetches under cumulative cross-node row/byte budgets, executes locally |
+| Window functions | ✅ Bounded | Fetches under cumulative cross-node row/byte budgets, materializes declared tables with typed rows, executes locally |
+| Small-table hash JOIN | ✅ Bounded | INNER/LEFT/RIGHT/FULL equi JOIN over declared operational tables; each side has a global row cap and both sides share the byte cap |
+| CTE / Subquery | ✅ Bounded | Fetches under cumulative cross-node row/byte budgets, executes locally |
+| `STDDEV/VARIANCE/MEDIAN/PERCENTILE` | ✅ Bounded | Fetches under cumulative cross-node row/byte budgets, executes locally |
+
+For these bounded coordinator-local paths, each node is queried only for the
+remaining rows plus one overflow probe. Remote SQL result payloads that exceed
+the remaining bounded-RPC allowance are rejected before the client allocates
+the payload receive buffer. Cap errors fail closed and never fall back to
+partial distributed semantics.
 | `SHOW TABLES` | ✅ Full | Scatter to all nodes, sum row counts |
 | `DESCRIBE` | ✅ Full | Execute on any node (schema replicated via DDL broadcast) |
 | `CREATE/DROP/ALTER TABLE` | ✅ Full | DDL broadcast to all nodes |

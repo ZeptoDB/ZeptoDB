@@ -24,12 +24,21 @@ spec:
         app.kubernetes.io/version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/security: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/security-values: {{ toJson (dict "auth" .Values.auth "clusterSecurity" .Values.cluster.security) | sha256sum }}
+        checksum/auth-external: {{ .Values.auth.rolloutChecksum | quote }}
+        checksum/cluster-external: {{ .Values.cluster.security.rolloutChecksum | quote }}
         {{- if .Values.prometheus.scrape }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.prometheus.port | quote }}
         prometheus.io/path: {{ .Values.prometheus.path | quote }}
         {{- end }}
     spec:
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.gracefulShutdown.terminationGracePeriodSeconds }}
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
@@ -70,6 +79,10 @@ spec:
       initContainers:
         - name: gen-cluster-args
           image: busybox:1.36-musl
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command: ["sh", "-c"]
           args:
             - |
@@ -88,7 +101,7 @@ spec:
               # Build startup script
               cat > /shared/start.sh <<SCRIPT
               #!/shared/sh
-              exec ./zepto_http_server --port ${PORT} --node-id ${ORDINAL} --no-auth --web-dir /opt/zeptodb/web --drain-threads ${DRAIN_THREADS} --ring-buffer-capacity ${RING_CAP}$(for i in $(seq 0 $((REPLICAS - 1))); do [ "$i" != "$ORDINAL" ] && echo -n " --add-node ${i}:${FULLNAME}-${i}.${HEADLESS}:${PORT}"; done)
+              exec ./zepto_http_server --bind 0.0.0.0 --allow-plaintext-http --secure-cookie --port ${PORT} --ticks 0 --node-id ${ORDINAL}{{ if .Values.persistence.enabled }} --storage-mode tiered --hdb-dir {{ .Values.config.dataDir }} --acknowledge-incomplete-durability{{ end }}{{ if .Values.auth.enabled }} --api-keys-file {{ .Values.auth.mountPath }} --no-bootstrap-dev-keys{{ else }} --no-auth{{ end }}{{ if not .Values.cluster.security.enabled }} --allow-insecure-cluster{{ end }} --web-dir /opt/zeptodb/web --drain-threads ${DRAIN_THREADS} --ring-buffer-capacity ${RING_CAP}$(for i in $(seq 0 $((REPLICAS - 1))); do [ "$i" != "$ORDINAL" ] && echo -n " --add-node ${i}:${FULLNAME}-${i}.${HEADLESS}:${PORT}"; done)
               SCRIPT
               chmod +x /shared/start.sh
               echo "Generated: $(cat /shared/start.sh)"
@@ -97,8 +110,12 @@ spec:
               mountPath: /shared
       containers:
         - name: zeptodb
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "zeptodb.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command: ["/shared/sh", "/shared/start.sh"]
           ports:
             - name: http
@@ -131,6 +148,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- if .Values.cluster.security.enabled }}
+            - name: ZEPTO_CLUSTER_SECRET_FILE
+              value: {{ .Values.cluster.security.mountPath | quote }}
+            {{- end }}
             {{- if .Values.coldTier.enabled }}
             # --- devlog 118: cold-tier S3 Parquet sink ---
             - name: ZEPTO_COLD_TIER_ENABLED
@@ -164,6 +185,20 @@ spec:
             - name: shared
               mountPath: /shared
               readOnly: true
+            {{- if .Values.auth.enabled }}
+            - name: auth
+              mountPath: {{ dir .Values.auth.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.cluster.security.enabled }}
+            - name: cluster-security
+              mountPath: {{ dir .Values.cluster.security.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.config.dataDir }}
+            {{- end }}
             {{- if .Values.performanceTuning.hugepages.enabled }}
             - name: hugepage
               mountPath: /dev/hugepages
@@ -187,7 +222,7 @@ spec:
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep {{ .Values.gracefulShutdown.preStopSleepSeconds }}"]
+                command: ["/shared/sh", "-c", "sleep {{ .Values.gracefulShutdown.preStopSleepSeconds }}"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
@@ -196,6 +231,24 @@ spec:
             name: {{ include "zeptodb.fullname" . }}
         - name: shared
           emptyDir: {}
+        {{- if .Values.auth.enabled }}
+        - name: auth
+          secret:
+            secretName: {{ include "zeptodb.authSecretName" . }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.auth.apiKeysKey }}
+                path: {{ base .Values.auth.mountPath }}
+        {{- end }}
+        {{- if .Values.cluster.security.enabled }}
+        - name: cluster-security
+          secret:
+            secretName: {{ include "zeptodb.clusterSecretName" . }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.cluster.security.secretKey }}
+                path: {{ base .Values.cluster.security.mountPath }}
+        {{- end }}
         {{- if .Values.performanceTuning.hugepages.enabled }}
         - name: hugepage
           emptyDir:

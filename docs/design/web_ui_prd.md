@@ -9,7 +9,7 @@ Web UI for investor/customer demos. Next.js project in the `web/` directory with
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| Framework | Next.js 15 (App Router) | File-based routing, SSG, extensibility |
+| Framework | Next.js 16.2.10 (App Router) | File-based routing, SSG, extensibility; security-patched 16.2 line |
 | UI | **MUI (Material UI) v6** | Material Design 3, rich dashboard components, built-in dark mode |
 | SQL Editor | CodeMirror 6 | SQL highlighting, autocomplete |
 | Chart | Recharts | React native, lightweight |
@@ -142,7 +142,7 @@ web/src/app/
 | admin | ✅ | ✅ | ✅ | ✅ |
 | writer | ✅ | ✅ | ❌ | ✅ |
 | reader | ✅ | ❌ | ❌ | ❌ |
-| analyst | ✅ (symbol restricted) | ❌ | ❌ | ❌ |
+| analyst | ❌ (reserved) | ❌ | ❌ | ❌ |
 | metrics | ❌ | ❌ | ❌ | ✅ |
 
 - Description and usage scenarios per role
@@ -201,7 +201,7 @@ Browser → /ui (login page)
       admin   → all menus
       writer  → query, tables, dashboard
       reader  → query, tables, dashboard (SELECT only)
-      analyst → query (symbol restricted), tables
+      analyst → no data pages until symbol filtering ships
       metrics → dashboard only
 ```
 

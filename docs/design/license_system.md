@@ -104,7 +104,10 @@ Gated endpoints return:
 ## Security
 
 - License public key is embedded at compile time
-- RS256 signature prevents key forgery
+- Non-trial keys require an exact three-part JWT with `alg=RS256`; the signature
+  is verified over the original header and payload bytes with the embedded key
+- License claims use their own schema and are not interpreted as login identity
+  claims
 - No phone-home; validation is fully offline
 
 ## Trial Keys

@@ -25,8 +25,14 @@ cluster:
   rpcPortOffset: 100
   heartbeatPort: 9100
 
+# Benchmark-only exception. Never reuse this overlay for production.
+auth:
+  enabled: false
+
 persistence:
   enabled: true
+  # Benchmark-only evaluation; not a SQL-visible restart durability claim.
+  acknowledgeIncompleteDurability: true
   storageClass: gp3
   size: 100Gi
 

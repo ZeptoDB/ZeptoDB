@@ -280,18 +280,20 @@ Full SQL reference: [SQL_REFERENCE.md](docs/api/SQL_REFERENCE.md) — INSERT, UP
 |---------|---------|
 | TLS/HTTPS | OpenSSL 3.2, cert/key PEM |
 | Authentication | API Key (SHA256) + JWT/OIDC (HS256/RS256, JWKS auto-fetch) |
-| Authorization | RBAC: 5 roles + symbol-level ACL + multi-tenancy |
+| Authorization | RBAC: 5 roles + table/tenant ACL; symbol scopes fail closed pending row filtering |
 | Rate Limiting | Token bucket per-identity + per-IP |
 | Secrets | Vault KV v2 → K8s secrets → env var (priority chain) |
-| Audit Log | 7-year retention, SOC2/EMIR/MiFID II compliant |
+| Audit Log | Structured audit events; external immutable retention/SIEM required for compliance |
 
 ---
 
 ## 🚢 Deployment
 
 ```bash
-# Docker
-docker run -p 8123:8123 zeptodb/zeptodb
+# Docker (after creating auth/api_keys.txt as shown in the deployment guide)
+docker run --rm -p 127.0.0.1:8123:8123 \
+  -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
+  zeptodb/zeptodb:0.1.7
 
 # Helm
 helm install zeptodb ./deploy/helm/zeptodb

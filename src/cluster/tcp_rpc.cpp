@@ -10,6 +10,7 @@
 #include <cstring>
 #include <netdb.h>
 #include <fcntl.h>
+#include <limits>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -48,7 +49,13 @@ static bool recv_all(int fd, void* buf, size_t len) {
 }
 
 static bool send_message(int fd, RpcType type, uint32_t req_id,
-                         const std::vector<uint8_t>& payload) {
+                         const std::vector<uint8_t>& payload,
+                         size_t max_payload_size =
+                             std::numeric_limits<uint32_t>::max()) {
+    if (payload.size() > max_payload_size ||
+        payload.size() > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
     RpcHeader hdr;
     hdr.type        = static_cast<uint32_t>(type);
     hdr.request_id  = req_id;
@@ -59,6 +66,89 @@ static bool send_message(int fd, RpcType type, uint32_t req_id,
     return true;
 }
 
+static bool serialized_result_exceeds(
+    const zeptodb::sql::QueryResultSet& result,
+    size_t limit) {
+    size_t total = 0;
+    auto add = [&](size_t bytes) {
+        if (bytes > limit - std::min(total, limit)) return false;
+        total += bytes;
+        return total <= limit;
+    };
+
+    if (!add(sizeof(uint32_t)) || !add(result.error.size()) ||
+        result.column_names.size() > std::numeric_limits<uint32_t>::max() ||
+        !add(sizeof(uint32_t))) {
+        return true;
+    }
+    for (const auto& name : result.column_names) {
+        if (name.size() > std::numeric_limits<uint32_t>::max() ||
+            !add(sizeof(uint32_t)) || !add(name.size()) ||
+            !add(sizeof(uint8_t))) {
+            return true;
+        }
+    }
+    if (result.rows.size() > std::numeric_limits<uint32_t>::max() ||
+        !add(sizeof(uint32_t))) {
+        return true;
+    }
+    const size_t column_count = result.column_names.size();
+    if (column_count != 0 &&
+        result.rows.size() >
+            std::numeric_limits<size_t>::max() / column_count) {
+        return true;
+    }
+    const size_t cell_count = result.rows.size() * column_count;
+    if (cell_count > std::numeric_limits<size_t>::max() / sizeof(int64_t) ||
+        !add(cell_count * sizeof(int64_t)) || !add(sizeof(uint32_t))) {
+        return true;
+    }
+
+    size_t string_count = 0;
+    if (!result.string_rows.empty()) {
+        string_count = result.string_rows.size();
+        if (string_count > std::numeric_limits<uint32_t>::max()) return true;
+        for (const auto& value : result.string_rows) {
+            if (value.size() > std::numeric_limits<uint32_t>::max() ||
+                !add(sizeof(uint32_t)) || !add(value.size())) {
+                return true;
+            }
+        }
+    } else if (result.symbol_dict != nullptr) {
+        for (const auto& row : result.rows) {
+            for (size_t column = 0;
+                 column < column_count && column < row.size(); ++column) {
+                if (column >= result.column_types.size() ||
+                    !rpc_is_string_encoded_type(
+                        result.column_types[column])) {
+                    continue;
+                }
+                if (++string_count > std::numeric_limits<uint32_t>::max()) {
+                    return true;
+                }
+                const auto value = result.symbol_dict->lookup(
+                    static_cast<uint32_t>(row[column]));
+                if (value.size() > std::numeric_limits<uint32_t>::max() ||
+                    !add(sizeof(uint32_t)) || !add(value.size())) {
+                    return true;
+                }
+            }
+        }
+    }
+    return total > limit;
+}
+
+static bool send_auth_header(int fd, RpcType type, uint32_t payload_len = 0) {
+    RpcHeader header{};
+    header.type = static_cast<uint32_t>(type);
+    header.payload_len = payload_len;
+    return send_all(fd, &header, sizeof(header));
+}
+
+static void reject_auth(int fd) {
+    (void)send_auth_header(fd, RpcType::AUTH_REJECT);
+}
+
 // ============================================================================
 // TcpRpcServer
 // ============================================================================
@@ -67,6 +157,13 @@ void TcpRpcServer::start(uint16_t port, SqlQueryCallback   sql_cb,
                           TickIngestCallback tick_cb,
                           WalReplayCallback  wal_cb) {
     if (running_.load()) return;
+
+    const std::string security_error = security_.validation_error();
+    if (!security_error.empty()) {
+        ZEPTO_ERROR("TcpRpcServer: invalid cluster RPC security configuration: {}",
+                    security_error);
+        return;
+    }
 
     sql_callback_  = std::move(sql_cb);
     tick_callback_ = std::move(tick_cb);
@@ -219,36 +316,73 @@ void TcpRpcServer::handle_connection(int cfd) {
     tv.tv_usec = 0;
     ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    // Auth handshake: if security enabled, first message must be AUTH_HANDSHAKE
+    // A peer that authenticates and then stops reading must not pin a worker
+    // forever in send_all(). Use the graceful-drain bound for server writes.
+    const int send_timeout_ms = std::max(drain_timeout_ms_, 1);
+    struct timeval send_timeout{};
+    send_timeout.tv_sec = send_timeout_ms / 1000;
+    send_timeout.tv_usec = (send_timeout_ms % 1000) * 1000;
+    ::setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO,
+                 &send_timeout, sizeof(send_timeout));
+
+    // Protocol v2 mutually authenticates both peers and binds each proof to a
+    // fresh server challenge. Authentication is performed once per pooled
+    // connection before any application message is accepted.
     if (security_.enabled) {
-        RpcHeader auth_hdr;
-        if (!recv_all(cfd, &auth_hdr, sizeof(auth_hdr))) return;
-        if (auth_hdr.magic != 0x41504558u ||
-            static_cast<RpcType>(auth_hdr.type) != RpcType::AUTH_HANDSHAKE ||
-            auth_hdr.payload_len < RPC_AUTH_PAYLOAD_SIZE ||
-            auth_hdr.payload_len > max_payload_size_) {
-            // Not an auth message — reject
-            RpcHeader rej{};
-            rej.type = static_cast<uint32_t>(RpcType::AUTH_REJECT);
-            send_all(cfd, &rej, sizeof(rej));
-            return;
-        }
-        std::vector<uint8_t> auth_payload(auth_hdr.payload_len);
-        if (!recv_all(cfd, auth_payload.data(), auth_hdr.payload_len)) return;
-
-        if (!rpc_validate_auth(security_.shared_secret,
-                               auth_payload.data(), auth_payload.size())) {
-            ZEPTO_WARN("TcpRpcServer: auth handshake failed from client");
-            RpcHeader rej{};
-            rej.type = static_cast<uint32_t>(RpcType::AUTH_REJECT);
-            send_all(cfd, &rej, sizeof(rej));
+        RpcHeader hello_header{};
+        if (!recv_all(cfd, &hello_header, sizeof(hello_header))) return;
+        if (hello_header.magic != 0x41504558u ||
+            static_cast<RpcType>(hello_header.type) !=
+                RpcType::AUTH_CLIENT_HELLO ||
+            hello_header.payload_len != RPC_AUTH_CLIENT_HELLO_SIZE) {
+            reject_auth(cfd);
             return;
         }
 
-        // Auth OK
-        RpcHeader ok_hdr{};
-        ok_hdr.type = static_cast<uint32_t>(RpcType::AUTH_OK);
-        if (!send_all(cfd, &ok_hdr, sizeof(ok_hdr))) return;
+        RpcAuthNonce client_nonce{};
+        if (!recv_all(cfd, client_nonce.data(), client_nonce.size())) return;
+
+        RpcAuthNonce server_nonce{};
+        RpcAuthProof server_proof{};
+        if (!rpc_generate_auth_nonce(server_nonce) ||
+            !rpc_compute_server_proof(security_.shared_secret, client_nonce,
+                                      server_nonce, server_proof)) {
+            ZEPTO_ERROR("TcpRpcServer: could not create RPC auth challenge");
+            reject_auth(cfd);
+            return;
+        }
+
+        RpcAuthServerChallenge challenge{};
+        std::copy(server_nonce.begin(), server_nonce.end(), challenge.begin());
+        std::copy(server_proof.begin(), server_proof.end(),
+                  challenge.begin() + RPC_AUTH_NONCE_SIZE);
+        if (!send_auth_header(
+                cfd, RpcType::AUTH_SERVER_CHALLENGE,
+                static_cast<uint32_t>(challenge.size())) ||
+            !send_all(cfd, challenge.data(), challenge.size())) {
+            return;
+        }
+
+        RpcHeader proof_header{};
+        if (!recv_all(cfd, &proof_header, sizeof(proof_header))) return;
+        if (proof_header.magic != 0x41504558u ||
+            static_cast<RpcType>(proof_header.type) !=
+                RpcType::AUTH_CLIENT_PROOF ||
+            proof_header.payload_len != RPC_AUTH_CLIENT_PROOF_SIZE) {
+            reject_auth(cfd);
+            return;
+        }
+
+        RpcAuthProof client_proof{};
+        if (!recv_all(cfd, client_proof.data(), client_proof.size())) return;
+        if (!rpc_validate_client_proof(security_.shared_secret, client_nonce,
+                                       server_nonce, client_proof)) {
+            ZEPTO_WARN("TcpRpcServer: cluster RPC authentication failed");
+            reject_auth(cfd);
+            return;
+        }
+
+        if (!send_auth_header(cfd, RpcType::AUTH_OK)) return;
     }
 
     RpcHeader hdr;
@@ -287,8 +421,14 @@ void TcpRpcServer::handle_connection(int cfd) {
             } catch (...) {
                 result.error = "rpc_server: unknown exception";
             }
+            if (serialized_result_exceeds(result, max_payload_size_)) {
+                result = {};
+                result.error =
+                    "rpc_server: response exceeds configured payload limit";
+            }
             auto data = serialize_result(result);
-            if (!send_message(cfd, RpcType::SQL_RESULT, hdr.request_id, data))
+            if (!send_message(cfd, RpcType::SQL_RESULT, hdr.request_id, data,
+                              max_payload_size_))
                 break;
             continue;  // keep-alive: wait for next request
         }
@@ -402,7 +542,8 @@ void TcpRpcServer::handle_connection(int cfd) {
                 : RpcType::AGENT_CACHE_RESULT;
             if (fencing_token_ && hdr.epoch != 0 &&
                 !fencing_token_->validate(hdr.epoch)) {
-                if (!send_message(cfd, response_type, hdr.request_id, {}))
+                if (!send_message(cfd, response_type, hdr.request_id, {},
+                                  max_payload_size_))
                     break;
                 continue;
             }
@@ -425,7 +566,8 @@ void TcpRpcServer::handle_connection(int cfd) {
                     response.clear();
                 }
             }
-            if (!send_message(cfd, response_type, hdr.request_id, response))
+            if (!send_message(cfd, response_type, hdr.request_id, response,
+                              max_payload_size_))
                 break;
             continue;
         }
@@ -435,7 +577,8 @@ void TcpRpcServer::handle_connection(int cfd) {
                 !fencing_token_->validate(hdr.epoch)) {
                 const std::vector<uint8_t> rejected{0u};
                 if (!send_message(cfd, RpcType::AGENT_MEMORY_REPLICA_ACK,
-                                  hdr.request_id, rejected))
+                                  hdr.request_id, rejected,
+                                  max_payload_size_))
                     break;
                 continue;
             }
@@ -450,7 +593,7 @@ void TcpRpcServer::handle_connection(int cfd) {
                 }
             }
             if (!send_message(cfd, RpcType::AGENT_MEMORY_REPLICA_ACK,
-                              hdr.request_id, response))
+                              hdr.request_id, response, max_payload_size_))
                 break;
             continue;
         }
@@ -466,7 +609,7 @@ void TcpRpcServer::handle_connection(int cfd) {
                 }
             }
             if (!send_message(cfd, RpcType::AGENT_MEMORY_STATS_RESULT,
-                              hdr.request_id, response))
+                              hdr.request_id, response, max_payload_size_))
                 break;
             continue;
         }
@@ -494,7 +637,8 @@ void TcpRpcServer::handle_connection(int cfd) {
                     response.clear();
                 }
             }
-            if (!send_message(cfd, response_type, hdr.request_id, response))
+            if (!send_message(cfd, response_type, hdr.request_id, response,
+                              max_payload_size_))
                 break;
             continue;
         }
@@ -504,12 +648,10 @@ void TcpRpcServer::handle_connection(int cfd) {
             if (stats_callback_) {
                 try { json = stats_callback_(); } catch (...) {}
             }
-            RpcHeader resp;
-            resp.type        = static_cast<uint32_t>(RpcType::STATS_RESULT);
-            resp.request_id  = hdr.request_id;
-            resp.payload_len = static_cast<uint32_t>(json.size());
-            if (!send_all(cfd, &resp, sizeof(resp)) ||
-                !send_all(cfd, json.data(), json.size()))
+            if (json.size() > max_payload_size_) break;
+            std::vector<uint8_t> response(json.begin(), json.end());
+            if (!send_message(cfd, RpcType::STATS_RESULT, hdr.request_id,
+                              response, max_payload_size_))
                 break;
             continue;
         }
@@ -523,12 +665,10 @@ void TcpRpcServer::handle_connection(int cfd) {
                                             since_ms, limit);
                 try { json = metrics_callback_(since_ms, limit); } catch (...) {}
             }
-            RpcHeader resp;
-            resp.type        = static_cast<uint32_t>(RpcType::METRICS_RESULT);
-            resp.request_id  = hdr.request_id;
-            resp.payload_len = static_cast<uint32_t>(json.size());
-            if (!send_all(cfd, &resp, sizeof(resp)) ||
-                !send_all(cfd, json.data(), json.size()))
+            if (json.size() > max_payload_size_) break;
+            std::vector<uint8_t> response(json.begin(), json.end());
+            if (!send_message(cfd, RpcType::METRICS_RESULT, hdr.request_id,
+                              response, max_payload_size_))
                 break;
             continue;
         }
@@ -562,14 +702,24 @@ TcpRpcClient::~TcpRpcClient() {
     pool_.clear();
 }
 
+void TcpRpcClient::set_security(RpcSecurityConfig cfg) {
+    std::lock_guard<std::mutex> lock(pool_mu_);
+    for (int fd : pool_) ::close(fd);
+    pool_.clear();
+    security_ = std::move(cfg);
+}
+
 size_t TcpRpcClient::pool_idle_count() const {
     std::lock_guard<std::mutex> lock(pool_mu_);
     return pool_.size();
 }
 
 int TcpRpcClient::acquire() {
+    RpcSecurityConfig security;
     {
         std::lock_guard<std::mutex> lock(pool_mu_);
+        security = security_;
+        if (!security.validation_error().empty()) return -1;
         while (!pool_.empty()) {
             int fd = pool_.back();
             pool_.pop_back();
@@ -586,21 +736,75 @@ int TcpRpcClient::acquire() {
     int fd = connect_to_server();
     if (fd < 0) return -1;
 
-    // Auth handshake on new connections
-    if (security_.enabled && !security_.shared_secret.empty()) {
-        auto auth_payload = rpc_build_auth(security_.shared_secret);
-        RpcHeader auth_hdr{};
-        auth_hdr.type        = static_cast<uint32_t>(RpcType::AUTH_HANDSHAKE);
-        auth_hdr.payload_len = static_cast<uint32_t>(auth_payload.size());
-        if (!send_all(fd, &auth_hdr, sizeof(auth_hdr)) ||
-            !send_all(fd, auth_payload.data(), auth_payload.size())) {
+    // Auth handshake on new connections. Bound the handshake reads so a peer
+    // cannot hold a client indefinitely before normal per-query timeouts apply.
+    if (security.enabled) {
+        const int auth_timeout_ms = connect_timeout_ms_ > 0
+            ? connect_timeout_ms_
+            : query_timeout_ms_;
+        if (auth_timeout_ms > 0) {
+            struct timeval timeout{};
+            timeout.tv_sec = auth_timeout_ms / 1000;
+            timeout.tv_usec = (auth_timeout_ms % 1000) * 1000;
+            (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                               &timeout, sizeof(timeout));
+            (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+                               &timeout, sizeof(timeout));
+        }
+
+        RpcAuthNonce client_nonce{};
+        if (!rpc_generate_auth_nonce(client_nonce) ||
+            !send_auth_header(
+                fd, RpcType::AUTH_CLIENT_HELLO,
+                static_cast<uint32_t>(client_nonce.size())) ||
+            !send_all(fd, client_nonce.data(), client_nonce.size())) {
             ::close(fd);
             return -1;
         }
-        // Wait for AUTH_OK
-        RpcHeader resp{};
-        if (!recv_all(fd, &resp, sizeof(resp)) ||
-            static_cast<RpcType>(resp.type) != RpcType::AUTH_OK) {
+
+        RpcHeader challenge_header{};
+        if (!recv_all(fd, &challenge_header, sizeof(challenge_header)) ||
+            challenge_header.magic != 0x41504558u ||
+            static_cast<RpcType>(challenge_header.type) !=
+                RpcType::AUTH_SERVER_CHALLENGE ||
+            challenge_header.payload_len != RPC_AUTH_SERVER_CHALLENGE_SIZE) {
+            ::close(fd);
+            return -1;
+        }
+
+        RpcAuthServerChallenge challenge{};
+        if (!recv_all(fd, challenge.data(), challenge.size())) {
+            ::close(fd);
+            return -1;
+        }
+        RpcAuthNonce server_nonce{};
+        RpcAuthProof server_proof{};
+        std::copy_n(challenge.begin(), server_nonce.size(),
+                    server_nonce.begin());
+        std::copy_n(challenge.begin() + RPC_AUTH_NONCE_SIZE,
+                    server_proof.size(), server_proof.begin());
+        if (!rpc_validate_server_proof(security.shared_secret, client_nonce,
+                                       server_nonce, server_proof)) {
+            ::close(fd);
+            return -1;
+        }
+
+        RpcAuthProof client_proof{};
+        if (!rpc_compute_client_proof(security.shared_secret, client_nonce,
+                                      server_nonce, client_proof) ||
+            !send_auth_header(
+                fd, RpcType::AUTH_CLIENT_PROOF,
+                static_cast<uint32_t>(client_proof.size())) ||
+            !send_all(fd, client_proof.data(), client_proof.size())) {
+            ::close(fd);
+            return -1;
+        }
+
+        RpcHeader response_header{};
+        if (!recv_all(fd, &response_header, sizeof(response_header)) ||
+            response_header.magic != 0x41504558u ||
+            static_cast<RpcType>(response_header.type) != RpcType::AUTH_OK ||
+            response_header.payload_len != 0) {
             ::close(fd);
             return -1;
         }
@@ -694,7 +898,15 @@ int TcpRpcClient::connect_to_server() const {
 }
 
 zeptodb::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
+    return execute_sql(sql, max_response_size_);
+}
+
+zeptodb::sql::QueryResultSet TcpRpcClient::execute_sql(
+    const std::string& sql,
+    size_t max_response_bytes) {
     zeptodb::sql::QueryResultSet err_result;
+    const size_t response_limit = std::min<size_t>(
+        max_response_bytes, max_response_size_);
 
     int fd = acquire();
     if (fd < 0) {
@@ -727,6 +939,22 @@ zeptodb::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
         return err_result;
     }
 
+    if (hdr.magic != 0x41504558u ||
+        static_cast<RpcType>(hdr.type) != RpcType::SQL_RESULT) {
+        release(fd, false);
+        err_result.error = "TcpRpcClient: unexpected response type";
+        return err_result;
+    }
+
+    if (static_cast<size_t>(hdr.payload_len) > response_limit) {
+        release(fd, false);
+        err_result.error =
+            "TcpRpcClient: response payload exceeds configured limit (" +
+            std::to_string(hdr.payload_len) + " > " +
+            std::to_string(response_limit) + " bytes)";
+        return err_result;
+    }
+
     std::vector<uint8_t> resp(hdr.payload_len);
     if (hdr.payload_len > 0 && !recv_all(fd, resp.data(), hdr.payload_len)) {
         release(fd, false);
@@ -735,11 +963,6 @@ zeptodb::sql::QueryResultSet TcpRpcClient::execute_sql(const std::string& sql) {
     }
 
     release(fd, true);  // return to pool
-
-    if (static_cast<RpcType>(hdr.type) != RpcType::SQL_RESULT) {
-        err_result.error = "TcpRpcClient: unexpected response type";
-        return err_result;
-    }
 
     return deserialize_result(resp.data(), resp.size());
 }
@@ -766,15 +989,19 @@ bool TcpRpcClient::ingest_tick(const zeptodb::ingestion::TickMessage& msg) {
         return false;
     }
 
+    if (resp.magic != 0x41504558u ||
+        static_cast<RpcType>(resp.type) != RpcType::TICK_ACK ||
+        resp.payload_len != 1) {
+        release(fd, false);
+        return false;
+    }
     uint8_t status = 0;
-    if (resp.payload_len == 1) {
-        if (!recv_all(fd, &status, 1)) {
-            release(fd, false);
-            return false;
-        }
+    if (!recv_all(fd, &status, 1)) {
+        release(fd, false);
+        return false;
     }
     release(fd, true);
-    return static_cast<RpcType>(resp.type) == RpcType::TICK_ACK && status == 1u;
+    return status == 1u;
 }
 
 bool TcpRpcClient::ingest_typed_row(const zeptodb::core::TypedRowMessage& row) {
@@ -799,15 +1026,19 @@ bool TcpRpcClient::ingest_typed_row(const zeptodb::core::TypedRowMessage& row) {
         return false;
     }
 
+    if (resp.magic != 0x41504558u ||
+        static_cast<RpcType>(resp.type) != RpcType::TYPED_ROW_ACK ||
+        resp.payload_len != 1) {
+        release(fd, false);
+        return false;
+    }
     uint8_t status = 0;
-    if (resp.payload_len == 1) {
-        if (!recv_all(fd, &status, 1)) {
-            release(fd, false);
-            return false;
-        }
+    if (!recv_all(fd, &status, 1)) {
+        release(fd, false);
+        return false;
     }
     release(fd, true);
-    return static_cast<RpcType>(resp.type) == RpcType::TYPED_ROW_ACK && status == 1u;
+    return status == 1u;
 }
 
 bool TcpRpcClient::replicate_wal(
@@ -834,15 +1065,19 @@ bool TcpRpcClient::replicate_wal(
         release(fd, false);
         return false;
     }
+    if (resp.magic != 0x41504558u ||
+        static_cast<RpcType>(resp.type) != RpcType::WAL_ACK ||
+        resp.payload_len != 1) {
+        release(fd, false);
+        return false;
+    }
     uint8_t status = 0;
-    if (resp.payload_len == 1) {
-        if (!recv_all(fd, &status, 1)) {
-            release(fd, false);
-            return false;
-        }
+    if (!recv_all(fd, &status, 1)) {
+        release(fd, false);
+        return false;
     }
     release(fd, true);
-    return static_cast<RpcType>(resp.type) == RpcType::WAL_ACK && status == 1u;
+    return status == 1u;
 }
 
 std::string TcpRpcClient::request_stats() {
@@ -860,7 +1095,9 @@ std::string TcpRpcClient::request_stats() {
 
     RpcHeader resp{};
     if (!recv_all(fd, &resp, sizeof(resp)) ||
-        static_cast<RpcType>(resp.type) != RpcType::STATS_RESULT) {
+        resp.magic != 0x41504558u ||
+        static_cast<RpcType>(resp.type) != RpcType::STATS_RESULT ||
+        resp.payload_len > max_response_size_) {
         release(fd, false);
         return "";
     }
@@ -892,7 +1129,9 @@ std::string TcpRpcClient::request_metrics(int64_t since_ms, uint32_t limit) {
 
     RpcHeader resp{};
     if (!recv_all(fd, &resp, sizeof(resp)) ||
-        static_cast<RpcType>(resp.type) != RpcType::METRICS_RESULT) {
+        resp.magic != 0x41504558u ||
+        static_cast<RpcType>(resp.type) != RpcType::METRICS_RESULT ||
+        resp.payload_len > max_response_size_) {
         release(fd, false);
         return "";
     }
@@ -951,6 +1190,14 @@ std::vector<uint8_t> TcpRpcClient::request_binary(
         return {};
     }
 
+    if (resp.magic != 0x41504558u ||
+        static_cast<RpcType>(resp.type) != response_type ||
+        resp.payload_len > max_response_size_) {
+        release(fd, false);
+        if (error) *error = "TcpRpcClient: unexpected response type";
+        return {};
+    }
+
     std::vector<uint8_t> response(resp.payload_len);
     if (resp.payload_len > 0 &&
         !recv_all(fd, response.data(), resp.payload_len)) {
@@ -959,11 +1206,6 @@ std::vector<uint8_t> TcpRpcClient::request_binary(
         return {};
     }
     release(fd, true);
-
-    if (static_cast<RpcType>(resp.type) != response_type) {
-        if (error) *error = "TcpRpcClient: unexpected response type";
-        return {};
-    }
     return response;
 }
 
@@ -982,9 +1224,12 @@ bool TcpRpcClient::ping() {
     }
 
     RpcHeader resp{};
-    bool ok = recv_all(fd, &resp, sizeof(resp));
+    bool ok = recv_all(fd, &resp, sizeof(resp)) &&
+              resp.magic == 0x41504558u &&
+              static_cast<RpcType>(resp.type) == RpcType::PONG &&
+              resp.payload_len == 0;
     release(fd, ok);
-    return ok && static_cast<RpcType>(resp.type) == RpcType::PONG;
+    return ok;
 }
 
 } // namespace zeptodb::cluster

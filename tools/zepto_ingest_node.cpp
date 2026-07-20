@@ -53,6 +53,7 @@ void print_usage(const char* prog) {
         << "                            collide with any storage node ID)\n"
         << "  --add-node id:host:port   Storage node to forward to (repeatable)\n"
         << "  --no-auth                 Disable authentication (bench / dev mode)\n"
+        << "  --allow-insecure-cluster  Allow unauthenticated RPC (development only)\n"
         << "  --log-level LEVEL         info|debug|warn|error (default: info)\n"
         << "  -h, --help                Show this help and exit\n\n"
         << "Example (forward INSERTs to two storage pods):\n"
@@ -67,6 +68,7 @@ int main(int argc, char* argv[]) {
     uint16_t    port    = 8124;     // distinct from 8123 to avoid local collision
     uint32_t    node_id = 65534;    // must not collide with storage pod IDs; fits uint16_t
     bool        no_auth = false;
+    bool        allow_insecure_cluster = false;
     std::string log_level = "info";
     std::vector<RemoteNodeSpec> remote_nodes;
 
@@ -78,6 +80,8 @@ int main(int argc, char* argv[]) {
             node_id = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (arg == "--no-auth") {
             no_auth = true;
+        } else if (arg == "--allow-insecure-cluster") {
+            allow_insecure_cluster = true;
         } else if (arg == "--log-level" && i + 1 < argc) {
             log_level = argv[++i];
         } else if (arg == "--add-node" && i + 1 < argc) {
@@ -107,6 +111,21 @@ int main(int argc, char* argv[]) {
     if (remote_nodes.empty()) {
         std::cerr << "Error: zepto_ingest_node requires at least one "
                      "--add-node id:host:port (nothing to forward to)\n";
+        return 1;
+    }
+
+    auto rpc_security = zeptodb::cluster::RpcSecurityConfig::from_environment();
+    if (const auto error = rpc_security.validation_error(); !error.empty()) {
+        std::cerr << "Error: invalid cluster RPC security configuration: "
+                  << error << "\n";
+        return 1;
+    }
+    if (!rpc_security.enabled && !allow_insecure_cluster) {
+        std::cerr
+            << "Error: cluster RPC authentication is required. Set "
+               "ZEPTO_CLUSTER_SECRET_FILE (recommended) or "
+               "ZEPTO_CLUSTER_SECRET (minimum 32 bytes). Use "
+               "--allow-insecure-cluster only for isolated development.\n";
         return 1;
     }
 
@@ -156,11 +175,12 @@ int main(int argc, char* argv[]) {
     std::unordered_map<zeptodb::cluster::NodeId,
                        std::shared_ptr<zeptodb::cluster::RpcClientBase>> peer_rpc;
     for (const auto& rn : remote_nodes) {
-        peer_rpc.emplace(rn.id,
-            std::make_shared<zeptodb::cluster::TcpRpcClient>(
-                rn.host,
-                static_cast<uint16_t>(rn.port + 100),
-                /*timeout_ms=*/2000));
+        auto rpc = std::make_shared<zeptodb::cluster::TcpRpcClient>(
+            rn.host,
+            static_cast<uint16_t>(rn.port + 100),
+            /*timeout_ms=*/2000);
+        rpc->set_security(rpc_security);
+        peer_rpc.emplace(rn.id, std::move(rpc));
     }
 
     // Routing adapter — self_id=99999 means route() always picks a storage

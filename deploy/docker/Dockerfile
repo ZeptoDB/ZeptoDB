@@ -4,6 +4,8 @@
 # Enabled:  SIMD, JIT, TLS/JWT, S3, Arrow Flight, Parquet, LZ4, io_uring, Web UI
 # Disabled: UCX/RDMA (bare-metal only), Python binding (pip install zeptodb)
 
+ARG ZEPTO_VERSION=0.1.8
+
 # ============================================================================
 # Stage 1: Web UI (Next.js static export)
 # ============================================================================
@@ -70,7 +72,6 @@ COPY tests ./tests
 COPY third_party ./third_party
 
 RUN mkdir -p build && cd build && \
-    sed -i 's/-march=native/-march=x86-64-v2 -mtune=generic/g' ../CMakeLists.txt && \
     CLANG_SCAN_DEPS="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)" && \
     cmake .. \
         -G Ninja \
@@ -90,8 +91,11 @@ RUN mkdir -p build && cd build && \
         -DZEPTO_USE_PARQUET=ON \
         -DZEPTO_USE_FLIGHT=ON \
         -DZEPTO_BUILD_PYTHON=OFF \
+        -DZEPTO_BUILD_BENCH=OFF \
         -DAPEX_USE_IO_URING=ON \
-        -DBUILD_TESTS=OFF && \
+        -DZEPTO_BUILD_TESTS=OFF && \
+    grep -Fq -- '-march=x86-64-v2' build.ninja && \
+    ! grep -Fq -- '-march=native' build.ninja && \
     ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli && \
     strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli
 
@@ -119,11 +123,12 @@ RUN cd build && \
     -DCMAKE_C_COMPILER=clang-19 \
     -DCMAKE_CXX_COMPILER=clang++-19 \
     -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
-    -DBUILD_TESTS=ON \
+    -DZEPTO_BUILD_TESTS=ON \
     -DZEPTO_USE_JIT=ON \
     -DZEPTO_USE_S3=ON \
     -DZEPTO_USE_PARQUET=ON \
-    -DZEPTO_USE_FLIGHT=ON && \
+    -DZEPTO_USE_FLIGHT=ON \
+    -DZEPTO_BUILD_BENCH=OFF && \
     ninja -j$(nproc) zepto_tests test_migration test_feeds
 CMD ["/build/build/tests/zepto_tests"]
 
@@ -132,9 +137,12 @@ CMD ["/build/build/tests/zepto_tests"]
 # ============================================================================
 FROM gcr.io/distroless/cc-debian12:nonroot
 
+ARG ZEPTO_VERSION
+
 LABEL maintainer="ZeptoDB Team <contact@zeptodb.com>"
 LABEL description="ZeptoDB — Ultra-Low Latency Time-Series Database"
-LABEL version="0.0.1"
+LABEL version="${ZEPTO_VERSION}"
+LABEL org.opencontainers.image.version="${ZEPTO_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/ZeptoDB/ZeptoDB"
 LABEL org.opencontainers.image.url="https://zeptodb.com"
 LABEL org.opencontainers.image.vendor="ZeptoDB"
@@ -160,4 +168,4 @@ ENV APEX_WORKER_THREADS=8 \
     APEX_PORT=8123
 
 ENTRYPOINT ["./zepto_http_server"]
-CMD ["--port", "8123", "--no-auth", "--web-dir", "/opt/zeptodb/web"]
+CMD ["--bind", "0.0.0.0", "--allow-plaintext-http", "--secure-cookie", "--port", "8123", "--ticks", "0", "--api-keys-file", "/run/secrets/zeptodb-auth/api_keys.txt", "--no-bootstrap-dev-keys", "--web-dir", "/opt/zeptodb/web"]

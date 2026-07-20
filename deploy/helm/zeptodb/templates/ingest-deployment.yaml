@@ -20,6 +20,7 @@
   Until that init container lands, override args explicitly:
     helm install ... \
       --set ingest.enabled=true \
+      --set ingest.noAuth=true \
       --set-string 'ingest.extraArgs={--add-node,0:zeptodb-0.zeptodb-headless:8123,--add-node,1:zeptodb-1.zeptodb-headless:8123}'
 */ -}}
 {{- if .Values.ingest.enabled }}
@@ -42,11 +43,24 @@ spec:
       labels:
         {{- include "zeptodb.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: ingest
+      annotations:
+        checksum/security: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/security-values: {{ toJson (dict "auth" .Values.auth "clusterSecurity" .Values.cluster.security) | sha256sum }}
+        checksum/cluster-external: {{ .Values.cluster.security.rolloutChecksum | quote }}
     spec:
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: ingest
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "zeptodb.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command: ["./zepto_ingest_node"]
           args:
             - "--port"
@@ -54,12 +68,24 @@ spec:
             {{- if .Values.ingest.noAuth }}
             - "--no-auth"
             {{- end }}
+            {{- if not .Values.cluster.security.enabled }}
+            - "--allow-insecure-cluster"
+            {{- end }}
             {{- with .Values.ingest.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.config.port }}
+          {{- if .Values.cluster.security.enabled }}
+          env:
+            - name: ZEPTO_CLUSTER_SECRET_FILE
+              value: {{ .Values.cluster.security.mountPath | quote }}
+          volumeMounts:
+            - name: cluster-security
+              mountPath: {{ dir .Values.cluster.security.mountPath | quote }}
+              readOnly: true
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /ready
@@ -74,6 +100,16 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.ingest.resources | nindent 12 }}
+      {{- if .Values.cluster.security.enabled }}
+      volumes:
+        - name: cluster-security
+          secret:
+            secretName: {{ include "zeptodb.clusterSecretName" . }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.cluster.security.secretKey }}
+                path: {{ base .Values.cluster.security.mountPath }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

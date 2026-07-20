@@ -209,12 +209,12 @@ def t_env_prestop_resources(s):
 
 def t_rolling_strategy(s):
     t0 = time.monotonic()
-    d = kubectl_json(f"get deployment {DEPLOY_NAME}")
-    if not d:
+    stateful_set = kubectl_json(f"get statefulset {DEPLOY_NAME}")
+    if not stateful_set:
         s.add(TestResult("T11_rolling_strategy", False, "not found", time.monotonic() - t0)); return
-    st = d["spec"]["strategy"]
-    ok = st["type"] == "RollingUpdate" and str(st["rollingUpdate"]["maxUnavailable"]) == "0"
-    s.add(TestResult("T11_rolling_strategy", ok, f"maxUnavailable={st['rollingUpdate']['maxUnavailable']}", time.monotonic() - t0))
+    strategy = stateful_set["spec"]["updateStrategy"]
+    ok = strategy["type"] == "RollingUpdate"
+    s.add(TestResult("T11_rolling_strategy", ok, f"type={strategy['type']}", time.monotonic() - t0))
 
 def t_health_check(s):
     t0 = time.monotonic()
@@ -333,24 +333,29 @@ def perf_startup(s):
 def perf_rolling(s):
     t0 = time.monotonic()
     # Force a rollout by changing an annotation
-    kubectl(f"patch deployment {DEPLOY_NAME} -p '{{\"spec\":{{\"template\":{{\"metadata\":{{\"annotations\":{{\"perf-test\":\"{time.time()}\"}}}}}}}}}}'")
-    kubectl(f"rollout status deployment/{DEPLOY_NAME} --timeout=300s", timeout=310)
+    kubectl(f"patch statefulset {DEPLOY_NAME} -p '{{\"spec\":{{\"template\":{{\"metadata\":{{\"annotations\":{{\"perf-test\":\"{time.time()}\"}}}}}}}}}}'")
+    kubectl(f"rollout status statefulset/{DEPLOY_NAME} --timeout=300s", timeout=310)
     ok, _ = wait_ready(3, timeout=120)
     dur = time.monotonic() - t0
     s.add(TestResult("PERF02_rolling", ok, f"{dur:.1f}s", time.monotonic() - t0))
     if ok: s.add_perf(PerfResult("rolling_update_3r", dur, "sec"))
 
 def perf_health_latency(s):
-    """Measure health endpoint latency via LB."""
+    """Measure health endpoint latency through the private Service."""
     t0 = time.monotonic()
-    lb = run(f"kubectl get svc {DEPLOY_NAME} -n {NAMESPACE} -o jsonpath='{{.status.loadBalancer.ingress[0].hostname}}'",
-             check=False, timeout=10).stdout.strip("'")
+    pf = subprocess.Popen(
+        f"kubectl port-forward -n {NAMESPACE} svc/{DEPLOY_NAME} 19124:8123".split(),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2)
     latencies = []
-    for _ in range(10):
-        req_t = time.monotonic()
-        r = run(f"curl -sf --max-time 3 http://{lb}:8123/health", check=False, timeout=5)
-        if r.returncode == 0:
-            latencies.append((time.monotonic() - req_t) * 1000)
+    try:
+        for _ in range(10):
+            req_t = time.monotonic()
+            r = run("curl -sf --max-time 3 http://127.0.0.1:19124/health", check=False, timeout=5)
+            if r.returncode == 0:
+                latencies.append((time.monotonic() - req_t) * 1000)
+    finally:
+        pf.terminate(); pf.wait()
     if latencies:
         s.add_perf(PerfResult("health_latency_avg", mean(latencies), "ms", f"n={len(latencies)}"))
         s.add_perf(PerfResult("health_latency_min", min(latencies), "ms"))
@@ -362,15 +367,12 @@ def perf_failover(s):
     pods = get_ready_pods()
     if len(pods) < 3:
         s.add(TestResult("PERF04_failover", False, "need 3 pods", time.monotonic() - t0)); return
-    lb = run(f"kubectl get svc {DEPLOY_NAME} -n {NAMESPACE} -o jsonpath='{{.status.loadBalancer.ingress[0].hostname}}'",
-             check=False, timeout=10).stdout.strip("'")
     kubectl(f"delete pod {pods[0]['metadata']['name']} --grace-period=0 --force")
     fail_start = time.monotonic()
     consec = 0
     failover_time = None
     for _ in range(40):
-        r = run(f"curl -sf --max-time 2 http://{lb}:8123/health", check=False, timeout=5)
-        if r.returncode == 0:
+        if health_check_via_pf():
             consec += 1
             if consec >= 3 and failover_time is None:
                 failover_time = time.monotonic() - fail_start

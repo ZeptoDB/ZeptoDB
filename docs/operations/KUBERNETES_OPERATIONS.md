@@ -1,6 +1,6 @@
 # ZeptoDB Kubernetes Operations Guide
 
-Last updated: 2026-04-30
+Last updated: 2026-07-19
 
 ---
 
@@ -31,18 +31,18 @@ Last updated: 2026-04-30
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  Namespace: zeptodb                                   │   │
 │  │                                                       │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐              │   │
-│  │  │ Pod-0   │  │ Pod-1   │  │ Pod-2   │  ← Deployment│   │
-│  │  │ ZeptoDB │  │ ZeptoDB │  │ ZeptoDB │    (3 replicas)│  │
-│  │  │ :8123   │  │ :8123   │  │ :8123   │              │   │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘              │   │
-│  │       │             │            │                    │   │
-│  │  ┌────┴─────────────┴────────────┴────┐              │   │
-│  │  │  Service (LoadBalancer :8123)       │              │   │
-│  │  │  + Headless Service (pod discovery) │              │   │
-│  │  └────────────────────────────────────┘              │   │
+│  │  ┌─────────┐                                          │   │
+│  │  │ Pod-0   │  ← standalone Deployment (default: 1)   │   │
+│  │  │ ZeptoDB │     or opt-in cluster StatefulSet        │   │
+│  │  │ :8123   │                                          │   │
+│  │  └────┬────┘                                          │   │
+│  │       │                                                │   │
+│  │  ┌────┴─────────────────────────────────┐              │   │
+│  │  │  Service (ClusterIP :8123)            │              │   │
+│  │  │  + Headless Service (pod discovery)   │              │   │
+│  │  └──────────────────────────────────────┘              │   │
 │  │                                                       │   │
-│  │  ConfigMap │ PVC (gp3 500Gi) │ PDB │ HPA │ ServiceMon│   │
+│  │ ConfigMap │ optional eval PVC │ PDB │ authenticated SM│   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │  ┌──────────────────────┐  ┌─────────────────────────────┐  │
@@ -56,12 +56,14 @@ Last updated: 2026-04-30
 
 | Resource | Template | Purpose |
 |----------|----------|---------|
-| Deployment | `deployment.yaml` | ZeptoDB pods (rolling update) |
-| Service | `service.yaml` | LoadBalancer + Headless |
+| Deployment | `deployment.yaml` | Single standalone ZeptoDB pod by default |
+| StatefulSet | `statefulset.yaml` | Opt-in distributed cluster (`cluster.enabled=true`) |
+| Service | `service.yaml` | Private ClusterIP + Headless |
+| Secrets | `secret.yaml` | Bootstrap API key store + cluster peer secret |
 | ConfigMap | `configmap.yaml` | `zeptodb.conf` |
-| PVC | `pvc.yaml` | gp3 500Gi persistent storage |
-| HPA | `hpa.yaml` | Auto-scaling (3–10 replicas) |
-| PDB | `pdb.yaml` | minAvailable: 2 |
+| PVC | `pvc.yaml` | Opt-in tiered-storage evaluation; not a durability guarantee |
+| HPA | `hpa.yaml` | Template retained, but rendering is blocked until peer discovery is dynamic |
+| PDB | `pdb.yaml` | minAvailable: 1 by default |
 | ServiceMonitor | `servicemonitor.yaml` | Prometheus scrape config |
 
 ---
@@ -96,12 +98,33 @@ helm install zeptodb ./deploy/helm/zeptodb \
 kubectl get all -n zeptodb
 ```
 
-### Production values override
+The portable default is intentionally in-memory. It survives neither process
+nor pod replacement. Enabling a PVC is gated because hot-partition WAL/recovery
+coverage and merging HDB rows into general SQL reads are not complete; no
+current chart profile should be presented as data-durable production.
 
-`values-prod.yaml`:
+### Release-candidate values (durability blocked)
+
+The following is suitable only for controlled topology/security evaluation,
+not durable production:
 
 ```yaml
 replicaCount: 3
+
+service:
+  type: ClusterIP
+
+auth:
+  enabled: true
+  existingSecret: zeptodb-auth
+
+# The cluster Secret is separate so peer credentials can rotate
+# independently from client API credentials.
+cluster:
+  enabled: true
+  security:
+    enabled: true
+    existingSecret: zeptodb-cluster
 
 image:
   repository: your-registry/zeptodb
@@ -116,6 +139,9 @@ resources:
     memory: "32Gi"
 
 persistence:
+  enabled: true
+  # Explicit evaluation acknowledgement; not a durability assertion.
+  acknowledgeIncompleteDurability: true
   storageClass: gp3
   size: 500Gi
 
@@ -124,9 +150,7 @@ config:
   parallelThreshold: 100000
 
 autoscaling:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 10
+  enabled: false
 
 podDisruptionBudget:
   enabled: true
@@ -152,14 +176,16 @@ helm install zeptodb ./deploy/helm/zeptodb \
 # All pods running
 kubectl get pods -n zeptodb -o wide
 
-# Health check
-export LB=$(kubectl get svc zeptodb -n zeptodb \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-curl -s http://$LB:8123/health
-curl -s http://$LB:8123/ready
+# Keep the chart Service private; use port-forward for initial verification.
+kubectl port-forward svc/zeptodb 8123:8123 -n zeptodb &
+export ZEPTO_ADMIN_KEY="$(kubectl get secret zeptodb-auth -n zeptodb \
+  -o jsonpath="{.data['admin-api-key']}" | base64 --decode)"
+curl -s http://127.0.0.1:8123/health
+curl -s http://127.0.0.1:8123/ready
 
 # Test query
-curl -X POST http://$LB:8123/ -d 'SELECT 1'
+curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" \
+  -X POST http://127.0.0.1:8123/ -d 'SELECT 1'
 ```
 
 ---
@@ -173,17 +199,18 @@ curl -X POST http://$LB:8123/ -d 'SELECT 1'
 # daily-check.sh — run from cron or manually
 
 NS=zeptodb
-LB=$(kubectl get svc zeptodb -n $NS \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# The default Service is private. Start `kubectl port-forward
+# svc/zeptodb 8123:8123 -n zeptodb` or set this to the approved HTTPS ingress.
+ZEPTO_URL=${ZEPTO_URL:-http://127.0.0.1:8123}
 
 echo "=== Pod Status ==="
 kubectl get pods -n $NS -o wide
 
 echo "=== Health ==="
-curl -sf http://$LB:8123/health && echo " OK" || echo " FAIL"
+curl -sf "$ZEPTO_URL/health" && echo " OK" || echo " FAIL"
 
 echo "=== Readiness ==="
-curl -sf http://$LB:8123/ready && echo " OK" || echo " FAIL"
+curl -sf "$ZEPTO_URL/ready" && echo " OK" || echo " FAIL"
 
 echo "=== HPA ==="
 kubectl get hpa -n $NS
@@ -232,10 +259,13 @@ kubectl logs <pod-name> -n zeptodb --since=1h
 ### Pod Restart
 
 ```bash
-# Full rolling restart (zero-downtime)
+# Standalone restart (one-pod maintenance window)
 kubectl rollout restart deployment/zeptodb -n zeptodb
 
-# Delete a specific pod only (Deployment auto-recreates it)
+# Cluster rolling restart
+kubectl rollout restart statefulset/zeptodb -n zeptodb
+
+# Delete a specific pod only (the owning controller recreates it)
 kubectl delete pod <pod-name> -n zeptodb
 ```
 
@@ -246,27 +276,27 @@ kubectl delete pod <pod-name> -n zeptodb
 ### Prometheus Setup
 
 ```bash
-# Enable ServiceMonitor (requires Prometheus Operator)
+# Enable the credential-aware ServiceMonitor (requires Prometheus Operator).
+# The chart generates a dedicated metrics-role token and references it from
+# the auth Secret; the raw token is not mounted into the ZeptoDB pod.
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.interval=15s
 ```
 
-In environments without ServiceMonitor, use Pod annotation-based scraping:
-
-```yaml
-# Already included in deployment.yaml
-annotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "8123"
-  prometheus.io/path: "/metrics"
-```
+Do not enable `prometheus.scrape` while authentication is enabled. Kubernetes
+pod scrape annotations cannot attach the required Bearer token, and the chart
+rejects that combination. Without the Prometheus Operator, configure the
+scraper externally with a metrics-role Bearer credential from an approved
+secret provider.
 
 ### Key Metrics
 
 ```bash
-# Check directly
-curl -s http://$LB:8123/metrics
+# Check directly with the generated or operator-managed metrics credential.
+export ZEPTO_METRICS_KEY="$(kubectl get secret zeptodb-auth -n zeptodb \
+  -o jsonpath="{.data['metrics-api-key']}" | base64 --decode)"
+curl -s -H "Authorization: Bearer $ZEPTO_METRICS_KEY" "$ZEPTO_URL/metrics"
 ```
 
 | Metric | Type | Alert Threshold |
@@ -339,25 +369,29 @@ Two custom node pools are configured:
 | **zepto-realtime** | Pending pods with `zeptodb.com/role: realtime` | On-Demand only | WhenEmpty, after 30m |
 | **zepto-analytics** | Pending pods with `zeptodb.com/role: analytics` | Spot + On-Demand | WhenEmptyOrUnderutilized, after 5m |
 
-Scaling flow: HPA increases replicas → pods pending → Auto Mode provisions node (30-60s) → pods scheduled.
+Node autoscaling still provisions capacity for operator-approved static replica
+changes. Automatic ZeptoDB pod-count changes remain blocked as described below.
 
 ### Horizontal Pod Autoscaler (HPA)
 
-Default configuration: Auto-scales between 3–10 replicas based on CPU 70% / Memory 80% thresholds.
+The HPA is disabled and rejected at Helm render time in both standalone and
+cluster modes. A standalone Deployment cannot exceed one replica because each
+process owns an independent database. The current StatefulSet generates a
+static peer list from `replicaCount`; an HPA-created ordinal would therefore
+start with incomplete membership. Until dynamic peer discovery lands, use only
+an explicitly reviewed static cluster topology and coordinated membership
+changes.
 
 ```bash
 # Check HPA status
 kubectl get hpa -n zeptodb
 kubectl describe hpa zeptodb -n zeptodb
 
-# Manual scale
-kubectl scale deployment zeptodb -n zeptodb --replicas=5
-
-# Change HPA settings
+# A replica-count change must be performed through a reviewed values update so
+# every ordinal receives the same static peer topology. Do not use kubectl scale.
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
-  --set autoscaling.minReplicas=5 \
-  --set autoscaling.maxReplicas=20 \
-  --set autoscaling.targetCPU=60
+  --set cluster.enabled=true \
+  --set replicaCount=5
 ```
 
 ### Ingest-rate HPA (P8-I4, devlog 117)
@@ -389,13 +423,11 @@ rules:
       avg_over_time(<<.Series>>{<<.LabelMatchers>>}[1m])
 ```
 
-**Enable on the chart.** Off by default; set both flags on `helm upgrade`:
-
-```bash
-helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
-  --set autoscaling.ingestRateEnabled=true \
-  --set autoscaling.targetIngestRate=50000   # ticks/sec per pod
-```
+The metric and HPA template wiring remain available for future promotion, but
+`autoscaling.enabled=true` is currently rejected before either CPU/memory or
+ingest-rate scaling can deploy. Do not enable `ingestRateEnabled` in production
+until dynamic StatefulSet peer discovery and membership convergence are
+verified.
 
 `targetIngestRate` is `AverageValue` for the HPA Pods metric — scale-out
 is triggered when the per-pod 1-minute average ingest rate exceeds it.
@@ -404,11 +436,9 @@ Tune to ~70–80% of a single pod's measured sustained ingest ceiling
 ingest-path tunables and `pipeline.drainThreads` /
 `pipeline.ringBufferCapacity`).
 
-**Karpenter compatibility.** No special config required — the standard
-HPA → pending pods → Karpenter scale-out path works unchanged. When the
-ingest-rate metric pushes HPA above currently-scheduled capacity,
-Karpenter provisions a new node from the realtime pool in the usual
-30–60s.
+**Karpenter compatibility.** Karpenter may provision nodes for a reviewed
+static replica increase. The HPA-to-Karpenter path is intentionally unavailable
+while automatic database membership is blocked.
 
 ### Scale-Down Protection
 
@@ -542,8 +572,10 @@ without the scheduling block.
   100 MB + 6.4 GB + 64 MB ≈ 6.6 GB — round up to 8 GB limit for headroom. Raise
   `limits.memory` before raising `pipeline.ringBufferCapacity`.
 - **Bare-metal trading (Guaranteed QoS)** — pin `requests.cpu == limits.cpu` and
-  `requests.memory == limits.memory` in an overlay. Keep `hugepages-2Mi` on both
-  sides to retain HugePages reservation.
+  `requests.memory == limits.memory` in an overlay. Portable chart defaults do
+  not request HugePages: opt in only after the target nodes have a verified
+  pre-reserved pool, and add the same `hugepages-2Mi` quantity to both requests
+  and limits together with `performanceTuning.hugepages.enabled=true`.
 
 ```bash
 # Auto-factory profile (5 replicas × 5 nodes × 4c/8G)
@@ -566,6 +598,12 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
 ---
 
 ## 6. Backup & Recovery
+
+> **Release blocker:** The examples in this section can snapshot or copy PVC
+> bytes, but they do not establish an application-consistent ZeptoDB backup.
+> Hot-partition WAL/recovery and SQL-visible HDB merge must be completed and an
+> end-to-end insert-stop-restart-query test must pass before these procedures
+> can be used as a production recovery promise.
 
 ### In-Cluster Backup (CronJob)
 
@@ -643,7 +681,7 @@ EOF
 kubectl get volumesnapshot -n zeptodb
 ```
 
-### Recovery from Snapshot
+### Recovery from Snapshot (infrastructure-only)
 
 ```bash
 # Create new PVC from snapshot
@@ -665,10 +703,9 @@ spec:
     apiGroup: snapshot.storage.k8s.io
 EOF
 
-# Replace PVC in Deployment
-helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
-  --set persistence.existingClaim=zeptodb-data-restored \
-  --wait
+# Do not attach this restored PVC to production yet. The chart has no validated
+# existing-claim restore workflow, and SQL-visible restart recovery remains a
+# release blocker.
 ```
 
 ---
@@ -682,30 +719,30 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
 ```bash
 # 1. Pre-flight
 kubectl get pods -n zeptodb -o wide
-curl -s http://$LB:8123/health
+curl -s "$ZEPTO_URL/health"
 
 # 2. Upgrade
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set image.tag=1.1.0 \
   --wait --timeout 5m
 
-# 3. Monitor
-kubectl rollout status deployment/zeptodb -n zeptodb
+# 3. Monitor the production cluster StatefulSet
+kubectl rollout status statefulset/zeptodb -n zeptodb
 
 # 4. Verify
-curl -s http://$LB:8123/health
-curl -X POST http://$LB:8123/ -d 'SELECT 1'
+curl -s "$ZEPTO_URL/health"
+curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" \
+  -X POST "$ZEPTO_URL/" -d 'SELECT 1'
 ```
 
-### Zero-Downtime Guarantee Mechanisms
+### Availability During Upgrade
 
-| Setting | Value | Effect |
-|---------|-------|--------|
-| `maxSurge` | 1 | Create 1 new pod first |
-| `maxUnavailable` | 0 | Maintain existing pod count |
-| `PDB minAvailable` | 2 | Guarantee minimum 2 pods |
-| `preStop sleep` | 15s | Wait for in-flight queries to complete |
-| `readinessProbe` | /ready | Only ready pods receive traffic |
+Standalone mode uses `maxSurge: 0` / `maxUnavailable: 1` so a ReadWriteOnce
+volume is detached before the replacement pod starts. Plan a maintenance
+window; standalone upgrades are not zero-downtime. Cluster mode rolls the
+StatefulSet one pod at a time. A production overlay with at least three pods,
+`PDB minAvailable: 2`, healthy readiness probes, and validated replication is
+required before claiming service continuity.
 
 ### Rollback
 
@@ -717,8 +754,8 @@ helm rollback zeptodb -n zeptodb
 helm history zeptodb -n zeptodb
 helm rollback zeptodb <REVISION> -n zeptodb
 
-# kubectl rollback (without Helm)
-kubectl rollout undo deployment/zeptodb -n zeptodb
+# kubectl rollback (without Helm, cluster mode)
+kubectl rollout undo statefulset/zeptodb -n zeptodb
 ```
 
 ### Canary Deployment
@@ -788,10 +825,21 @@ EOF
 ### API Key / JWT Secrets
 
 ```bash
-# API keys file
+# Existing API-key Secret contract. api-keys contains the hash-only key store;
+# admin-api-key and metrics-api-key are the corresponding raw operator and
+# Prometheus credentials. The store must contain the SHA-256 hash of each raw
+# key with `admin` and `metrics` roles respectively.
 kubectl create secret generic zeptodb-auth \
   -n zeptodb \
-  --from-file=keys.txt=/path/to/keys.txt
+  --from-file=api-keys=/secure/path/api_keys.txt \
+  --from-literal=admin-api-key="$ZEPTO_ADMIN_KEY" \
+  --from-literal=metrics-api-key="$ZEPTO_METRICS_KEY"
+
+# Cluster peer secret (minimum 32 random bytes).
+openssl rand -base64 48 > /secure/path/cluster-secret
+kubectl create secret generic zeptodb-cluster \
+  -n zeptodb \
+  --from-file=cluster-secret=/secure/path/cluster-secret
 
 # JWT secret
 kubectl create secret generic zeptodb-jwt \
@@ -802,32 +850,50 @@ kubectl create secret generic zeptodb-jwt \
 # → SecretsProvider chain: Vault KV v2 → K8s file → env var
 ```
 
+Set `auth.existingSecret=zeptodb-auth` and
+`cluster.security.existingSecret=zeptodb-cluster` in production values. When
+those settings are empty, the chart generates valid Secrets and preserves them
+across upgrades with `lookup`; retrieve the bootstrap admin key only with the
+explicit command printed by `helm install`. Secret volumes are read-only and
+the process loads them only at startup. For an external API-key rotation, keep
+old and new hashes in the store during overlap and change
+`auth.rolloutChecksum` to force a rollout; move clients, remove the old hash,
+then change the checksum again. Cluster peer secrets have no overlap mechanism:
+change `cluster.security.rolloutChecksum` only during a coordinated maintenance
+window because mixed old/new processes cannot authenticate.
+
+The read-only store makes Kubernetes Secret rotation the source of truth;
+runtime `/admin/keys` mutations cannot persist back into that volume. If the
+deployment requires dynamic key creation/revocation, configure the documented
+Vault/writable key backend instead of relying on the mounted bootstrap file.
+
 ### Network Policy
 
+The chart enables an ingress NetworkPolicy by default. HTTP is allowed from
+pods in the release namespace, while cluster RPC and heartbeat ports accept
+only pods belonging to the same Helm release. To admit an approved TLS ingress
+controller or Prometheus deployment from another namespace, add a narrowly
+scoped NetworkPolicy peer:
+
 ```yaml
-# Allow access only from same namespace + monitoring
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: zeptodb-netpol
-  namespace: zeptodb
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: zeptodb
-  policyTypes: [Ingress]
-  ingress:
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: zeptodb
-    - namespaceSelector:
-        matchLabels:
-          name: monitoring
-    ports:
-    - port: 8123
-      protocol: TCP
+networkPolicy:
+  enabled: true
+  http:
+    allowSameNamespace: true
+    additionalSources:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: ingress-nginx
 ```
+
+Add a second peer for the actual Prometheus namespace/labels when the
+ServiceMonitor scraper runs outside the release namespace. Verify that the CNI
+enforces Kubernetes NetworkPolicy. The policy reduces unauthorized reachability
+but does not encrypt HTTP or cluster RPC payloads; TLS termination and a private
+or encrypted cluster network remain required.
 
 ### RBAC (Kubernetes)
 
@@ -858,6 +924,7 @@ For operating a ZeptoDB distributed cluster on Kubernetes.
 ```bash
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set cluster.enabled=true \
+  --set replicaCount=3 \
   --set cluster.rpcPortOffset=100 \
   --set cluster.heartbeatPort=9100 \
   --set headless.enabled=true
@@ -866,6 +933,12 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
 Direct pod-to-pod communication via Headless Service:
 - RPC: `<pod-name>.zeptodb-headless.zeptodb.svc:8223`
 - Heartbeat: UDP `:9100`
+
+The chart mounts one shared peer secret into every RPC-capable pod through
+`ZEPTO_CLUSTER_SECRET_FILE`. The HMAC challenge-response authenticates peers
+and rejects replayed handshakes; it does not encrypt RPC payloads. Keep peer
+ports private and enforce a namespace/VPC network policy. Disabling
+`cluster.security.enabled` is an explicit development-only choice.
 
 ### Write-path routing (devlog 111)
 
@@ -918,11 +991,14 @@ clients ──► ingest Service (ClusterIP) ──► N × zepto_ingest_node po
                                          — owns partitions, runs queries
 ```
 
-Enable via Helm (opt-in):
+Production rendering is blocked until the ingest binary can load the shared
+API-key store (or an authenticated proxy mode is implemented). The only
+currently accepted Helm form is an explicit isolated benchmark exception:
 
 ```bash
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
   --set ingest.enabled=true \
+  --set ingest.noAuth=true \
   --set ingest.replicas=3 \
   --set-string 'ingest.extraArgs={--add-node,0:zeptodb-0.zeptodb-headless:8123,--add-node,1:zeptodb-1.zeptodb-headless:8123,--add-node,2:zeptodb-2.zeptodb-headless:8123}'
 ```
@@ -932,11 +1008,11 @@ Notes:
 - Storage-pod discovery is currently manual via `ingest.extraArgs`. A
   future init container will generate `--add-node` flags from the
   headless service automatically.
-- `ingest.noAuth: true` is the default — put the ingest Service behind
-  an auth-enforcing ingress if you expose it outside the cluster.
-- The ingest tier can be scaled with its own HPA independently of the
-  storage StatefulSet. Ingest-rate HPA on `zepto_pipeline_ticks_per_sec`
-  is tracked as BACKLOG **P8-I4**.
+- `ingest.noAuth: false` is the fail-closed default and causes a clear Helm
+  render failure while `ingest.enabled=true`. `ingest.noAuth: true` is an
+  explicit isolated benchmark override, not a production setting.
+- The chart also rejects an empty `ingest.extraArgs`; storage routes must be
+  explicit until discovery is implemented.
 - DDL (`CREATE / DROP / ALTER TABLE`) sent to an ingest pod replicates
   to every storage pod automatically via devlog 112's
   `forward_ddl_to_remotes`.
@@ -1017,25 +1093,23 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
 
 ```bash
 # Check query plan with EXPLAIN
-curl -X POST http://$LB:8123/ -d 'EXPLAIN SELECT ...'
+curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" \
+  -X POST "$ZEPTO_URL/" -d 'EXPLAIN SELECT ...'
 
 # Check running queries via Admin API
-curl -H "Authorization: Bearer $ADMIN_KEY" http://$LB:8123/admin/queries
+curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" "$ZEPTO_URL/admin/queries"
 
 # Kill slow query
-curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
-  http://$LB:8123/admin/queries/<query-id>
+curl -X DELETE -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" \
+  "$ZEPTO_URL/admin/queries/<query-id>"
 ```
 
 ### HPA Not Scaling
 
-```bash
-kubectl describe hpa zeptodb -n zeptodb
-
-# Check metrics-server
-kubectl top pods -n zeptodb
-# "error: Metrics API not available" → metrics-server needs to be installed
-```
+This is intentional for the current release. Helm rejects
+`autoscaling.enabled=true` because the StatefulSet startup peer list is static.
+Do not bypass the validation; use a reviewed `replicaCount` change and verify
+membership on every ordinal.
 
 ---
 
@@ -1047,13 +1121,14 @@ kubectl top pods -n zeptodb
 # 1. Record current state
 kubectl get pods -n zeptodb -o wide > /tmp/zeptodb-state.txt
 
-# 2. Rolling restart (zero-downtime)
-kubectl rollout restart deployment/zeptodb -n zeptodb
-kubectl rollout status deployment/zeptodb -n zeptodb --timeout=5m
+# 2. Cluster rolling restart. Standalone mode requires a maintenance window.
+kubectl rollout restart statefulset/zeptodb -n zeptodb
+kubectl rollout status statefulset/zeptodb -n zeptodb --timeout=5m
 
 # 3. Verify
-curl -s http://$LB:8123/health
-curl -X POST http://$LB:8123/ -d 'SELECT 1'
+curl -s "$ZEPTO_URL/health"
+curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" \
+  -X POST "$ZEPTO_URL/" -d 'SELECT 1'
 ```
 
 ### Runbook: Disk Full
@@ -1063,7 +1138,7 @@ curl -X POST http://$LB:8123/ -d 'SELECT 1'
 kubectl exec -n zeptodb <pod> -- df -h /opt/zeptodb/data
 
 # 2. Clean up old HDB data (TTL setting)
-curl -X POST http://$LB:8123/ \
+curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" -X POST "$ZEPTO_URL/" \
   -d "ALTER TABLE trades SET TTL 90 DAYS"
 
 # 3. Expand PVC (if StorageClass has allowVolumeExpansion: true)
@@ -1096,7 +1171,7 @@ helm uninstall zeptodb -n zeptodb
 helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f values-prod.yaml --wait
 
 # 4. Verify
-curl -s http://$LB:8123/health
+curl -s "$ZEPTO_URL/health"
 ```
 
 ---
@@ -1111,13 +1186,13 @@ kubectl get pvc -n zeptodb
 kubectl get events -n zeptodb --sort-by='.lastTimestamp' | tail -20
 
 # === Logs ===
-kubectl logs -f deployment/zeptodb -n zeptodb
+kubectl logs -f statefulset/zeptodb -n zeptodb
 kubectl logs <pod> -n zeptodb --previous
 
 # === Health ===
-curl http://$LB:8123/health
-curl http://$LB:8123/ready
-curl http://$LB:8123/metrics
+curl "$ZEPTO_URL/health"
+curl "$ZEPTO_URL/ready"
+curl -H "Authorization: Bearer $ZEPTO_METRICS_KEY" "$ZEPTO_URL/metrics"
 
 # === Helm ===
 helm list -n zeptodb
@@ -1128,7 +1203,8 @@ helm get values zeptodb -n zeptodb
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=X.Y.Z --wait
 helm rollback zeptodb -n zeptodb
 
-# === Scale ===
-kubectl scale deployment zeptodb -n zeptodb --replicas=5
+# === Reviewed static scale (cluster.enabled=true only) ===
+helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb \
+  --reuse-values --set replicaCount=5
 kubectl top pods -n zeptodb
 ```
