@@ -32,8 +32,8 @@ Guides for deploying ZeptoDB in production environments.
 - Network tuning (busy_poll, buffer sizes)
 - Benchmarking & profiling methods
 
-### 4. [KUBERNETES_OPS.md](KUBERNETES_OPS.md)
-**Kubernetes Operations Guide** (TODO)
+### 4. [Kubernetes Operations](../operations/KUBERNETES_OPERATIONS.md)
+**Kubernetes Operations Guide**
 - Helm Chart usage
 - Rolling updates
 - Monitoring configuration
@@ -76,13 +76,34 @@ docker build -t zeptodb:latest .
 # 2. Deploy via Helm (recommended)
 helm install zeptodb ./deploy/helm/zeptodb -n zeptodb --create-namespace
 
-# 3. Verify
+# 3. Verify through the private ClusterIP Service
 kubectl get pods -n zeptodb
-curl -s http://<LB>:8123/health
+kubectl port-forward svc/zeptodb 8123:8123 -n zeptodb
+curl -s http://127.0.0.1:8123/health
 
 # Upgrade
 helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=1.1.0 --wait
 ```
+
+The Helm default is one authenticated standalone replica behind a private
+`ClusterIP`. It generates a bootstrap administrator key and a separate cluster
+peer secret, mounts only the hash-only API key store into the pod, and preserves
+generated credentials across upgrades. A default ingress NetworkPolicy limits
+HTTP to the release namespace; add explicit peers for the approved TLS ingress
+or external Prometheus namespace. Run `helm get notes zeptodb -n zeptodb`
+for the explicit administrator-key retrieval command. Configure a
+TLS-terminating ingress/load balancer before external exposure.
+
+The default is deliberately in-memory. Enabling a PVC requires an explicit
+incomplete-durability acknowledgement and is for evaluation only: hot-partition
+WAL/recovery and SQL-visible HDB merge remain production release blockers.
+
+Do not increase `replicaCount` in standalone mode. HPA rendering is currently
+rejected in both standalone and cluster modes because StatefulSet startup peer
+lists are static. For horizontal scale, explicitly set `cluster.enabled=true`,
+apply a reviewed static `replicaCount`, review placement and persistence, and
+keep peer RPC on a private network; shared-secret RPC authentication does not
+encrypt payloads.
 
 ---
 
@@ -93,7 +114,7 @@ helm upgrade zeptodb ./deploy/helm/zeptodb -n zeptodb --set image.tag=1.1.0 --wa
 | Latency < 100us | **Bare metal** |
 | Latency < 1ms | Bare metal recommended |
 | Latency > 1ms | Cloud OK |
-| Auto-scaling needed | Cloud |
+| Elastic node capacity needed | Cloud (database replica changes remain reviewed/static) |
 | Fixed workload | Bare metal |
 | Cost optimization priority | Cloud (spot) |
 

@@ -69,11 +69,22 @@ def read_web_version(root: Path) -> tuple[int, int, int]:
     return parse_version(data["version"])
 
 
+def read_chart_app_version(root: Path) -> tuple[int, int, int]:
+    text = (root / "deploy" / "helm" / "zeptodb" / "Chart.yaml").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r'^appVersion: "([^"]+)"$', text, flags=re.MULTILINE)
+    if not match:
+        raise ValueError("could not find appVersion in deploy/helm/zeptodb/Chart.yaml")
+    return parse_version(match.group(1))
+
+
 def current_file_versions(root: Path) -> list[tuple[int, int, int]]:
     return [
         read_cmake_version(root),
         read_python_version(root),
         read_web_version(root),
+        read_chart_app_version(root),
     ]
 
 
@@ -101,6 +112,9 @@ def bump(root: Path, version: str, *, dry_run: bool) -> None:
         root / "CMakeLists.txt",
         root / "zepto_py" / "__init__.py",
         root / "web" / "package.json",
+        root / "deploy" / "helm" / "zeptodb" / "Chart.yaml",
+        root / "deploy" / "docker" / "Dockerfile",
+        root / "deploy" / "docker" / "Dockerfile.arm64",
     ]
 
     if dry_run:
@@ -123,6 +137,20 @@ def bump(root: Path, version: str, *, dry_run: bool) -> None:
     package_data = json.loads(package_path.read_text(encoding="utf-8"))
     package_data["version"] = version
     package_path.write_text(json.dumps(package_data, indent=2) + "\n", encoding="utf-8")
+    replace_once(
+        root / "deploy" / "helm" / "zeptodb" / "Chart.yaml",
+        r'^appVersion: "[^"]+"$',
+        f'appVersion: "{version}"',
+    )
+    for dockerfile in (
+        root / "deploy" / "docker" / "Dockerfile",
+        root / "deploy" / "docker" / "Dockerfile.arm64",
+    ):
+        replace_once(
+            dockerfile,
+            r"^ARG ZEPTO_VERSION=\d+\.\d+\.\d+$",
+            f"ARG ZEPTO_VERSION={version}",
+        )
 
 
 def main() -> int:

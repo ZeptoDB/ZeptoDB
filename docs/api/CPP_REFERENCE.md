@@ -1,6 +1,6 @@
 # ZeptoDB C++ API Reference
 
-*Last updated: 2026-07-04*
+*Last updated: 2026-07-19*
 
 ---
 
@@ -18,6 +18,8 @@
 - [AgentMemoryStore](#agentmemorystore)
 - [AgentMemoryRouter](#agentmemoryrouter)
 - [Auth — CancellationToken](#auth--cancellationtoken)
+- [Arrow Flight Server](#arrow-flight-server)
+- [Cluster RPC Security](#cluster-rpc-security)
 
 ---
 
@@ -162,7 +164,9 @@ ZeptoPipeline pipeline{cfg};
 
 ```cpp
 pipeline.start();        // start background drain thread
-pipeline.stop();         // flush queue + stop drain thread
+bool snapshot_ok = pipeline.stop();
+// Stops workers, drains the queue, and publishes a final snapshot when
+// flush_config.snapshot_path is configured. Quiesce producers first.
 
 // Sync drain — useful in tests without background thread
 size_t drained = pipeline.drain_sync();
@@ -175,12 +179,31 @@ size_t drained = pipeline.drain_sync(/*max_items=*/1000);
 struct PipelineConfig {
     size_t   arena_size_per_partition = 32ULL * 1024 * 1024; // 32 MB
     size_t   drain_batch_size         = 256;
+    size_t   drain_threads            = 0; // auto
+    size_t   ring_buffer_capacity     = 0; // engine default
     uint32_t drain_sleep_us           = 10;
     StorageMode storage_mode          = StorageMode::PURE_IN_MEMORY;
     std::string hdb_base_path         = "/tmp/zepto_hdb";
     FlushConfig flush_config{};   // tiered mode HDB flush settings
+    bool enable_recovery              = false;
+    std::string recovery_snapshot_path;
+    size_t max_memory_bytes           = 0;
 };
 ```
+
+For `TIERED`, `FlushConfig::reclaim_after_flush` defaults to `false` and the
+pipeline rejects `true`: general SQL does not yet merge every HDB-only
+partition. Tiered memory-limit eviction is rejected for the same reason.
+Configure `flush_config.snapshot_path` plus `enable_recovery` to get the
+graceful-restart snapshot path. Recovery validates the atomically published
+generation and aborts startup on detected structural corruption; it is not
+checksummed, abrupt-crash/WAL, or power-loss durability.
+Snapshot publication fails for `STRING`/`SYMBOL` columns until dictionary
+metadata has a durable format.
+
+Embedding applications must stop external producers before `stop()`. The HTTP
+server satisfies this lifecycle rule by stopping its listener before stopping
+the pipeline.
 
 ### StorageMode
 
@@ -268,7 +291,18 @@ TickPlant&        tp  = pipeline.tick_plant();
 // nullptr in PURE_IN_MEMORY mode
 HDBReader*    hdb = pipeline.hdb_reader();
 FlushManager* fm  = pipeline.flush_manager();
+
+size_t partitions = fm->snapshot_now();
+bool published = fm->last_snapshot_succeeded(); // distinguishes empty success
+auto snapshot = FlushManager::resolve_snapshot("/var/lib/zeptodb/snapshots");
+// snapshot.status is Missing, Ready, or Invalid.
 ```
+
+`HDBWriter::snapshot_partition_checked()` returns
+`HDBSnapshotWriteResult { ok, bytes_written, rows_written }`; it validates a
+partition's column types and equal row counts while holding the partition write
+lock. Most embedders should use `FlushManager::snapshot_now()` so complete
+generations are published atomically instead of writing partitions directly.
 
 ---
 
@@ -404,7 +438,19 @@ std::vector<Partition*> parts = pm.get_partitions_for_time_range(
 
 // Total partition count (all symbols)
 size_t n = pm.partition_count();
+
+// Cold-path lifetime-safe traversal. The manager pins the initial partition
+// set, then releases its map lock before callbacks run.
+bool visited_all = pm.visit_partitions_stable([](Partition& partition) {
+    inspect_partition(partition);
+    return true; // false stops traversal
+});
 ```
+
+`visit_partitions_stable()` keeps each selected partition alive across
+concurrent eviction or DROP. It does not create a cross-partition point-in-time
+transaction; callers that need row consistency must take each partition's
+write lock, as the snapshot writer does.
 
 ### Partition
 
@@ -1197,6 +1243,44 @@ token.reset();
 
 ---
 
+## Arrow Flight Server
+
+`#include "zeptodb/server/flight_server.h"` — Namespace:
+`zeptodb::server`
+
+`FlightServer` retains shared ownership of optional `AuthManager` and
+`TenantManager` instances. The referenced `QueryExecutor` must outlive all
+in-flight RPCs. Lifecycle calls must be serialized; RPC handling is concurrent
+after startup.
+
+```cpp
+zeptodb::server::FlightServer server(executor, auth, tenant_manager);
+
+zeptodb::server::FlightServerConfig config;
+config.host = "0.0.0.0";
+config.port = 8815;  // zero requests an ephemeral port
+config.tls_cert_path = "/etc/zeptodb/tls/server.crt";
+config.tls_key_path = "/etc/zeptodb/tls/server.key";
+
+if (!server.start_async(config)) {
+    std::cerr << server.last_error() << '\n';
+}
+```
+
+The default config binds plaintext Flight to `127.0.0.1:8815`. Plaintext
+non-loopback listeners fail unless `allow_insecure_non_loopback` is explicitly
+set for development. Certificate and key paths must be supplied together.
+`start(config)` blocks; `start_async(config)` starts a background serving
+thread. Both return `false` on validation or listener initialization failure.
+The legacy `start(port)` / `start_async(port)` overloads retain loopback-only
+development behavior.
+
+Query tickets accept read-only SQL. `DoPut` is the separate write surface.
+See [Arrow Flight API Reference](FLIGHT_REFERENCE.md) for authentication,
+authorization, TLS, and wire-level behavior.
+
+---
+
 ## Quick Build Reference
 
 ```bash
@@ -1301,6 +1385,52 @@ remote owner binds the same dictionary code before storage. Most callers get
 this automatically through SQL `INSERT` materialization; connector code that
 constructs typed rows directly should set the fields when a string code was
 derived from text.
+
+### Cluster RPC security
+
+`RpcSecurityConfig::from_environment()` reads exactly one of
+`ZEPTO_CLUSTER_SECRET_FILE` or `ZEPTO_CLUSTER_SECRET`. When enabled,
+`validation_error()` reports short secrets, conflicting sources, unreadable
+files, or a build without OpenSSL. `TcpRpcServer::start()` refuses to listen on
+an invalid enabled configuration, and `TcpRpcClient` refuses to connect.
+
+```cpp
+#include "zeptodb/cluster/tcp_rpc.h"
+
+auto security = zeptodb::cluster::RpcSecurityConfig::from_environment();
+if (auto error = security.validation_error(); !error.empty()) {
+    throw std::runtime_error(error);
+}
+
+zeptodb::cluster::TcpRpcServer server;
+server.set_security(security);
+
+zeptodb::cluster::TcpRpcClient client{"10.0.1.2", 8223};
+client.set_security(security);  // closes existing idle pooled sockets
+auto result = client.execute_sql("SELECT * FROM control_table", 8 << 20);
+```
+
+The bounded `execute_sql(sql, max_response_bytes)` overload rejects an
+oversized response header before allocating or decoding the payload and closes
+that connection. The default overload and other response-bearing RPC methods
+apply a 64 MiB ceiling, configurable with `set_max_response_size()`, before
+allocation. The decoder additionally caps a result at 4,096 columns, 1,000,000
+rows, and 1,000,000 decoded string cells and validates that the claimed cell
+bytes exist before constructing vectors. Authentication is a mutual
+HMAC-SHA256 challenge over fresh
+client/server nonces. It authenticates peers but does not encrypt TCP traffic.
+
+`HttpServer::set_allow_insecure_cluster(false)` makes runtime
+`POST /admin/nodes` fail closed unless the process has a valid cluster secret;
+production binaries set this automatically. The C++ embedding default remains
+permissive for backward-compatible local tests, so production embedders should
+set it explicitly.
+
+Catalog durability uses `ZeptoPipeline::lock_schema_catalog_transaction()` to
+serialize DDL and placement mutations. `SchemaRegistry::restore_table_schema()`
+is the exact-schema rollback primitive used after persistence failure; callers
+must hold the pipeline catalog transaction guard around the full
+mutate/save/rollback sequence.
 
 ### Experimental operational table placement
 

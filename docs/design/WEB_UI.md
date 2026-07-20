@@ -205,5 +205,5 @@ The sidebar menu is filtered based on the logged-in user's role:
 | admin | ✅ | ✅ | ✅ | ✅ |
 | writer | ✅ | ✅ | ✅ | ❌ |
 | reader | ✅ | ✅ | ✅ | ❌ |
-| analyst | ✅ | ❌ | ✅ | ❌ |
+| analyst | ❌ | ❌ | ❌ | ❌ |
 | metrics | ❌ | ✅ | ❌ | ❌ |

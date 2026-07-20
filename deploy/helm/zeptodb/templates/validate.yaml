@@ -1,0 +1,50 @@
+{{- if and (not .Values.cluster.enabled) (not .Values.validation.allowUnsafeStandaloneScale) (gt (int .Values.replicaCount) 1) -}}
+{{- fail "standalone mode requires replicaCount=1; set cluster.enabled=true for multiple ZeptoDB replicas" -}}
+{{- end -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- fail "autoscaling is disabled until StatefulSet peer discovery tracks HPA-created ordinals; set autoscaling.enabled=false and scale only through an explicitly reviewed static cluster topology" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled (empty .Values.auth.apiKeysKey) -}}
+{{- fail "auth.apiKeysKey must not be empty when authentication is enabled" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled (empty .Values.auth.adminKeyKey) -}}
+{{- fail "auth.adminKeyKey must not be empty when authentication is enabled" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled (empty .Values.auth.metricsKeyKey) -}}
+{{- fail "auth.metricsKeyKey must not be empty when authentication is enabled" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled (empty .Values.auth.mountPath) -}}
+{{- fail "auth.mountPath must not be empty when authentication is enabled" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled .Values.prometheus.scrape -}}
+{{- fail "prometheus.scrape cannot authenticate to /metrics; keep it false and use serviceMonitor.enabled=true with credential-aware authorization" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled .Values.serviceMonitor.enabled (not .Values.serviceMonitor.authorization.enabled) -}}
+{{- fail "serviceMonitor.authorization.enabled must be true when authentication and ServiceMonitor scraping are enabled" -}}
+{{- end -}}
+{{- if and .Values.cluster.security.enabled (empty .Values.cluster.security.secretKey) -}}
+{{- fail "cluster.security.secretKey must not be empty when cluster security is enabled" -}}
+{{- end -}}
+{{- if and .Values.cluster.security.enabled (empty .Values.cluster.security.mountPath) -}}
+{{- fail "cluster.security.mountPath must not be empty when cluster security is enabled" -}}
+{{- end -}}
+{{- if and .Values.ingest.enabled (not .Values.ingest.noAuth) -}}
+{{- fail "ingest.enabled with ingest.noAuth=false is unusable because zepto_ingest_node cannot load the API-key store; keep ingest disabled for production or set ingest.noAuth=true only in an isolated benchmark namespace" -}}
+{{- end -}}
+{{- if and .Values.ingest.enabled (empty .Values.ingest.extraArgs) -}}
+{{- fail "ingest.extraArgs must include explicit --add-node routes until storage-node discovery is implemented" -}}
+{{- end -}}
+{{- $hugepageResource := printf "hugepages-%s" .Values.performanceTuning.hugepages.size -}}
+{{- if .Values.performanceTuning.hugepages.enabled -}}
+  {{- if not (and (hasKey .Values.resources.requests $hugepageResource) (hasKey .Values.resources.limits $hugepageResource)) -}}
+    {{- fail (printf "performanceTuning.hugepages.enabled=true requires matching resources.requests.%s and resources.limits.%s on nodes with pre-reserved HugePages" $hugepageResource $hugepageResource) -}}
+  {{- end -}}
+  {{- $hugepageRequest := index .Values.resources.requests $hugepageResource | toString -}}
+  {{- $hugepageLimit := index .Values.resources.limits $hugepageResource | toString -}}
+  {{- if or (eq $hugepageRequest "0") (ne $hugepageRequest $hugepageLimit) -}}
+    {{- fail (printf "HugePages request and limit for %s must be equal and non-zero" $hugepageResource) -}}
+  {{- end -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.acknowledgeIncompleteDurability) -}}
+{{- fail "persistence.enabled does not yet guarantee SQL-visible restart durability; hot-partition WAL/recovery and HDB SQL merge remain blockers. Set persistence.acknowledgeIncompleteDurability=true only for an explicitly approved durability evaluation" -}}
+{{- end -}}

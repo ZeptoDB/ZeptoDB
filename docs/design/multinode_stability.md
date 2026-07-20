@@ -132,18 +132,25 @@ Node DEAD detected
 
 **Problem**: Cluster-internal TCP RPC is plaintext. No authentication/authorization. Anyone with network access can execute SQL and inject data.
 
-**Solution**: Shared-secret HMAC authentication protocol.
+**Solution**: Mutual shared-secret HMAC authentication protocol.
 
 ```
-Client → Server: AUTH_HANDSHAKE (nonce + HMAC-SHA256(shared_secret, nonce))
-Server: HMAC verification → AUTH_OK / AUTH_REJECT
-  → on failure: connection immediately rejected
-  → on success: normal RPC messages allowed
+Client → Server: AUTH_CLIENT_HELLO (fresh client nonce)
+Server → Client: AUTH_SERVER_CHALLENGE (fresh server nonce + server proof)
+Client: validate the server proof
+Client → Server: AUTH_CLIENT_PROOF (proof bound to both nonces)
+Server: constant-time HMAC-SHA256 validation → AUTH_OK / AUTH_REJECT
 ```
 
-- `RpcSecurityConfig::enabled=true` + `shared_secret` configuration
+- Proofs are domain-separated; replaying a captured client proof against a new
+  server challenge fails.
+- Exactly one of `ZEPTO_CLUSTER_SECRET_FILE` or `ZEPTO_CLUSTER_SECRET` enables
+  authentication; configured secrets must contain at least 32 bytes.
 - Automatic handshake on every new connection (TcpRpcClient::acquire())
-- mTLS configuration structure prepared (`cert_path`/`key_path`/`ca_cert_path`)
+- Production cluster CLIs fail closed unless explicitly started with
+  `--allow-insecure-cluster` for development.
+- Authentication does not encrypt the TCP payload. Native mTLS configuration
+  remains planned (`cert_path`/`key_path`/`ca_cert_path`).
 
 **Related code**: `include/zeptodb/cluster/rpc_security.h`
 **Devlog**: `docs/devlog/034_rpc_security.md`

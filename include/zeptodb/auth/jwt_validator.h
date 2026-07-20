@@ -15,6 +15,8 @@
 //   aud          — audience (validated when expected_audience configured)
 //   zepto_role    — role string ("admin"|"writer"|"reader"|"analyst"|"metrics")
 //   zepto_symbols — comma-separated symbol whitelist (optional)
+//   tenant_id     — tenant binding (optional)
+//   allowed_tables — table whitelist array (optional)
 //
 // Usage:
 //   JwtValidator::Config cfg;
@@ -40,8 +42,10 @@ struct JwtClaims {
     std::string              email;            // "email" (optional)
     std::string              issuer;           // "iss"
     int64_t                  expiry = 0;       // "exp" Unix seconds
-    Role                     role = Role::READER;
+    Role                     role = Role::UNKNOWN;
     std::vector<std::string> allowed_symbols;  // from "zepto_symbols" claim
+    std::string              tenant_id;        // from "tenant_id" claim
+    std::vector<std::string> allowed_tables;   // from "allowed_tables" claim
 };
 
 // ============================================================================
@@ -59,10 +63,16 @@ public:
         std::string expected_issuer;    // validate "iss" if non-empty
         std::string expected_audience;  // validate "aud" if non-empty
         bool        verify_expiry = true;
+        // Applied when the role claim is absent or unknown. UNKNOWN is the
+        // fail-closed default; deployments that require legacy implicit read
+        // access must opt in explicitly with Role::READER.
+        Role        default_role = Role::UNKNOWN;
 
         // --- Claim name mapping ---
         std::string role_claim    = "zepto_role";    // claim carrying the role
         std::string symbols_claim = "zepto_symbols"; // claim carrying symbol list
+        std::string tenant_claim  = "tenant_id";     // claim carrying tenant binding
+        std::string tables_claim  = "allowed_tables"; // claim carrying table list
     };
 
     explicit JwtValidator(Config config);
@@ -87,7 +97,8 @@ private:
     bool verify_hs256(const std::string& header_payload,
                       const std::string& b64sig) const;
     bool verify_rs256(const std::string& header_payload,
-                      const std::string& b64sig) const;
+                      const std::string& b64sig,
+                      const std::string& public_key_pem) const;
 
     // Minimal JSON field extractors (no external dependency).
     static std::string get_json_string(const std::string& json,

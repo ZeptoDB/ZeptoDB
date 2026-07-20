@@ -15,17 +15,22 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(__linux__)
+#include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -63,6 +68,12 @@ struct TableSchema {
     bool                   has_data = false;  // set true on first INSERT
     uint16_t               table_id = 0;  // stable name-derived id (0 = legacy/default)
     TablePlacementOptions  placement;
+};
+
+enum class SchemaCatalogLoadResult : uint8_t {
+    Loaded,
+    NotFound,
+    Invalid,
 };
 
 // ============================================================================
@@ -108,6 +119,30 @@ public:
     bool drop(const std::string& name) {
         std::unique_lock lk(mu_);
         return tables_.erase(name) > 0;
+    }
+
+    /// Restore an exact table schema snapshot after a catalog persistence
+    /// failure. The original table id and all durable metadata are preserved.
+    /// Refuse a snapshot that would collide with another table's id.
+    bool restore_table_schema(TableSchema schema) {
+        if (schema.table_name.empty() || schema.table_id == 0) return false;
+
+        std::unique_lock lk(mu_);
+        for (const auto& [name, existing] : tables_) {
+            if (name != schema.table_name &&
+                existing.table_id == schema.table_id) {
+                return false;
+            }
+        }
+
+        const std::string name = schema.table_name;
+        const uint16_t table_id = schema.table_id;
+        tables_[name] = std::move(schema);
+        if (next_table_id_ <= table_id &&
+            table_id < std::numeric_limits<uint16_t>::max()) {
+            next_table_id_ = static_cast<uint16_t>(table_id + 1);
+        }
+        return true;
     }
 
     [[nodiscard]] bool exists(const std::string& name) const {
@@ -240,12 +275,14 @@ public:
 
     bool save_to(const std::string& path) const {
         // devlog 088: DDL hot-path optimization.
-        // 1) Snapshot the catalog under a shared_lock (readers don't block).
-        // 2) Release the lock and write JSON to a per-(pid, tid) tmp file
-        //    with NO lock held — the slow I/O must not serialize DDL.
-        // 3) Take a unique_lock only around std::rename so two concurrent
-        //    save_to() calls on the same final path serialize that one
-        //    syscall and we preserve atomic-replace semantics.
+        // 1) Serialize save calls so an older snapshot can never rename after
+        //    a newer one and erase a concurrently completed DDL update.
+        // 2) Snapshot the catalog under a shared_lock (readers don't block).
+        // 3) Release the registry lock and write JSON to a per-(pid, tid) tmp
+        //    file. Mutations may proceed while the slow I/O is in progress;
+        //    their subsequent save observes the cumulative registry state.
+        // 4) Atomically replace the final catalog file.
+        std::lock_guard save_lock(save_mu_);
         uint16_t snap_next_id = 0;
         std::vector<TableSchema> snap;
         {
@@ -291,97 +328,249 @@ public:
         }
         out << "]}";
         out.close();
-        if (!out) return false;
-        // atomic replace (best-effort) — serialize final rename on same path
+        if (!out) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+#if defined(__linux__)
+        // Persist the new file before publishing its name.  Atomic rename
+        // alone does not make the file durable across power loss.
+        const int tmp_fd = ::open(tmp.c_str(), O_RDONLY | O_CLOEXEC);
+        if (tmp_fd < 0) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+        const bool file_synced = ::fsync(tmp_fd) == 0;
+        ::close(tmp_fd);
+        if (!file_synced) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+#endif
+        // save_mu_ serializes the final path; mu_ keeps a concurrent registry
+        // mutation out of the rename window.
         std::unique_lock lk(mu_);
-        return std::rename(tmp.c_str(), path.c_str()) == 0;
+        if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+#if defined(__linux__)
+        const auto parent = std::filesystem::path(path).parent_path();
+        const std::string parent_path = parent.empty() ? "." : parent.string();
+        const int dir_fd = ::open(
+            parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dir_fd < 0) return false;
+        const bool directory_synced = ::fsync(dir_fd) == 0;
+        ::close(dir_fd);
+        if (!directory_synced) return false;
+#endif
+        return true;
     }
 
-    bool load_from(const std::string& path) {
+    [[nodiscard]] SchemaCatalogLoadResult load_from_checked(
+        const std::string& path) {
         std::ifstream in(path, std::ios::binary);
-        if (!in) return false;
+        if (!in) {
+            std::error_code error;
+            const bool exists = std::filesystem::exists(path, error);
+            return !exists && !error
+                ? SchemaCatalogLoadResult::NotFound
+                : SchemaCatalogLoadResult::Invalid;
+        }
         std::stringstream ss;
         ss << in.rdbuf();
+        if (!in.good() && !in.eof()) return SchemaCatalogLoadResult::Invalid;
         const std::string s = ss.str();
-        std::unique_lock lk(mu_);
-        tables_.clear();
-        size_t p = 0;
-        uint32_t loaded_next = 1;
-        if (json_find_int_(s, "next_table_id", p, loaded_next) == 0) return false;
-        // Find "tables":[ ... ]
-        size_t tpos = s.find("\"tables\"", p);
-        if (tpos == std::string::npos) return false;
-        size_t lbracket = s.find('[', tpos);
-        if (lbracket == std::string::npos) return false;
-        size_t i = lbracket + 1;
+
+        auto skip_ws = [](const std::string& value, size_t& pos, size_t end) {
+            while (pos < end &&
+                   (value[pos] == ' ' || value[pos] == '\n' ||
+                    value[pos] == '\r' || value[pos] == '\t')) {
+                ++pos;
+            }
+        };
+        size_t root_start = 0;
+        skip_ws(s, root_start, s.size());
+        if (root_start >= s.size() || s[root_start] != '{') {
+            return SchemaCatalogLoadResult::Invalid;
+        }
+        const size_t root_end = json_match_brace_(s, root_start);
+        if (root_end == std::string::npos) {
+            return SchemaCatalogLoadResult::Invalid;
+        }
+        size_t trailing = root_end + 1;
+        skip_ws(s, trailing, s.size());
+        if (trailing != s.size()) return SchemaCatalogLoadResult::Invalid;
+
+        uint32_t loaded_next = 0;
+        if (json_find_int_(s, "next_table_id", root_start, loaded_next) == 0 ||
+            loaded_next == 0 ||
+            loaded_next > std::numeric_limits<uint16_t>::max()) {
+            return SchemaCatalogLoadResult::Invalid;
+        }
+        const size_t tables_value =
+            json_find_member_value_(s, "tables", root_start);
+        if (tables_value == std::string::npos || tables_value > root_end) {
+            return SchemaCatalogLoadResult::Invalid;
+        }
+        const size_t lbracket = tables_value;
+        const size_t rbracket = json_match_bracket_(s, lbracket);
+        if (lbracket == std::string::npos || rbracket == std::string::npos ||
+            rbracket > root_end) {
+            return SchemaCatalogLoadResult::Invalid;
+        }
+        size_t after_tables = rbracket + 1;
+        skip_ws(s, after_tables, root_end);
+        if (after_tables != root_end) {
+            return SchemaCatalogLoadResult::Invalid;
+        }
+
+        std::unordered_map<std::string, TableSchema> parsed_tables;
+        std::unordered_set<uint16_t> parsed_ids;
         uint16_t max_id = 0;
-        while (i < s.size()) {
-            // skip whitespace/commas until '{' or ']'
-            while (i < s.size() && (s[i] == ' ' || s[i] == ',' || s[i] == '\n' || s[i] == '\r' || s[i] == '\t')) ++i;
-            if (i >= s.size() || s[i] == ']') break;
-            if (s[i] != '{') break;
-            size_t obj_end = json_match_brace_(s, i);
-            if (obj_end == std::string::npos) break;
+        size_t i = lbracket + 1;
+        while (i < rbracket) {
+            skip_ws(s, i, rbracket);
+            if (i == rbracket) break;
+            if (s[i] != '{') return SchemaCatalogLoadResult::Invalid;
+            const size_t obj_end = json_match_brace_(s, i);
+            if (obj_end == std::string::npos || obj_end > rbracket) {
+                return SchemaCatalogLoadResult::Invalid;
+            }
             const std::string obj = s.substr(i, obj_end - i + 1);
-            TableSchema ts;
-            std::string tname;
-            if (!json_extract_string_(obj, "name", tname)) { i = obj_end + 1; continue; }
-            ts.table_name = tname;
-            uint32_t tid = 0;
-            json_find_int_(obj, "table_id", 0, tid);
-            ts.table_id = static_cast<uint16_t>(tid);
-            int64_t ttl_signed = 0;
-            json_find_int64_(obj, "ttl_ns", 0, ttl_signed);
-            ts.ttl_ns = ttl_signed;
-            uint32_t hd_val = 0;
-            json_find_int_(obj, "has_data", 0, hd_val);
-            ts.has_data = (hd_val != 0);
+            const size_t columns_left =
+                json_find_member_value_(obj, "columns", 0);
+            const size_t columns_right =
+                json_match_bracket_(obj, columns_left);
+            if (columns_left == std::string::npos ||
+                columns_right == std::string::npos) {
+                return SchemaCatalogLoadResult::Invalid;
+            }
+            size_t after_columns = columns_right + 1;
+            skip_ws(obj, after_columns, obj.size());
+            if (after_columns + 1 != obj.size() || obj[after_columns] != '}') {
+                return SchemaCatalogLoadResult::Invalid;
+            }
+            TableSchema table;
+            uint32_t table_id = 0;
+            int64_t ttl_ns = 0;
+            uint32_t has_data = 0;
+            if (!json_extract_string_(obj, "name", table.table_name) ||
+                table.table_name.empty() ||
+                json_find_int_(obj, "table_id", 0, table_id) == 0 ||
+                table_id == 0 ||
+                table_id > std::numeric_limits<uint16_t>::max() ||
+                json_find_int64_(obj, "ttl_ns", 0, ttl_ns) == 0 ||
+                ttl_ns < 0 ||
+                json_find_int_(obj, "has_data", 0, has_data) == 0 ||
+                has_data > 1) {
+                return SchemaCatalogLoadResult::Invalid;
+            }
+            table.table_id = static_cast<uint16_t>(table_id);
+            table.ttl_ns = ttl_ns;
+            table.has_data = has_data != 0;
+            if (parsed_tables.contains(table.table_name) ||
+                !parsed_ids.insert(table.table_id).second) {
+                return SchemaCatalogLoadResult::Invalid;
+            }
+
             uint32_t placement_configured = 0;
-            json_find_int_(obj, "placement_configured", 0,
-                           placement_configured);
-            ts.placement.configured = (placement_configured != 0);
+            if (json_find_int_(obj, "placement_configured", 0,
+                               placement_configured) != 0) {
+                if (placement_configured > 1) {
+                    return SchemaCatalogLoadResult::Invalid;
+                }
+                table.placement.configured = placement_configured != 0;
+            }
             uint32_t placement_policy = 0;
-            json_find_int_(obj, "placement_policy", 0, placement_policy);
-            if (placement_policy <=
-                static_cast<uint32_t>(TablePlacementMode::PinnedNode)) {
-                ts.placement.mode =
+            if (json_find_int_(obj, "placement_policy", 0,
+                               placement_policy) != 0) {
+                if (placement_policy >
+                    static_cast<uint32_t>(TablePlacementMode::PinnedNode)) {
+                    return SchemaCatalogLoadResult::Invalid;
+                }
+                table.placement.mode =
                     static_cast<TablePlacementMode>(placement_policy);
             }
             uint32_t placement_node_id = 0;
-            json_find_int_(obj, "placement_node_id", 0, placement_node_id);
-            ts.placement.node_id = placement_node_id;
-            // columns
-            size_t cpos = obj.find("\"columns\"");
-            if (cpos != std::string::npos) {
-                size_t cl = obj.find('[', cpos);
-                size_t cr = json_match_bracket_(obj, cl);
-                if (cl != std::string::npos && cr != std::string::npos) {
-                    size_t j = cl + 1;
-                    while (j < cr) {
-                        while (j < cr && (obj[j] == ' ' || obj[j] == ',' || obj[j] == '\n' || obj[j] == '\r' || obj[j] == '\t')) ++j;
-                        if (j >= cr || obj[j] != '{') break;
-                        size_t cje = json_match_brace_(obj, j);
-                        if (cje == std::string::npos || cje > cr) break;
-                        std::string cobj = obj.substr(j, cje - j + 1);
-                        ColumnDef cd;
-                        json_extract_string_(cobj, "name", cd.name);
-                        uint32_t ctype = 0;
-                        json_find_int_(cobj, "type", 0, ctype);
-                        cd.type = static_cast<ColumnType>(ctype);
-                        ts.columns.push_back(std::move(cd));
-                        j = cje + 1;
+            if (json_find_int_(obj, "placement_node_id", 0,
+                               placement_node_id) != 0) {
+                table.placement.node_id = placement_node_id;
+            }
+            if (table.placement.configured &&
+                table.placement.mode == TablePlacementMode::PinnedNode &&
+                table.placement.node_id == 0) {
+                return SchemaCatalogLoadResult::Invalid;
+            }
+
+            std::unordered_set<std::string> column_names;
+            size_t column_pos = columns_left + 1;
+            while (column_pos < columns_right) {
+                skip_ws(obj, column_pos, columns_right);
+                if (column_pos == columns_right) break;
+                if (obj[column_pos] != '{') {
+                    return SchemaCatalogLoadResult::Invalid;
+                }
+                const size_t column_end =
+                    json_match_brace_(obj, column_pos);
+                if (column_end == std::string::npos ||
+                    column_end > columns_right) {
+                    return SchemaCatalogLoadResult::Invalid;
+                }
+                const std::string column_obj =
+                    obj.substr(column_pos, column_end - column_pos + 1);
+                ColumnDef column;
+                uint32_t column_type = 0;
+                if (!json_extract_string_(column_obj, "name", column.name) ||
+                    column.name.empty() ||
+                    !column_names.insert(column.name).second ||
+                    json_find_int_(column_obj, "type", 0, column_type) == 0 ||
+                    column_type >
+                        static_cast<uint32_t>(ColumnType::STRING)) {
+                    return SchemaCatalogLoadResult::Invalid;
+                }
+                column.type = static_cast<ColumnType>(column_type);
+                table.columns.push_back(std::move(column));
+                column_pos = column_end + 1;
+                skip_ws(obj, column_pos, columns_right);
+                if (column_pos < columns_right) {
+                    if (obj[column_pos] != ',') {
+                        return SchemaCatalogLoadResult::Invalid;
+                    }
+                    ++column_pos;
+                    skip_ws(obj, column_pos, columns_right);
+                    if (column_pos == columns_right) {
+                        return SchemaCatalogLoadResult::Invalid;
                     }
                 }
             }
-            if (ts.table_id > max_id) max_id = ts.table_id;
-            tables_[ts.table_name] = std::move(ts);
+            if (table.table_id > max_id) max_id = table.table_id;
+            parsed_tables.emplace(table.table_name, std::move(table));
             i = obj_end + 1;
+            skip_ws(s, i, rbracket);
+            if (i < rbracket) {
+                if (s[i] != ',') return SchemaCatalogLoadResult::Invalid;
+                ++i;
+                skip_ws(s, i, rbracket);
+                if (i == rbracket) return SchemaCatalogLoadResult::Invalid;
+            }
         }
-        // next_table_id must be > max loaded id; don't reset below loaded_next either.
-        uint32_t nti = loaded_next;
-        if (static_cast<uint32_t>(max_id) + 1u > nti) nti = static_cast<uint32_t>(max_id) + 1u;
-        next_table_id_ = static_cast<uint16_t>(nti > 65535u ? 65535u : nti);
-        return true;
+
+        uint32_t next_id = std::max<uint32_t>(
+            loaded_next, static_cast<uint32_t>(max_id) + 1u);
+        if (next_id > std::numeric_limits<uint16_t>::max()) {
+            next_id = std::numeric_limits<uint16_t>::max();
+        }
+        {
+            std::unique_lock lk(mu_);
+            tables_.swap(parsed_tables);
+            next_table_id_ = static_cast<uint16_t>(next_id);
+        }
+        return SchemaCatalogLoadResult::Loaded;
+    }
+
+    bool load_from(const std::string& path) {
+        return load_from_checked(path) == SchemaCatalogLoadResult::Loaded;
     }
 
 private:
@@ -437,15 +626,70 @@ private:
         }
         return std::string::npos;
     }
+    // Return the first byte of a top-level object member's value. Looking only
+    // at depth one prevents a missing table field from being satisfied by a
+    // same-named field inside a nested column object.
+    static size_t json_find_member_value_(const std::string& s,
+                                          const char* key,
+                                          size_t start) {
+        int object_depth = 0;
+        int array_depth = 0;
+        const std::string expected(key);
+        for (size_t i = start; i < s.size(); ++i) {
+            const char c = s[i];
+            if (c == '{') {
+                ++object_depth;
+                continue;
+            }
+            if (c == '}') {
+                --object_depth;
+                continue;
+            }
+            if (c == '[') {
+                ++array_depth;
+                continue;
+            }
+            if (c == ']') {
+                --array_depth;
+                continue;
+            }
+            if (c != '"') continue;
+
+            const size_t text_start = i + 1;
+            size_t text_end = text_start;
+            for (; text_end < s.size(); ++text_end) {
+                if (s[text_end] == '\\' && text_end + 1 < s.size()) {
+                    ++text_end;
+                    continue;
+                }
+                if (s[text_end] == '"') break;
+            }
+            if (text_end >= s.size()) return std::string::npos;
+            if (object_depth == 1 && array_depth == 0 &&
+                s.compare(text_start, text_end - text_start, expected) == 0) {
+                size_t value = text_end + 1;
+                while (value < s.size() &&
+                       (s[value] == ' ' || s[value] == '\t' ||
+                        s[value] == '\n' || s[value] == '\r')) {
+                    ++value;
+                }
+                if (value < s.size() && s[value] == ':') {
+                    ++value;
+                    while (value < s.size() &&
+                           (s[value] == ' ' || s[value] == '\t' ||
+                            s[value] == '\n' || s[value] == '\r')) {
+                        ++value;
+                    }
+                    return value;
+                }
+            }
+            i = text_end;
+        }
+        return std::string::npos;
+    }
     static bool json_extract_string_(const std::string& s, const char* key, std::string& out) {
-        std::string needle = std::string("\"") + key + "\"";
-        size_t p = s.find(needle);
+        size_t p = json_find_member_value_(s, key, 0);
         if (p == std::string::npos) return false;
-        p = s.find(':', p);
-        if (p == std::string::npos) return false;
-        // skip ws
-        ++p;
-        while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\n' || s[p] == '\r')) ++p;
         if (p >= s.size() || s[p] != '"') return false;
         ++p;
         out.clear();
@@ -458,32 +702,63 @@ private:
                     case 't': out += '\t'; break;
                     case '"': out += '"';  break;
                     case '\\': out += '\\'; break;
-                    default: out += n; break;
+                    default: return false;
                 }
                 p += 2;
             } else {
+                if (static_cast<unsigned char>(s[p]) < 0x20) return false;
                 out += s[p++];
             }
         }
-        return p < s.size();
+        if (p >= s.size()) return false;
+        size_t after = p + 1;
+        while (after < s.size() &&
+               (s[after] == ' ' || s[after] == '\t' ||
+                s[after] == '\n' || s[after] == '\r')) {
+            ++after;
+        }
+        return after == s.size() || s[after] == ',' || s[after] == '}';
     }
     template <class T>
     static int json_find_int_gen_(const std::string& s, const char* key, size_t start, T& out) {
-        std::string needle = std::string("\"") + key + "\"";
-        size_t p = s.find(needle, start);
+        static_assert(std::is_integral_v<T>);
+        size_t p = json_find_member_value_(s, key, start);
         if (p == std::string::npos) return 0;
-        p = s.find(':', p);
-        if (p == std::string::npos) return 0;
-        ++p;
-        while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\n' || s[p] == '\r')) ++p;
         bool neg = false;
         if (p < s.size() && s[p] == '-') { neg = true; ++p; }
         if (p >= s.size() || !std::isdigit(static_cast<unsigned char>(s[p]))) return 0;
-        long long v = 0;
+        if (neg && std::is_unsigned_v<T>) return 0;
+        const uint64_t positive_limit = static_cast<uint64_t>(
+            std::numeric_limits<T>::max());
+        const uint64_t magnitude_limit = neg
+            ? positive_limit + 1u
+            : positive_limit;
+        uint64_t v = 0;
         while (p < s.size() && std::isdigit(static_cast<unsigned char>(s[p]))) {
-            v = v * 10 + (s[p] - '0'); ++p;
+            const uint64_t digit = static_cast<uint64_t>(s[p] - '0');
+            if (v > (magnitude_limit - digit) / 10u) return 0;
+            v = v * 10u + digit;
+            ++p;
         }
-        out = static_cast<T>(neg ? -v : v);
+        size_t after = p;
+        while (after < s.size() &&
+               (s[after] == ' ' || s[after] == '\t' ||
+                s[after] == '\n' || s[after] == '\r')) {
+            ++after;
+        }
+        if (after < s.size() && s[after] != ',' && s[after] != '}' &&
+            s[after] != ']') {
+            return 0;
+        }
+        if (neg) {
+            if (v == positive_limit + 1u) {
+                out = std::numeric_limits<T>::min();
+            } else {
+                out = static_cast<T>(-static_cast<int64_t>(v));
+            }
+        } else {
+            out = static_cast<T>(v);
+        }
         return 1;
     }
     static int json_find_int_(const std::string& s, const char* key, size_t start, uint32_t& out) {
@@ -512,6 +787,7 @@ private:
     }
 
     mutable std::shared_mutex mu_;
+    mutable std::mutex save_mu_;
     std::unordered_map<std::string, TableSchema> tables_;
     uint16_t next_table_id_ = 1;  // catalog compatibility; ids are name-derived on create
 };

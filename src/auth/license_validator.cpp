@@ -159,9 +159,12 @@ bool LicenseValidator::load_from_jwt_string_for_testing(const std::string& jwt) 
 
     // Split into 3 parts
     auto p1 = jwt.find('.');
-    if (p1 == std::string::npos) return false;
+    if (p1 == std::string::npos || p1 == 0) return false;
     auto p2 = jwt.find('.', p1 + 1);
-    if (p2 == std::string::npos) return false;
+    if (p2 == std::string::npos || p2 == p1 + 1 || p2 + 1 >= jwt.size() ||
+        jwt.find('.', p2 + 1) != std::string::npos) {
+        return false;
+    }
 
     std::string b64_payload = jwt.substr(p1 + 1, p2 - p1 - 1);
     std::string payload = JwtValidator::base64url_decode(b64_payload);
@@ -204,7 +207,9 @@ bool LicenseValidator::decode_and_verify(const std::string& jwt) {
     // Decode header to check for trial (alg:none)
     std::string header = JwtValidator::base64url_decode(b64_header);
     std::string payload = JwtValidator::base64url_decode(b64_payload);
-    bool is_alg_none = JwtValidator::get_json_string(header, "alg") == "none";
+    const std::string algorithm =
+        JwtValidator::get_json_string(header, "alg");
+    bool is_alg_none = algorithm == "none";
     bool is_trial = get_json_bool(payload, "trial");
 
     if (is_alg_none && is_trial) {
@@ -217,16 +222,19 @@ bool LicenseValidator::decode_and_verify(const std::string& jwt) {
             if (now_unix() > exp + gd * 86400) return false;
         }
     } else {
-        // Reject if no public key — cannot verify signature
-        if (public_key_pem_.empty()) return false;
+        // License tokens have a different claim schema from login JWTs, so
+        // verify their RS256 envelope directly instead of requiring user
+        // identity claims such as `sub` and `zepto_role`.
+        if (algorithm != "RS256" || public_key_pem_.empty()) return false;
 
         std::string header_payload = jwt.substr(0, p2);
         JwtValidator::Config cfg;
         cfg.rs256_public_key_pem = public_key_pem_;
-        cfg.verify_expiry = false;  // We handle expiry ourselves (grace period)
         JwtValidator v(cfg);
-        auto result = v.validate(jwt);
-        if (!result) return false;
+        if (!v.verify_rs256(
+                header_payload, jwt.substr(p2 + 1), public_key_pem_)) {
+            return false;
+        }
     }
 
     // Decode payload and extract license claims
@@ -273,7 +281,8 @@ bool LicenseValidator::inGracePeriod() const {
 
 std::string LicenseValidator::statusLine() const {
     std::ostringstream ss;
-    ss << "ZeptoDB v0.1.0 (" << edition_to_string(claims_.edition);
+    ss << "ZeptoDB v" << ZEPTO_VERSION << " ("
+       << edition_to_string(claims_.edition);
     if (trial_) ss << " Trial";
     if (loaded_ && !claims_.company.empty())
         ss << " — " << claims_.company;

@@ -6,13 +6,15 @@ This guide covers connecting ZeptoDB to OIDC identity providers for Single Sign-
 
 ## Quick Start (OIDC Discovery)
 
-The simplest setup — one flag auto-configures everything:
+OIDC discovery configures the provider endpoints. Supply the client secret
+through an environment variable or mounted file so it is not exposed in
+process arguments:
 
 ```bash
 ./zepto_http_server --port 8123 \
   --oidc-issuer https://dev-123456.okta.com/oauth2/default \
   --oidc-client-id 0oa1bcdef2ghijk3l4m5 \
-  --oidc-client-secret YOUR_CLIENT_SECRET \
+  --oidc-client-secret-file /run/secrets/zeptodb/oidc-client-secret \
   --oidc-redirect-uri http://localhost:8123/auth/callback
 ```
 
@@ -25,6 +27,27 @@ Users can then:
 1. Open the Web UI → click "Sign in with SSO"
 2. Authenticate at the IdP
 3. Get redirected back with a session cookie
+
+The standalone OIDC CLI currently requires every accepted ID/access token to
+carry a signed `zepto_role` claim. Missing or unknown roles receive no
+permissions. Group-to-role maps, alternate role-claim names, and multi-IdP
+policy are C++ embedding configuration only in this release; the CLI does not
+infer a reader role from group membership.
+
+`--oidc-client-secret` remains available for local compatibility, but command
+arguments may be visible through process listings, shell history, manifests,
+and support bundles. Do not use the literal argv form in production. The issuer
+must use HTTPS. Redirect URIs must use HTTPS except for exact `localhost`,
+`127.0.0.1`, or `[::1]` HTTP development callbacks. Discovery fails closed
+unless the returned issuer matches the configured issuer and its authorization,
+token, and JWKS endpoints are all present and HTTPS.
+
+Issuers on an explicit HTTPS port are supported. The discovery connection uses
+normal certificate and hostname verification, including custom trust configured
+through the process CA environment. Identity and session endpoints return
+`Cache-Control: no-store, private` and `Pragma: no-cache`, including pre-routing
+authentication failures, so credentials and identity payloads are not retained
+by shared or browser caches.
 
 ---
 
@@ -52,9 +75,8 @@ Users can then:
    - Sign-out redirect URI: `http://localhost:8123/login`
    - Assignments: assign users/groups
 4. Note the Client ID and Client Secret
-5. Enable Groups claim:
-   - Security → API → Authorization Servers → default → Claims
-   - Add claim: name=`groups`, value type=Groups, filter=Matches regex `.*`
+5. Add a signed custom `zepto_role` claim with one of the supported role
+   strings. A groups claim alone is insufficient for the standalone CLI.
 
 ```bash
 ./zepto_http_server --port 8123 \
@@ -64,7 +86,7 @@ Users can then:
   --oidc-redirect-uri http://localhost:8123/auth/callback
 ```
 
-Group mapping (in code or config):
+Optional group mapping (C++ embedding configuration only):
 ```
 ZeptoDB-Admins  → admin
 Trading-Desk    → writer
@@ -76,7 +98,8 @@ Quant-Research  → reader
 1. Azure Portal → App registrations → New registration
 2. Redirect URI: `http://localhost:8123/auth/callback` (Web)
 3. Certificates & secrets → New client secret
-4. Token configuration → Add groups claim → Security groups
+4. Configure token issuance to include a signed `zepto_role` claim. A standard
+   `groups` or `roles` claim alone is insufficient for the standalone CLI.
 5. Note: Azure sends group GUIDs, not names. Map GUIDs to roles.
 
 ```bash
@@ -88,7 +111,7 @@ Quant-Research  → reader
   --oidc-audience api://APP_CLIENT_ID
 ```
 
-Group mapping (Azure uses GUIDs):
+Optional group mapping (C++ embedding configuration only; Azure uses GUIDs):
 ```
 a1b2c3d4-...  → admin    # "ZeptoDB Admins" group GUID
 e5f6g7h8-...  → writer   # "Trading Desk" group GUID
@@ -117,9 +140,9 @@ Note: Google does not include groups in the ID token by default. Use `zepto_role
 2. Client type: OpenID Connect
 3. Valid redirect URIs: `http://localhost:8123/auth/callback`
 4. Client authentication: On (confidential)
-5. Add group mapper: Client scopes → dedicated scope → Add mapper → Group Membership
-   - Token claim name: `groups`
-   - Full group path: Off
+5. Add a mapper that emits the selected ZeptoDB role as the signed
+   `zepto_role` claim. A group-membership mapper alone is only usable through
+   the C++ group-map configuration.
 
 ```bash
 ./zepto_http_server --port 8123 \
@@ -138,8 +161,8 @@ Note: Google does not include groups in the ID token by default. Use `zepto_role
 ```javascript
 // Auth0 Action: Add roles to ID token
 exports.onExecutePostLogin = async (event, api) => {
-  const roles = event.authorization?.roles || [];
-  api.idToken.setCustomClaim('https://zeptodb.com/roles', roles);
+  const role = event.authorization?.roles?.[0];
+  if (role) api.idToken.setCustomClaim('zepto_role', role);
 };
 ```
 
@@ -166,7 +189,9 @@ exports.onExecutePostLogin = async (event, api) => {
   --oidc-redirect-uri http://localhost:8123/auth/callback
 ```
 
-Cognito group claim: `cognito:groups`
+Cognito's `cognito:groups` claim is not consumed by the standalone CLI. Add a
+pre-token-generation mapping that emits `zepto_role`, or use the C++ group-map
+configuration.
 
 ---
 
@@ -208,17 +233,19 @@ Service → POST / -H "Authorization: Bearer zepto_..."
 
 ## Group-to-Role Mapping
 
-ZeptoDB maps IdP groups to its 5-role model:
+The C++ embedding API can map IdP groups to the 5-role model. This mapping is
+not yet exposed by the standalone server CLI:
 
 | ZeptoDB Role | Permissions | Typical IdP Group |
 |-------------|-------------|-------------------|
 | `admin` | Full access (DDL, queries, user management) | `ZeptoDB-Admins` |
 | `writer` | Read + write (SQL + ingest) | `Trading-Desk`, `Data-Engineers` |
 | `reader` | SELECT queries only | `Quant-Research`, `Analysts` |
-| `analyst` | SELECT, restricted to symbol whitelist | `External-Analysts` |
-| `metrics` | /metrics, /health, /stats only | `Monitoring-Service` |
+| `analyst` | No permissions; reserved until symbol filtering ships | Do not map in production |
+| `metrics` | /metrics, /stats, /api/ai/stats only | `Monitoring-Service` |
 
-When a user belongs to multiple groups, the highest-privilege role wins.
+When a user belongs to multiple mapped groups, the highest-privilege role
+wins. Unmapped groups do not grant access.
 
 ---
 
@@ -230,7 +257,8 @@ After SSO login, ZeptoDB issues an HttpOnly session cookie instead of exposing t
 |---------|---------|-------------|
 | `session.ttl_s` | 3600 | Session lifetime (seconds) |
 | `session.refresh_window_s` | 300 | Extend session if active within this window |
-| `session.max_sessions` | 10000 | Max concurrent sessions |
+| `session.max_session_lifetime_s` | 28800 | Absolute lifetime; idle refresh cannot extend it |
+| `session.max_sessions` | 10000 | Max concurrent sessions; when full, new sessions fail closed after expired-session cleanup rather than evicting valid users |
 | `session.cookie_name` | `zepto_sid` | Cookie name |
 | `session.cookie_secure` | false | Set true when TLS enabled |
 | `session.cookie_httponly` | true | Prevent JavaScript access |
@@ -271,7 +299,8 @@ curl -H "Authorization: Bearer eyJ..." http://localhost:8123/auth/me
 
 ## Multi-IdP Configuration
 
-For environments with multiple identity providers (e.g., internal Okta + external Azure AD):
+For C++ embeddings with multiple identity providers (e.g., internal Okta +
+external Azure AD):
 
 ```cpp
 AuthManager::Config cfg;
@@ -344,7 +373,10 @@ export ZEPTO_OIDC_CLIENT_SECRET=YOUR_SECRET
 ./zepto_http_server --oidc-issuer ... --oidc-client-id ...
 ```
 
-Priority chain: Vault → K8s Secret → Environment Variable → Config file
+The native CLI supports `--oidc-client-secret-file PATH`,
+`--oidc-client-secret-env NAME`, or the default
+`ZEPTO_OIDC_CLIENT_SECRET`. These sources are mutually exclusive with the
+literal argv option.
 
 ---
 

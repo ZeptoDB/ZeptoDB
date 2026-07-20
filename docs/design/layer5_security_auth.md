@@ -20,7 +20,7 @@ institutions operating under EMIR, MiFID II, and SOC2 frameworks.
 |--------|---------------|--------|
 | **Transport Encryption (TLS)** | httplib::SSLServer, OpenSSL 3.2 | ✅ |
 | **Authentication** | API Key (Bearer) + JWT/OIDC | ✅ |
-| **Authorization (RBAC)** | 5-role model + symbol-level ACL + table-level ACL | ✅ |
+| **Authorization (RBAC)** | 5-role model + table/tenant ACL; symbol scopes fail closed | ⚠️ |
 | **Rate Limiting** | Token bucket, per-identity + per-IP | ✅ |
 | **Admin REST API** | Key/query/audit/version management | ✅ |
 | **Query Timeout & Kill** | CancellationToken + QueryTracker | ✅ |
@@ -222,8 +222,10 @@ such as Okta, Azure Active Directory, Google Workspace, and Auth0.
 | `exp` | integer | ✅ | Expiry (Unix seconds, validated) |
 | `iss` | string | When configured | Issuer URL (e.g. `https://corp.okta.com`) |
 | `aud` | string/array | When configured | Audience (e.g. `zeptodb`) |
-| `zepto_role` | string | Recommended | Role assignment: admin/writer/reader/analyst/metrics |
+| `zepto_role` | string | Recommended | Role assignment: admin/writer/reader/analyst/metrics; missing or unknown roles receive no permissions unless an explicit IdP fallback is configured |
 | `zepto_symbols` | string | Optional | Comma-separated symbol whitelist: `AAPL,GOOG,MSFT` |
+| `tenant_id` | string | Optional | Tenant binding used for namespace enforcement |
+| `allowed_tables` | string array | Optional | Physical-table whitelist; empty or absent is unrestricted |
 | `email` | string | Optional | Used for audit log display name |
 
 **OIDC integration example (Okta):**
@@ -234,6 +236,8 @@ jwt_cfg.expected_issuer      = "https://corp.okta.com/oauth2/default";
 jwt_cfg.expected_audience    = "zeptodb";
 jwt_cfg.role_claim           = "zepto_role";    // custom claim in Okta app
 jwt_cfg.symbols_claim        = "zepto_symbols"; // custom claim in Okta app
+jwt_cfg.tenant_claim         = "tenant_id";
+jwt_cfg.tables_claim         = "allowed_tables";
 ```
 
 **IdP configuration (Okta example):**
@@ -261,7 +265,7 @@ ZeptoDB uses five predefined roles covering all access patterns for financial op
 | `admin` | READ + WRITE + ADMIN + METRICS | DBA, system administrator |
 | `writer` | READ + WRITE + METRICS | Trading systems, feed handlers, data pipelines |
 | `reader` | READ | Quant researchers, BI dashboards |
-| `analyst` | READ (symbol-restricted) | External analysts, team-scoped access |
+| `analyst` | NONE (reserved) | Disabled until executor-level symbol filtering ships |
 | `metrics` | METRICS only | Prometheus, monitoring agents |
 
 ### 4.2 Permission Bitmask
@@ -279,8 +283,8 @@ METRICS      3     /metrics, /stats, /health, /ready endpoints
 
 | Endpoint | Method | Required Permission |
 |----------|--------|-------------------|
-| `POST /` | SQL query | READ |
-| `GET /?query=...` | SQL query | READ |
+| `POST /` | SQL query | READ for SELECT/SHOW/DESCRIBE, WRITE for DML, ADMIN for DDL |
+| `GET /?query=...` | Read-only SQL query | READ for SELECT/SHOW/DESCRIBE; DML/DDL rejected with 405 |
 | `GET /metrics` | Prometheus | METRICS |
 | `GET /stats` | Statistics | METRICS |
 | `GET /ping` | Health | (public, no auth) |
@@ -288,10 +292,19 @@ METRICS      3     /metrics, /stats, /health, /ready endpoints
 | `GET /ready` | Readiness | (public, no auth) |
 | `POST /admin/keys` | Key management | ADMIN |
 
+Both SQL entry points parse the statement before execution and fail closed when
+an authenticated request cannot be parsed or classified. Table allowlists and
+tenant namespaces are checked against every real table reached through JOINs,
+CTEs, subqueries, set operations, and materialized-view definitions, not only
+the first `FROM` table. The authentication middleware removes caller-supplied
+`X-Zepto-*` identity and ACL headers before installing its own trusted context;
+clients cannot raise their role or replace table/tenant restrictions with
+request headers.
+
 ### 4.3 Symbol-Level Access Control (Multi-Tenant)
 
-For organizations with multiple trading desks or external analysts, ZeptoDB supports
-per-identity symbol whitelisting.
+Persisted API-key and JWT formats support per-identity symbol whitelists, but
+the query executor does not yet apply row-level symbol filtering.
 
 **API Key with symbol restriction:**
 ```cpp
@@ -313,12 +326,11 @@ std::string key = auth->create_api_key(
 }
 ```
 
-**Enforcement in query execution:**
-The SQL executor checks `AuthContext::can_access_symbol(sym)` during partition selection.
-Symbol-restricted identities only see results for their allowed symbols — other symbols
-are filtered at the partition scan level (no timing side-channel).
-
-**Empty symbol list = unrestricted** (admin/writer/reader roles default to all symbols).
+**Current enforcement:** any authenticated data request with a non-empty symbol
+scope fails closed, and the `analyst` role has no permissions. An empty symbol
+list remains unrestricted for `admin`, `writer`, and `reader`. Do not expose a
+symbol-scoped identity until partition-aware row filtering is implemented and
+verified across HTTP SQL, Arrow/MessagePack ingest, Agent Memory, and Flight.
 
 ### 4.4 Principle of Least Privilege
 
@@ -329,7 +341,7 @@ Recommended key assignment by service type:
 | Market data feed handler | `writer` | All (empty) |
 | Trading strategy process | `reader` | Strategy-specific symbols |
 | Quant research notebook | `reader` | Research universe |
-| External client analytics | `analyst` | Contracted symbols only |
+| External client analytics | No supported role yet | Use tenant/table isolation only after policy review |
 | Prometheus scraper | `metrics` | N/A |
 | DBA / operations | `admin` | All (empty) |
 | Backup / ETL jobs | `writer` | All (empty) |
@@ -484,16 +496,17 @@ Internal (Ops)
 ```
 
 **Isolation guarantees:**
-- Symbol ACL enforced at partition scan level — not application logic
+- Symbol-scoped data access fails closed until partition-scan filtering ships
 - Tenant A cannot observe Tenant B's symbols (even if they know the partition key structure)
 - `admin` role is only issued to internal ops accounts, never tenants
 
 ### 6.6 Tenant Table Namespace (HTTP Layer) — devlog 090
 
 `TenantConfig.table_namespace` is enforced at the HTTP POST `/` boundary by
-`HttpServer`. When an authenticated identity carries a non-empty `tenant_id`
-and the server has a `TenantManager` configured (`HttpServer::set_tenant_manager`),
-every query that names a table is checked against `TenantManager::can_access_table`.
+`HttpServer`. When an authenticated identity carries a non-empty `tenant_id`,
+the server requires a configured `TenantManager` and a matching registered
+tenant. Every query that names a table is checked against
+`TenantManager::can_access_table`.
 
 Flow:
 
@@ -515,9 +528,18 @@ Example — tenant Alpha with `table_namespace = "deskA."`:
 | `DESCRIBE deskA.quotes`      | 200 — allowed |
 | `CREATE TABLE deskB.foo ...` | 403 — namespace prefix check fires on DDL too |
 
-Tenants with an empty `table_namespace` are unrestricted (function returns
-`true`). Requests without a `tenant_id` on the `AuthContext` skip the check
-entirely (unauthenticated `--no-auth` mode is unaffected).
+Registered tenants with an empty `table_namespace` are unrestricted (function
+returns `true`). Unknown tenants and tenant-scoped embeddings without a
+`TenantManager` fail closed. Authenticated requests without a `tenant_id` on
+the `AuthContext` skip the check. In `--no-auth` mode, the caller-supplied `X-Zepto-Tenant-Id` header
+is preserved specifically for this documented tenant-scoping contract; all
+other internal identity and ACL headers are discarded.
+
+Direct `JwtValidator` authentication accepts both `tenant_id` and the
+`allowed_tables` array. API keys and multi-IdP SSO identities accept the same
+two restrictions, with configurable SSO claim names. Server-side sessions
+preserve the restrictions resolved by their source identity and replace their
+authorization context after a validated token refresh.
 
 This layer sits on top of, not in place of, the per-key `allowed_tables` ACL
 (§4.3 / §4.4): a query must pass BOTH checks to reach the SQL executor.
@@ -546,13 +568,17 @@ cfg.jwt.expected_audience      = "zeptodb";
 cfg.jwt.verify_expiry          = true;
 cfg.jwt.role_claim             = "zepto_role";
 cfg.jwt.symbols_claim          = "zepto_symbols";
+cfg.jwt.tenant_claim           = "tenant_id";
+cfg.jwt.tables_claim           = "allowed_tables";
 
 // --- Audit ---
 cfg.audit_enabled  = true;
 cfg.audit_log_file = "/var/log/zeptodb/audit.log";
 
 // --- Public paths (no auth required) ---
-cfg.public_paths = {"/ping", "/health", "/ready"};
+cfg.public_paths = {"/ping", "/health", "/ready", "/api/license",
+                    "/auth/login", "/auth/callback", "/auth/logout",
+                    "/auth/session"};
 ```
 
 ### 7.2 TlsConfig
@@ -614,9 +640,9 @@ src/auth/
 ```
 1. HttpServer receives request
 2. set_pre_routing_handler fires before any route handler
-3. AuthManager::check(method, path, Authorization header, remote_addr)
+3. AuthManager::check(method, path, Authorization header, remote_addr, Cookie)
    a. is_public_path(path)? → OK (anonymous/metrics role)
-   b. No Authorization header? → 401
+   b. No Authorization header? → validate a server-side session cookie, or 401
    c. Extract Bearer token
    d. Token starts with "ey"? → Try SsoIdentityProvider first (multi-IdP, issuer-routed)
    e. SSO miss? → Try JwtValidator (single-IdP fallback)
@@ -624,8 +650,14 @@ src/auth/
    g. All fail? → 401
 4. Decision.status == OK → continue to route handler
 5. Decision.status != OK → return 401/403 with JSON error
-6. Audit log written for all authenticated requests
+6. Audit log and identity/IP rate limits are applied once per authenticated request
 ```
+
+`POST /auth/session` and the OIDC callback are self-authenticating handlers:
+pre-routing permits them without consuming a rate-limit token, then the handler
+calls `AuthManager::authenticate()` exactly once for the presented Bearer token.
+`/whoami` and `/auth/me` consume the trusted identity stamped by pre-routing and
+do not revalidate or double-count the same request.
 
 ### 8.3 Performance Impact
 
@@ -789,6 +821,11 @@ DELETE /admin/queries/q_a1b2c3...
 ```
 This sets the `CancellationToken` — the running query aborts at the next partition boundary
 and returns HTTP 408 with `{"error":"Query cancelled"}`.
+
+Cancellation is cooperative. The HTTP worker waits for the executor future to
+finish after setting the token, and distributed RPC work does not yet receive
+the token. Consequently this timeout limits normal cancellation latency but is
+not a hard wall-clock or resource-isolation boundary.
 
 ---
 

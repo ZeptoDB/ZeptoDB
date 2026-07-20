@@ -4,21 +4,219 @@
 
 #include "zeptodb/storage/flush_manager.h"
 
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <limits>
+#include <sstream>
+#include <vector>
+#include <unistd.h>
 
 namespace zeptodb::storage {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+constexpr const char* kSnapshotManifestMagic = "ZEPTO_SNAPSHOT_V1";
+std::atomic<uint64_t> g_snapshot_generation_sequence{0};
+
+bool is_generation_name(const std::string& name) {
+    if (!name.starts_with("gen-") || name.size() <= 4 || name.size() > 160) {
+        return false;
+    }
+    return std::all_of(name.begin() + 4, name.end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || ch == '-';
+    });
+}
+
+bool write_text_atomically(const fs::path& destination,
+                           const std::string& contents) {
+    const uint64_t sequence = g_snapshot_generation_sequence.fetch_add(
+        1, std::memory_order_relaxed);
+    const fs::path temporary = destination.string() + ".tmp." +
+        std::to_string(static_cast<uint64_t>(::getpid())) + "." +
+        std::to_string(sequence);
+
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    output.flush();
+    if (!output) {
+        output.close();
+        std::error_code remove_error;
+        fs::remove(temporary, remove_error);
+        return false;
+    }
+    output.close();
+    if (!output) {
+        std::error_code remove_error;
+        fs::remove(temporary, remove_error);
+        return false;
+    }
+
+    std::error_code rename_error;
+    fs::rename(temporary, destination, rename_error);
+    if (rename_error) {
+        std::error_code remove_error;
+        fs::remove(temporary, remove_error);
+        return false;
+    }
+    return true;
+}
+
+void cleanup_old_generations(const fs::path& generations_root,
+                             const std::string& current_generation) {
+    std::error_code ec;
+    std::vector<fs::path> generations;
+    for (const auto& entry : fs::directory_iterator(generations_root, ec)) {
+        if (ec) return;
+        const std::string name = entry.path().filename().string();
+        if (entry.is_directory(ec) && !ec && is_generation_name(name)) {
+            generations.push_back(entry.path());
+        }
+        ec.clear();
+    }
+    std::sort(generations.begin(), generations.end(),
+              [](const fs::path& left, const fs::path& right) {
+                  return left.filename().string() > right.filename().string();
+              });
+
+    size_t retained = 0;
+    for (const auto& generation : generations) {
+        const bool is_current =
+            generation.filename().string() == current_generation;
+        if (is_current || retained < 1) {
+            if (!is_current) ++retained;
+            continue;
+        }
+        std::error_code remove_error;
+        fs::remove_all(generation, remove_error);
+    }
+}
+
+SnapshotResolution invalid_snapshot(std::string error) {
+    SnapshotResolution result;
+    result.status = SnapshotResolutionStatus::Invalid;
+    result.error = std::move(error);
+    return result;
+}
+
+}  // namespace
+
+SnapshotResolution FlushManager::resolve_snapshot(
+    const std::string& snapshot_path) {
+    if (snapshot_path.empty()) {
+        return {};
+    }
+
+    const fs::path root(snapshot_path);
+    std::error_code ec;
+    if (!fs::exists(root, ec)) {
+        if (ec) {
+            return invalid_snapshot("cannot inspect snapshot root: " + ec.message());
+        }
+        return {};
+    }
+    if (!fs::is_directory(root, ec) || ec) {
+        return invalid_snapshot("snapshot root is not a directory");
+    }
+
+    const fs::path current_path = root / "CURRENT";
+    if (!fs::exists(current_path, ec)) {
+        if (ec) {
+            return invalid_snapshot("cannot inspect snapshot CURRENT: " + ec.message());
+        }
+
+        bool has_unpublished_content = false;
+        for (const auto& entry : fs::directory_iterator(root, ec)) {
+            if (ec) {
+                return invalid_snapshot("cannot enumerate snapshot root: " + ec.message());
+            }
+            if (entry.path().filename() == "generations" &&
+                entry.is_directory(ec) && !ec && fs::is_empty(entry.path(), ec) && !ec) {
+                continue;
+            }
+            has_unpublished_content = true;
+            break;
+        }
+        if (ec) {
+            return invalid_snapshot("cannot inspect snapshot root: " + ec.message());
+        }
+        return has_unpublished_content
+            ? invalid_snapshot("snapshot root has data but no CURRENT manifest")
+            : SnapshotResolution{};
+    }
+    const auto current_status = fs::symlink_status(current_path, ec);
+    if (ec || !fs::is_regular_file(current_status)) {
+        return invalid_snapshot("snapshot CURRENT is not a regular file");
+    }
+    const auto current_size = fs::file_size(current_path, ec);
+    if (ec || current_size == 0 || current_size > 512) {
+        return invalid_snapshot("snapshot CURRENT has an invalid size");
+    }
+
+    std::ifstream current(current_path, std::ios::binary);
+    std::string generation_name;
+    std::string extra;
+    if (!current || !(current >> generation_name) || (current >> extra) ||
+        !is_generation_name(generation_name)) {
+        return invalid_snapshot("snapshot CURRENT is malformed");
+    }
+
+    const fs::path generation_path =
+        root / "generations" / generation_name;
+    const auto generation_status = fs::symlink_status(generation_path, ec);
+    if (ec || !fs::is_directory(generation_status)) {
+        return invalid_snapshot("snapshot CURRENT generation is missing");
+    }
+
+    const fs::path complete_path = generation_path / "_COMPLETE";
+    const auto complete_status = fs::symlink_status(complete_path, ec);
+    if (ec || !fs::is_regular_file(complete_status)) {
+        return invalid_snapshot("snapshot generation is not complete");
+    }
+    const auto complete_size = fs::file_size(complete_path, ec);
+    if (ec || complete_size == 0 || complete_size > 512) {
+        return invalid_snapshot("snapshot complete manifest has an invalid size");
+    }
+
+    std::ifstream complete(complete_path, std::ios::binary);
+    std::string magic;
+    std::string manifest_generation;
+    uint64_t partition_count = 0;
+    uint64_t row_count = 0;
+    if (!complete || !(complete >> magic >> manifest_generation >> partition_count >> row_count) ||
+        (complete >> extra) || magic != kSnapshotManifestMagic ||
+        manifest_generation != generation_name ||
+        partition_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        row_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        return invalid_snapshot("snapshot complete manifest is malformed");
+    }
+
+    SnapshotResolution result;
+    result.status = SnapshotResolutionStatus::Ready;
+    result.generation_path = generation_path.string();
+    result.partition_count = static_cast<size_t>(partition_count);
+    result.row_count = static_cast<size_t>(row_count);
+    return result;
+}
 
 // ============================================================================
 // 생성자 / 소멸자
 // ============================================================================
 FlushManager::FlushManager(PartitionManager& pm,
                             HDBWriter&         writer,
-                            FlushConfig        config)
+                            FlushConfig        config,
+                            EvictBeforeCallback evict_before)
     : pm_(pm)
     , writer_(writer)
     , config_(config)
+    , evict_before_(std::move(evict_before))
 {
     // Parquet writer 초기화 (필요 시)
     if (config_.output_format == HDBOutputFormat::PARQUET ||
@@ -110,7 +308,9 @@ void FlushManager::flush_loop() {
         const int64_t ttl = ttl_ns_.load(std::memory_order_relaxed);
         if (ttl > 0) {
             const int64_t cutoff = now_ns() - ttl;
-            const size_t evicted = pm_.evict_older_than(cutoff);
+            const size_t evicted = evict_before_
+                ? evict_before_(cutoff)
+                : pm_.evict_older_than(cutoff);
             if (evicted > 0) {
                 ZEPTO_INFO("FlushManager: TTL evicted {} partitions older than {}ns",
                           evicted, ttl);
@@ -218,21 +418,77 @@ size_t FlushManager::snapshot_now() {
 }
 
 size_t FlushManager::do_snapshot() {
+    std::lock_guard<std::mutex> snapshot_lock(snapshot_mu_);
+    last_snapshot_succeeded_.store(false, std::memory_order_release);
     if (config_.snapshot_path.empty()) return 0;
 
-    auto all = pm_.get_all_partitions();
-    size_t count = 0;
-    for (Partition* part : all) {
-        if (!part || part->num_rows() == 0) continue;
-        const size_t bytes = writer_.snapshot_partition(*part, config_.snapshot_path);
-        if (bytes > 0) ++count;
+    const fs::path root(config_.snapshot_path);
+    const fs::path generations_root = root / "generations";
+    std::error_code ec;
+    fs::create_directories(generations_root, ec);
+    if (ec) {
+        ZEPTO_WARN("FlushManager: cannot create snapshot root {} ({})",
+                   generations_root.string(), ec.message());
+        return 0;
     }
 
-    last_snapshot_ns_.store(now_ns(), std::memory_order_relaxed);
-    if (count > 0) {
-        ZEPTO_INFO("FlushManager: snapshot {} partitions → {}", count, config_.snapshot_path);
+    const uint64_t sequence = g_snapshot_generation_sequence.fetch_add(
+        1, std::memory_order_relaxed);
+    const std::string generation_name = "gen-" + std::to_string(now_ns()) + "-" +
+        std::to_string(static_cast<uint64_t>(::getpid())) + "-" +
+        std::to_string(sequence);
+    const fs::path generation_path = generations_root / generation_name;
+    if (!fs::create_directory(generation_path, ec) || ec) {
+        ZEPTO_WARN("FlushManager: cannot create snapshot generation {} ({})",
+                   generation_path.string(), ec.message());
+        return 0;
     }
-    return count;
+
+    size_t partition_count = 0;
+    size_t row_count = 0;
+    const bool wrote_all = pm_.visit_partitions_stable([&](Partition& partition) {
+        const auto result = writer_.snapshot_partition_checked(
+            partition, generation_path.string());
+        if (!result.ok) {
+            return false;
+        }
+        if (result.rows_written > 0) {
+            if (row_count > std::numeric_limits<size_t>::max() -
+                            result.rows_written ||
+                partition_count == std::numeric_limits<size_t>::max()) {
+                return false;
+            }
+            ++partition_count;
+            row_count += result.rows_written;
+        }
+        return true;
+    });
+
+    if (!wrote_all) {
+        fs::remove_all(generation_path, ec);
+        ZEPTO_WARN("FlushManager: snapshot generation write failed: {}",
+                   generation_path.string());
+        return 0;
+    }
+
+    const std::string complete_contents =
+        std::string(kSnapshotManifestMagic) + " " + generation_name + " " +
+        std::to_string(partition_count) + " " + std::to_string(row_count) + "\n";
+    if (!write_text_atomically(generation_path / "_COMPLETE", complete_contents) ||
+        !write_text_atomically(root / "CURRENT", generation_name + "\n")) {
+        fs::remove_all(generation_path, ec);
+        ZEPTO_WARN("FlushManager: snapshot manifest publish failed: {}",
+                   generation_path.string());
+        return 0;
+    }
+
+    cleanup_old_generations(generations_root, generation_name);
+    last_snapshot_ns_.store(now_ns(), std::memory_order_relaxed);
+    last_snapshot_succeeded_.store(true, std::memory_order_release);
+    ZEPTO_INFO("FlushManager: published snapshot generation {} "
+               "({} partitions, {} rows)",
+               generation_name, partition_count, row_count);
+    return partition_count;
 }
 
 // ============================================================================

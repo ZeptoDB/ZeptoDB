@@ -25,12 +25,21 @@ spec:
         app.kubernetes.io/version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/security: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/security-values: {{ toJson (dict "auth" .Values.auth "clusterSecurity" .Values.cluster.security) | sha256sum }}
+        checksum/auth-external: {{ .Values.auth.rolloutChecksum | quote }}
+        checksum/cluster-external: {{ .Values.cluster.security.rolloutChecksum | quote }}
         {{- if .Values.prometheus.scrape }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.prometheus.port | quote }}
         prometheus.io/path: {{ .Values.prometheus.path | quote }}
         {{- end }}
     spec:
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.gracefulShutdown.terminationGracePeriodSeconds }}
       {{- if .Values.performanceTuning.hostNetwork }}
       hostNetwork: true
@@ -78,8 +87,46 @@ spec:
       {{- end }}
       containers:
         - name: zeptodb
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "zeptodb.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.container.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.container.args }}
+          args:
+            {{- toYaml .Values.container.args | nindent 12 }}
+          {{- else }}
+          args:
+            - "--bind"
+            - "0.0.0.0"
+            - "--allow-plaintext-http"
+            - "--secure-cookie"
+            - "--port"
+            - {{ .Values.config.port | quote }}
+            - "--ticks"
+            - "0"
+            {{- if .Values.persistence.enabled }}
+            - "--storage-mode"
+            - "tiered"
+            - "--hdb-dir"
+            - {{ .Values.config.dataDir | quote }}
+            - "--acknowledge-incomplete-durability"
+            {{- end }}
+            {{- if .Values.auth.enabled }}
+            - "--api-keys-file"
+            - {{ .Values.auth.mountPath | quote }}
+            - "--no-bootstrap-dev-keys"
+            {{- else }}
+            - "--no-auth"
+            {{- end }}
+            - "--web-dir"
+            - "/opt/zeptodb/web"
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.config.port }}
@@ -113,6 +160,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- if .Values.cluster.security.enabled }}
+            - name: ZEPTO_CLUSTER_SECRET_FILE
+              value: {{ .Values.cluster.security.mountPath | quote }}
+            {{- end }}
             {{- if .Values.coldTier.enabled }}
             # --- devlog 118: cold-tier S3 Parquet sink ---
             - name: ZEPTO_COLD_TIER_ENABLED
@@ -143,6 +194,16 @@ spec:
             - name: config
               mountPath: /opt/zeptodb/config
               readOnly: true
+            {{- if .Values.auth.enabled }}
+            - name: auth
+              mountPath: {{ dir .Values.auth.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.cluster.security.enabled }}
+            - name: cluster-security
+              mountPath: {{ dir .Values.cluster.security.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.persistence.enabled }}
             - name: data
               mountPath: {{ .Values.config.dataDir }}
@@ -167,16 +228,37 @@ spec:
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- with .Values.gracefulShutdown.preStopCommand }}
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep {{ .Values.gracefulShutdown.preStopSleepSeconds }}"]
+                command:
+                  {{- toYaml . | nindent 18 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - name: config
           configMap:
             name: {{ include "zeptodb.fullname" . }}
+        {{- if .Values.auth.enabled }}
+        - name: auth
+          secret:
+            secretName: {{ include "zeptodb.authSecretName" . }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.auth.apiKeysKey }}
+                path: {{ base .Values.auth.mountPath }}
+        {{- end }}
+        {{- if .Values.cluster.security.enabled }}
+        - name: cluster-security
+          secret:
+            secretName: {{ include "zeptodb.clusterSecretName" . }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.cluster.security.secretKey }}
+                path: {{ base .Values.cluster.security.mountPath }}
+        {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: data
           persistentVolumeClaim:

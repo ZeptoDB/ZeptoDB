@@ -8,6 +8,15 @@
 
 namespace zeptodb::auth {
 
+namespace {
+
+std::string trim_trailing_slashes(std::string value) {
+    while (!value.empty() && value.back() == '/') value.pop_back();
+    return value;
+}
+
+}  // namespace
+
 std::string OidcDiscovery::extract_json_string(const std::string& json,
                                                 const std::string& key) {
     std::string needle = "\"" + key + "\"";
@@ -23,6 +32,7 @@ std::string OidcDiscovery::extract_json_string(const std::string& json,
 }
 
 std::optional<OidcMetadata> OidcDiscovery::fetch(const std::string& issuer_url) {
+    if (!issuer_url.starts_with("https://")) return std::nullopt;
     // Build well-known URL
     std::string base = issuer_url;
     while (!base.empty() && base.back() == '/') base.pop_back();
@@ -38,22 +48,13 @@ std::optional<OidcMetadata> OidcDiscovery::fetch(const std::string& issuer_url) 
     std::string host_port = (slash != std::string::npos) ? url.substr(0, slash) : url;
     std::string path = (slash != std::string::npos) ? url.substr(slash) : "/";
 
-    std::string body;
-    if (use_ssl) {
-        httplib::SSLClient cli(host_port);
-        cli.set_connection_timeout(5);
-        cli.set_read_timeout(5);
-        auto res = cli.Get(path);
-        if (!res || res->status != 200) return std::nullopt;
-        body = res->body;
-    } else {
-        httplib::Client cli(host_port);
-        cli.set_connection_timeout(5);
-        cli.set_read_timeout(5);
-        auto res = cli.Get(path);
-        if (!res || res->status != 200) return std::nullopt;
-        body = res->body;
-    }
+    httplib::Client cli((use_ssl ? "https://" : "http://") + host_port);
+    if (!cli.is_valid()) return std::nullopt;
+    cli.set_connection_timeout(5);
+    cli.set_read_timeout(5);
+    auto res = cli.Get(path);
+    if (!res || res->status != 200) return std::nullopt;
+    std::string body = std::move(res->body);
 
     OidcMetadata meta;
     meta.issuer                 = extract_json_string(body, "issuer");
@@ -62,10 +63,22 @@ std::optional<OidcMetadata> OidcDiscovery::fetch(const std::string& issuer_url) 
     meta.token_endpoint         = extract_json_string(body, "token_endpoint");
     meta.userinfo_endpoint      = extract_json_string(body, "userinfo_endpoint");
 
-    // issuer and jwks_uri are required
-    if (meta.issuer.empty() || meta.jwks_uri.empty()) return std::nullopt;
+    if (!validate_metadata(issuer_url, meta)) return std::nullopt;
 
     return meta;
+}
+
+bool OidcDiscovery::validate_metadata(
+    const std::string& configured_issuer,
+    const OidcMetadata& metadata) {
+    if (!configured_issuer.starts_with("https://") ||
+        trim_trailing_slashes(metadata.issuer) !=
+            trim_trailing_slashes(configured_issuer)) {
+        return false;
+    }
+    return metadata.jwks_uri.starts_with("https://") &&
+        metadata.authorization_endpoint.starts_with("https://") &&
+        metadata.token_endpoint.starts_with("https://");
 }
 
 } // namespace zeptodb::auth

@@ -35,6 +35,16 @@ namespace zeptodb::sql {
 
 using zeptodb::storage::ColumnType;
 
+namespace detail {
+
+/// SQL cache storage that retains the complete query text. The hasher is a
+/// template parameter so collision behavior can be verified deterministically
+/// without weakening the production hash function.
+template <typename Value, typename Hasher = std::hash<std::string>>
+using FullSqlCache = std::unordered_map<std::string, Value, Hasher>;
+
+}  // namespace detail
+
 // ============================================================================
 // QueryResultSet: SQL 쿼리 결과
 // ============================================================================
@@ -108,6 +118,15 @@ public:
     QueryResultSet execute(const std::string& sql,
                            zeptodb::auth::CancellationToken* token);
 
+    /// Execute a request-owned AST without consulting or populating the
+    /// statement/result caches. Security boundaries use this after applying
+    /// ACL and row-limit policy so concurrent requests cannot replace the AST
+    /// or reuse a result produced under different bounds.
+    QueryResultSet execute_parsed(
+        const std::string& sql,
+        ParsedStatement statement,
+        zeptodb::auth::CancellationToken* token = nullptr);
+
     /// 병렬 실행 활성화 (LocalQueryScheduler 재생성, num_threads 지정)
     void enable_parallel(size_t num_threads = 0,
                          size_t row_threshold = 100'000);
@@ -122,10 +141,12 @@ public:
     size_t prepared_cache_size() const;
     void   clear_prepared_cache();
 
-    /// Prime the prepared-statement cache with a pre-parsed AST for the given
-    /// SQL. Used by the HTTP ACL path (devlog 091 F4) to avoid re-parsing.
-    /// No-op if the cache already contains this SQL's hash or is at capacity.
-    void cache_prepared(const std::string& sql, ParsedStatement ps);
+    /// Prime the ordinary prepared-statement cache with a pre-parsed AST for
+    /// the given SQL. Existing entries are replaced; new entries are rejected
+    /// at capacity. Security boundaries must use execute_parsed() instead,
+    /// because a shared cache cannot provide request-owned policy semantics.
+    [[nodiscard]] bool cache_prepared(const std::string& sql,
+                                      ParsedStatement ps);
 
     /// Query result cache control
     void   enable_result_cache(size_t max_entries = 128, double ttl_seconds = 5.0);
@@ -171,6 +192,11 @@ public:
         std::vector<zeptodb::ingestion::TickMessage> ticks);
 
 private:
+    QueryResultSet execute_impl(
+        const std::string& sql,
+        ParsedStatement* request_statement,
+        bool allow_caches);
+
     zeptodb::core::ZeptoPipeline& pipeline_;
     zeptodb::cluster::ClusterNodeBase* cluster_node_ = nullptr;  // devlog 103
     ParallelOptions par_opts_;
@@ -185,7 +211,10 @@ private:
 
     // ── Prepared statement cache (parse result reuse) ────────────────────────
     mutable std::mutex stmt_cache_mu_;
-    std::unordered_map<size_t, ParsedStatement> stmt_cache_;  // hash(sql) → parsed
+    // Keep the complete SQL text as the key. std::unordered_map still hashes
+    // it internally, but key equality prevents a hash collision from reusing
+    // another query's AST.
+    detail::FullSqlCache<ParsedStatement> stmt_cache_;
 
     // ── Query result cache (TTL-based) ───────────────────────────────────────
     struct CachedResult {
@@ -193,7 +222,9 @@ private:
         double         expire_time;  // monotonic seconds
     };
     mutable std::mutex result_cache_mu_;
-    std::unordered_map<size_t, CachedResult> result_cache_;
+    // Full SQL equality is required here because a false cache hit can return
+    // data from a different query or authorization scope.
+    detail::FullSqlCache<CachedResult> result_cache_;
     size_t result_cache_max_   = 0;      // 0 = disabled
     double result_cache_ttl_s_ = 5.0;
 
@@ -215,8 +246,6 @@ private:
     static bool is_duckdb_table_func(const std::string& table_name,
                                      std::string& out_path);
 #endif
-
-    static size_t sql_hash(const std::string& sql);
 
     // Resolve uncorrelated scalar/IN subqueries in WHERE tree into literals
     void resolve_subqueries(std::shared_ptr<Expr>& expr);

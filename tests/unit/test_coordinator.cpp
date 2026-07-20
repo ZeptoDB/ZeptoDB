@@ -25,9 +25,14 @@
 
 #include "test_port_helper.h"
 
+#include <arpa/inet.h>
+#include <array>
 #include <chrono>
+#include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <sys/socket.h>
 #include <thread>
 #include <unordered_map>
 #include <unistd.h>
@@ -122,6 +127,38 @@ TEST(RpcProtocol, RoundTripPreservesSymbolStrings) {
     EXPECT_EQ(r2.rows[0][2], 1);
 }
 
+TEST(RpcProtocol, RoundTripPreservesStandaloneTextRows) {
+    QueryResultSet r;
+    r.column_names = {"result"};
+    r.string_rows = {"Table created"};
+
+    auto bytes = serialize_result(r);
+    auto r2 = deserialize_result(bytes.data(), bytes.size());
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    EXPECT_TRUE(r2.rows.empty());
+    ASSERT_EQ(r2.string_rows.size(), 1u);
+    EXPECT_EQ(r2.string_rows[0], "Table created");
+}
+
+TEST(RpcProtocol, RoundTripPadsRaggedMetadataRowsBeforeStringTail) {
+    QueryResultSet r;
+    r.column_names = {"name", "rows"};
+    r.column_types = {zeptodb::storage::ColumnType::SYMBOL,
+                      zeptodb::storage::ColumnType::INT64};
+    r.rows = {{17}};
+    r.string_rows = {"trades"};
+
+    auto bytes = serialize_result(r);
+    auto r2 = deserialize_result(bytes.data(), bytes.size());
+    ASSERT_TRUE(r2.ok()) << r2.error;
+    ASSERT_EQ(r2.rows.size(), 1u);
+    ASSERT_EQ(r2.rows[0].size(), 2u);
+    EXPECT_EQ(r2.rows[0][0], 17);
+    EXPECT_EQ(r2.rows[0][1], 0);
+    ASSERT_EQ(r2.string_rows.size(), 1u);
+    EXPECT_EQ(r2.string_rows[0], "trades");
+}
+
 TEST(RpcProtocol, RoundTripPreservesTypedRowStringPayload) {
     zeptodb::core::TypedRowMessage row;
     row.table_id = 42;
@@ -170,6 +207,53 @@ TEST(RpcProtocol, TruncatedDataReturnsError) {
     auto r2 = deserialize_result(bytes.data(), bytes.size() / 2);
     EXPECT_FALSE(r2.ok());
     EXPECT_NE(r2.error.find("truncated"), std::string::npos);
+}
+
+TEST(RpcProtocol, RejectsClaimedDimensionsBeforeAllocation) {
+    std::vector<uint8_t> too_many_columns;
+    proto_write_u32(too_many_columns, 0);  // error length
+    proto_write_u32(too_many_columns, RPC_RESULT_MAX_COLUMNS + 1);
+    auto columns = deserialize_result(too_many_columns.data(),
+                                      too_many_columns.size());
+    EXPECT_NE(columns.error.find("col_count exceeds limit"),
+              std::string::npos);
+
+    std::vector<uint8_t> too_many_rows;
+    proto_write_u32(too_many_rows, 0);  // error length
+    proto_write_u32(too_many_rows, 1);  // columns
+    proto_write_str(too_many_rows, "value");
+    proto_write_u8(
+        too_many_rows,
+        static_cast<uint8_t>(zeptodb::storage::ColumnType::INT64));
+    proto_write_u32(too_many_rows, RPC_RESULT_MAX_ROWS + 1);
+    auto rows = deserialize_result(too_many_rows.data(), too_many_rows.size());
+    EXPECT_NE(rows.error.find("row_count exceeds limit"), std::string::npos);
+
+    std::vector<uint8_t> too_many_strings;
+    proto_write_u32(too_many_strings, 0);  // error length
+    proto_write_u32(too_many_strings, 1);  // columns
+    proto_write_str(too_many_strings, "text");
+    proto_write_u8(
+        too_many_strings,
+        static_cast<uint8_t>(zeptodb::storage::ColumnType::STRING));
+    proto_write_u32(too_many_strings, 1);  // rows
+    proto_write_i64(too_many_strings, 0);
+    proto_write_u32(too_many_strings, RPC_RESULT_MAX_STRING_CELLS + 1);
+    auto strings = deserialize_result(too_many_strings.data(),
+                                      too_many_strings.size());
+    EXPECT_NE(strings.error.find("string_count exceeds limit"),
+              std::string::npos);
+}
+
+TEST(RpcProtocol, TypedRowRejectsClaimedColumnCountBeforeReserve) {
+    std::vector<uint8_t> payload;
+    proto_write_u32(payload, 1);  // table id
+    proto_write_u32(payload, 1);  // symbol id
+    proto_write_i64(payload, 1);  // timestamp
+    proto_write_u32(payload, RPC_RESULT_MAX_COLUMNS + 1);
+
+    zeptodb::core::TypedRowMessage decoded;
+    EXPECT_FALSE(deserialize_typed_row(payload.data(), payload.size(), decoded));
 }
 
 // ============================================================================
@@ -372,6 +456,123 @@ static inline uint16_t P(uint16_t n) {
     return port;
 }
 
+static RpcSecurityConfig rpc_test_security(std::string secret) {
+    RpcSecurityConfig security;
+    security.enabled = true;
+    security.shared_secret = std::move(secret);
+    return security;
+}
+
+class ScopedRpcAuthEnvironment {
+public:
+    explicit ScopedRpcAuthEnvironment(const std::string& secret) {
+        capture("ZEPTO_CLUSTER_SECRET", old_secret_, had_secret_);
+        capture("ZEPTO_CLUSTER_SECRET_FILE", old_file_, had_file_);
+        (void)::setenv("ZEPTO_CLUSTER_SECRET", secret.c_str(), 1);
+        (void)::unsetenv("ZEPTO_CLUSTER_SECRET_FILE");
+    }
+
+    ~ScopedRpcAuthEnvironment() {
+        restore("ZEPTO_CLUSTER_SECRET", old_secret_, had_secret_);
+        restore("ZEPTO_CLUSTER_SECRET_FILE", old_file_, had_file_);
+    }
+
+    ScopedRpcAuthEnvironment(const ScopedRpcAuthEnvironment&) = delete;
+    ScopedRpcAuthEnvironment& operator=(const ScopedRpcAuthEnvironment&) = delete;
+
+private:
+    static void capture(const char* name, std::string& value, bool& present) {
+        const char* current = std::getenv(name);
+        present = current != nullptr;
+        if (present) value = current;
+    }
+
+    static void restore(const char* name, const std::string& value,
+                        bool present) {
+        if (present) {
+            (void)::setenv(name, value.c_str(), 1);
+        } else {
+            (void)::unsetenv(name);
+        }
+    }
+
+    std::string old_secret_;
+    std::string old_file_;
+    bool had_secret_ = false;
+    bool had_file_ = false;
+};
+
+static bool test_send_all(int fd, const void* data, size_t size) {
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    while (size > 0) {
+        const ssize_t sent = ::send(fd, cursor, size, MSG_NOSIGNAL);
+        if (sent <= 0) return false;
+        cursor += sent;
+        size -= static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+static bool test_recv_all(int fd, void* data, size_t size) {
+    auto* cursor = static_cast<uint8_t*>(data);
+    while (size > 0) {
+        const ssize_t received = ::recv(fd, cursor, size, 0);
+        if (received <= 0) return false;
+        cursor += received;
+        size -= static_cast<size_t>(received);
+    }
+    return true;
+}
+
+static int connect_test_rpc(uint16_t port) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&address),
+                  sizeof(address)) != 0) {
+        ::close(fd);
+        return -1;
+    }
+
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                       &timeout, sizeof(timeout));
+    return fd;
+}
+
+static bool begin_raw_rpc_auth(int fd,
+                               const RpcAuthNonce& client_nonce,
+                               RpcAuthNonce& server_nonce,
+                               RpcAuthProof& server_proof) {
+    RpcHeader hello{};
+    hello.type = static_cast<uint32_t>(RpcType::AUTH_CLIENT_HELLO);
+    hello.payload_len = static_cast<uint32_t>(client_nonce.size());
+    if (!test_send_all(fd, &hello, sizeof(hello)) ||
+        !test_send_all(fd, client_nonce.data(), client_nonce.size())) {
+        return false;
+    }
+
+    RpcHeader challenge_header{};
+    RpcAuthServerChallenge challenge{};
+    if (!test_recv_all(fd, &challenge_header, sizeof(challenge_header)) ||
+        challenge_header.magic != 0x41504558u ||
+        static_cast<RpcType>(challenge_header.type) !=
+            RpcType::AUTH_SERVER_CHALLENGE ||
+        challenge_header.payload_len != challenge.size() ||
+        !test_recv_all(fd, challenge.data(), challenge.size())) {
+        return false;
+    }
+    std::copy_n(challenge.begin(), server_nonce.size(), server_nonce.begin());
+    std::copy_n(challenge.begin() + RPC_AUTH_NONCE_SIZE,
+                server_proof.size(), server_proof.begin());
+    return true;
+}
+
 TEST(TcpRpc, PingPong) {
     TcpRpcServer server;
     server.start(RPC_TEST_PORT_BASE, [](const std::string&) {
@@ -406,6 +607,107 @@ TEST(TcpRpc, SqlQueryRoundTrip) {
     ASSERT_EQ(result.rows.size(), 1u);
     EXPECT_EQ(result.rows[0][0], 42);
 
+    server.stop();
+}
+
+TEST(TcpRpc, BoundedSqlResponseRejectsBeforeDecodeAndClosesConnection) {
+    TcpRpcServer server;
+    server.start(P(19741), [](const std::string& sql) {
+        if (sql == "SELECT large") {
+            QueryResultSet result;
+            result.column_names = {"payload"};
+            result.column_types = {zeptodb::storage::ColumnType::STRING};
+            result.rows = {{0}};
+            result.string_rows = {std::string(128 * 1024, 'x')};
+            return result;
+        }
+        return make_result({"value"}, {{42}});
+    });
+    ASSERT_TRUE(server.is_running());
+
+    TcpRpcClient client("127.0.0.1", P(19741), 2000, 4);
+    auto rejected = client.execute_sql("SELECT large", 64);
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_NE(rejected.error.find(
+                  "response payload exceeds configured limit"),
+              std::string::npos);
+    EXPECT_TRUE(rejected.rows.empty());
+    EXPECT_TRUE(rejected.string_rows.empty());
+    EXPECT_EQ(client.pool_idle_count(), 0u)
+        << "a socket with an unread oversized payload must not return to the pool";
+
+    auto recovered = client.execute_sql("SELECT small");
+    ASSERT_TRUE(recovered.ok()) << recovered.error;
+    ASSERT_EQ(recovered.rows.size(), 1u);
+    EXPECT_EQ(recovered.rows[0][0], 42);
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+
+    server.stop();
+}
+
+TEST(TcpRpc, ConfiguredResponseCeilingAppliesToDefaultSqlAndStats) {
+    TcpRpcServer server;
+    server.set_stats_callback([]() { return std::string(1024, 's'); });
+    server.start(P(19748), [](const std::string&) {
+        QueryResultSet result;
+        result.column_names = {"payload"};
+        result.column_types = {zeptodb::storage::ColumnType::STRING};
+        result.rows = {{0}};
+        result.string_rows = {std::string(1024, 'q')};
+        return result;
+    });
+    ASSERT_TRUE(server.is_running());
+
+    TcpRpcClient client("127.0.0.1", P(19748));
+    client.set_max_response_size(64);
+    auto sql = client.execute_sql("SELECT large");
+    EXPECT_FALSE(sql.ok());
+    EXPECT_NE(sql.error.find("response payload exceeds configured limit"),
+              std::string::npos);
+    EXPECT_EQ(client.pool_idle_count(), 0u);
+
+    auto explicit_larger_limit = client.execute_sql("SELECT large", 4096);
+    EXPECT_FALSE(explicit_larger_limit.ok());
+    EXPECT_NE(explicit_larger_limit.error.find(
+                  "response payload exceeds configured limit"),
+              std::string::npos);
+    EXPECT_EQ(client.pool_idle_count(), 0u);
+
+    EXPECT_TRUE(client.request_stats().empty());
+    EXPECT_EQ(client.pool_idle_count(), 0u);
+
+    server.stop();
+}
+
+TEST(TcpRpc, ServerPayloadCeilingBoundsOutboundSqlAndStats) {
+    TcpRpcServer server;
+    server.set_max_payload_size(256);
+    server.set_stats_callback([]() { return std::string(1024, 's'); });
+    server.start(P(19749), [](const std::string& sql) {
+        if (sql == "SELECT large") {
+            QueryResultSet result;
+            result.column_names = {"payload"};
+            result.column_types = {zeptodb::storage::ColumnType::STRING};
+            result.rows = {{0}};
+            result.string_rows = {std::string(1024, 'q')};
+            return result;
+        }
+        return make_result({"value"}, {{42}});
+    });
+    ASSERT_TRUE(server.is_running());
+
+    TcpRpcClient client("127.0.0.1", P(19749));
+    auto bounded = client.execute_sql("SELECT large");
+    ASSERT_FALSE(bounded.ok());
+    EXPECT_NE(bounded.error.find("response exceeds configured payload limit"),
+              std::string::npos);
+
+    auto small = client.execute_sql("SELECT small");
+    ASSERT_TRUE(small.ok()) << small.error;
+    ASSERT_EQ(small.rows.size(), 1u);
+    EXPECT_EQ(small.rows[0][0], 42);
+
+    EXPECT_TRUE(client.request_stats().empty());
     server.stop();
 }
 
@@ -473,6 +775,183 @@ TEST(TcpRpc, MultipleSequentialQueries) {
         EXPECT_EQ(r.rows.size(), 1u);
     }
     EXPECT_EQ(call_count.load(), 5);
+    server.stop();
+}
+
+TEST(TcpRpcSecurity, MutualAuthenticationAndConnectionPoolReuse) {
+    const std::string secret(48, 's');
+    std::atomic<int> call_count{0};
+
+    TcpRpcServer server;
+    server.set_security(rpc_test_security(secret));
+    server.start(P(19742), [&](const std::string&) {
+        return make_result({"n"}, {{++call_count}});
+    });
+    ASSERT_TRUE(server.is_running());
+
+    TcpRpcClient client("127.0.0.1", P(19742));
+    client.set_security(rpc_test_security(secret));
+    auto first = client.execute_sql("SELECT n");
+    ASSERT_TRUE(first.ok()) << first.error;
+    ASSERT_EQ(first.rows.size(), 1u);
+    EXPECT_EQ(first.rows[0][0], 1);
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+
+    auto second = client.execute_sql("SELECT n");
+    ASSERT_TRUE(second.ok()) << second.error;
+    ASSERT_EQ(second.rows.size(), 1u);
+    EXPECT_EQ(second.rows[0][0], 2);
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+    EXPECT_EQ(call_count.load(), 2);
+
+    server.stop();
+}
+
+TEST(TcpRpcSecurity, DefaultConstructorsLoadEnvironmentConfiguration) {
+    ScopedRpcAuthEnvironment environment(std::string(48, 'e'));
+
+    TcpRpcServer server;
+    server.start(P(19747), [](const std::string&) {
+        return make_result({"value"}, {{42}});
+    });
+    ASSERT_TRUE(server.is_running());
+
+    TcpRpcClient client("127.0.0.1", P(19747));
+    auto result = client.execute_sql("SELECT 42");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 42);
+    EXPECT_EQ(client.pool_idle_count(), 1u);
+
+    server.stop();
+}
+
+TEST(TcpRpcSecurity, WrongSecretAndMissingAuthenticationFailClosed) {
+    const std::string server_secret(48, 'a');
+    std::atomic<int> call_count{0};
+
+    TcpRpcServer server;
+    server.set_security(rpc_test_security(server_secret));
+    server.start(P(19743), [&](const std::string&) {
+        ++call_count;
+        return make_result({"value"}, {{42}});
+    });
+    ASSERT_TRUE(server.is_running());
+
+    TcpRpcClient wrong_secret("127.0.0.1", P(19743));
+    wrong_secret.set_security(rpc_test_security(std::string(48, 'b')));
+    EXPECT_FALSE(wrong_secret.execute_sql("SELECT 42").ok());
+    EXPECT_EQ(wrong_secret.pool_idle_count(), 0u);
+
+    TcpRpcClient missing_auth("127.0.0.1", P(19743));
+    missing_auth.set_security(RpcSecurityConfig{});
+    EXPECT_FALSE(missing_auth.execute_sql("SELECT 42").ok());
+    EXPECT_EQ(missing_auth.pool_idle_count(), 0u);
+    EXPECT_EQ(call_count.load(), 0);
+
+    server.stop();
+}
+
+TEST(TcpRpcSecurity, InvalidConfiguredSecretPreventsServerStart) {
+    TcpRpcServer server;
+    server.set_security(rpc_test_security("too-short"));
+    server.start(P(19744), [](const std::string&) {
+        return QueryResultSet{};
+    });
+    EXPECT_FALSE(server.is_running());
+
+    TcpRpcClient client("127.0.0.1", P(19744));
+    auto invalid = rpc_test_security("also-too-short");
+    EXPECT_NE(invalid.validation_error().find("at least 32 bytes"),
+              std::string::npos);
+    client.set_security(std::move(invalid));
+    EXPECT_FALSE(client.execute_sql("SELECT 1").ok());
+    EXPECT_EQ(client.pool_idle_count(), 0u);
+}
+
+TEST(TcpRpcSecurity, RejectsNonExactHelloLength) {
+    TcpRpcServer server;
+    server.set_security(rpc_test_security(std::string(48, 'l')));
+    server.start(P(19745), [](const std::string&) {
+        return QueryResultSet{};
+    });
+    ASSERT_TRUE(server.is_running());
+
+    const int fd = connect_test_rpc(P(19745));
+    ASSERT_GE(fd, 0);
+    RpcHeader malformed{};
+    malformed.type = static_cast<uint32_t>(RpcType::AUTH_CLIENT_HELLO);
+    malformed.payload_len = RPC_AUTH_CLIENT_HELLO_SIZE + 1;
+    ASSERT_TRUE(test_send_all(fd, &malformed, sizeof(malformed)));
+
+    RpcHeader rejection{};
+    ASSERT_TRUE(test_recv_all(fd, &rejection, sizeof(rejection)));
+    EXPECT_EQ(rejection.magic, 0x41504558u);
+    EXPECT_EQ(static_cast<RpcType>(rejection.type), RpcType::AUTH_REJECT);
+    EXPECT_EQ(rejection.payload_len, 0u);
+    ::close(fd);
+    server.stop();
+}
+
+TEST(TcpRpcSecurity, CapturedClientProofCannotBeReplayed) {
+    const std::string secret(48, 'r');
+    TcpRpcServer server;
+    server.set_security(rpc_test_security(secret));
+    server.start(P(19746), [](const std::string&) {
+        return QueryResultSet{};
+    });
+    ASSERT_TRUE(server.is_running());
+
+    RpcAuthNonce client_nonce{};
+    client_nonce.fill(0x5a);
+
+    const int first_fd = connect_test_rpc(P(19746));
+    ASSERT_GE(first_fd, 0);
+    RpcAuthNonce first_server_nonce{};
+    RpcAuthProof first_server_proof{};
+    ASSERT_TRUE(begin_raw_rpc_auth(first_fd, client_nonce,
+                                   first_server_nonce, first_server_proof));
+    ASSERT_TRUE(rpc_validate_server_proof(secret, client_nonce,
+                                          first_server_nonce,
+                                          first_server_proof));
+
+    RpcAuthProof captured_client_proof{};
+    ASSERT_TRUE(rpc_compute_client_proof(secret, client_nonce,
+                                         first_server_nonce,
+                                         captured_client_proof));
+    RpcHeader proof_header{};
+    proof_header.type = static_cast<uint32_t>(RpcType::AUTH_CLIENT_PROOF);
+    proof_header.payload_len = captured_client_proof.size();
+    ASSERT_TRUE(test_send_all(first_fd, &proof_header, sizeof(proof_header)));
+    ASSERT_TRUE(test_send_all(first_fd, captured_client_proof.data(),
+                              captured_client_proof.size()));
+    RpcHeader accepted{};
+    ASSERT_TRUE(test_recv_all(first_fd, &accepted, sizeof(accepted)));
+    ASSERT_EQ(static_cast<RpcType>(accepted.type), RpcType::AUTH_OK);
+    ASSERT_EQ(accepted.payload_len, 0u);
+    ::close(first_fd);
+
+    const int replay_fd = connect_test_rpc(P(19746));
+    ASSERT_GE(replay_fd, 0);
+    RpcAuthNonce second_server_nonce{};
+    RpcAuthProof second_server_proof{};
+    ASSERT_TRUE(begin_raw_rpc_auth(replay_fd, client_nonce,
+                                   second_server_nonce,
+                                   second_server_proof));
+    EXPECT_NE(first_server_nonce, second_server_nonce);
+    ASSERT_TRUE(rpc_validate_server_proof(secret, client_nonce,
+                                          second_server_nonce,
+                                          second_server_proof));
+
+    ASSERT_TRUE(test_send_all(replay_fd, &proof_header, sizeof(proof_header)));
+    ASSERT_TRUE(test_send_all(replay_fd, captured_client_proof.data(),
+                              captured_client_proof.size()));
+    RpcHeader rejected{};
+    ASSERT_TRUE(test_recv_all(replay_fd, &rejected, sizeof(rejected)));
+    EXPECT_EQ(static_cast<RpcType>(rejected.type), RpcType::AUTH_REJECT);
+    EXPECT_EQ(rejected.payload_len, 0u);
+    ::close(replay_fd);
+
     server.stop();
 }
 

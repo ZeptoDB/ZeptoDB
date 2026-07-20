@@ -11,7 +11,9 @@
 #include <bit>
 #include <cctype>
 #include <chrono>
+#include <functional>
 #include <future>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <set>
@@ -57,8 +59,31 @@ static size_t estimate_result_bytes(const zeptodb::sql::QueryResultSet& result) 
             saturating_multiply(
                 row.size(), sizeof(zeptodb::sql::QueryResultSet::Value)));
     }
-    for (const auto& value : result.string_rows) {
-        bytes = saturating_add(bytes, value.size());
+    if (!result.string_rows.empty()) {
+        for (const auto& value : result.string_rows) {
+            bytes = saturating_add(bytes, value.size());
+        }
+    } else if (result.symbol_dict != nullptr) {
+        for (const auto& row : result.rows) {
+            for (size_t ci = 0;
+                 ci < result.column_types.size() && ci < row.size(); ++ci) {
+                const auto type = result.column_types[ci];
+                if (type != zeptodb::storage::ColumnType::SYMBOL &&
+                    type != zeptodb::storage::ColumnType::STRING) {
+                    continue;
+                }
+                const int64_t raw = row[ci];
+                if (raw < 0 ||
+                    raw > static_cast<int64_t>(
+                        std::numeric_limits<uint32_t>::max())) {
+                    continue;
+                }
+                bytes = saturating_add(
+                    bytes,
+                    result.symbol_dict
+                        ->lookup(static_cast<uint32_t>(raw)).size());
+            }
+        }
     }
     return bytes;
 }
@@ -194,72 +219,144 @@ bool QueryCoordinator::set_table_placement(const std::string& table_name,
                                            TablePlacementPolicy policy,
                                            NodeId node_id,
                                            std::string* error) {
-    std::optional<zeptodb::storage::TableSchema> schema;
-    {
-        std::shared_lock lock(mutex_);
-        schema = schema_snapshot_locked(table_name);
+    std::unique_lock lock(mutex_);
+    const auto pipelines = local_pipelines_locked();
+    std::vector<std::unique_lock<std::mutex>> catalog_locks;
+    catalog_locks.reserve(pipelines.size());
+    for (auto* pipeline : pipelines) {
+        catalog_locks.push_back(
+            pipeline->lock_schema_catalog_transaction());
     }
+
+    const auto schema = schema_snapshot_locked(table_name);
     if (!schema) {
         if (error) *error = "table '" + table_name + "' is not declared";
         return false;
     }
+
+    if (policy == TablePlacementPolicy::PinnedNode) {
+        auto rlock = router_read_lock();
+        const auto nodes = router().all_nodes();
+        if (std::find(nodes.begin(), nodes.end(), node_id) == nodes.end()) {
+            if (error) {
+                *error = "pinned table placement node " +
+                         std::to_string(node_id) +
+                         " is not registered";
+            }
+            return false;
+        }
+    }
+
+    const auto placement = to_schema_placement_options(policy, node_id);
+    struct PlacementUpdate {
+        zeptodb::core::ZeptoPipeline* pipeline = nullptr;
+        zeptodb::storage::TablePlacementOptions previous;
+    };
+    std::vector<PlacementUpdate> updates;
+    auto rollback_catalogs = [&]() {
+        for (auto& update : updates) {
+            (void)update.pipeline->schema_registry().set_placement(
+                table_name, update.previous);
+        }
+        for (auto& update : updates) {
+            (void)update.pipeline->save_schema_catalog();
+        }
+    };
+
+    for (auto* pipeline : pipelines) {
+        const auto previous = pipeline->schema_registry().get(table_name);
+        if (!previous) continue;
+        if (!pipeline->schema_registry().set_placement(
+                table_name, placement)) {
+            rollback_catalogs();
+            if (error) {
+                *error = "failed to update table placement metadata for table '" +
+                         table_name + "'";
+            }
+            return false;
+        }
+        updates.push_back({pipeline, previous->placement});
+    }
+    for (auto& update : updates) {
+        if (!update.pipeline->save_schema_catalog()) {
+            rollback_catalogs();
+            if (error) {
+                *error = "failed to persist table placement for table '" +
+                         table_name + "'";
+            }
+            return false;
+        }
+    }
+
     try {
         auto rlock = router_write_lock();
-        if (policy == TablePlacementPolicy::PinnedNode) {
-            const auto nodes = router().all_nodes();
-            if (std::find(nodes.begin(), nodes.end(), node_id) == nodes.end()) {
-                if (error) {
-                    *error = "pinned table placement node " +
-                             std::to_string(node_id) +
-                             " is not registered";
-                }
-                return false;
-            }
-        }
         router().set_table_placement(schema->table_id, policy, node_id);
     } catch (const std::exception& e) {
+        rollback_catalogs();
         if (error) *error = e.what();
         return false;
-    }
-    const auto placement = to_schema_placement_options(policy, node_id);
-    {
-        std::shared_lock lock(mutex_);
-        for (const auto& ep : endpoints_) {
-            if (!ep->is_local || ep->pipeline == nullptr) continue;
-            if (!ep->pipeline->schema_registry().set_placement(
-                    table_name, placement)) {
-                continue;
-            }
-            (void)ep->pipeline->save_schema_catalog();
-        }
     }
     return true;
 }
 
 bool QueryCoordinator::clear_table_placement(const std::string& table_name,
                                              std::string* error) {
-    std::optional<zeptodb::storage::TableSchema> schema;
-    {
-        std::shared_lock lock(mutex_);
-        schema = schema_snapshot_locked(table_name);
+    std::unique_lock lock(mutex_);
+    const auto pipelines = local_pipelines_locked();
+    std::vector<std::unique_lock<std::mutex>> catalog_locks;
+    catalog_locks.reserve(pipelines.size());
+    for (auto* pipeline : pipelines) {
+        catalog_locks.push_back(
+            pipeline->lock_schema_catalog_transaction());
     }
+
+    const auto schema = schema_snapshot_locked(table_name);
     if (!schema) {
         if (error) *error = "table '" + table_name + "' is not declared";
         return false;
     }
-    auto rlock = router_write_lock();
-    router().clear_table_placement(schema->table_id);
-    rlock.unlock();
-    {
-        std::shared_lock lock(mutex_);
-        for (const auto& ep : endpoints_) {
-            if (!ep->is_local || ep->pipeline == nullptr) continue;
-            if (!ep->pipeline->schema_registry().clear_placement(table_name)) {
-                continue;
+
+    struct PlacementUpdate {
+        zeptodb::core::ZeptoPipeline* pipeline = nullptr;
+        zeptodb::storage::TablePlacementOptions previous;
+    };
+    std::vector<PlacementUpdate> updates;
+    auto rollback_catalogs = [&]() {
+        for (auto& update : updates) {
+            (void)update.pipeline->schema_registry().set_placement(
+                table_name, update.previous);
+        }
+        for (auto& update : updates) {
+            (void)update.pipeline->save_schema_catalog();
+        }
+    };
+
+    for (auto* pipeline : pipelines) {
+        const auto previous = pipeline->schema_registry().get(table_name);
+        if (!previous) continue;
+        if (!pipeline->schema_registry().clear_placement(table_name)) {
+            rollback_catalogs();
+            if (error) {
+                *error = "failed to clear table placement metadata for table '" +
+                         table_name + "'";
             }
-            (void)ep->pipeline->save_schema_catalog();
+            return false;
+        }
+        updates.push_back({pipeline, previous->placement});
+    }
+    for (auto& update : updates) {
+        if (!update.pipeline->save_schema_catalog()) {
+            rollback_catalogs();
+            if (error) {
+                *error = "failed to persist cleared table placement for table '" +
+                         table_name + "'";
+            }
+            return false;
         }
     }
+
+    auto rlock = router_write_lock();
+    router().clear_table_placement(schema->table_id);
     return true;
 }
 
@@ -304,10 +401,17 @@ bool QueryCoordinator::apply_schema_placement_locked(
 
 bool QueryCoordinator::apply_catalog_table_placements_locked(
     std::string* error) {
-    for (const auto& ep : endpoints_) {
-        if (!ep->is_local || ep->pipeline == nullptr) continue;
-        for (const auto& table : ep->pipeline->schema_registry().list_tables()) {
-            const auto schema = ep->pipeline->schema_registry().get(table);
+    const auto pipelines = local_pipelines_locked();
+    std::vector<std::unique_lock<std::mutex>> catalog_locks;
+    catalog_locks.reserve(pipelines.size());
+    for (auto* pipeline : pipelines) {
+        catalog_locks.push_back(
+            pipeline->lock_schema_catalog_transaction());
+    }
+
+    for (auto* pipeline : pipelines) {
+        for (const auto& table : pipeline->schema_registry().list_tables()) {
+            const auto schema = pipeline->schema_registry().get(table);
             if (!schema) continue;
             if (!apply_schema_placement_locked(*schema, error)) {
                 return false;
@@ -1028,6 +1132,23 @@ QueryCoordinator::schema_snapshot_locked(const std::string& table_name) const
     return std::nullopt;
 }
 
+std::vector<zeptodb::core::ZeptoPipeline*>
+QueryCoordinator::local_pipelines_locked() const
+{
+    std::vector<zeptodb::core::ZeptoPipeline*> pipelines;
+    pipelines.reserve(endpoints_.size());
+    for (const auto& endpoint : endpoints_) {
+        if (endpoint->is_local && endpoint->pipeline != nullptr) {
+            pipelines.push_back(endpoint->pipeline);
+        }
+    }
+    std::sort(pipelines.begin(), pipelines.end(),
+              std::less<zeptodb::core::ZeptoPipeline*>{});
+    pipelines.erase(std::unique(pipelines.begin(), pipelines.end()),
+                    pipelines.end());
+    return pipelines;
+}
+
 static std::string lower_ascii(std::string s) {
     for (char& c : s) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1177,6 +1298,118 @@ static void snapshot_decoded_string_rows(zeptodb::sql::QueryResultSet& result) {
         }
     }
     result.symbol_dict = nullptr;
+}
+
+QueryCoordinator::BoundedFetchResult QueryCoordinator::fetch_concat_bounded(
+    const std::string& base_sql,
+    size_t row_limit,
+    size_t max_materialized_bytes)
+{
+    constexpr size_t kRpcEnvelopeAllowance = 64 * 1024;
+
+    std::vector<std::shared_ptr<NodeEndpoint>> endpoints;
+    {
+        std::shared_lock lock(mutex_);
+        endpoints = endpoints_;
+    }
+
+    BoundedFetchResult fetched;
+    for (const auto& endpoint : endpoints) {
+        const size_t accumulated_rows = fetched.result.rows.size();
+        const size_t remaining_rows = accumulated_rows < row_limit
+            ? row_limit - accumulated_rows
+            : 0;
+        const size_t probe_limit = saturating_add(remaining_rows, size_t{1});
+        const std::string query = base_sql + " LIMIT " +
+                                  std::to_string(probe_limit);
+
+        const size_t remaining_bytes =
+            fetched.estimated_bytes < max_materialized_bytes
+                ? max_materialized_bytes - fetched.estimated_bytes
+                : 0;
+        const size_t rpc_response_limit =
+            saturating_add(remaining_bytes, kRpcEnvelopeAllowance);
+
+        zeptodb::sql::QueryResultSet node_result;
+        if (endpoint->is_local && endpoint->pipeline != nullptr) {
+            node_result = exec_on(*endpoint, query);
+        } else if (endpoint->rpc) {
+            node_result = endpoint->rpc->execute_sql(
+                query, rpc_response_limit);
+        } else {
+            node_result.error =
+                "QueryCoordinator::fetch_concat_bounded: endpoint has no "
+                "RPC or pipeline";
+        }
+
+        if (!node_result.ok()) {
+            if (node_result.error.find(
+                    "response payload exceeds configured limit") !=
+                std::string::npos) {
+                fetched.status = BoundedFetchStatus::ByteLimitExceeded;
+                fetched.estimated_bytes = saturating_add(
+                    max_materialized_bytes, size_t{1});
+                return fetched;
+            }
+            fetched.status = BoundedFetchStatus::Error;
+            fetched.result.error = "node " + endpoint->addr.host + ":" +
+                std::to_string(endpoint->addr.port) + " failed: " +
+                node_result.error;
+            return fetched;
+        }
+
+        fetched.rows_observed = saturating_add(
+            accumulated_rows, node_result.rows.size());
+        const size_t node_bytes = estimate_result_bytes(node_result);
+        const size_t observed_bytes = saturating_add(
+            fetched.estimated_bytes, node_bytes);
+
+        if (node_result.rows.size() > remaining_rows) {
+            fetched.status = BoundedFetchStatus::RowLimitExceeded;
+            fetched.estimated_bytes = observed_bytes;
+            return fetched;
+        }
+        if (node_bytes > remaining_bytes) {
+            fetched.status = BoundedFetchStatus::ByteLimitExceeded;
+            fetched.estimated_bytes = observed_bytes;
+            return fetched;
+        }
+
+        snapshot_decoded_string_rows(node_result);
+        if (fetched.result.column_names.empty() &&
+            !node_result.column_names.empty()) {
+            fetched.result.column_names = node_result.column_names;
+            fetched.result.column_types = node_result.column_types;
+        } else if (!node_result.column_names.empty() &&
+                   (fetched.result.column_names != node_result.column_names ||
+                    fetched.result.column_types != node_result.column_types)) {
+            fetched.status = BoundedFetchStatus::Error;
+            fetched.result.error =
+                "bounded cluster materialization returned inconsistent "
+                "column metadata";
+            return fetched;
+        }
+
+        fetched.result.rows.insert(
+            fetched.result.rows.end(),
+            std::make_move_iterator(node_result.rows.begin()),
+            std::make_move_iterator(node_result.rows.end()));
+        fetched.result.typed_rows.insert(
+            fetched.result.typed_rows.end(),
+            std::make_move_iterator(node_result.typed_rows.begin()),
+            std::make_move_iterator(node_result.typed_rows.end()));
+        fetched.result.string_rows.insert(
+            fetched.result.string_rows.end(),
+            std::make_move_iterator(node_result.string_rows.begin()),
+            std::make_move_iterator(node_result.string_rows.end()));
+        fetched.result.rows_scanned = saturating_add(
+            fetched.result.rows_scanned, node_result.rows_scanned);
+        fetched.result.execution_time_us += node_result.execution_time_us;
+        fetched.estimated_bytes = observed_bytes;
+        fetched.rows_observed = fetched.result.rows.size();
+    }
+
+    return fetched;
 }
 
 static std::optional<zeptodb::storage::TableSchema> infer_schema_from_result(
@@ -1483,26 +1716,6 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
             "small-table broadcast JOIN is disabled by coordinator policy"));
     }
 
-    auto fetch_small_table = [this, &config](const std::string& table_name) {
-        const std::string fetch_sql = "SELECT * FROM " + table_name +
-            " LIMIT " + std::to_string(config.row_limit + 1);
-        auto results = scatter(fetch_sql);
-        auto merged = merge_concat_results(results);
-        if (!merged.ok()) {
-            small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
-            return merged;
-        }
-        if (merged.rows.size() > config.row_limit) {
-            small_table_join_stats_.rejected_row_cap.fetch_add(
-                1, std::memory_order_relaxed);
-            return make_query_error(
-                "small-table broadcast JOIN row limit exceeded for table '" +
-                table_name + "' (limit " +
-                std::to_string(config.row_limit) + ")");
-        }
-        return merged;
-    };
-
     std::optional<zeptodb::storage::TableSchema> left_schema;
     std::optional<zeptodb::storage::TableSchema> right_schema;
     {
@@ -1511,38 +1724,95 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
         right_schema = schema_snapshot_locked(stmt.join->table);
     }
 
-    auto left_rows = fetch_small_table(stmt.from_table);
-    if (!left_rows.ok()) return finish(left_rows);
-    auto right_rows = stmt.join->table == stmt.from_table
-        ? left_rows
-        : fetch_small_table(stmt.join->table);
-    if (!right_rows.ok()) return finish(right_rows);
-    small_table_join_stats_.last_left_rows.store(left_rows.rows.size(),
-                                                std::memory_order_relaxed);
-    small_table_join_stats_.last_right_rows.store(right_rows.rows.size(),
-                                                 std::memory_order_relaxed);
-
-    const size_t left_bytes = estimate_result_bytes(left_rows);
-    const size_t right_bytes = estimate_result_bytes(right_rows);
-    const size_t materialized_bytes =
-        saturating_add(left_bytes, right_bytes);
-    small_table_join_stats_.last_materialized_bytes.store(
-        size_to_u64(materialized_bytes), std::memory_order_relaxed);
-    if (materialized_bytes > config.max_materialized_bytes) {
+    auto reject_rows = [&](const std::string& table_name) {
+        small_table_join_stats_.rejected_row_cap.fetch_add(
+            1, std::memory_order_relaxed);
+        return finish(make_query_error(
+            "small-table broadcast JOIN row limit exceeded for table '" +
+            table_name + "' (limit " +
+            std::to_string(config.row_limit) + ")"));
+    };
+    auto reject_bytes = [&](size_t observed_bytes) {
         small_table_join_stats_.rejected_byte_cap.fetch_add(
             1, std::memory_order_relaxed);
         return finish(make_query_error(
             "small-table broadcast JOIN materialized byte limit exceeded "
-            "(estimated " + std::to_string(materialized_bytes) +
+            "(estimated " + std::to_string(observed_bytes) +
             " bytes, limit " +
             std::to_string(config.max_materialized_bytes) + " bytes)"));
+    };
+
+    auto left_fetch = fetch_concat_bounded(
+        "SELECT * FROM " + stmt.from_table,
+        config.row_limit,
+        config.max_materialized_bytes);
+    small_table_join_stats_.last_left_rows.store(
+        size_to_u64(left_fetch.rows_observed), std::memory_order_relaxed);
+    small_table_join_stats_.last_materialized_bytes.store(
+        size_to_u64(left_fetch.estimated_bytes), std::memory_order_relaxed);
+    if (left_fetch.status == BoundedFetchStatus::RowLimitExceeded) {
+        return reject_rows(stmt.from_table);
+    }
+    if (left_fetch.status == BoundedFetchStatus::ByteLimitExceeded) {
+        return reject_bytes(left_fetch.estimated_bytes);
+    }
+    if (left_fetch.status == BoundedFetchStatus::Error) {
+        small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
+        return finish(std::move(left_fetch.result));
+    }
+
+    auto left_rows = std::move(left_fetch.result);
+    const size_t left_bytes = left_fetch.estimated_bytes;
+    zeptodb::sql::QueryResultSet right_rows_storage;
+    const zeptodb::sql::QueryResultSet* right_rows = &left_rows;
+    size_t right_bytes = left_bytes;
+
+    if (stmt.join->table != stmt.from_table) {
+        const size_t remaining_bytes =
+            left_bytes < config.max_materialized_bytes
+                ? config.max_materialized_bytes - left_bytes
+                : 0;
+        auto right_fetch = fetch_concat_bounded(
+            "SELECT * FROM " + stmt.join->table,
+            config.row_limit,
+            remaining_bytes);
+        small_table_join_stats_.last_right_rows.store(
+            size_to_u64(right_fetch.rows_observed), std::memory_order_relaxed);
+        const size_t observed_total = saturating_add(
+            left_bytes, right_fetch.estimated_bytes);
+        small_table_join_stats_.last_materialized_bytes.store(
+            size_to_u64(observed_total), std::memory_order_relaxed);
+        if (right_fetch.status == BoundedFetchStatus::RowLimitExceeded) {
+            return reject_rows(stmt.join->table);
+        }
+        if (right_fetch.status == BoundedFetchStatus::ByteLimitExceeded) {
+            return reject_bytes(observed_total);
+        }
+        if (right_fetch.status == BoundedFetchStatus::Error) {
+            small_table_join_stats_.errors.fetch_add(
+                1, std::memory_order_relaxed);
+            return finish(std::move(right_fetch.result));
+        }
+        right_bytes = right_fetch.estimated_bytes;
+        right_rows_storage = std::move(right_fetch.result);
+        right_rows = &right_rows_storage;
+    } else {
+        small_table_join_stats_.last_right_rows.store(
+            size_to_u64(left_rows.rows.size()), std::memory_order_relaxed);
+    }
+
+    const size_t materialized_bytes = saturating_add(left_bytes, right_bytes);
+    small_table_join_stats_.last_materialized_bytes.store(
+        size_to_u64(materialized_bytes), std::memory_order_relaxed);
+    if (materialized_bytes > config.max_materialized_bytes) {
+        return reject_bytes(materialized_bytes);
     }
 
     if (!left_schema) {
         left_schema = infer_schema_from_result(stmt.from_table, left_rows);
     }
     if (!right_schema) {
-        right_schema = infer_schema_from_result(stmt.join->table, right_rows);
+        right_schema = infer_schema_from_result(stmt.join->table, *right_rows);
     }
     if (!left_schema) {
         small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
@@ -1574,7 +1844,7 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
     }
     if (stmt.join->table != stmt.from_table &&
         !materialize_result_into_typed_table(
-            tmp, *right_schema, right_rows, replay_error)) {
+            tmp, *right_schema, *right_rows, replay_error)) {
         tmp.stop();
         small_table_join_stats_.errors.fetch_add(1, std::memory_order_relaxed);
         return finish(make_query_error(
@@ -1599,7 +1869,7 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_small_table_hash_join(
     if (result.ok()) {
         small_table_join_stats_.accepted.fetch_add(1, std::memory_order_relaxed);
         small_table_join_stats_.rows_materialized.fetch_add(
-            left_rows.rows.size() + right_rows.rows.size(),
+            left_rows.rows.size() + right_rows->rows.size(),
             std::memory_order_relaxed);
         small_table_join_stats_.bytes_materialized.fetch_add(
             size_to_u64(materialized_bytes), std::memory_order_relaxed);
@@ -1784,8 +2054,11 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                                     });
                             }
                         }
-                        if (ps.limit && *ps.limit < merged.rows.size())
-                            merged.rows.resize(*ps.limit);
+                        if (ps.limit && *ps.limit >= 0) {
+                            const auto limit = static_cast<size_t>(*ps.limit);
+                            if (limit < merged.rows.size())
+                                merged.rows.resize(limit);
+                        }
                     } catch (...) {}
                 }
                 return merged;
@@ -1931,19 +2204,19 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                             base_q += sql.substr(wpos, wend - wpos);
                     }
                 }
-                base_q += " LIMIT " + std::to_string(config.row_limit + 1);
-
-                // Scatter base query, concat all rows
-                auto base_results = scatter(base_q);
-                auto base_merged = merge_concat_results(base_results);
-                if (!base_merged.ok()) {
-                    window_materialization_stats_.errors.fetch_add(
-                        1, std::memory_order_relaxed);
-                    return finish_window(base_merged);
-                }
+                // Fetch one node at a time and shrink each query/RPC allowance
+                // by the remaining global materialization budget.
+                auto base_fetch = fetch_concat_bounded(
+                    base_q, config.row_limit,
+                    config.max_materialized_bytes);
                 window_materialization_stats_.last_rows.store(
-                    base_merged.rows.size(), std::memory_order_relaxed);
-                if (base_merged.rows.size() > config.row_limit) {
+                    size_to_u64(base_fetch.rows_observed),
+                    std::memory_order_relaxed);
+                window_materialization_stats_.last_materialized_bytes.store(
+                    size_to_u64(base_fetch.estimated_bytes),
+                    std::memory_order_relaxed);
+                if (base_fetch.status ==
+                    BoundedFetchStatus::RowLimitExceeded) {
                     window_materialization_stats_.rejected_row_cap.fetch_add(
                         1, std::memory_order_relaxed);
                     return finish_window(make_query_error(
@@ -1951,23 +2224,26 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                         "exceeded for table '" + real_table + "' (limit " +
                         std::to_string(config.row_limit) + ")"));
                 }
-
-                const size_t materialized_bytes =
-                    estimate_result_bytes(base_merged);
-                window_materialization_stats_.last_materialized_bytes.store(
-                    size_to_u64(materialized_bytes),
-                    std::memory_order_relaxed);
-                if (materialized_bytes > config.max_materialized_bytes) {
+                if (base_fetch.status ==
+                    BoundedFetchStatus::ByteLimitExceeded) {
                     window_materialization_stats_.rejected_byte_cap.fetch_add(
                         1, std::memory_order_relaxed);
                     return finish_window(make_query_error(
                         "cluster full-data window materialization byte limit "
                         "exceeded (estimated " +
-                        std::to_string(materialized_bytes) +
+                        std::to_string(base_fetch.estimated_bytes) +
                         " bytes, limit " +
                         std::to_string(config.max_materialized_bytes) +
                         " bytes)"));
                 }
+                if (base_fetch.status == BoundedFetchStatus::Error) {
+                    window_materialization_stats_.errors.fetch_add(
+                        1, std::memory_order_relaxed);
+                    return finish_window(std::move(base_fetch.result));
+                }
+
+                auto base_merged = std::move(base_fetch.result);
+                const size_t materialized_bytes = base_fetch.estimated_bytes;
 
                 bool needs_timestamp_order = false;
                 for (const auto& col : wstmt.columns) {
@@ -2034,6 +2310,7 @@ zeptodb::sql::QueryResultSet QueryCoordinator::execute_sql(const std::string& sq
                 // Execute original SQL on the complete local dataset
                 zeptodb::sql::QueryExecutor local_ex(tmp);
                 auto result = local_ex.execute(sql);
+                snapshot_decoded_string_rows(result);
                 tmp.stop();
                 const uint64_t latency_us = record_latency();
                 if (config.max_latency_us > 0 &&

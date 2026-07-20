@@ -11,10 +11,13 @@
 #include "zeptodb/storage/arena_allocator.h"
 
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <vector>
 #include <string>
 #include <memory>
+#include <thread>
 
 using namespace zeptodb::sql;
 using namespace zeptodb::execution;
@@ -4406,6 +4409,31 @@ TEST(CatalogSQL, ShowTablesMultipleTables) {
     EXPECT_EQ(r.string_rows[1], "trades");
 }
 
+TEST(CatalogSQL, ShowTablesReportsPerTableRowCounts) {
+    PipelineConfig cfg;
+    cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
+    auto pipeline = std::make_unique<ZeptoPipeline>(cfg);
+    QueryExecutor ex(*pipeline);
+
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE trades (symbol INT64, price INT64)").ok());
+    ASSERT_TRUE(ex.execute(
+        "CREATE TABLE quotes (symbol INT64, bid INT64)").ok());
+    ASSERT_TRUE(ex.execute("INSERT INTO trades VALUES (1, 100)").ok());
+    ASSERT_TRUE(ex.execute("INSERT INTO trades VALUES (2, 200)").ok());
+    ASSERT_TRUE(ex.execute("INSERT INTO quotes VALUES (1, 99)").ok());
+
+    const auto result = ex.execute("SHOW TABLES");
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.string_rows,
+              std::vector<std::string>({"quotes", "trades"}));
+    ASSERT_EQ(result.rows.size(), 2u);
+    ASSERT_EQ(result.rows[0].size(), 1u);
+    ASSERT_EQ(result.rows[1].size(), 1u);
+    EXPECT_EQ(result.rows[0][0], 1);
+    EXPECT_EQ(result.rows[1][0], 2);
+}
+
 TEST(CatalogSQL, ShowTablesIfNotExistsNoDouble) {
     PipelineConfig cfg;
     cfg.storage_mode = StorageMode::PURE_IN_MEMORY;
@@ -4765,17 +4793,151 @@ TEST_F(SqlExecutorTest, CachePreparedAvoidsReparse) {
     zeptodb::sql::Parser parser;
     auto ps = parser.parse_statement("SELECT COUNT(*) FROM trades");
 
-    executor->cache_prepared("SELECT COUNT(*) FROM trades", std::move(ps));
+    EXPECT_TRUE(executor->cache_prepared(
+        "SELECT COUNT(*) FROM trades", std::move(ps)));
     EXPECT_EQ(executor->prepared_cache_size(), 1u);
 
     // Idempotent: second call with same SQL must NOT grow the cache.
     auto ps2 = parser.parse_statement("SELECT COUNT(*) FROM trades");
-    executor->cache_prepared("SELECT COUNT(*) FROM trades", std::move(ps2));
+    EXPECT_TRUE(executor->cache_prepared(
+        "SELECT COUNT(*) FROM trades", std::move(ps2)));
     EXPECT_EQ(executor->prepared_cache_size(), 1u);
 
     // Subsequent execute() on the same SQL should still succeed (cache hit).
     auto r = executor->execute("SELECT COUNT(*) FROM trades");
     EXPECT_TRUE(r.ok()) << r.error;
+}
+
+TEST_F(SqlExecutorTest, CachePreparedReplacesPrimedEntryForPolicyBounds) {
+    constexpr std::string_view query = "SELECT * FROM trades";
+    executor->clear_prepared_cache();
+
+    // Simulate a non-boundary caller priming the ordinary unbounded AST.
+    auto unbounded = executor->execute(std::string(query));
+    ASSERT_TRUE(unbounded.ok()) << unbounded.error;
+    ASSERT_GT(unbounded.rows.size(), 1u);
+
+    // HTTP and Flight parse the same SQL, attach their overflow-probe LIMIT,
+    // then prime the cache. The policy AST must replace the earlier entry.
+    zeptodb::sql::Parser parser;
+    auto bounded = parser.parse_statement(std::string(query));
+    ASSERT_TRUE(bounded.select);
+    bounded.select->limit = 1;
+    ASSERT_TRUE(executor->cache_prepared(
+        std::string(query), std::move(bounded)));
+
+    const auto result = executor->execute(std::string(query));
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.rows.size(), 1u);
+    EXPECT_EQ(executor->prepared_cache_size(), 1u);
+}
+
+TEST_F(SqlExecutorTest, ExecuteParsedBypassesSharedStatementAndResultCaches) {
+    constexpr std::string_view query = "SELECT * FROM trades";
+    executor->clear_prepared_cache();
+    executor->enable_result_cache(64, 10.0);
+
+    const auto unbounded = executor->execute(std::string(query));
+    ASSERT_TRUE(unbounded.ok()) << unbounded.error;
+    ASSERT_EQ(unbounded.rows.size(), 15u);
+    ASSERT_EQ(executor->prepared_cache_size(), 1u);
+    ASSERT_EQ(executor->result_cache_size(), 1u);
+
+    zeptodb::sql::Parser parser;
+    auto bounded = parser.parse_statement(std::string(query));
+    ASSERT_TRUE(bounded.select);
+    bounded.select->limit = 1;
+    const auto direct = executor->execute_parsed(
+        std::string(query), std::move(bounded));
+    ASSERT_TRUE(direct.ok()) << direct.error;
+    EXPECT_EQ(direct.rows.size(), 1u);
+    EXPECT_EQ(executor->prepared_cache_size(), 1u);
+    EXPECT_EQ(executor->result_cache_size(), 1u);
+}
+
+TEST_F(SqlExecutorTest, ExecuteParsedIsIndependentOfPreparedCacheExhaustion) {
+    executor->clear_prepared_cache();
+    zeptodb::sql::Parser parser;
+    const auto filler = parser.parse_statement(
+        "SELECT COUNT(*) FROM trades");
+    for (size_t index = 0; index < 4096; ++index) {
+        ASSERT_TRUE(executor->cache_prepared(
+            "cache-filler-" + std::to_string(index), filler));
+    }
+    ASSERT_EQ(executor->prepared_cache_size(), 4096u);
+    EXPECT_FALSE(executor->cache_prepared("cache-overflow", filler));
+
+    const std::string query = "SELECT * FROM trades";
+    auto bounded = parser.parse_statement(query);
+    ASSERT_TRUE(bounded.select);
+    bounded.select->limit = 2;
+    const auto direct = executor->execute_parsed(
+        query, std::move(bounded));
+    ASSERT_TRUE(direct.ok()) << direct.error;
+    EXPECT_EQ(direct.rows.size(), 2u);
+}
+
+TEST_F(SqlExecutorTest, ConcurrentRequestOwnedAstsKeepIndependentLimits) {
+    constexpr std::string_view query = "SELECT * FROM trades";
+    std::array<size_t, 2> row_counts{};
+    std::array<std::thread, 2> workers;
+    const std::array<int64_t, 2> limits{1, 7};
+
+    for (size_t index = 0; index < workers.size(); ++index) {
+        workers[index] = std::thread([&, index]() {
+            zeptodb::sql::Parser parser;
+            auto statement = parser.parse_statement(std::string(query));
+            statement.select->limit = limits[index];
+            const auto result = executor->execute_parsed(
+                std::string(query), std::move(statement));
+            if (result.ok()) row_counts[index] = result.rows.size();
+        });
+    }
+    for (auto& worker : workers) worker.join();
+
+    EXPECT_EQ(row_counts[0], 1u);
+    EXPECT_EQ(row_counts[1], 7u);
+}
+
+TEST(SqlCacheKeyTest, FullSqlEqualitySurvivesForcedHashCollision) {
+    struct ConstantHasher {
+        size_t operator()(const std::string&) const noexcept { return 7; }
+    };
+
+    zeptodb::sql::detail::FullSqlCache<int, ConstantHasher> cache;
+    cache.emplace("SELECT * FROM tenant_a.trades", 1);
+    cache.emplace("SELECT * FROM tenant_b.trades", 2);
+
+    ASSERT_EQ(cache.size(), 2u);
+    EXPECT_EQ(cache.at("SELECT * FROM tenant_a.trades"), 1);
+    EXPECT_EQ(cache.at("SELECT * FROM tenant_b.trades"), 2);
+}
+
+TEST_F(SqlExecutorTest, PreparedCacheConcurrentDistinctKeysRemainIsolated) {
+    executor->clear_prepared_cache();
+    constexpr size_t query_count = 32;
+    std::vector<std::thread> workers;
+    workers.reserve(query_count);
+    for (size_t index = 0; index < query_count; ++index) {
+        workers.emplace_back([this, index]() {
+            const std::string sql = "SELECT * FROM trades LIMIT " +
+                std::to_string(index + 1);
+            zeptodb::sql::Parser parser;
+            auto statement = parser.parse_statement(sql);
+            EXPECT_TRUE(executor->cache_prepared(
+                sql, std::move(statement)));
+        });
+    }
+    for (auto& worker : workers) worker.join();
+
+    ASSERT_EQ(executor->prepared_cache_size(), query_count);
+    for (size_t index = 0; index < query_count; ++index) {
+        const std::string sql = "SELECT * FROM trades LIMIT " +
+            std::to_string(index + 1);
+        const auto result = executor->execute(sql);
+        ASSERT_TRUE(result.ok()) << result.error;
+        EXPECT_EQ(result.rows.size(), std::min(index + 1, size_t{15}));
+    }
 }
 
 // ============================================================================
@@ -4796,6 +4958,31 @@ TEST_F(SqlExecutorTest, ResultCacheHit) {
 
     executor->disable_result_cache();
     EXPECT_EQ(executor->result_cache_size(), 0u);
+}
+
+TEST_F(SqlExecutorTest, ResultCacheUsesFullSqlEqualityForDistinctQueries) {
+    executor->enable_result_cache(64, 10.0);
+
+    const auto first = executor->execute(
+        "SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    const auto second = executor->execute(
+        "SELECT COUNT(*) FROM trades WHERE symbol = 2");
+    ASSERT_TRUE(first.ok()) << first.error;
+    ASSERT_TRUE(second.ok()) << second.error;
+    ASSERT_EQ(first.rows.size(), 1u);
+    ASSERT_EQ(second.rows.size(), 1u);
+    EXPECT_EQ(first.rows[0][0], 10);
+    EXPECT_EQ(second.rows[0][0], 5);
+    EXPECT_EQ(executor->result_cache_size(), 2u);
+
+    const auto first_hit = executor->execute(
+        "SELECT COUNT(*) FROM trades WHERE symbol = 1");
+    const auto second_hit = executor->execute(
+        "SELECT COUNT(*) FROM trades WHERE symbol = 2");
+    ASSERT_TRUE(first_hit.ok()) << first_hit.error;
+    ASSERT_TRUE(second_hit.ok()) << second_hit.error;
+    EXPECT_EQ(first_hit.rows[0][0], 10);
+    EXPECT_EQ(second_hit.rows[0][0], 5);
 }
 
 TEST_F(SqlExecutorTest, ResultCacheInvalidateOnInsert) {

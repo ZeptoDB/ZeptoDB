@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,13 @@ MappedColumn HDBReader::read_column(uint16_t table_id,
         return result;
     }
 
+    if (!S_ISREG(st.st_mode) || st.st_size < 0 ||
+        static_cast<uintmax_t>(st.st_size) >
+            static_cast<uintmax_t>(std::numeric_limits<size_t>::max())) {
+        ZEPTO_WARN("invalid HDB file type/size: {}", file_path);
+        ::close(fd);
+        return result;
+    }
     const size_t file_size = static_cast<size_t>(st.st_size);
     if (file_size < HDB_HEADER_V1_SIZE) {
         ZEPTO_WARN("파일이 너무 작음: {} ({} bytes)", file_path, file_size);
@@ -113,9 +121,10 @@ MappedColumn HDBReader::read_column(uint16_t table_id,
     std::memcpy(&h, base, HDB_HEADER_V1_SIZE);
     h.table_id = file_table_id;
 
-    // Cross-check: if caller asked for a specific table_id, reject mismatches.
-    // table_id == 0 means "don't care / legacy caller" and matches anything.
-    if (table_id != 0 && file_table_id != table_id) {
+    // The directory scope and the v2 header must agree exactly. Legacy v1
+    // files carry the implicit table_id 0 and therefore remain readable only
+    // through the legacy layout.
+    if (file_table_id != table_id) {
         ZEPTO_WARN("HDB table_id 불일치: file={}, expect={}, path={}",
                    file_table_id, table_id, file_path);
         ::munmap(mapped, file_size);
@@ -123,11 +132,35 @@ MappedColumn HDBReader::read_column(uint16_t table_id,
         return result;
     }
 
-    const ColumnType col_type   = static_cast<ColumnType>(h.col_type);
-    const size_t     row_count  = static_cast<size_t>(h.row_count);
-    const HDBCompression comp   = static_cast<HDBCompression>(h.compression);
-    const size_t data_size      = static_cast<size_t>(h.data_size);
-    const size_t uncomp_size    = static_cast<size_t>(h.uncompressed_size);
+    const ColumnType col_type = static_cast<ColumnType>(h.col_type);
+    const HDBCompression comp = static_cast<HDBCompression>(h.compression);
+    const size_t elem_size = column_type_size(col_type);
+    const uint64_t max_size = static_cast<uint64_t>(
+        std::numeric_limits<size_t>::max());
+    if (elem_size == 0 || h.row_count == 0 ||
+        h.row_count > max_size || h.data_size > max_size ||
+        h.uncompressed_size > max_size ||
+        h.row_count > max_size / elem_size) {
+        ZEPTO_WARN("invalid HDB dimensions/type: {}", file_path);
+        ::munmap(mapped, file_size);
+        ::close(fd);
+        return result;
+    }
+
+    const size_t row_count = static_cast<size_t>(h.row_count);
+    const size_t data_size = static_cast<size_t>(h.data_size);
+    const size_t uncomp_size = static_cast<size_t>(h.uncompressed_size);
+    const size_t expected_uncompressed = row_count * elem_size;
+    if (uncomp_size != expected_uncompressed ||
+        data_size > file_size - header_size ||
+        file_size != header_size + data_size ||
+        (comp == HDBCompression::NONE && data_size != uncomp_size) ||
+        (comp != HDBCompression::NONE && comp != HDBCompression::LZ4)) {
+        ZEPTO_WARN("inconsistent HDB header/payload sizes: {}", file_path);
+        ::munmap(mapped, file_size);
+        ::close(fd);
+        return result;
+    }
 
     // 데이터 포인터 (헤더 크기만큼 offset)
     const char* data_start = static_cast<const char*>(mapped) + header_size;
@@ -144,6 +177,13 @@ MappedColumn HDBReader::read_column(uint16_t table_id,
     } else if (comp == HDBCompression::LZ4) {
         // LZ4 압축 해제 → 버퍼에 복사 (Zero-copy 불가, 복사 필요)
 #if ZEPTO_HDB_LZ4_AVAILABLE
+        if (data_size > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            uncomp_size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            ZEPTO_WARN("LZ4 HDB payload exceeds decoder bounds: {}", file_path);
+            ::munmap(mapped, file_size);
+            ::close(fd);
+            return result;
+        }
         result.decompressed_buf.resize(uncomp_size);
 
         const int decomp_result = LZ4_decompress_safe(

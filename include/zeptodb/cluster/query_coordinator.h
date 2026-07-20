@@ -327,6 +327,26 @@ private:
     std::vector<zeptodb::sql::QueryResultSet> scatter_to(
         const std::string& sql, const std::unordered_set<size_t>& node_indices);
 
+    enum class BoundedFetchStatus {
+        Ok,
+        RowLimitExceeded,
+        ByteLimitExceeded,
+        Error,
+    };
+
+    struct BoundedFetchResult {
+        zeptodb::sql::QueryResultSet result;
+        BoundedFetchStatus status = BoundedFetchStatus::Ok;
+        size_t rows_observed = 0;
+        size_t estimated_bytes = 0;
+    };
+
+    /// Fetch and concatenate a base-table query one node at a time, shrinking
+    /// each node's LIMIT and RPC response allowance by the cumulative budget.
+    BoundedFetchResult fetch_concat_bounded(const std::string& base_sql,
+                                            size_t row_limit,
+                                            size_t max_materialized_bytes);
+
     /// Execute a bounded coordinator-local hash JOIN by fetching both small
     /// operational tables, materializing them into a temporary typed pipeline,
     /// and delegating the actual JOIN semantics to the SQL executor.
@@ -348,6 +368,11 @@ private:
     /// Snapshot a local schema registry entry while mutex_ is already held.
     std::optional<zeptodb::storage::TableSchema> schema_snapshot_locked(
         const std::string& table_name) const;
+
+    /// Return unique local pipelines in deterministic pointer order while
+    /// mutex_ is already held. Used to lock catalog transactions without
+    /// cross-coordinator deadlocks.
+    std::vector<zeptodb::core::ZeptoPipeline*> local_pipelines_locked() const;
 
     bool apply_catalog_table_placements_locked(std::string* error);
     bool apply_schema_placement_locked(

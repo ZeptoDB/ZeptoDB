@@ -39,7 +39,8 @@ All methods use the `Authorization: Bearer <token>` header (except session cooki
 
 ```
 /ping    /health    /ready
-/auth/login    /auth/callback    /auth/logout
+/api/license
+/auth/login    /auth/callback    /auth/logout    /auth/session
 ```
 
 ### Disabling Auth (development only)
@@ -52,6 +53,31 @@ auth:
 ---
 
 ## API Key Management
+
+### Production Startup
+
+Authentication-enabled HTTP startup is fail-closed. Supply a persisted key
+store with `--api-keys-file PATH` (or `ZEPTO_API_KEYS_FILE`), or configure a
+validated JWT method. A missing, unreadable, empty, or invalid key store does
+not cause implicit credential creation. `--bootstrap-dev-keys` is the only
+mode that creates and prints local development credentials and must not be
+used in production.
+
+```bash
+./zepto_http_server \
+  --bind 127.0.0.1 \
+  --api-keys-file /run/secrets/zeptodb/api_keys.txt \
+  --audit-log-file /var/log/zeptodb/audit.log
+```
+
+Rate limiting and audit recording are enabled by default. The
+`--disable-rate-limit` and `--disable-audit` switches are development-only
+opt-outs. A key store mounted read-only is suitable for static credentials,
+but key create/update/revoke operations cannot be durably written to it; use a
+writable protected store or Vault-backed key sync before relying on the admin
+key-management API for rotation. File-backed mutations write a private
+same-directory temporary file, sync it, atomically rename it, and sync the
+parent directory before reporting success.
 
 ### Key Format
 
@@ -140,23 +166,37 @@ auth:
 | `admin` | ✅ | ✅ | ✅ | ✅ | DBAs, platform team |
 | `writer` | ✅ | ✅ | ❌ | ✅ | Ingest services, trading desks |
 | `reader` | ✅ | ❌ | ❌ | ❌ | Analysts, dashboards |
-| `analyst` | ✅* | ❌ | ❌ | ❌ | External users (symbol-restricted) |
+| `analyst` | ❌ | ❌ | ❌ | ❌ | Reserved until row-level symbol filtering ships |
 | `metrics` | ❌ | ❌ | ❌ | ✅ | Prometheus scraper |
 
-*`analyst` can only SELECT from symbols in their `allowed_symbols` whitelist.
+The `analyst` role intentionally has no permissions. This is a fail-closed
+compatibility surface while persisted identities may still carry an
+`allowed_symbols` list but the SQL executor does not yet enforce row-level
+symbol filtering.
 
 ### Permission Mapping
 
 | Permission | Endpoints |
 |-----------|-----------|
-| READ | `POST /` (SELECT), `GET /stats` |
-| WRITE | `POST /` (INSERT, UPDATE, DELETE) |
-| ADMIN | `/admin/*` (keys, queries, audit, tenants, nodes, settings) |
-| METRICS | `GET /metrics`, `GET /health`, `GET /stats` |
+| READ | `POST /` or read-only `GET /?query=` (`SELECT`, `SHOW`, `DESCRIBE`) |
+| WRITE | `POST /` (`INSERT`, `UPDATE`, `DELETE`) |
+| ADMIN | SQL DDL over `POST /` plus `/admin/*` (keys, queries, audit, tenants, nodes, settings) |
+| METRICS | `GET /metrics`, `GET /stats`, `GET /api/ai/stats` |
+
+SQL permissions are derived from the parsed statement, not from a string
+prefix. Authenticated malformed or unsupported statements fail closed. The
+server removes caller-provided internal `X-Zepto-*` authorization headers
+before installing the authenticated role and ACL context.
+
+`GET /?query=` never executes DML or DDL, even for writer/admin identities or
+when authentication is disabled. State-changing SQL must use `POST /`. This
+keeps `SameSite=Lax` browser sessions from being mutated by a cross-site
+top-level GET navigation; custom browser integrations should still apply
+normal Origin and CSRF controls to any state-changing HTTP endpoints they add.
 
 ### Symbol-Level ACL
 
-Both API keys and JWT tokens can carry a symbol whitelist:
+API keys, JWT tokens, and SSO identities can carry a symbol whitelist:
 
 ```json
 // API key creation
@@ -166,13 +206,20 @@ Both API keys and JWT tokens can carry a symbol whitelist:
 {"sub": "analyst@partner.com", "zepto_symbols": "AAPL,GOOGL"}
 ```
 
-Queries referencing symbols outside the whitelist return 403.
+Any data request made with a non-empty symbol whitelist currently returns 403,
+and `analyst` identities cannot read data. Do not grant access on the
+assumption that ZeptoDB filters rows by symbol. Row-level symbol filtering
+across SQL, ingest, Agent Memory, and Flight remains a product-promotion
+blocker.
 
 ### Table-Level ACL
 
 ```json
 {"name": "desk-a-reader", "role": "reader", "tables": ["trades", "quotes"]}
 ```
+
+The allowlist is enforced on every table referenced by a JOIN, CTE, subquery,
+set operation, or materialized-view definition on both SQL HTTP entry points.
 
 ---
 
@@ -211,7 +258,9 @@ HTTP 403 Forbidden
 {"error": "Rate limit exceeded"}
 ```
 
-Rate limiting is applied after authentication — unauthenticated requests are rejected before rate check.
+The source-IP bucket is charged before JWT/JWKS or API-key verification so an
+invalid-credential flood is bounded before expensive authentication work.
+After a credential is validated, the per-identity bucket is charged as well.
 
 ### Per-Identity vs Per-IP
 
@@ -313,9 +362,9 @@ curl -X POST http://localhost:8123/admin/tenants \
 | Quota | Default | Description |
 |-------|---------|-------------|
 | `max_concurrent_queries` | 10 | Queries beyond this are rejected (429) |
-| `max_memory_bytes` | 0 (unlimited) | Per-tenant memory cap |
-| `max_queries_per_minute` | 0 (global limit) | Per-tenant rate limit |
-| `max_ingestion_rate` | 0 (unlimited) | Ticks/sec cap |
+| `max_memory_bytes` | 0 | Reserved; not currently enforced |
+| `max_queries_per_minute` | 0 | Reserved; use the AuthManager identity/IP limiter |
+| `max_ingestion_rate` | 0 | Reserved; not currently enforced |
 | `table_namespace` | "" (unrestricted) | Table prefix restriction |
 
 ### Table Namespace Isolation
@@ -374,9 +423,22 @@ tls:
 ```
 
 ```bash
+# Direct TLS with Bearer authentication
+./zepto_http_server \
+  --bind 0.0.0.0 \
+  --tls-cert /etc/zeptodb/server.crt \
+  --tls-key /etc/zeptodb/server.key \
+  --api-keys-file /run/secrets/zeptodb/api_keys.txt
+
 # Test
 curl --cacert ca.crt https://zepto.internal:8443/ping
 ```
+
+The listener defaults to `127.0.0.1`. Plain HTTP on a non-loopback address
+fails closed. When a trusted ingress terminates TLS, the internal listener must
+explicitly use `--bind 0.0.0.0 --allow-plaintext-http --secure-cookie`; network
+policy must restrict that plaintext hop. Direct TLS automatically marks session
+cookies Secure. `--tls-cert` and `--tls-key` are a required pair.
 
 ### Mutual TLS (mTLS)
 
@@ -393,6 +455,10 @@ tls:
 
 With `ca_cert_path` set, the server requires clients to present a certificate signed by that CA.
 
+The CLI equivalent is `--tls-ca /etc/zeptodb/ca.crt`. This is a client CA,
+not merely a server trust bundle: supplying it makes client certificates
+mandatory.
+
 ```bash
 # Client with cert
 curl --cert client.crt --key client.key --cacert ca.crt \
@@ -403,20 +469,46 @@ mTLS is independent of Bearer token auth — both can be required simultaneously
 
 ### Certificate Rotation
 
-Replace cert/key files and restart the server. For zero-downtime rotation in Kubernetes, use cert-manager with auto-reload.
+Replace cert/key files and restart the server. ZeptoDB does not hot-reload TLS
+material, so cert-manager alone is insufficient; arrange a controlled workload
+rollout when the mounted Secret changes.
 
 ### Inter-Node RPC Security
 
-Cluster nodes authenticate via shared-secret HMAC:
+Inter-node TCP RPC uses a mutual, replay-resistant challenge protocol:
 
-```yaml
-cluster:
-  rpc_security:
-    enabled: true
-    shared_secret: ${RPC_SHARED_SECRET}    # use Vault/env
+1. The client sends a fresh 32-byte nonce.
+2. The server returns a fresh 32-byte nonce and a domain-separated
+   HMAC-SHA256 proof over both nonces.
+3. The client validates the server, then returns its own domain-separated
+   HMAC-SHA256 proof over both nonces.
+4. The server responds with `AUTH_OK` only after constant-time proof
+   validation.
+
+Configure exactly one process-wide secret source on every node. A secret must
+contain at least 32 bytes; the file form is recommended so the secret does not
+appear in a command line or ordinary environment dump.
+
+```bash
+export ZEPTO_CLUSTER_SECRET_FILE=/run/secrets/zeptodb/cluster-rpc
+# Alternative: export ZEPTO_CLUSTER_SECRET='at-least-32-bytes-from-a-secret-store'
 ```
 
-mTLS for inter-node RPC is planned (config structure prepared in `RpcSecurityConfig`).
+`zepto_data_node` and `zepto_ingest_node` always fail startup when the secret
+is absent or invalid. `zepto_http_server` applies the same rule when `--ha` or
+`--add-node` is used, and also rejects runtime `POST /admin/nodes` additions
+without a valid secret. `--allow-insecure-cluster` is an explicit isolated
+development override. Configured authentication also fails closed when the
+binary was built without OpenSSL. Legacy one-message `AUTH_HANDSHAKE` payloads
+are rejected.
+
+The protocol authenticates peers but does **not** encrypt RPC payloads. Run RPC
+ports only on a private network protected by security groups/network policy and
+use an encrypted overlay or service mesh when traffic can cross an untrusted
+network. Native RPC TLS/mTLS remains planned; the mTLS path fields in
+`RpcSecurityConfig` are not connected to TCP sockets. Secret changes are not
+hot-reloaded: rotate the secret through a coordinated restart of all cluster
+processes so pooled connections are rebuilt.
 
 ---
 
@@ -433,6 +525,11 @@ Timed-out queries return:
 ```json
 {"error": "Query cancelled (timeout 30000ms)"}
 ```
+
+Cancellation is cooperative. The HTTP worker waits for local execution to
+observe the token and finish, and distributed RPC work does not yet receive
+that token. Treat this as an operator cancellation mechanism, not a hard
+wall-clock or memory-isolation boundary.
 
 ### Manual Kill
 
@@ -545,31 +642,65 @@ export OIDC_CLIENT_SECRET=xxx
 
 ## Arrow Flight Security
 
-Arrow Flight (gRPC, port 8815) inherits the same auth as the HTTP API:
+Arrow Flight (gRPC, port 8815) validates per-RPC `authorization` metadata
+through the shared `AuthManager`. `GetFlightInfo`, `DoGet`, and `ListFlights`
+require `READ`; `DoPut` requires `WRITE` and is disabled by default because its
+current compatibility implementation is non-atomic. Query tickets are intentionally
+limited to `SELECT`, `SHOW TABLES`, and `DESCRIBE`, so DDL/DML is rejected even
+for administrators. Table allowlists and tenant namespaces cover every
+physical table reached through JOINs, sequential CTEs, subqueries, and set
+operations. `SHOW TABLES` and `ListFlights` are filtered to visible tables.
 
-```bash
+The CLI shares one `TenantManager` between HTTP and Flight. Flight read RPCs
+enforce tenant concurrency slots and a 30-second cooperative timeout by
+default. Request-owned bounded ASTs bypass shared SQL caches, preventing cache
+priming, collision, and concurrent policy replacement. The
+`--allow-non-atomic-put` flag is an experimental test-only override; a later
+row/batch error can leave earlier rows committed.
+
+`ping`, `healthcheck`, and `ListActions` remain public for health probes.
+Missing/invalid credentials map to Flight `Unauthenticated`; authenticated
+role, rate, table, and tenant denials map to Flight `Unauthorized`. Identity is
+never accepted from caller-supplied `X-Zepto-*` metadata.
+
+```python
 # Python client with API key
-import pyarrow.flight
-client = pyarrow.flight.connect(
-    "grpc://localhost:8815",
-    generic_options=[("authorization", "Bearer zepto_abc123")]
-)
+import pyarrow.flight as fl
+
+client = fl.connect("grpc://127.0.0.1:8815")
+options = fl.FlightCallOptions(headers=[
+    (b"authorization", b"Bearer zepto_abc123"),
+])
+reader = client.do_get(fl.Ticket("SELECT * FROM trades"), options)
 ```
 
-TLS for Flight:
+The listener defaults to `127.0.0.1`. A non-loopback bind fails closed unless
+TLS is configured; the explicit `--allow-insecure-flight` override is for
+development only. It does not authorize plaintext for the bundled HTTP
+listener, which has a separate `--allow-plaintext-http` development override.
+Production startup:
+
 ```bash
-./zepto_flight_server --port 8815 \
-  --tls-cert /etc/zeptodb/server.crt \
-  --tls-key /etc/zeptodb/server.key
+./zepto_flight_server \
+  --flight-host 0.0.0.0 \
+  --flight-port 8815 \
+  --tls-cert /etc/zeptodb/tls/server.crt \
+  --tls-key /etc/zeptodb/tls/server.key \
+  --api-keys-file /etc/zeptodb/api_keys.txt
 ```
 
 ```python
 # Python client with TLS
-client = pyarrow.flight.connect(
+client = fl.connect(
     "grpc+tls://zepto.internal:8815",
     tls_root_certs=open("ca.crt", "rb").read()
 )
 ```
+
+The certificate and private key must be provided together as readable,
+non-empty PEM files. Tenant-scoped identities fail closed if the Flight
+embedding has no matching `TenantManager` configuration. See
+[`FLIGHT_REFERENCE.md`](FLIGHT_REFERENCE.md) for the complete RPC contract.
 
 ---
 
@@ -579,19 +710,19 @@ client = pyarrow.flight.connect(
 
 | Control | Implementation |
 |---------|---------------|
-| Access control | RBAC (5 roles) + symbol/table ACL |
+| Access control | RBAC (5 roles) + table/tenant ACL; symbol scopes fail closed |
 | Authentication | API Key (SHA-256) + JWT/OIDC + SSO |
-| Audit trail | Every auth event logged with timestamp, subject, action, IP |
-| Encryption in transit | TLS 1.2+ (OpenSSL 3.2) |
+| Audit trail | Authenticated events are emitted; external immutable retention and control validation are operator responsibilities |
+| Encryption in transit | HTTP TLS or a TLS-terminating ingress; RPC additionally needs an encrypted overlay |
 | Secrets management | Vault/AWS SM/K8s — no plaintext secrets |
 
 ### EMIR / MiFID II
 
 | Requirement | Implementation |
 |-------------|---------------|
-| Trade data retention | Audit log + HDB (Parquet on S3, 7-year retention) |
+| Trade data retention | Operator-defined HDB/audit export and retention policy; not automatic certification evidence |
 | Access logging | Structured JSON access log + audit buffer |
-| Data integrity | WAL + snapshot recovery |
+| Data integrity | Partial snapshot/recovery support; crash-durable SQL WAL proof remains a blocker |
 | Segregation of duties | RBAC roles separate read/write/admin |
 
 ### GDPR

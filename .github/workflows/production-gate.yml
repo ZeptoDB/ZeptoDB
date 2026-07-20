@@ -1,0 +1,400 @@
+name: Production Gate
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Git ref to validate. The caller's ref is used when omitted.
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to validate. The current ref is used when omitted.
+        required: false
+        type: string
+        default: ''
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: production-gate-${{ github.workflow }}-${{ inputs.source_ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  x86_cpp:
+    name: x86 C++ and Python build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      FOCUSED_FILTER: ApiKeyTest.*:AuthManagerTest.*:JwtHs256Test.*:JwtRs256Test.*:RateLimiterTest.*:SessionStoreTest.*:AuthManagerSessionTest.*:Sso*.*:Oidc*.*:TcpRpc*.*:HttpCluster*.*:Flight*.*:HttpArrowIpc*.*:HttpMsgpackIngestTest.*:SqlRbac*.*:TableAclDdlTest.*
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ccache
+          key: production-x86-ccache-${{ github.sha }}
+          restore-keys: |
+            production-x86-ccache-
+
+      - name: Install LLVM, Arrow, and build dependencies
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
+            sudo tee /etc/apt/trusted.gpg.d/llvm.asc >/dev/null
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+
+          arrow_package="apache-arrow-apt-source-latest-$(lsb_release -cs).deb"
+          wget "https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/${arrow_package}"
+          sudo apt-get install -y -V "./${arrow_package}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-19 clang-tools-19 llvm-19-dev cmake ninja-build git pkg-config ccache \
+            libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
+            libarrow-dev libarrow-flight-dev libparquet-dev python3-pyarrow
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
+
+      - name: Build Highway
+        run: |
+          git clone --depth 1 --branch 1.2.0 \
+            https://github.com/google/highway.git "$RUNNER_TEMP/highway"
+          cmake -S "$RUNNER_TEMP/highway" -B "$RUNNER_TEMP/highway-build" -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHWY_ENABLE_TESTS=OFF \
+            -DHWY_ENABLE_EXAMPLES=OFF
+          sudo ninja -C "$RUNNER_TEMP/highway-build" -j"$(nproc)" install
+
+      - name: Build AWS SDK S3 dependency
+        run: |
+          git clone --depth 1 --branch 1.11.510 --recurse-submodules \
+            https://github.com/aws/aws-sdk-cpp.git "$RUNNER_TEMP/aws-sdk"
+          cmake -S "$RUNNER_TEMP/aws-sdk" -B "$RUNNER_TEMP/aws-sdk-build" -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ONLY=s3 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_TESTING=OFF \
+            -DAUTORUN_UNIT_TESTS=OFF
+          sudo ninja -C "$RUNNER_TEMP/aws-sdk-build" -j"$(nproc)" install
+
+      - name: Configure production feature build
+        run: |
+          clang_scan_deps="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)"
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$clang_scan_deps" \
+            -DZEPTO_USE_HUGEPAGES=ON \
+            -DZEPTO_USE_UCX=OFF \
+            -DZEPTO_USE_JIT=ON \
+            -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm \
+            -DZEPTO_USE_S3=ON \
+            -DZEPTO_USE_PARQUET=ON \
+            -DZEPTO_USE_FLIGHT=ON \
+            -DZEPTO_BUILD_TESTS=ON \
+            -DZEPTO_BUILD_BENCH=OFF
+
+      - name: Build production binaries and C++ tests
+        run: |
+          ninja -C build-ci -j"$(nproc)" \
+            zepto_http_server zepto_data_node zepto_flight_server zepto-cli \
+            zepto_ingest_node zepto_action_outcome_soak zepto-opcua-browse \
+            zepto_tests test_feeds test_migration
+
+      - name: Run focused security and production-path tests
+        run: |
+          mkdir -p test-results
+          ./build-ci/tests/zepto_tests \
+            "--gtest_filter=${FOCUSED_FILTER}" \
+            --gtest_brief=1 \
+            --gtest_output=xml:test-results/focused.xml
+
+      - name: Run full CTest suite
+        run: |
+          ctest --test-dir build-ci \
+            -j"$(nproc)" \
+            --output-on-failure \
+            --timeout 180 \
+            --output-junit "$GITHUB_WORKSPACE/test-results/ctest.xml"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python client test dependencies
+        run: python -m pip install --disable-pip-version-check -e '.[dev]' build
+
+      - name: Run Python client and integration tests
+        env:
+          ZEPTODB_BUILD: ${{ github.workspace }}/build-ci
+        run: python -m pytest tests/python
+
+      - name: Build Python release artifacts
+        run: python -m build
+
+      - name: Upload verified Python release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: zeptodb-python-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Print ccache stats
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Upload C++ test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: production-x86-test-results
+          path: test-results/*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  arm_cpp:
+    name: ARM64 production-profile C++ build and full tests
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      FOCUSED_FILTER: ApiKeyTest.*:AuthManagerTest.*:JwtHs256Test.*:JwtRs256Test.*:RateLimiterTest.*:SessionStoreTest.*:AuthManagerSessionTest.*:Sso*.*:Oidc*.*:TcpRpc*.*:HttpCluster*.*:Flight*.*:HttpArrowIpc*.*:HttpMsgpackIngestTest.*:SqlRbac*.*:TableAclDdlTest.*
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ccache
+          key: production-arm64-ccache-${{ github.sha }}
+          restore-keys: |
+            production-arm64-ccache-
+
+      - name: Install ARM64 LLVM, Arrow, and build dependencies
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
+            sudo tee /etc/apt/trusted.gpg.d/llvm.asc >/dev/null
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+
+          arrow_package="apache-arrow-apt-source-latest-$(lsb_release -cs).deb"
+          wget "https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/${arrow_package}"
+          sudo apt-get install -y -V "./${arrow_package}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-19 clang-tools-19 llvm-19-dev cmake ninja-build git pkg-config ccache \
+            libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
+            libarrow-dev libarrow-flight-dev libparquet-dev python3-pyarrow
+
+      - name: Configure ARM64 ccache
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
+
+      - name: Build ARM64 Highway
+        run: |
+          git clone --depth 1 --branch 1.2.0 \
+            https://github.com/google/highway.git "$RUNNER_TEMP/highway"
+          cmake -S "$RUNNER_TEMP/highway" -B "$RUNNER_TEMP/highway-build" -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHWY_ENABLE_TESTS=OFF \
+            -DHWY_ENABLE_EXAMPLES=OFF
+          sudo ninja -C "$RUNNER_TEMP/highway-build" -j"$(nproc)" install
+
+      - name: Build ARM64 AWS SDK S3 dependency
+        run: |
+          git clone --depth 1 --branch 1.11.510 --recurse-submodules \
+            https://github.com/aws/aws-sdk-cpp.git "$RUNNER_TEMP/aws-sdk"
+          cmake -S "$RUNNER_TEMP/aws-sdk" -B "$RUNNER_TEMP/aws-sdk-build" -G Ninja \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ONLY=s3 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_TESTING=OFF \
+            -DAUTORUN_UNIT_TESTS=OFF
+          sudo ninja -C "$RUNNER_TEMP/aws-sdk-build" -j"$(nproc)" install
+
+      - name: Configure ARM64 production feature build
+        run: |
+          clang_scan_deps="$(command -v clang-scan-deps-19 || command -v clang-scan-deps)"
+          cmake -S . -B build-arm-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$clang_scan_deps" \
+            -DZEPTO_USE_HUGEPAGES=ON \
+            -DZEPTO_USE_UCX=OFF \
+            -DZEPTO_USE_JIT=ON \
+            -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm \
+            -DZEPTO_USE_S3=ON \
+            -DZEPTO_USE_PARQUET=ON \
+            -DZEPTO_USE_FLIGHT=ON \
+            -DZEPTO_BUILD_TESTS=ON \
+            -DZEPTO_BUILD_BENCH=OFF
+
+      - name: Build ARM64 production binaries and C++ tests
+        run: |
+          ninja -C build-arm-ci -j"$(nproc)" \
+            zepto_http_server zepto_data_node zepto_flight_server zepto-cli \
+            zepto_ingest_node zepto_action_outcome_soak zepto-opcua-browse \
+            zepto_tests test_feeds test_migration
+
+      - name: Run ARM64 focused security and production-path tests
+        run: |
+          mkdir -p test-results-arm64
+          ./build-arm-ci/tests/zepto_tests \
+            "--gtest_filter=${FOCUSED_FILTER}" \
+            --gtest_brief=1 \
+            --gtest_output=xml:test-results-arm64/focused.xml
+
+      - name: Run ARM64 full CTest suite
+        run: |
+          ctest --test-dir build-arm-ci \
+            -j"$(nproc)" \
+            --output-on-failure \
+            --timeout 240 \
+            --output-junit "$GITHUB_WORKSPACE/test-results-arm64/ctest.xml"
+
+      - name: Print ARM64 ccache stats
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Upload ARM64 C++ test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: production-arm64-test-results
+          path: test-results-arm64/*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  web:
+    name: Web frozen install, test, lint, and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Web tests
+        working-directory: web
+        run: pnpm test
+
+      - name: Run Web lint
+        working-directory: web
+        run: pnpm lint
+
+      - name: Build Web production bundle
+        working-directory: web
+        run: pnpm build
+
+  helm:
+    name: Helm security, lint, and render
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Install Helm
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.20.1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Helm security test dependency
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+
+      - name: Lint Helm chart
+        run: helm lint deploy/helm/zeptodb --strict
+
+      - name: Render standalone and cluster production profiles
+        run: |
+          helm template ci-default deploy/helm/zeptodb \
+            --namespace zeptodb > "$RUNNER_TEMP/zeptodb-default.yaml"
+          helm template ci-cluster deploy/helm/zeptodb \
+            --namespace zeptodb \
+            --set cluster.enabled=true \
+            --set replicaCount=3 \
+            --set persistence.enabled=true \
+            --set persistence.acknowledgeIncompleteDurability=true \
+            > "$RUNNER_TEMP/zeptodb-cluster.yaml"
+          test -s "$RUNNER_TEMP/zeptodb-default.yaml"
+          test -s "$RUNNER_TEMP/zeptodb-cluster.yaml"
+
+      - name: Run offline Helm security assertions
+        run: python tests/k8s/test_helm_security.py -v
+
+  production_gate:
+    name: Production gate
+    if: always()
+    needs: [x86_cpp, arm_cpp, web, helm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      X86_RESULT: ${{ needs.x86_cpp.result }}
+      ARM_RESULT: ${{ needs.arm_cpp.result }}
+      WEB_RESULT: ${{ needs.web.result }}
+      HELM_RESULT: ${{ needs.helm.result }}
+    steps:
+      - name: Require every production validation job
+        run: |
+          for result in "$X86_RESULT" "$ARM_RESULT" "$WEB_RESULT" "$HELM_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "::error::Production validation did not pass: x86=$X86_RESULT arm64=$ARM_RESULT web=$WEB_RESULT helm=$HELM_RESULT"
+              exit 1
+            fi
+          done
+          echo "All production validation jobs passed."

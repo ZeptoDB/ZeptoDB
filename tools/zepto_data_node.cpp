@@ -104,7 +104,10 @@ int main(int argc, char* argv[]) {
                   << "  --symbol S                  symbol_id for sample data (default: 1)\n"
                   << "  --coordinator host:port      auto-register with coordinator\n"
                   << "  --api-key KEY               admin API key for registration\n"
-                  << "  --advertise-host HOST       host to advertise (default: localhost)\n";
+                  << "  --advertise-host HOST       host to advertise (default: localhost)\n"
+                  << "  --allow-insecure-cluster    allow unauthenticated RPC (development only)\n"
+                  << "\nCluster RPC secret: set ZEPTO_CLUSTER_SECRET_FILE (recommended)\n"
+                  << "or ZEPTO_CLUSTER_SECRET; minimum 32 bytes.\n";
         return 1;
     }
 
@@ -115,6 +118,7 @@ int main(int argc, char* argv[]) {
     std::string coordinator_spec;  // "host:port"
     std::string api_key;
     std::string advertise_host = "localhost";
+    bool allow_insecure_cluster = false;
 
     // Parse positional num_ticks (argv[2] if not a flag)
     if (argc >= 3 && argv[2][0] != '-')
@@ -132,6 +136,23 @@ int main(int argc, char* argv[]) {
             api_key = argv[++i];
         else if (arg == "--advertise-host" && i + 1 < argc)
             advertise_host = argv[++i];
+        else if (arg == "--allow-insecure-cluster")
+            allow_insecure_cluster = true;
+    }
+
+    auto rpc_security = zeptodb::cluster::RpcSecurityConfig::from_environment();
+    if (const auto error = rpc_security.validation_error(); !error.empty()) {
+        std::cerr << "Error: invalid cluster RPC security configuration: "
+                  << error << "\n";
+        return 1;
+    }
+    if (!rpc_security.enabled && !allow_insecure_cluster) {
+        std::cerr
+            << "Error: cluster RPC authentication is required. Set "
+               "ZEPTO_CLUSTER_SECRET_FILE (recommended) or "
+               "ZEPTO_CLUSTER_SECRET (minimum 32 bytes). Use "
+               "--allow-insecure-cluster only for isolated development.\n";
+        return 1;
     }
 
     std::signal(SIGINT, signal_handler);
@@ -166,6 +187,7 @@ int main(int argc, char* argv[]) {
 
     // Start RPC server
     zeptodb::cluster::TcpRpcServer srv;
+    srv.set_security(rpc_security);
 
     // Metrics collector for this data node
     zeptodb::server::MetricsCollector mc(pipeline.stats());

@@ -40,11 +40,14 @@ struct IdpConfig {
     // Group-based role mapping
     std::string group_claim = "groups";  // JWT claim containing group list
     std::unordered_map<std::string, Role> group_role_map;  // group → role
-    Role default_role = Role::READER;
+    // Fail closed when neither a mapped group nor a signed token role grants
+    // access. Legacy implicit read access requires an explicit READER value.
+    Role default_role = Role::UNKNOWN;
 
     // Optional claim mappings
-    std::string tenant_claim;                  // JWT claim for tenant_id
+    std::string tenant_claim = "tenant_id";    // JWT claim for tenant_id
     std::string symbols_claim = "zepto_symbols"; // JWT claim for symbol whitelist
+    std::string tables_claim = "allowed_tables"; // JWT claim for table whitelist
 };
 
 // ============================================================================
@@ -55,9 +58,10 @@ struct SsoIdentity {
     std::string              email;
     std::string              idp_id;
     std::vector<std::string> groups;
-    Role                     role = Role::READER;
+    Role                     role = Role::UNKNOWN;
     std::vector<std::string> allowed_symbols;
     std::string              tenant_id;
+    std::vector<std::string> allowed_tables;
 };
 
 // ============================================================================
@@ -99,6 +103,17 @@ public:
     static std::vector<std::string> extract_json_string_array(
         const std::string& json, const std::string& key);
 
+    /// Highest-privilege explicitly mapped group role. The IdP default is
+    /// deliberately excluded and applies only when no group maps.
+    static std::optional<Role> resolve_group_role(
+        const IdpConfig& cfg, const std::vector<std::string>& groups);
+
+    /// Resolve mapped groups first, then an explicit token role, then the IdP
+    /// default. UNKNOWN represents a missing or unrecognized token role.
+    static Role resolve_role(const IdpConfig& cfg,
+                             const std::vector<std::string>& groups,
+                             Role token_role);
+
 private:
     Config config_;
 
@@ -123,12 +138,12 @@ private:
     // Helpers
     std::optional<SsoIdentity> resolve_with_idp(const IdpRuntime& idp,
                                                  const std::string& token) const;
-    Role resolve_role(const IdpConfig& cfg,
-                      const std::vector<std::string>& groups) const;
     static std::string extract_issuer_from_jwt(const std::string& token);
-    static std::string cache_key(const std::string& idp_id, const std::string& sub);
+    static std::string cache_key(const std::string& idp_id,
+                                 const std::string& token);
     std::optional<SsoIdentity> lookup_cache(const std::string& key) const;
-    void store_cache(const std::string& key, const SsoIdentity& identity) const;
+    void store_cache(const std::string& key, const SsoIdentity& identity,
+                     int64_t token_expiry_s) const;
 };
 
 } // namespace zeptodb::auth

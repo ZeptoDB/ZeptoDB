@@ -21,8 +21,14 @@ cluster:
   rpcPortOffset: 100
   heartbeatPort: 9100
 
+# Benchmark-only exception. The Service remains cluster-internal by default.
+auth:
+  enabled: false
+
 persistence:
   enabled: true
+  # Benchmark-only evaluation; not a SQL-visible restart durability claim.
+  acknowledgeIncompleteDurability: true
   storageClass: gp3
   size: 100Gi
 

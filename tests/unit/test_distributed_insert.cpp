@@ -18,6 +18,7 @@
 #include "zeptodb/cluster/cluster_node_base.h"
 #include "zeptodb/cluster/coordinator_routing_adapter.h"
 #include "zeptodb/cluster/query_coordinator.h"
+#include "zeptodb/cluster/rpc_protocol.h"
 #include "zeptodb/cluster/tcp_rpc.h"
 #include "zeptodb/auth/license_validator.h"
 #include "zeptodb/core/pipeline.h"
@@ -27,6 +28,7 @@
 #include "test_port_helper.h"
 
 #include <chrono>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -108,6 +110,19 @@ static zeptodb::core::TypedColumnValue make_i64_column(std::string name,
     col.name = std::move(name);
     col.type = zeptodb::storage::ColumnType::INT64;
     col.i64 = value;
+    return col;
+}
+
+static zeptodb::core::TypedColumnValue make_string_column(
+    std::string name,
+    uint32_t code,
+    std::string value) {
+    zeptodb::core::TypedColumnValue col;
+    col.name = std::move(name);
+    col.type = zeptodb::storage::ColumnType::STRING;
+    col.u32 = code;
+    col.has_string_value = true;
+    col.string_value = std::move(value);
     return col;
 }
 
@@ -597,6 +612,161 @@ TEST(DistributedInsert, ClusterWindowMaterializesGenericTableValues) {
     EXPECT_EQ(window_stats.rows_materialized, 4u);
     EXPECT_GT(window_stats.last_materialized_bytes, 0u);
     EXPECT_GT(window_stats.bytes_materialized, 0u);
+
+    remote_rpc.stop();
+}
+
+TEST(DistributedInsert, ClusterWindowSnapshotsStringsBeforeTemporaryPipelineStops) {
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    StartedPipeline owner(pc);
+    StartedPipeline peer(pc);
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19801, 1}, owner.get());
+    coord.add_local_node({"127.0.0.1", 19802, 8}, peer.get());
+
+    const std::string table = "window_string_snapshot_guard";
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + table +
+        " (label STRING, id INT64, group_id INT64)"
+    ).ok());
+    const uint16_t table_id =
+        owner.get().schema_registry().get_table_id(table);
+    ASSERT_NE(table_id, 0u);
+
+    for (int64_t id = 1; id <= 2; ++id) {
+        zeptodb::core::TypedRowMessage row;
+        row.table_id = table_id;
+        row.timestamp = id;
+        row.columns.push_back(make_string_column(
+            "label", static_cast<uint32_t>(id - 1),
+            id == 1 ? "alpha" : "beta"));
+        row.columns.push_back(make_i64_column("id", id));
+        row.columns.push_back(make_i64_column("group_id", 10));
+        ASSERT_TRUE(owner.get().ingest_typed_row(std::move(row)));
+    }
+
+    auto ranked = coord.execute_sql(
+        "SELECT label, id, group_id, "
+        "ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id) AS rn "
+        "FROM " + table + " ORDER BY id");
+    ASSERT_TRUE(ranked.ok()) << ranked.error;
+    ASSERT_EQ(ranked.rows.size(), 2u);
+    EXPECT_EQ(ranked.symbol_dict, nullptr);
+    ASSERT_EQ(ranked.string_rows.size(), 2u);
+    EXPECT_EQ(ranked.string_rows[0], "alpha");
+    EXPECT_EQ(ranked.string_rows[1], "beta");
+
+    const auto wire = serialize_result(ranked);
+    const auto restored = deserialize_result(wire.data(), wire.size());
+    ASSERT_TRUE(restored.ok()) << restored.error;
+    ASSERT_EQ(restored.string_rows.size(), 2u);
+    EXPECT_EQ(restored.string_rows[0], "alpha");
+    EXPECT_EQ(restored.string_rows[1], "beta");
+}
+
+TEST(DistributedInsert, WindowMaterializationStopsAtCumulativeMultiNodeRowCap) {
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    StartedPipeline owner(pc);
+    StartedPipeline peer(pc);
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19811, 1}, owner.get());
+    coord.add_local_node({"127.0.0.1", 19812, 8}, peer.get());
+
+    const std::string table = "window_cumulative_row_guard";
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + table +
+        " (id INT64, group_id INT64, score_micros INT64)"
+    ).ok());
+    const uint16_t table_id =
+        owner.get().schema_registry().get_table_id(table);
+    ASSERT_NE(table_id, 0u);
+    for (int64_t id = 1; id <= 3; ++id) {
+        ingest_window_row(owner.get(), table_id, id, 10, id * 100);
+        ingest_window_row(peer.get(), table_id, id + 10, 10, id * 1000);
+    }
+
+    QueryCoordinator::WindowMaterializationConfig config;
+    config.row_limit = 4;
+    std::string config_error;
+    ASSERT_TRUE(coord.set_window_materialization_config(config, &config_error))
+        << config_error;
+
+    auto rejected = coord.execute_sql(
+        "SELECT group_id, id, "
+        "ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id) AS rn "
+        "FROM " + table + " ORDER BY id");
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_NE(rejected.error.find("row limit exceeded"), std::string::npos);
+
+    const auto stats = coord.window_materialization_stats();
+    EXPECT_EQ(stats.rejected_row_cap, 1u);
+    EXPECT_EQ(stats.last_rows, 5u)
+        << "the second node must be queried only for the remaining row plus "
+           "one overflow probe";
+}
+
+TEST(DistributedInsert, WindowMaterializationRejectsOversizedRemoteStringPayload) {
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    StartedPipeline local(pc);
+    StartedPipeline remote(pc);
+
+    const uint16_t local_port = zepto_test_util::pick_free_port();
+    uint16_t remote_rpc_port = zepto_test_util::pick_free_port();
+    if (remote_rpc_port == local_port) {
+        remote_rpc_port = static_cast<uint16_t>(remote_rpc_port ^ 1);
+    }
+
+    TcpRpcServer remote_rpc;
+    remote_rpc.start(remote_rpc_port, [&remote](const std::string& sql) {
+        zeptodb::sql::QueryExecutor ex(remote.get());
+        return ex.execute(sql);
+    });
+    ASSERT_TRUE(remote_rpc.is_running());
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", local_port, 1}, local.get());
+    coord.add_remote_node({"127.0.0.1", remote_rpc_port, 8});
+
+    const std::string table = "window_remote_string_byte_guard";
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + table +
+        " (label STRING, id INT64, group_id INT64)"
+    ).ok());
+    const uint16_t table_id =
+        remote.get().schema_registry().get_table_id(table);
+    ASSERT_NE(table_id, 0u);
+
+    zeptodb::core::TypedRowMessage row;
+    row.table_id = table_id;
+    row.timestamp = 1;
+    row.columns.push_back(make_string_column(
+        "label", 0, std::string(128 * 1024, 'x')));
+    row.columns.push_back(make_i64_column("id", 1));
+    row.columns.push_back(make_i64_column("group_id", 10));
+    ASSERT_TRUE(remote.get().ingest_typed_row(std::move(row)));
+
+    QueryCoordinator::WindowMaterializationConfig config;
+    config.row_limit = 8;
+    config.max_materialized_bytes = 64;
+    std::string config_error;
+    ASSERT_TRUE(coord.set_window_materialization_config(config, &config_error))
+        << config_error;
+
+    auto rejected = coord.execute_sql(
+        "SELECT label, id, "
+        "ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id) AS rn "
+        "FROM " + table);
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_NE(rejected.error.find("byte limit exceeded"), std::string::npos);
+
+    const auto stats = coord.window_materialization_stats();
+    EXPECT_EQ(stats.rejected_byte_cap, 1u);
+    EXPECT_GT(stats.last_materialized_bytes, 64u);
 
     remote_rpc.stop();
 }
@@ -1118,6 +1288,253 @@ TEST(DistributedInsert, CatalogPlacementOptionAppliesAfterCoordinatorRestart) {
     remote_rpc.stop();
 }
 
+TEST(DistributedInsert, CreatePlacementRollsBackWhenCatalogSaveFails) {
+    zeptodb::core::PipelineConfig durable_config;
+    durable_config.storage_mode = zeptodb::core::StorageMode::TIERED;
+    durable_config.hdb_base_path = "/dev/null";
+    zeptodb::core::ZeptoPipeline durable(durable_config);
+    zeptodb::sql::QueryExecutor durable_executor(durable);
+
+    const std::string durable_table = "placement_catalog_failure_guard";
+    auto failed = durable_executor.execute(
+        "CREATE TABLE " + durable_table + " (id INT64) "
+        "WITH (placement = hash_by_table)");
+    ASSERT_FALSE(failed.ok());
+    EXPECT_NE(failed.error.find("Failed to persist schema catalog"),
+              std::string::npos);
+    EXPECT_FALSE(durable.schema_registry().exists(durable_table));
+
+    zeptodb::core::PipelineConfig memory_config;
+    memory_config.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    memory_config.hdb_base_path = "/dev/null";
+    zeptodb::core::ZeptoPipeline memory_only(memory_config);
+    zeptodb::sql::QueryExecutor memory_executor(memory_only);
+    auto created = memory_executor.execute(
+        "CREATE TABLE placement_memory_only_guard (id INT64) "
+        "WITH (placement = hash_by_table)");
+    ASSERT_TRUE(created.ok()) << created.error;
+    EXPECT_TRUE(memory_only.schema_registry().exists(
+        "placement_memory_only_guard"));
+}
+
+TEST(DistributedInsert, CatalogDdlRollsBackWhenCatalogSaveFails) {
+    zeptodb::core::PipelineConfig config;
+    config.storage_mode = zeptodb::core::StorageMode::TIERED;
+    config.hdb_base_path = "/dev/null";
+    zeptodb::core::ZeptoPipeline pipeline(config);
+    zeptodb::sql::QueryExecutor executor(pipeline);
+
+    const std::string table = "catalog_ddl_failure_guard";
+    zeptodb::storage::TablePlacementOptions placement;
+    placement.configured = true;
+    placement.mode = zeptodb::storage::TablePlacementMode::HashByTable;
+    ASSERT_TRUE(pipeline.schema_registry().create(
+        table,
+        {{"id", zeptodb::storage::ColumnType::INT64},
+         {"obsolete", zeptodb::storage::ColumnType::INT64}},
+        placement));
+    ASSERT_TRUE(pipeline.schema_registry().set_ttl(table, 123));
+    const uint16_t table_id = pipeline.schema_registry().get_table_id(table);
+    ASSERT_NE(table_id, 0u);
+
+    zeptodb::core::TypedRowMessage row;
+    row.table_id = table_id;
+    row.timestamp = 1;
+    row.columns.push_back(make_i64_column("id", 7));
+    row.columns.push_back(make_i64_column("obsolete", 9));
+    ASSERT_TRUE(pipeline.ingest_typed_row(std::move(row)));
+    const size_t partitions_before = pipeline.partition_manager()
+        .get_partitions_for_table(table_id).size();
+    ASSERT_GT(partitions_before, 0u);
+
+    auto expect_original_schema = [&]() {
+        const auto schema = pipeline.schema_registry().get(table);
+        ASSERT_TRUE(schema.has_value());
+        EXPECT_EQ(schema->table_id, table_id);
+        EXPECT_EQ(schema->ttl_ns, 123);
+        EXPECT_TRUE(schema->has_data);
+        EXPECT_TRUE(schema->placement.configured);
+        EXPECT_EQ(schema->placement.mode,
+                  zeptodb::storage::TablePlacementMode::HashByTable);
+        ASSERT_EQ(schema->columns.size(), 2u);
+        EXPECT_EQ(schema->columns[0].name, "id");
+        EXPECT_EQ(schema->columns[1].name, "obsolete");
+    };
+
+    auto add = executor.execute(
+        "ALTER TABLE " + table + " ADD COLUMN added INT64");
+    ASSERT_FALSE(add.ok());
+    EXPECT_NE(add.error.find("Failed to persist schema catalog after ADD COLUMN"),
+              std::string::npos);
+    expect_original_schema();
+
+    auto drop_column = executor.execute(
+        "ALTER TABLE " + table + " DROP COLUMN obsolete");
+    ASSERT_FALSE(drop_column.ok());
+    EXPECT_NE(drop_column.error.find(
+                  "Failed to persist schema catalog after DROP COLUMN"),
+              std::string::npos);
+    expect_original_schema();
+
+    auto ttl = executor.execute(
+        "ALTER TABLE " + table + " SET TTL 1 DAYS");
+    ASSERT_FALSE(ttl.ok());
+    EXPECT_NE(ttl.error.find("Failed to persist schema catalog after SET TTL"),
+              std::string::npos);
+    expect_original_schema();
+    EXPECT_EQ(pipeline.partition_manager()
+                  .get_partitions_for_table(table_id).size(),
+              partitions_before)
+        << "TTL eviction must not run before catalog persistence commits";
+
+    auto drop = executor.execute("DROP TABLE " + table);
+    ASSERT_FALSE(drop.ok());
+    EXPECT_NE(drop.error.find("Failed to persist schema catalog while dropping"),
+              std::string::npos);
+    expect_original_schema();
+    EXPECT_EQ(pipeline.partition_manager()
+                  .get_partitions_for_table(table_id).size(),
+              partitions_before)
+        << "DROP data deletion must not run before catalog persistence commits";
+}
+
+TEST(DistributedInsert, PureInMemoryCatalogDdlSucceedsWithoutPersistence) {
+    zeptodb::core::PipelineConfig config;
+    config.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    config.hdb_base_path = "/dev/null";
+    zeptodb::core::ZeptoPipeline pipeline(config);
+    zeptodb::sql::QueryExecutor executor(pipeline);
+
+    const std::string table = "memory_catalog_ddl_guard";
+    ASSERT_TRUE(executor.execute(
+        "CREATE TABLE " + table + " (id INT64, obsolete INT64)").ok());
+    ASSERT_TRUE(executor.execute(
+        "ALTER TABLE " + table + " ADD COLUMN added INT64").ok());
+    ASSERT_TRUE(executor.execute(
+        "ALTER TABLE " + table + " DROP COLUMN obsolete").ok());
+    ASSERT_TRUE(executor.execute(
+        "ALTER TABLE " + table + " SET TTL 1 DAYS").ok());
+
+    const auto schema = pipeline.schema_registry().get(table);
+    ASSERT_TRUE(schema.has_value());
+    ASSERT_EQ(schema->columns.size(), 2u);
+    EXPECT_EQ(schema->columns[0].name, "id");
+    EXPECT_EQ(schema->columns[1].name, "added");
+    EXPECT_GT(schema->ttl_ns, 0);
+
+    ASSERT_TRUE(executor.execute("DROP TABLE " + table).ok());
+    EXPECT_FALSE(pipeline.schema_registry().exists(table));
+}
+
+TEST(DistributedInsert, CatalogDdlAndPlacementSharePipelineTransactionLock) {
+    zeptodb::core::PipelineConfig config;
+    config.storage_mode = zeptodb::core::StorageMode::TIERED;
+    config.hdb_base_path = "/dev/null";
+    zeptodb::core::ZeptoPipeline pipeline(config);
+    zeptodb::sql::QueryExecutor executor(pipeline);
+
+    const std::string table = "catalog_transaction_lock_guard";
+    ASSERT_TRUE(pipeline.schema_registry().create(
+        table, {{"id", zeptodb::storage::ColumnType::INT64}}));
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19822, 1}, pipeline);
+
+    auto blocker = pipeline.lock_schema_catalog_transaction();
+    std::promise<void> ddl_started_promise;
+    std::promise<void> placement_started_promise;
+    auto ddl_started = ddl_started_promise.get_future();
+    auto placement_started = placement_started_promise.get_future();
+
+    auto ddl = std::async(std::launch::async, [&]() {
+        ddl_started_promise.set_value();
+        return executor.execute(
+            "ALTER TABLE " + table + " ADD COLUMN raced INT64");
+    });
+    auto placement = std::async(std::launch::async, [&]() {
+        placement_started_promise.set_value();
+        std::string error;
+        const bool ok = coord.set_table_placement(
+            table, TablePlacementPolicy::HashByTable, 0, &error);
+        return std::make_pair(ok, error);
+    });
+
+    ddl_started.wait();
+    placement_started.wait();
+    EXPECT_EQ(ddl.wait_for(25ms), std::future_status::timeout);
+    EXPECT_EQ(placement.wait_for(25ms), std::future_status::timeout);
+    blocker.unlock();
+
+    const auto ddl_result = ddl.get();
+    const auto placement_result = placement.get();
+    EXPECT_FALSE(ddl_result.ok());
+    EXPECT_FALSE(placement_result.first);
+
+    const auto schema = pipeline.schema_registry().get(table);
+    ASSERT_TRUE(schema.has_value());
+    ASSERT_EQ(schema->columns.size(), 1u);
+    EXPECT_EQ(schema->columns[0].name, "id");
+    EXPECT_FALSE(schema->placement.configured);
+}
+
+TEST(DistributedInsert, AdminPlacementRollsBackWhenCatalogSaveFails) {
+    zeptodb::core::PipelineConfig config;
+    config.storage_mode = zeptodb::core::StorageMode::TIERED;
+    config.hdb_base_path = "/dev/null";
+    zeptodb::core::ZeptoPipeline pipeline(config);
+
+    const std::string table = "admin_placement_catalog_failure_guard";
+    ASSERT_TRUE(pipeline.schema_registry().create(
+        table, {{"id", zeptodb::storage::ColumnType::INT64}}));
+    const uint16_t table_id = pipeline.schema_registry().get_table_id(table);
+    ASSERT_NE(table_id, 0u);
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19821, 1}, pipeline);
+
+    std::string error;
+    EXPECT_FALSE(coord.set_table_placement(
+        table, TablePlacementPolicy::PinnedNode, 1, &error));
+    EXPECT_NE(error.find("failed to persist table placement"),
+              std::string::npos);
+    const auto unchanged = pipeline.schema_registry().get(table);
+    ASSERT_TRUE(unchanged.has_value());
+    EXPECT_FALSE(unchanged->placement.configured);
+    {
+        auto lock = coord.router_read_lock();
+        EXPECT_FALSE(coord.router().table_placement(table_id).has_value());
+    }
+
+    zeptodb::storage::TablePlacementOptions pinned;
+    pinned.configured = true;
+    pinned.mode = zeptodb::storage::TablePlacementMode::PinnedNode;
+    pinned.node_id = 1;
+    ASSERT_TRUE(pipeline.schema_registry().set_placement(table, pinned));
+    {
+        auto lock = coord.router_write_lock();
+        coord.router().set_table_placement(
+            table_id, TablePlacementPolicy::PinnedNode, 1);
+    }
+
+    error.clear();
+    EXPECT_FALSE(coord.clear_table_placement(table, &error));
+    EXPECT_NE(error.find("failed to persist cleared table placement"),
+              std::string::npos);
+    const auto restored = pipeline.schema_registry().get(table);
+    ASSERT_TRUE(restored.has_value());
+    EXPECT_TRUE(restored->placement.configured);
+    EXPECT_EQ(restored->placement.mode,
+              zeptodb::storage::TablePlacementMode::PinnedNode);
+    EXPECT_EQ(restored->placement.node_id, 1u);
+    {
+        auto lock = coord.router_read_lock();
+        const auto placement = coord.router().table_placement(table_id);
+        ASSERT_TRUE(placement.has_value());
+        EXPECT_EQ(placement->policy, TablePlacementPolicy::PinnedNode);
+        EXPECT_EQ(placement->node_id, 1u);
+    }
+}
+
 TEST(DistributedInsert, SmallTableBroadcastJoinRejectsRowsOverLimit) {
     zeptodb::core::PipelineConfig pc;
     pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
@@ -1182,6 +1599,73 @@ TEST(DistributedInsert, SmallTableBroadcastJoinRejectsRowsOverLimit) {
     EXPECT_EQ(join_stats.accepted, 0u);
     EXPECT_EQ(join_stats.rejected_row_cap, 1u);
     EXPECT_EQ(join_stats.errors, 0u);
+}
+
+TEST(DistributedInsert, SmallTableJoinStopsAtCumulativeMultiNodeRowCap) {
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    StartedPipeline owner(pc);
+    StartedPipeline peer(pc);
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19831, 1}, owner.get());
+    coord.add_local_node({"127.0.0.1", 19832, 8}, peer.get());
+
+    const std::string left_table = "small_join_cumulative_left";
+    const std::string right_table = "small_join_cumulative_right";
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + left_table + " (id INT64, value INT64)"
+    ).ok());
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + right_table + " (id INT64, payload INT64)"
+    ).ok());
+    const uint16_t left_table_id =
+        owner.get().schema_registry().get_table_id(left_table);
+    const uint16_t right_table_id =
+        owner.get().schema_registry().get_table_id(right_table);
+    ASSERT_NE(left_table_id, 0u);
+    ASSERT_NE(right_table_id, 0u);
+
+    for (int64_t id = 1; id <= 3; ++id) {
+        zeptodb::core::TypedRowMessage owner_row;
+        owner_row.table_id = left_table_id;
+        owner_row.timestamp = id;
+        owner_row.columns.push_back(make_i64_column("id", id));
+        owner_row.columns.push_back(make_i64_column("value", id * 10));
+        ASSERT_TRUE(owner.get().ingest_typed_row(std::move(owner_row)));
+
+        zeptodb::core::TypedRowMessage peer_row;
+        peer_row.table_id = left_table_id;
+        peer_row.timestamp = id + 10;
+        peer_row.columns.push_back(make_i64_column("id", id + 10));
+        peer_row.columns.push_back(make_i64_column("value", id * 100));
+        ASSERT_TRUE(peer.get().ingest_typed_row(std::move(peer_row)));
+    }
+    zeptodb::core::TypedRowMessage right_row;
+    right_row.table_id = right_table_id;
+    right_row.timestamp = 1;
+    right_row.columns.push_back(make_i64_column("id", 1));
+    right_row.columns.push_back(make_i64_column("payload", 1000));
+    ASSERT_TRUE(owner.get().ingest_typed_row(std::move(right_row)));
+
+    QueryCoordinator::SmallTableJoinConfig config;
+    config.row_limit = 4;
+    std::string config_error;
+    ASSERT_TRUE(coord.set_small_table_join_config(config, &config_error))
+        << config_error;
+
+    auto rejected = coord.execute_sql(
+        "SELECT l.id, r.payload FROM " + left_table + " l JOIN " +
+        right_table + " r ON l.id = r.id");
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_NE(rejected.error.find("row limit exceeded"), std::string::npos);
+
+    const auto stats = coord.small_table_join_stats();
+    EXPECT_EQ(stats.rejected_row_cap, 1u);
+    EXPECT_EQ(stats.last_left_rows, 5u)
+        << "the second node must be queried only for the remaining row plus "
+           "one overflow probe";
+    EXPECT_EQ(stats.last_right_rows, 0u);
 }
 
 TEST(DistributedInsert, SmallTableBroadcastJoinRejectsInvalidConfig) {
@@ -1317,9 +1801,73 @@ TEST(DistributedInsert, SmallTableBroadcastJoinRejectsMaterializedBytesOverLimit
     EXPECT_EQ(join_stats.rejected_byte_cap, 1u);
     EXPECT_EQ(join_stats.errors, 0u);
     EXPECT_EQ(join_stats.last_left_rows, 1u);
-    EXPECT_EQ(join_stats.last_right_rows, 1u);
+    EXPECT_EQ(join_stats.last_right_rows, 0u)
+        << "the right side must not be fetched after the left side exhausts "
+           "the cumulative byte budget";
     EXPECT_GT(join_stats.last_materialized_bytes, 1u);
     EXPECT_EQ(join_stats.bytes_materialized, 0u);
+}
+
+TEST(DistributedInsert, SmallTableJoinRejectsOversizedStringBeforeRightFetch) {
+    zeptodb::core::PipelineConfig pc;
+    pc.storage_mode = zeptodb::core::StorageMode::PURE_IN_MEMORY;
+    StartedPipeline left_owner(pc);
+    StartedPipeline right_owner(pc);
+
+    QueryCoordinator coord;
+    coord.add_local_node({"127.0.0.1", 19841, 1}, left_owner.get());
+    coord.add_local_node({"127.0.0.1", 19842, 8}, right_owner.get());
+
+    const std::string left_table = "small_join_string_byte_left";
+    const std::string right_table = "small_join_string_byte_right";
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + left_table + " (id INT64, payload STRING)"
+    ).ok());
+    ASSERT_TRUE(coord.execute_sql(
+        "CREATE TABLE " + right_table + " (id INT64, match_value INT64)"
+    ).ok());
+    const uint16_t left_table_id =
+        left_owner.get().schema_registry().get_table_id(left_table);
+    const uint16_t right_table_id =
+        left_owner.get().schema_registry().get_table_id(right_table);
+    ASSERT_NE(left_table_id, 0u);
+    ASSERT_NE(right_table_id, 0u);
+
+    zeptodb::core::TypedRowMessage left_row;
+    left_row.table_id = left_table_id;
+    left_row.timestamp = 1;
+    left_row.columns.push_back(make_i64_column("id", 7));
+    left_row.columns.push_back(make_string_column(
+        "payload", 0, std::string(4096, 'x')));
+    ASSERT_TRUE(left_owner.get().ingest_typed_row(std::move(left_row)));
+
+    zeptodb::core::TypedRowMessage right_row;
+    right_row.table_id = right_table_id;
+    right_row.timestamp = 1;
+    right_row.columns.push_back(make_i64_column("id", 7));
+    right_row.columns.push_back(make_i64_column("match_value", 700));
+    ASSERT_TRUE(right_owner.get().ingest_typed_row(std::move(right_row)));
+
+    QueryCoordinator::SmallTableJoinConfig config;
+    config.row_limit = 8;
+    config.max_materialized_bytes = 128;
+    std::string config_error;
+    ASSERT_TRUE(coord.set_small_table_join_config(config, &config_error))
+        << config_error;
+
+    auto rejected = coord.execute_sql(
+        "SELECT l.id, l.payload, r.match_value FROM " + left_table +
+        " l JOIN " + right_table + " r ON l.id = r.id");
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_NE(rejected.error.find("materialized byte limit exceeded"),
+              std::string::npos);
+
+    const auto stats = coord.small_table_join_stats();
+    EXPECT_EQ(stats.rejected_byte_cap, 1u);
+    EXPECT_EQ(stats.last_left_rows, 1u);
+    EXPECT_EQ(stats.last_right_rows, 0u);
+    EXPECT_GT(stats.last_materialized_bytes, 128u);
+    EXPECT_EQ(stats.bytes_materialized, 0u);
 }
 
 TEST(DistributedInsert, SmallTableBroadcastJoinRejectsLatencyOverLimit) {

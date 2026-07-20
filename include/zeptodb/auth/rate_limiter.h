@@ -31,6 +31,8 @@ public:
         uint32_t burst_capacity      = 200;   // max burst tokens
         uint32_t per_ip_rpm          = 10000; // per-IP limit (0 = disabled)
         uint32_t ip_burst            = 500;
+        size_t   max_identity_buckets = 100000;
+        size_t   max_ip_buckets       = 100000;
     };
 
     explicit RateLimiter(Config config);
@@ -64,17 +66,18 @@ private:
     Config config_;
 
     mutable std::shared_mutex identity_mu_;
-    std::unordered_map<std::string, std::unique_ptr<Bucket>> identity_buckets_;
+    std::unordered_map<std::string, std::shared_ptr<Bucket>> identity_buckets_;
 
     mutable std::shared_mutex ip_mu_;
-    std::unordered_map<std::string, std::unique_ptr<Bucket>> ip_buckets_;
+    std::unordered_map<std::string, std::shared_ptr<Bucket>> ip_buckets_;
 
-    Bucket* get_or_create(const std::string& key,
-                          std::shared_mutex& map_mu,
-                          std::unordered_map<std::string, std::unique_ptr<Bucket>>& map,
-                          double capacity, double rpm);
+    std::shared_ptr<Bucket> get_or_create(
+        const std::string& key,
+        std::shared_mutex& map_mu,
+        std::unordered_map<std::string, std::shared_ptr<Bucket>>& map,
+        double capacity, double rpm, size_t max_buckets);
 
-    RateDecision consume(Bucket* bucket);
+    RateDecision consume(const std::shared_ptr<Bucket>& bucket);
 
     static int64_t now_ns();
 };

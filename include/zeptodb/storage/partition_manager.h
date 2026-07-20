@@ -13,6 +13,7 @@
 #include "zeptodb/storage/string_dictionary.h"
 
 #include <algorithm>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -291,6 +292,13 @@ public:
     /// 전체 파티션 목록 반환 (SQL 쿼리 실행용)
     std::vector<Partition*> get_all_partitions();
 
+    /// Visit a pinned set of partition objects. Create, eviction, and DROP may
+    /// proceed concurrently without invalidating the callback's objects;
+    /// existing-partition appends remain serialized by each Partition's write
+    /// lock. Intended only for cold durability operations.
+    bool visit_partitions_stable(
+        const std::function<bool(Partition&)>& visitor);
+
     /// 특정 Table + Symbol의 파티션 목록 반환
     std::vector<Partition*> get_partitions_for_symbol(uint16_t table_id, SymbolId symbol);
 
@@ -359,7 +367,7 @@ private:
     static int64_t to_hour_epoch(Timestamp ts);
 
     size_t arena_size_;
-    std::unordered_map<PartitionKey, std::unique_ptr<Partition>, PartitionKeyHash> partitions_;
+    std::unordered_map<PartitionKey, std::shared_ptr<Partition>, PartitionKeyHash> partitions_;
     mutable std::shared_mutex mutex_;
 };
 

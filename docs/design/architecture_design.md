@@ -89,7 +89,7 @@ HTTPS (TLS 1.2+, OpenSSL 3.2)
 AuthManager::check()                ← set_pre_routing_handler
     ├── JwtValidator (HS256/RS256)   ← OIDC: Okta, Azure AD, Google
     ├── ApiKeyStore (SHA256 hash)    ← Service-to-service auth
-    └── RBAC Engine                 ← 5 roles + symbol-level ACL
+    └── RBAC Engine                 ← 5 roles + table/tenant ACL
             │
             ▼
     AuditLogger (spdlog)            ← EMIR / MiFID II compliance
@@ -102,7 +102,7 @@ AuthManager::check()                ← set_pre_routing_handler
 | `admin` | ALL | DBA, ops team |
 | `writer` | READ + WRITE | Feed handlers, pipelines |
 | `reader` | READ | Quant researchers, BI |
-| `analyst` | READ (symbol whitelist) | External/contracted analysts |
+| `analyst` | NONE (reserved) | Disabled pending executor-level symbol filtering |
 | `metrics` | /metrics only | Prometheus scraper |
 
 ### 3-C. Identity Priority

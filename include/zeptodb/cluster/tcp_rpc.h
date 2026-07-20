@@ -8,8 +8,8 @@
 // TcpRpcClient: connects to a TcpRpcServer, sends a SQL_QUERY, returns the
 //               QueryResultSet from the response.
 //
-// Protocol: RpcHeader (16 bytes) + payload — see rpc_protocol.h
-// One connection per request (Phase 1 simplicity; Phase 2 can add pooling).
+// Protocol: RpcHeader (24 bytes) + payload — see rpc_protocol.h.
+// Connections are mutually authenticated once, then reused from a pool.
 // ============================================================================
 
 #include "zeptodb/cluster/rpc_client_base.h"
@@ -113,12 +113,13 @@ public:
         agent_memory_replica_append_callback_ = std::move(cb);
     }
 
-    /// Set security config for internal RPC authentication.
-    /// When enabled, clients must send AUTH_HANDSHAKE before any other message.
+    /// Override the environment-derived internal RPC security config.
+    /// When enabled, peers must complete the v2 mutual challenge handshake.
     void set_security(RpcSecurityConfig cfg) { security_ = std::move(cfg); }
 
-    /// Set maximum allowed payload size in bytes (default 64MB).
-    /// Messages exceeding this limit are rejected and the connection is closed.
+    /// Set the maximum inbound and outbound payload size (default 64 MiB).
+    /// Oversized inbound/binary responses close the connection; oversized SQL
+    /// results are replaced with a bounded error result.
     void set_max_payload_size(uint32_t bytes) { max_payload_size_ = bytes; }
     uint32_t max_payload_size() const { return max_payload_size_; }
 
@@ -169,7 +170,7 @@ private:
     BinaryRpcCallback  agent_memory_stats_callback_;
     BinaryRpcCallback  agent_memory_replica_append_callback_;
     FencingToken*      fencing_token_ = nullptr;
-    RpcSecurityConfig  security_;
+    RpcSecurityConfig  security_ = RpcSecurityConfig::from_environment();
     uint32_t           max_payload_size_ = 64u * 1024u * 1024u;  // 64MB default
     int                max_connections_ = 1024;
     size_t             pool_size_ = 0;  // 0 = hardware_concurrency
@@ -211,6 +212,13 @@ public:
     /// Execute SQL on the remote node (blocking, respects connect timeout).
     zeptodb::sql::QueryResultSet execute_sql(const std::string& sql);
 
+    /// Execute SQL while rejecting a response payload larger than
+    /// `max_response_bytes` before allocating its receive buffer. The
+    /// connection is closed on rejection because the unread payload cannot be
+    /// returned safely to the pool.
+    zeptodb::sql::QueryResultSet execute_sql(const std::string& sql,
+                                             size_t max_response_bytes);
+
     /// Send a TickMessage to the remote node's local pipeline.
     bool ingest_tick(const zeptodb::ingestion::TickMessage& msg) override;
 
@@ -247,8 +255,14 @@ public:
     void set_epoch(uint64_t e) { epoch_ = e; }
     uint64_t epoch() const { return epoch_; }
 
-    /// Set security config for internal RPC authentication.
-    void set_security(RpcSecurityConfig cfg) { security_ = std::move(cfg); }
+    /// Override the environment-derived internal RPC security config.
+    /// Existing pooled sockets are closed so they cannot bypass the new mode.
+    void set_security(RpcSecurityConfig cfg);
+
+    /// Set the maximum response payload accepted before receive-buffer
+    /// allocation (default 64 MiB). Per-query execute_sql limits may be lower.
+    void set_max_response_size(uint32_t bytes) { max_response_size_ = bytes; }
+    uint32_t max_response_size() const { return max_response_size_; }
 
     /// Number of idle connections currently in the pool.
     size_t pool_idle_count() const;
@@ -267,7 +281,8 @@ private:
     size_t      max_pool_size_;
     int         query_timeout_ms_;
     uint64_t    epoch_ = 0;
-    RpcSecurityConfig security_;
+    RpcSecurityConfig security_ = RpcSecurityConfig::from_environment();
+    uint32_t max_response_size_ = 64u * 1024u * 1024u;
 
     mutable std::mutex pool_mu_;
     std::vector<int>   pool_;  // idle fds

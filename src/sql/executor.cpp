@@ -718,6 +718,8 @@ QueryResultSet QueryExecutor::exec_create_table(const CreateTableStmt& stmt) {
         return err;
     }
 
+    auto catalog_tx = pipeline_.lock_schema_catalog_transaction();
+
     bool ok = pipeline_.schema_registry().create(
         stmt.table_name, std::move(cols), *placement);
     if (!ok) {
@@ -727,7 +729,15 @@ QueryResultSet QueryExecutor::exec_create_table(const CreateTableStmt& stmt) {
         err.error = "Table '" + stmt.table_name + "' already exists";
         return err;
     }
-    pipeline_.save_schema_catalog();
+    if (!pipeline_.save_schema_catalog()) {
+        // CREATE has not produced table data yet, so rolling back the
+        // in-memory registry is safe and prevents a false-success response.
+        pipeline_.schema_registry().drop(stmt.table_name);
+        QueryResultSet err;
+        err.error = "Failed to persist schema catalog for table '" +
+                    stmt.table_name + "'";
+        return err;
+    }
     return ddl_ok("Table '" + stmt.table_name + "' created");
 }
 
@@ -735,20 +745,38 @@ QueryResultSet QueryExecutor::exec_create_table(const CreateTableStmt& stmt) {
 // exec_drop_table
 // ============================================================================
 QueryResultSet QueryExecutor::exec_drop_table(const DropTableStmt& stmt) {
-    const uint16_t tid = pipeline_.schema_registry().get_table_id(stmt.table_name);
-    bool ok = pipeline_.schema_registry().drop(stmt.table_name);
-    if (!ok) {
+    auto catalog_tx = pipeline_.lock_schema_catalog_transaction();
+    auto& registry = pipeline_.schema_registry();
+    const auto previous = registry.get(stmt.table_name);
+    if (!previous) {
         if (stmt.if_exists)
             return ddl_ok("Table '" + stmt.table_name + "' does not exist (IF EXISTS)");
         QueryResultSet err;
         err.error = "Table '" + stmt.table_name + "' does not exist";
         return err;
     }
-    if (tid != 0) {
-        pipeline_.partition_manager().drop_table_partitions(tid);
-        pipeline_.drop_table_index(tid);
+
+    if (!registry.drop(stmt.table_name)) {
+        QueryResultSet err;
+        err.error = "Table '" + stmt.table_name +
+                    "' changed concurrently during DROP";
+        return err;
     }
-    pipeline_.save_schema_catalog();
+    if (!pipeline_.save_schema_catalog()) {
+        const bool restored = registry.restore_table_schema(*previous);
+        QueryResultSet err;
+        err.error = "Failed to persist schema catalog while dropping table '" +
+                    stmt.table_name + "'";
+        if (!restored) err.error += "; in-memory rollback failed";
+        return err;
+    }
+
+    // Catalog durability is the commit point. Do not destroy table data or
+    // indexes until the DROP is known to survive restart.
+    if (previous->table_id != 0) {
+        pipeline_.partition_manager().drop_table_partitions(previous->table_id);
+        pipeline_.drop_table_index(previous->table_id);
+    }
     return ddl_ok("Table '" + stmt.table_name + "' dropped");
 }
 
@@ -756,18 +784,39 @@ QueryResultSet QueryExecutor::exec_drop_table(const DropTableStmt& stmt) {
 // exec_alter_table
 // ============================================================================
 QueryResultSet QueryExecutor::exec_alter_table(const AlterTableStmt& stmt) {
+    auto catalog_tx = pipeline_.lock_schema_catalog_transaction();
     auto& reg = pipeline_.schema_registry();
 
-    if (!reg.exists(stmt.table_name)) {
+    const auto previous = reg.get(stmt.table_name);
+    if (!previous) {
         QueryResultSet err;
         err.error = "Table '" + stmt.table_name + "' does not exist";
         return err;
     }
 
+    auto persist_or_rollback = [&](const char* action)
+        -> std::optional<QueryResultSet> {
+        if (pipeline_.save_schema_catalog()) return std::nullopt;
+
+        const bool restored = reg.restore_table_schema(*previous);
+        QueryResultSet err;
+        err.error = "Failed to persist schema catalog after " +
+                    std::string(action) + " on table '" +
+                    stmt.table_name + "'";
+        if (!restored) err.error += "; in-memory rollback failed";
+        return err;
+    };
+
     if (stmt.action == AlterTableStmt::Action::ADD_COLUMN) {
         storage::ColumnDef col{stmt.col_def.column,
                                ddl_type_from_str(stmt.col_def.type_str)};
-        reg.add_column(stmt.table_name, std::move(col));
+        if (!reg.add_column(stmt.table_name, std::move(col))) {
+            QueryResultSet err;
+            err.error = "Table '" + stmt.table_name +
+                        "' changed concurrently during ALTER ADD COLUMN";
+            return err;
+        }
+        if (auto err = persist_or_rollback("ADD COLUMN")) return *err;
         return ddl_ok("Column '" + stmt.col_def.column + "' added to '" + stmt.table_name + "'");
     }
 
@@ -778,10 +827,13 @@ QueryResultSet QueryExecutor::exec_alter_table(const AlterTableStmt& stmt) {
             err.error = "Column '" + stmt.col_name + "' not found in '" + stmt.table_name + "'";
             return err;
         }
+        if (auto err = persist_or_rollback("DROP COLUMN")) return *err;
         return ddl_ok("Column '" + stmt.col_name + "' dropped from '" + stmt.table_name + "'");
     }
 
     if (stmt.action == AlterTableStmt::Action::SET_ATTRIBUTE) {
+        // SORTED/GROUPED/PARTED are runtime partition hints and are not part
+        // of the durable SchemaRegistry catalog model.
         // Apply attribute to all partitions for this table's symbol
         auto partitions = pipeline_.partition_manager().get_all_partitions();
         size_t applied = 0;
@@ -797,6 +849,8 @@ QueryResultSet QueryExecutor::exec_alter_table(const AlterTableStmt& stmt) {
     }
 
     if (stmt.action == AlterTableStmt::Action::SET_STORAGE_POLICY) {
+        // Storage-policy thresholds currently belong to the runtime
+        // FlushManager configuration, not the durable table catalog.
         if (pipeline_.flush_manager()) {
             auto& fm = *pipeline_.flush_manager();
             // Update tiering policy on the FlushManager's config
@@ -820,7 +874,13 @@ QueryResultSet QueryExecutor::exec_alter_table(const AlterTableStmt& stmt) {
         ? 3'600'000'000'000LL    // ns per hour
         : 86'400'000'000'000LL;  // ns per day (default DAYS)
     const int64_t ttl_ns = stmt.ttl_value * multiplier;
-    reg.set_ttl(stmt.table_name, ttl_ns);
+    if (!reg.set_ttl(stmt.table_name, ttl_ns)) {
+        QueryResultSet err;
+        err.error = "Table '" + stmt.table_name +
+                    "' changed concurrently during ALTER SET TTL";
+        return err;
+    }
+    if (auto err = persist_or_rollback("SET TTL")) return *err;
 
     // Apply immediately: evict partitions already beyond TTL
     if (ttl_ns > 0) {
@@ -1287,22 +1347,30 @@ QueryResultSet QueryExecutor::exec_delete(const DeleteStmt& stmt) {
 }
 
 QueryResultSet QueryExecutor::execute(const std::string& sql) {
+    return execute_impl(sql, nullptr, true);
+}
+
+QueryResultSet QueryExecutor::execute_impl(
+    const std::string& sql,
+    ParsedStatement* request_statement,
+    bool allow_caches) {
     tl_cte_map.clear();
     double t0 = now_us();
     try {
-        // ── Prepared statement cache: reuse parsed AST ───────────────────────
-        size_t h = sql_hash(sql);
         ParsedStatement ps;
-        {
+        if (request_statement) {
+            ps = std::move(*request_statement);
+        } else {
+            // ── Prepared statement cache: reuse parsed AST ──────────────────
             std::lock_guard<std::mutex> lk(stmt_cache_mu_);
-            auto it = stmt_cache_.find(h);
+            auto it = stmt_cache_.find(sql);
             if (it != stmt_cache_.end()) {
                 ps = it->second;
             } else {
                 Parser parser;
                 ps = parser.parse_statement(sql);
                 if (stmt_cache_.size() < 4096) // cap cache size
-                    stmt_cache_.emplace(h, ps);
+                    stmt_cache_.emplace(sql, ps);
             }
         }
 
@@ -1358,10 +1426,16 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
             r.column_types = {ColumnType::SYMBOL, ColumnType::INT64};
             auto tables = pipeline_.schema_registry().list_tables();
             std::sort(tables.begin(), tables.end());
-            auto all_parts = pipeline_.partition_manager().get_all_partitions();
             for (auto& tbl : tables) {
                 size_t cnt = 0;
-                for (auto* p : all_parts) cnt += p->num_rows();
+                const auto schema = pipeline_.schema_registry().get(tbl);
+                if (schema) {
+                    const auto table_parts = pipeline_.partition_manager()
+                        .get_partitions_for_table(schema->table_id);
+                    for (auto* partition : table_parts) {
+                        cnt += partition->num_rows();
+                    }
+                }
                 r.string_rows.push_back(tbl);
                 r.rows.push_back({static_cast<int64_t>(cnt)});
             }
@@ -1427,10 +1501,11 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
         }
 
         // ── Query result cache: check for cached SELECT result ───────────────
-        bool cacheable = result_cache_max_ > 0 && stmt.cte_defs.empty();
+        const bool cacheable = allow_caches && result_cache_max_ > 0 &&
+            stmt.cte_defs.empty();
         if (cacheable) {
             std::lock_guard<std::mutex> lk(result_cache_mu_);
-            auto it = result_cache_.find(h);
+            auto it = result_cache_.find(sql);
             if (it != result_cache_.end()) {
                 double now_mono = static_cast<double>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1496,7 +1571,7 @@ QueryResultSet QueryExecutor::execute(const std::string& sql) {
             double now_mono = static_cast<double>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
-            result_cache_[h] = {result, now_mono + result_cache_ttl_s_};
+            result_cache_[sql] = {result, now_mono + result_cache_ttl_s_};
         }
 
         return result;
@@ -1513,7 +1588,17 @@ QueryResultSet QueryExecutor::execute(const std::string& sql,
                                        zeptodb::auth::CancellationToken* token)
 {
     tl_cancel_token = token;
-    auto result = execute(sql);
+    auto result = execute_impl(sql, nullptr, true);
+    tl_cancel_token = nullptr;
+    return result;
+}
+
+QueryResultSet QueryExecutor::execute_parsed(
+    const std::string& sql,
+    ParsedStatement statement,
+    zeptodb::auth::CancellationToken* token) {
+    tl_cancel_token = token;
+    auto result = execute_impl(sql, &statement, false);
     tl_cancel_token = nullptr;
     return result;
 }
@@ -6348,10 +6433,6 @@ QueryResultSet QueryExecutor::exec_simple_select_parallel(
 // ============================================================================
 // Prepared statement cache
 // ============================================================================
-size_t QueryExecutor::sql_hash(const std::string& sql) {
-    return std::hash<std::string>{}(sql);
-}
-
 size_t QueryExecutor::prepared_cache_size() const {
     std::lock_guard<std::mutex> lk(stmt_cache_mu_);
     return stmt_cache_.size();
@@ -6364,12 +6445,18 @@ void QueryExecutor::clear_prepared_cache() {
 
 // devlog 091 F4: prime cache from HTTP ACL parse so the subsequent execute()
 // call hits the cache instead of re-parsing.
-void QueryExecutor::cache_prepared(const std::string& sql, ParsedStatement ps) {
-    size_t h = sql_hash(sql);
+bool QueryExecutor::cache_prepared(const std::string& sql,
+                                   ParsedStatement ps) {
     std::lock_guard<std::mutex> lk(stmt_cache_mu_);
-    if (stmt_cache_.find(h) == stmt_cache_.end() && stmt_cache_.size() < 4096) {
-        stmt_cache_.emplace(h, std::move(ps));
+    auto existing = stmt_cache_.find(sql);
+    if (existing != stmt_cache_.end()) {
+        existing->second = std::move(ps);
+        return true;
+    } else if (stmt_cache_.size() < 4096) {
+        stmt_cache_.emplace(sql, std::move(ps));
+        return true;
     }
+    return false;
 }
 
 // ============================================================================

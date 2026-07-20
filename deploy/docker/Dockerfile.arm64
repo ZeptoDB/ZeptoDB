@@ -1,6 +1,8 @@
 # ZeptoDB ARM64/Graviton Dockerfile
 # Identical to main Dockerfile except: -march=armv8.2-a+crypto (Graviton2+)
 
+ARG ZEPTO_VERSION=0.1.8
+
 # ============================================================================
 # Stage 1: Web UI (Next.js static export)
 # ============================================================================
@@ -74,6 +76,7 @@ RUN mkdir -p build && cd build && \
         -DCMAKE_CXX_COMPILER=clang++-19 \
         -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$CLANG_SCAN_DEPS" \
         -DCMAKE_CXX_FLAGS="-mcpu=neoverse-n1 -O3" \
+        -DCMAKE_CXX_FLAGS_RELEASE="-O3 -mcpu=neoverse-n1 -DNDEBUG" \
         -DAPEX_CLOUD_NATIVE=ON \
         -DAPEX_USE_HUGEPAGES=ON \
         -DAPEX_USE_RDMA=OFF \
@@ -84,8 +87,11 @@ RUN mkdir -p build && cd build && \
         -DZEPTO_USE_PARQUET=ON \
         -DZEPTO_USE_FLIGHT=ON \
         -DZEPTO_BUILD_PYTHON=OFF \
+        -DZEPTO_BUILD_BENCH=OFF \
         -DAPEX_USE_IO_URING=ON \
-        -DBUILD_TESTS=OFF && \
+        -DZEPTO_BUILD_TESTS=OFF && \
+    grep -Fq -- '-mcpu=neoverse-n1' build.ninja && \
+    ! grep -Fq -- '-march=native' build.ninja && \
     ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli && \
     strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli
 
@@ -102,8 +108,12 @@ RUN mkdir -p /runtime-libs && \
 # ============================================================================
 FROM gcr.io/distroless/cc-debian12:nonroot
 
+ARG ZEPTO_VERSION
+
 LABEL maintainer="ZeptoDB Team <contact@zeptodb.com>"
 LABEL description="ZeptoDB — Ultra-Low Latency Time-Series Database (ARM64/Graviton)"
+LABEL version="${ZEPTO_VERSION}"
+LABEL org.opencontainers.image.version="${ZEPTO_VERSION}"
 
 WORKDIR /opt/zeptodb
 
@@ -121,4 +131,4 @@ ENV APEX_WORKER_THREADS=8 \
     APEX_PORT=8123
 
 ENTRYPOINT ["./zepto_http_server"]
-CMD ["--port", "8123", "--no-auth", "--web-dir", "/opt/zeptodb/web"]
+CMD ["--bind", "0.0.0.0", "--allow-plaintext-http", "--secure-cookie", "--port", "8123", "--ticks", "0", "--api-keys-file", "/run/secrets/zeptodb-auth/api_keys.txt", "--no-bootstrap-dev-keys", "--web-dir", "/opt/zeptodb/web"]

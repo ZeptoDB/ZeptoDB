@@ -2,7 +2,9 @@
 // ============================================================================
 // ZeptoDB: Multi-Tenancy — Tenant Manager
 // ============================================================================
-// Resource isolation per tenant: query concurrency, memory, rate limits.
+// Resource isolation per tenant: query concurrency and table namespaces.
+// Memory, query-rate, and ingestion-rate fields are reserved for future
+// enforcement and must not be treated as active production quotas.
 // Integrates with AuthContext (tenant_id) and QueryExecutor.
 // ============================================================================
 
@@ -23,11 +25,14 @@ struct TenantConfig {
     std::string tenant_id;
     std::string name;                       // display name
 
-    // Resource quotas
+    // Enforced resource quota
     uint32_t    max_concurrent_queries = 10;  // 0 = unlimited
-    uint64_t    max_memory_bytes       = 0;   // 0 = unlimited
-    uint32_t    max_queries_per_minute = 0;   // 0 = use global rate limit
-    uint32_t    max_ingestion_rate     = 0;   // ticks/sec, 0 = unlimited
+
+    // Reserved configuration. These values are stored and reported but are
+    // not currently enforced; keep them at 0 in production.
+    uint64_t    max_memory_bytes       = 0;
+    uint32_t    max_queries_per_minute = 0;
+    uint32_t    max_ingestion_rate     = 0;
 
     // Table namespace: if non-empty, tenant can only access tables
     // prefixed with this namespace (e.g. "tenant_a." → "tenant_a.trades")
@@ -45,6 +50,15 @@ struct TenantUsage {
     std::atomic<uint64_t> total_queries{0};
     std::atomic<uint64_t> total_ticks_ingested{0};
     std::atomic<uint64_t> rejected_queries{0};  // over quota
+};
+
+/// Lock-consistent value snapshot safe to retain after TenantManager methods
+/// return, including while tenants are concurrently removed or recreated.
+struct TenantUsageSnapshot {
+    uint32_t active_queries = 0;
+    uint64_t total_queries = 0;
+    uint64_t total_ticks_ingested = 0;
+    uint64_t rejected_queries = 0;
 };
 
 // ============================================================================
@@ -76,8 +90,9 @@ public:
     bool can_access_table(const std::string& tenant_id,
                           const std::string& table_name) const;
 
-    /// Get usage stats for a tenant.
-    const TenantUsage* usage(const std::string& tenant_id) const;
+    /// Get a value snapshot of usage stats for a tenant.
+    std::optional<TenantUsageSnapshot> usage(
+        const std::string& tenant_id) const;
 
     /// Check if any tenants are configured.
     bool has_tenants() const;

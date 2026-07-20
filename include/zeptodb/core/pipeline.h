@@ -208,9 +208,9 @@ struct PipelineConfig {
     // Recovery 설정
     // -------------------------
 
-    /// On start(), reload in-memory data from this snapshot directory.
-    /// Works for all storage modes — points to the same path used by
-    /// FlushConfig::snapshot_path (or a cold snapshot taken before shutdown).
+    /// On start(), reload RDB data from the complete generation selected by
+    /// CURRENT under this snapshot root. The path may be used in every storage
+    /// mode and normally matches FlushConfig::snapshot_path.
     bool        enable_recovery          = false;
     std::string recovery_snapshot_path  = "";
 
@@ -218,8 +218,9 @@ struct PipelineConfig {
     // Memory limit & eviction (P0-6)
     // -------------------------
 
-    /// Maximum total memory for all partitions (0 = unlimited).
-    /// When exceeded, oldest partitions are evicted (flushed to HDB if tiered).
+    /// Maximum approximate partition memory (0 = unlimited). PURE_IN_MEMORY
+    /// evicts the oldest partition after crossing it. TIERED rejects a nonzero
+    /// value until general SQL can merge HDB-only rows.
     size_t max_memory_bytes = 0;
 };
 
@@ -238,8 +239,11 @@ public:
     /// 파이프라인 시작 (드레인 스레드 기동)
     void start();
 
-    /// 파이프라인 중지 (드레인 스레드 종료, 큐 플러시)
-    void stop();
+    /// Stop drain/flush workers, drain the queue, and publish a final snapshot
+    /// when FlushConfig::snapshot_path is configured. Returns false if that
+    /// graceful-shutdown snapshot could not be published.
+    /// Callers must quiesce external producers before calling stop().
+    bool stop();
 
     /// Number of drain threads currently running (0 when stopped).
     [[nodiscard]] size_t drain_thread_count() const { return drain_threads_.size(); }
@@ -308,13 +312,24 @@ public:
     [[nodiscard]] SchemaRegistry& schema_registry() { return schema_registry_; }
     [[nodiscard]] const SchemaRegistry& schema_registry() const { return schema_registry_; }
 
+    /// Serialize a multi-step catalog transaction (registry mutation,
+    /// persistence, and possible rollback) against other DDL/control-plane
+    /// mutations on this pipeline.
+    [[nodiscard]] std::unique_lock<std::mutex>
+    lock_schema_catalog_transaction() const {
+        return std::unique_lock<std::mutex>(schema_catalog_tx_mu_);
+    }
+
     /// HDB base path (for schema catalog durability / table-scoped paths).
     /// Empty string if HDB is disabled (PURE_IN_MEMORY).
     [[nodiscard]] const std::string& hdb_base_path() const { return config_.hdb_base_path; }
 
-    /// Persist SchemaRegistry to {hdb_base_path}/_schema.json. No-op if HDB
-    /// is disabled. Called after CREATE / DROP / ALTER TABLE in executor.
+    /// Persist SchemaRegistry to {hdb_base_path}/_schema.json. PURE_IN_MEMORY
+    /// pipelines have no durable catalog, so persistence succeeds as a no-op.
+    /// Called after CREATE / DROP and ALTER changes represented in the
+    /// SchemaRegistry (columns, TTL, and placement).
     bool save_schema_catalog() const {
+        if (config_.storage_mode == StorageMode::PURE_IN_MEMORY) return true;
         if (config_.hdb_base_path.empty()) return false;
         return schema_registry_.save_to(config_.hdb_base_path + "/_schema.json");
     }
@@ -402,7 +417,10 @@ private:
     mutable std::mutex               partition_index_mu_;
     std::unordered_map<uint64_t, std::vector<Partition*>> partition_index_;
 
-    // Schema registry (all storage modes)
+    // Schema registry (all storage modes). Multi-step mutation/persistence
+    // transactions use schema_catalog_tx_mu_; SchemaRegistry retains its own
+    // fine-grained lock for individual reads and mutations.
+    mutable std::mutex schema_catalog_tx_mu_;
     SchemaRegistry schema_registry_;
     MaterializedViewManager mat_view_mgr_;
     storage::StringDictionary symbol_dict_;
@@ -414,6 +432,7 @@ private:
 
     std::vector<std::thread> drain_threads_;
     std::atomic<bool> running_{false};
+    bool recovery_completed_ = false;
 };
 
 } // namespace zeptodb::core
