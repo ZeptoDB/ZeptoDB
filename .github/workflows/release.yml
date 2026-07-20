@@ -157,7 +157,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-19 clang-tools-19 llvm-19-dev cmake ninja-build git pkg-config ccache \
             libnuma-dev liblz4-dev liburing-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
-            libarrow-dev libarrow-flight-dev libparquet-dev python3-pyarrow
+            libarrow-dev libarrow-flight-dev libparquet-dev
 
       - name: Configure ccache
         run: |
