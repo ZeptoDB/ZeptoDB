@@ -234,6 +234,11 @@ for regulatory compliance (SOC2, EMIR, MiFID II).
 | **Production** | INFO | ✅ | ✅ (>100ms) | ✅ |
 | **HFT (ultra-low latency)** | WARN | ❌ (Prometheus only) | ✅ (>1ms) | ✅ |
 
+If the rotating file sink cannot be opened, including under a read-only
+container root filesystem, logger initialization emits a bootstrap warning to
+stderr and continues with structured stdout logging. This prevents a log-path
+permission error from masking a more actionable startup or recovery failure.
+
 ### 4.3 Disk Usage Estimates
 
 | Scenario | QPS | Access Log/day | Slow Query/day | Total Disk/day |

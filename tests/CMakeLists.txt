@@ -28,6 +28,7 @@ add_executable(zepto_tests
     unit/test_opcua_integration.cpp
     unit/test_ros2.cpp
     unit/test_metrics_collector.cpp
+    unit/test_logger.cpp
     unit/test_flight_server.cpp
     unit/test_http_arrow_ipc.cpp
     unit/test_http_msgpack_ingest.cpp

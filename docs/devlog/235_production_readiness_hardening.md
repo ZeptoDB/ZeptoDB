@@ -277,6 +277,13 @@ passes every workflow, and the release-version dry run covers all six version
 targets. Documentation-site QA and the internal-experiment publication boundary
 shipped separately in site PR 11.
 
+Hosted-runner triage also removed unavailable distro-level PyArrow packaging,
+installs Python binding and Flight dependencies before configure/CTest, makes
+structured logging fall back to stdout on a read-only log path, and isolates
+the DDL replication test with kernel-assigned ports. The focused local CTest
+selection for the logger fallback, parallel HTTP cluster paths, HTTP production
+CLI, and Flight TLS passes 13/13.
+
 Hosted ARM64 repeats the full production-profile build and CTest suite in the
 required `Production gate`; cross-architecture completion is not claimed from
 this x86_64 host. Main/prod promotion also remains subject to the repository

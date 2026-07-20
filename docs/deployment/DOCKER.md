@@ -375,7 +375,7 @@ JWT / SSO:
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| `Permission denied [/var/log/zeptodb]` | Log directory not writable | Already handled in image; report if seen |
+| File logging bootstrap warning | Log directory is read-only or not writable | The server continues with stdout logging; mount a writable log volume only when local rotating files are required |
 | `mmap failed, falling back` | HugePages not available on host | Normal — auto-fallback to regular pages |
 | Port already in use | Another container on same port | Change `-p` mapping |
 | Web UI blank page | Browser cache | Hard refresh (Ctrl+Shift+R) |

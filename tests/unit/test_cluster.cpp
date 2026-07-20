@@ -1180,11 +1180,13 @@ TEST(HttpCluster, PostDdlStillReplicatesAfterPreparedCacheMove) {
     TestNode coordinator_node;
     TestNode data_node;
 
-    const uint16_t rpc_port = P(18821);
+    const uint16_t rpc_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(rpc_port, 0u);
     TcpRpcServer rpc_server;
     rpc_server.start(rpc_port, [&](const std::string& sql) {
         return data_node.executor->execute(sql);
     });
+    ASSERT_TRUE(rpc_server.is_running());
     std::this_thread::sleep_for(20ms);
 
     QueryCoordinator coordinator;
@@ -1194,7 +1196,8 @@ TEST(HttpCluster, PostDdlStillReplicatesAfterPreparedCacheMove) {
 
     TestAuth auth(
         zepto_test_util::unique_test_path("keys_http_ddl_replication").string());
-    const uint16_t http_port = P(18823);
+    const uint16_t http_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(http_port, 0u);
     zeptodb::server::HttpServer server(
         *coordinator_node.executor, http_port, zeptodb::auth::TlsConfig{},
         auth.mgr);
