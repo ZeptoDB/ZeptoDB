@@ -1022,7 +1022,7 @@ Last updated: 2026-07-20
 - [x] **JIT SIMD emit** — `compile_simd()` generates explicit `<4 x i64>` vector IR (256-bit). Vector load/compare, `bitcast <4 x i1>→i4`, cttz mask extraction loop. Scalar tail for remainder (n%4). Reuses existing AST parser — 8 tests (devlog 079)
 
 ## Package Distribution (P2)
-- [x] **Docker Hub official image** — current tagged pulls use `docker pull zeptodb/zeptodb:0.1.7`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint
+- [x] **Docker Hub official image** — current tagged pulls use `docker pull zeptodb/zeptodb:0.1.8`. GitHub Actions workflow (`docker-publish.yml`) builds on tag push (`v*`) or manual dispatch. Multi-stage build, non-root user, health check endpoint
 - [x] **GitHub Releases + binaries** — Release workflow builds amd64 + arm64 tarballs, creates GitHub Release with download links on tag push
 - [x] **Homebrew Formula** — `homebrew-tap` repo with auto-update workflow triggered on release via repository_dispatch
 

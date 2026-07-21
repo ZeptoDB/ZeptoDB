@@ -103,7 +103,7 @@ New to the project? Start with the website:
 |--------|---------|
 | **Binary** | Download from [GitHub Releases](https://github.com/ZeptoDB/ZeptoDB/releases) |
 | **Homebrew** | `brew install ZeptoDB/tap/zeptodb` |
-| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.1.7` |
+| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.1.8` |
 | **PyPI** | `pip install zeptodb` |
 | **Source** | [Build instructions below](#build-from-source) |
 
@@ -111,12 +111,12 @@ New to the project? Start with the website:
 
 ```bash
 # amd64
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-linux-amd64-0.1.7.tar.gz
-tar xzf zeptodb-linux-amd64-0.1.7.tar.gz
-./zeptodb-linux-amd64-0.1.7/zepto_http_server --port 8123
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.8/zeptodb-linux-amd64-0.1.8.tar.gz
+tar xzf zeptodb-linux-amd64-0.1.8.tar.gz
+./zeptodb-linux-amd64-0.1.8/zepto_http_server --port 8123
 
 # arm64 (AWS Graviton)
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-linux-arm64-0.1.7.tar.gz
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.8/zeptodb-linux-arm64-0.1.8.tar.gz
 ```
 
 > **Note:** Prebuilt binaries require runtime libraries (LLVM 19, Arrow, etc.). See the [Binary Installation Guide](docs/getting-started/BINARY_INSTALL.md) for prerequisites and troubleshooting.
@@ -124,7 +124,7 @@ curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-lin
 ### Docker
 
 ```bash
-docker run -p 8123:8123 zeptodb/zeptodb:0.1.7
+docker run -p 8123:8123 zeptodb/zeptodb:0.1.8
 
 # Insert data
 curl -X POST http://localhost:8123/ \
@@ -293,7 +293,7 @@ Full SQL reference: [SQL_REFERENCE.md](docs/api/SQL_REFERENCE.md) — INSERT, UP
 # Docker (after creating auth/api_keys.txt as shown in the deployment guide)
 docker run --rm -p 127.0.0.1:8123:8123 \
   -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
-  zeptodb/zeptodb:0.1.7
+  zeptodb/zeptodb:0.1.8
 
 # Helm
 helm install zeptodb ./deploy/helm/zeptodb
