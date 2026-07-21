@@ -297,3 +297,10 @@ Hosted ARM64 repeats the full production-profile build and CTest suite in the
 required `Production gate`; cross-architecture completion is not claimed from
 this x86_64 host. Main/prod promotion also remains subject to the repository
 approval rule and the operator decisions listed in the deployment runbook.
+
+The v0.1.8 publication pass also closed a release-only Flight smoke gap. Binary
+packaging now installs Python 3.12 and PyArrow before exercising the Arrow
+Flight TLS client on both amd64 and arm64. The release workflow can repair an
+existing immutable tag with `repair_release=true`: it rebuilds and republishes
+all release artifacts from the tag while leaving the tag itself unchanged.
+Docker-only refresh dispatches remain available when the repair flag is false.
