@@ -2,7 +2,7 @@
 
 > Single Docker image for all roles: master, data node, flight server, CLI.
 
-**Image:** `zeptodb/zeptodb:0.1.7`
+**Image:** `zeptodb/zeptodb:0.1.8`
 **Size:** ~300MB (distroless runtime)
 **Base:** `gcr.io/distroless/cc-debian12:nonroot`
 **Platforms:** `linux/amd64`, `linux/arm64`
@@ -26,7 +26,7 @@ chmod 0444 auth/api_keys.txt
 # Bind to loopback and mount the key store read-only.
 docker run --rm -p 127.0.0.1:8123:8123 \
   -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
-  zeptodb/zeptodb:0.1.7
+  zeptodb/zeptodb:0.1.8
 
 # Query via curl
 curl -H "Authorization: Bearer $ZEPTO_ADMIN_KEY" \
@@ -64,21 +64,21 @@ need runtime `/admin/keys` mutations must use a writable/Vault-backed store.
 # Master node (default)
 docker run --rm -p 127.0.0.1:8123:8123 \
   -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
-  zeptodb/zeptodb:0.1.7
+  zeptodb/zeptodb:0.1.8
 
 # Data node (requires a cluster secret; see the Compose example below)
 docker run --rm \
   --entrypoint ./zepto_data_node \
   -e ZEPTO_CLUSTER_SECRET_FILE=/run/secrets/cluster-secret \
   -v "$PWD/auth/cluster-secret:/run/secrets/cluster-secret:ro" \
-  zeptodb/zeptodb:0.1.7 9000
+  zeptodb/zeptodb:0.1.8 9000
 
 # Arrow Flight server (production TLS + API-key authentication)
 docker run --rm -p 8815:8815 \
   --entrypoint ./zepto_flight_server \
   -v "$PWD/tls:/run/zeptodb/tls:ro" \
   -v "$PWD/auth/api_keys.txt:/run/zeptodb/api_keys.txt:ro" \
-  zeptodb/zeptodb:0.1.7 \
+  zeptodb/zeptodb:0.1.8 \
     --flight-host 0.0.0.0 \
     --flight-port 8815 \
     --tls-cert /run/zeptodb/tls/server.crt \
@@ -86,7 +86,7 @@ docker run --rm -p 8815:8815 \
     --api-keys-file /run/zeptodb/api_keys.txt
 
 # CLI (interactive)
-docker run -it --entrypoint ./zepto-cli zeptodb/zeptodb:0.1.7
+docker run -it --entrypoint ./zepto-cli zeptodb/zeptodb:0.1.8
 ```
 
 ---
@@ -171,7 +171,7 @@ key-store mount from Quick Start to every `zepto_http_server` container.
 
 ```bash
 # Pin to cores 0-3
-docker run --cpuset-cpus="0-3" -p 8123:8123 zeptodb/zeptodb:0.1.7
+docker run --cpuset-cpus="0-3" -p 8123:8123 zeptodb/zeptodb:0.1.8
 ```
 
 ### HugePages
@@ -183,14 +183,14 @@ echo 1024 > /proc/sys/vm/nr_hugepages
 # Container: mount hugetlbfs
 docker run --shm-size=2g \
   -v /dev/hugepages:/dev/hugepages \
-  -p 8123:8123 zeptodb/zeptodb:0.1.7
+  -p 8123:8123 zeptodb/zeptodb:0.1.8
 ```
 
 ### NUMA (multi-socket hosts)
 
 ```bash
 docker run --cpuset-cpus="0-15" --cpuset-mems="0" \
-  -p 8123:8123 zeptodb/zeptodb:0.1.7
+  -p 8123:8123 zeptodb/zeptodb:0.1.8
 ```
 
 ### Persistent Storage
@@ -199,7 +199,7 @@ docker run --cpuset-cpus="0-15" --cpuset-mems="0" \
 docker run -p 127.0.0.1:8123:8123 \
   -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
   -v /data/zeptodb:/opt/zeptodb/data \
-  zeptodb/zeptodb:0.1.7 \
+  zeptodb/zeptodb:0.1.8 \
     --bind 0.0.0.0 --allow-plaintext-http --secure-cookie \
     --port 8123 --ticks 0 \
     --storage-mode tiered --hdb-dir /opt/zeptodb/data \
@@ -224,7 +224,7 @@ docker run -p 8123:8123 \
   -e AWS_ACCESS_KEY_ID=<key> \
   -e AWS_SECRET_ACCESS_KEY=<secret> \
   -e AWS_DEFAULT_REGION=us-east-1 \
-  zeptodb/zeptodb:0.1.7
+  zeptodb/zeptodb:0.1.8
 ```
 
 ---
@@ -243,7 +243,7 @@ chmod 0444 auth/cluster-secret
 ```yaml
 services:
   master:
-    image: zeptodb/zeptodb:0.1.7
+    image: zeptodb/zeptodb:0.1.8
     ports:
       - "127.0.0.1:8123:8123"
     environment:
@@ -264,7 +264,7 @@ services:
       --add-node 2:data2:9001
 
   data1:
-    image: zeptodb/zeptodb:0.1.7
+    image: zeptodb/zeptodb:0.1.8
     entrypoint: ["./zepto_data_node"]
     command: ["9000", "--node-id", "1"]
     environment:
@@ -273,7 +273,7 @@ services:
       - cluster_secret
 
   data2:
-    image: zeptodb/zeptodb:0.1.7
+    image: zeptodb/zeptodb:0.1.8
     entrypoint: ["./zepto_data_node"]
     command: ["9001", "--node-id", "2"]
     environment:
