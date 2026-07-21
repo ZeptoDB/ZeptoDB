@@ -104,6 +104,20 @@ For a release:
 4. Confirm `Version Main Release` creates the version commit and `v*` tag.
 5. Confirm the tag-triggered `Release` workflow publishes artifacts.
 
+For recovery of a failed publication after the immutable tag exists:
+
+1. Do not delete, move, or recreate the release tag.
+2. Fix only the release automation on `main` through a reviewed pull request.
+   Use a squash commit whose subject starts with `chore(release):` so the
+   automation repair does not create a new product version.
+3. Dispatch `Release` from `main` with the existing `version` and
+   `repair_release=true`. Set `update_latest=true` only when that tag is still
+   the highest semantic version.
+4. Confirm the workflow resolves and checks out the immutable tag, reruns all
+   production gates and architecture-specific builds, then publishes the
+   binaries, Docker manifests, PyPI package, GitHub Release, and Homebrew
+   update from that tag.
+
 ## Current Follow-ups
 
 - Replace repository-admin bypass with a narrower release bot bypass after the
