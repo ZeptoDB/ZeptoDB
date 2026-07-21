@@ -35,11 +35,16 @@
 #include <openssl/rsa.h>
 #include <openssl/bio.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <unordered_set>
+#include <utility>
 
 using namespace zeptodb::auth;
 
@@ -142,6 +147,14 @@ TEST(RbacTest, MetricsRoleOnlyMetrics) {
     EXPECT_FALSE(p & Permission::ADMIN);
 }
 
+TEST(RbacTest, AnalystFailsClosedUntilSymbolFilteringIsImplemented) {
+    const auto permissions = role_permissions(Role::ANALYST);
+    EXPECT_FALSE(permissions & Permission::READ);
+    EXPECT_FALSE(permissions & Permission::WRITE);
+    EXPECT_FALSE(permissions & Permission::ADMIN);
+    EXPECT_FALSE(permissions & Permission::METRICS);
+}
+
 TEST(RbacTest, RoleRoundtrip) {
     EXPECT_EQ(role_from_string(role_to_string(Role::ADMIN)),   Role::ADMIN);
     EXPECT_EQ(role_from_string(role_to_string(Role::WRITER)),  Role::WRITER);
@@ -223,6 +236,23 @@ TEST_F(ApiKeyTest, PersistenceAcrossInstances) {
     ASSERT_TRUE(entry.has_value());
     EXPECT_EQ(entry->name, "persistent-svc");
     EXPECT_EQ(entry->role, Role::ADMIN);
+}
+
+TEST_F(ApiKeyTest, PublishedCredentialFileIsPrivateAndLeavesNoTemporaryFile) {
+    ApiKeyStore store(path_);
+    store.create_key("private-file", Role::READER);
+
+    const auto permissions = std::filesystem::status(path_).permissions();
+    EXPECT_EQ(permissions & (std::filesystem::perms::group_all |
+                             std::filesystem::perms::others_all),
+              std::filesystem::perms::none);
+
+    const std::filesystem::path target(path_);
+    const auto parent = target.parent_path();
+    const std::string prefix = target.filename().string() + ".tmp.";
+    for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+        EXPECT_FALSE(entry.path().filename().string().starts_with(prefix));
+    }
 }
 
 TEST_F(ApiKeyTest, Sha256Hex) {
@@ -313,6 +343,69 @@ TEST_F(ApiKeyTest, TenantAndExpiryPersistence) {
     EXPECT_EQ(list[0].allowed_symbols[0], "SYM1");
 }
 
+TEST_F(ApiKeyTest, RejectsFieldsThatCouldCorruptCredentialFormat) {
+    ApiKeyStore store(path_);
+    EXPECT_THROW((void)store.create_key("bad|name", Role::READER),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key("bad,name", Role::READER),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key("bad\nname", Role::READER),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key(
+                     "scope", Role::READER, {"AAPL,GOOG"}),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key(
+                     "scope", Role::READER, {""}),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key(
+                     "tenant", Role::READER, {}, {}, "desk|a"),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key("role", Role::UNKNOWN),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store.create_key(
+                     "expiry", Role::READER, {}, {}, "", -1),
+                 std::invalid_argument);
+    EXPECT_TRUE(store.list().empty());
+}
+
+TEST_F(ApiKeyTest, InvalidUpdatesDoNotChangePersistedScope) {
+    ApiKeyStore store(path_);
+    const auto key = store.create_key(
+        "stable", Role::READER, {"AAPL"}, {"trades"}, "desk_a");
+    const auto before = store.validate(key);
+    ASSERT_TRUE(before.has_value());
+
+    EXPECT_THROW((void)store.update_key(
+                     before->id, std::vector<std::string>{","}, std::nullopt,
+                     std::nullopt, std::nullopt, std::nullopt),
+                 std::invalid_argument);
+    const auto after = store.validate(key);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->allowed_symbols, std::vector<std::string>({"AAPL"}));
+    EXPECT_EQ(after->allowed_tables, std::vector<std::string>({"trades"}));
+    EXPECT_EQ(after->tenant_id, "desk_a");
+}
+
+TEST_F(ApiKeyTest, MalformedPersistedEntryFailsStoreInitialization) {
+    const std::string hash(64, 'a');
+    const std::vector<std::string> malformed_lines = {
+        "ak_deadbeef|name|" + hash + "|reader|,,,|1|1|||0",
+        "ak_deadbeef|name|" + hash + "|reader||1|1|,,,||0",
+        "ak_deadbeef|name|" + hash + "|reader||1|1|||broken",
+        "ak_deadbeef|name|" + hash + "|reader||1|broken|||0",
+        "ak_deadbeef|name|" + hash + "|unknown||1|1|||0",
+        "ak_deadbeef|name|short|reader||1|1|||0",
+        "ak_deadbeef|name|" + hash + "|reader||true|1|||0",
+    };
+    for (const auto& line : malformed_lines) {
+        {
+            std::ofstream file(path_, std::ios::trunc);
+            file << "# zeptodb-keys-v1\n" << line << "\n";
+        }
+        EXPECT_THROW((void)ApiKeyStore{path_}, std::runtime_error) << line;
+    }
+}
+
 // ============================================================================
 // JwtValidator Tests (HS256)
 // ============================================================================
@@ -350,12 +443,45 @@ TEST_F(JwtHs256Test, AdminRole) {
     EXPECT_EQ(claims->role, Role::ADMIN);
 }
 
+TEST_F(JwtHs256Test, MissingRoleDefaultsFailClosed) {
+    const std::string payload =
+        R"({"sub":"sso-user","exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    const auto claims = JwtValidator(cfg_).validate(
+        make_hs256_jwt(payload, SECRET));
+    ASSERT_TRUE(claims.has_value());
+    EXPECT_EQ(claims->role, Role::UNKNOWN);
+
+    cfg_.default_role = Role::READER;
+    const auto compatibility_claims = JwtValidator(cfg_).validate(
+        make_hs256_jwt(payload, SECRET));
+    ASSERT_TRUE(compatibility_claims.has_value());
+    EXPECT_EQ(compatibility_claims->role, Role::READER);
+}
+
 TEST_F(JwtHs256Test, ExpiredTokenReturnsNullopt) {
     std::string payload = R"({"sub":"u","zepto_role":"reader","exp":)"
                         + std::to_string(unix_now(-3600))  // 1 hour ago
                         + R"(,"iss":"test-issuer"})";
     JwtValidator v(cfg_);
     EXPECT_FALSE(v.validate(make_hs256_jwt(payload, SECRET)).has_value());
+}
+
+TEST_F(JwtHs256Test, MissingExpiryReturnsNullopt) {
+    const std::string payload =
+        R"({"sub":"u","zepto_role":"reader","iss":"test-issuer"})";
+    EXPECT_FALSE(JwtValidator(cfg_)
+                     .validate(make_hs256_jwt(payload, SECRET))
+                     .has_value());
+}
+
+TEST_F(JwtHs256Test, MissingSubjectReturnsNullopt) {
+    const std::string payload =
+        R"({"zepto_role":"reader","exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    EXPECT_FALSE(JwtValidator(cfg_)
+                     .validate(make_hs256_jwt(payload, SECRET))
+                     .has_value());
 }
 
 TEST_F(JwtHs256Test, WrongIssuerReturnsNullopt) {
@@ -383,6 +509,28 @@ TEST_F(JwtHs256Test, SymbolClaimParsed) {
     ASSERT_EQ(claims->allowed_symbols.size(), 2u);
     EXPECT_EQ(claims->allowed_symbols[0], "AAPL");
     EXPECT_EQ(claims->allowed_symbols[1], "GOOG");
+}
+
+TEST_F(JwtHs256Test, NonEmptySymbolClaimCannotCollapseToUnrestricted) {
+    const std::string payload =
+        R"({"sub":"a","zepto_role":"analyst","zepto_symbols":",,,","exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    EXPECT_FALSE(JwtValidator(cfg_)
+                     .validate(make_hs256_jwt(payload, SECRET))
+                     .has_value());
+}
+
+TEST_F(JwtHs256Test, TenantAndTableClaimsParsed) {
+    std::string payload =
+        R"({"sub":"restricted","zepto_role":"reader",)"
+        R"("tenant_id":"tenant_a","allowed_tables":["trades","quotes"],"exp":)" +
+        std::to_string(unix_now(3600)) +
+        R"(,"iss":"test-issuer"})";
+    auto claims = JwtValidator(cfg_).validate(make_hs256_jwt(payload, SECRET));
+    ASSERT_TRUE(claims.has_value());
+    EXPECT_EQ(claims->tenant_id, "tenant_a");
+    EXPECT_EQ(claims->allowed_tables,
+              std::vector<std::string>({"trades", "quotes"}));
 }
 
 TEST_F(JwtHs256Test, SkipExpiryValidation) {
@@ -415,6 +563,57 @@ TEST_F(JwtHs256Test, AudienceValidation) {
     EXPECT_FALSE(v.validate(make_hs256_jwt(bad_payload, SECRET)).has_value());
 }
 
+TEST_F(JwtHs256Test, AudienceArrayValidation) {
+    cfg_.expected_audience = "zeptodb";
+    const std::string payload =
+        R"({"sub":"u","zepto_role":"reader","aud":["other","zeptodb"],"exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    EXPECT_TRUE(JwtValidator(cfg_)
+                    .validate(make_hs256_jwt(payload, SECRET))
+                    .has_value());
+}
+
+TEST_F(JwtHs256Test, AudienceCannotBorrowUnrelatedArray) {
+    cfg_.expected_audience = "zeptodb";
+    const std::string payload =
+        R"({"sub":"u","zepto_role":"reader","aud":"other",)"
+        R"("groups":["zeptodb"],"exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    EXPECT_FALSE(JwtValidator(cfg_)
+                     .validate(make_hs256_jwt(payload, SECRET))
+                     .has_value());
+}
+
+TEST_F(JwtHs256Test, MalformedTableClaimCannotBorrowLaterArray) {
+    const std::string payload =
+        R"({"sub":"u","zepto_role":"reader","allowed_tables":"trades",)"
+        R"("groups":["quotes"],"exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    EXPECT_FALSE(JwtValidator(cfg_)
+                     .validate(make_hs256_jwt(payload, SECRET))
+                     .has_value());
+}
+
+TEST_F(JwtHs256Test, DuplicateSecurityClaimIsRejected) {
+    const std::string payload =
+        R"({"sub":"u","sub":"other","zepto_role":"reader","exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    EXPECT_FALSE(JwtValidator(cfg_)
+                     .validate(make_hs256_jwt(payload, SECRET))
+                     .has_value());
+}
+
+TEST_F(JwtHs256Test, EscapedTableClaimIsDecoded) {
+    const std::string payload =
+        R"({"sub":"u","zepto_role":"reader","allowed_tables":["tra\"des"],"exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    const auto claims = JwtValidator(cfg_).validate(
+        make_hs256_jwt(payload, SECRET));
+    ASSERT_TRUE(claims.has_value());
+    EXPECT_EQ(claims->allowed_tables,
+              std::vector<std::string>({"tra\"des"}));
+}
+
 // ============================================================================
 // JwtValidator Tests (RS256)
 // ============================================================================
@@ -423,7 +622,7 @@ protected:
     std::string private_key_pem_;
     std::string public_key_pem_;
 
-    void SetUp() override {
+    static std::pair<std::string, std::string> generate_rsa_key_pair() {
         // Generate a 2048-bit RSA key pair for testing
         EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
         EVP_PKEY_keygen_init(ctx);
@@ -436,27 +635,40 @@ protected:
         BIO* bio = BIO_new(BIO_s_mem());
         PEM_write_bio_PrivateKey(bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
         char* data; long len = BIO_get_mem_data(bio, &data);
-        private_key_pem_ = std::string(data, len);
+        std::string private_key_pem(data, len);
         BIO_free(bio);
 
         // Export public key
         bio = BIO_new(BIO_s_mem());
         PEM_write_bio_PUBKEY(bio, pkey);
         len = BIO_get_mem_data(bio, &data);
-        public_key_pem_ = std::string(data, len);
+        std::string public_key_pem(data, len);
         BIO_free(bio);
 
         EVP_PKEY_free(pkey);
+        return {std::move(private_key_pem), std::move(public_key_pem)};
     }
 
-    std::string make_rs256_jwt(const std::string& payload_json) const {
-        std::string header  = base64url_str(R"({"alg":"RS256","typ":"JWT"})");
+    void SetUp() override {
+        auto keys = generate_rsa_key_pair();
+        private_key_pem_ = std::move(keys.first);
+        public_key_pem_ = std::move(keys.second);
+    }
+
+    static std::string make_rs256_jwt_with_key(
+        const std::string& payload_json,
+        const std::string& private_key_pem,
+        const std::string& kid = "") {
+        const std::string header_json = kid.empty()
+            ? R"({"alg":"RS256","typ":"JWT"})"
+            : R"({"alg":"RS256","typ":"JWT","kid":")" + kid + "\"}";
+        std::string header  = base64url_str(header_json);
         std::string payload = base64url_str(payload_json);
         std::string hp = header + "." + payload;
 
         // Load private key and sign
-        BIO* bio = BIO_new_mem_buf(private_key_pem_.data(),
-                                   static_cast<int>(private_key_pem_.size()));
+        BIO* bio = BIO_new_mem_buf(private_key_pem.data(),
+                                   static_cast<int>(private_key_pem.size()));
         EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
         BIO_free(bio);
 
@@ -473,6 +685,10 @@ protected:
         EVP_PKEY_free(pkey);
 
         return hp + "." + base64url_encode(sig.data(), sig_len);
+    }
+
+    std::string make_rs256_jwt(const std::string& payload_json) const {
+        return make_rs256_jwt_with_key(payload_json, private_key_pem_);
     }
 };
 
@@ -584,6 +800,45 @@ TEST_F(JwtRs256Test, KeyResolverEmptyPemFails) {
     EXPECT_FALSE(v.validate(token).has_value());
 }
 
+TEST_F(JwtRs256Test, ConcurrentKeyResolutionUsesRequestedPem) {
+    auto second_keys = generate_rsa_key_pair();
+    const std::string payload_one =
+        R"({"sub":"key-one-user","zepto_role":"reader","exp":)" +
+        std::to_string(unix_now(3600)) + "}";
+    const std::string payload_two =
+        R"({"sub":"key-two-user","zepto_role":"writer","exp":)" +
+        std::to_string(unix_now(3600)) + "}";
+    const std::string token_one = make_rs256_jwt_with_key(
+        payload_one, private_key_pem_, "key-one");
+    const std::string token_two = make_rs256_jwt_with_key(
+        payload_two, second_keys.first, "key-two");
+
+    JwtValidator validator(JwtValidator::Config{});
+    validator.set_key_resolver(
+        [this, &second_keys](const std::string& kid) {
+            if (kid == "key-one") return public_key_pem_;
+            if (kid == "key-two") return second_keys.second;
+            return std::string{};
+        });
+
+    std::atomic<size_t> failures{0};
+    std::vector<std::thread> workers;
+    for (size_t worker = 0; worker < 8; ++worker) {
+        workers.emplace_back([&] {
+            for (size_t iteration = 0; iteration < 100; ++iteration) {
+                const auto one = validator.validate(token_one);
+                const auto two = validator.validate(token_two);
+                if (!one || one->subject != "key-one-user" ||
+                    !two || two->subject != "key-two-user") {
+                    ++failures;
+                }
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    EXPECT_EQ(failures.load(), 0u);
+}
+
 // ============================================================================
 // Base64url decode Tests
 // ============================================================================
@@ -597,9 +852,35 @@ TEST(Base64urlTest, DecodeWithPaddingEquivalent) {
     EXPECT_EQ(JwtValidator::base64url_decode("e30"), "{}");
 }
 
+TEST(Base64urlTest, RejectsNonCanonicalOrInvalidEncoding) {
+    EXPECT_TRUE(JwtValidator::base64url_decode("aGVsbG8=").empty());
+    EXPECT_TRUE(JwtValidator::base64url_decode("aGVs*bG8").empty());
+    EXPECT_TRUE(JwtValidator::base64url_decode("A").empty());
+    EXPECT_TRUE(JwtValidator::base64url_decode("Zh").empty());
+}
+
+TEST_F(JwtHs256Test, RejectsExtraJwtSections) {
+    const std::string payload =
+        R"({"sub":"u","zepto_role":"reader","exp":)" +
+        std::to_string(unix_now(3600)) + R"(,"iss":"test-issuer"})";
+    const auto token = make_hs256_jwt(payload, SECRET);
+    EXPECT_FALSE(JwtValidator(cfg_).validate(token + ".extra").has_value());
+}
+
 // ============================================================================
 // AuthContext Tests
 // ============================================================================
+TEST(AuthContextTest, AuthorizationValueTypesFailClosedByDefault) {
+    const AuthContext context;
+    const ApiKeyEntry key;
+    const Session session;
+
+    EXPECT_EQ(context.role, Role::UNKNOWN);
+    EXPECT_EQ(key.role, Role::UNKNOWN);
+    EXPECT_EQ(session.role, Role::UNKNOWN);
+    EXPECT_FALSE(context.has_permission(Permission::READ));
+}
+
 TEST(AuthContextTest, PermissionCheck) {
     AuthContext ctx;
     ctx.role = Role::READER;
@@ -729,6 +1010,73 @@ TEST_F(AuthManagerTest, JwtBeatsApiKeyWhenBothConfigured) {
     EXPECT_EQ(d.status, AuthStatus::OK);
     EXPECT_EQ(d.context.source, "jwt");
     EXPECT_EQ(d.context.role, Role::WRITER);
+}
+
+TEST_F(AuthManagerTest, JwtPropagatesTenantAndTableRestrictions) {
+    static constexpr const char* SECRET = "test-jwt-restriction-secret";
+
+    AuthManager::Config cfg;
+    cfg.enabled = true;
+    cfg.jwt_enabled = true;
+    cfg.jwt.hs256_secret = SECRET;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = false;
+    AuthManager mgr(cfg);
+
+    const std::string payload =
+        R"({"sub":"jwt_restricted","zepto_role":"reader",)"
+        R"("tenant_id":"tenant_a","allowed_tables":["trades"],)"
+        R"("exp":4102444800})";
+    const auto token = make_hs256_jwt(payload, SECRET);
+    const auto decision = mgr.check(
+        "POST", "/", "Bearer " + token, "127.0.0.1");
+
+    ASSERT_EQ(decision.status, AuthStatus::OK);
+    EXPECT_EQ(decision.context.tenant_id, "tenant_a");
+    EXPECT_EQ(decision.context.allowed_tables,
+              std::vector<std::string>({"trades"}));
+}
+
+TEST_F(AuthManagerTest, JwtRejectsHeaderUnsafeAuthorizationContext) {
+    static constexpr const char* SECRET = "test-jwt-header-safety-secret";
+
+    AuthManager::Config cfg;
+    cfg.enabled = true;
+    cfg.jwt_enabled = true;
+    cfg.jwt.hs256_secret = SECRET;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = false;
+    AuthManager mgr(cfg);
+
+    const std::vector<std::string> unsafe_claims = {
+        R"("allowed_tables":["trades\n"])",
+        R"("allowed_tables":[""])",
+        R"("allowed_tables":["trades,quotes"])",
+        R"("zepto_symbols":"AAPL\r,GOOG")",
+        R"("tenant_id":"tenant\u0000hidden")",
+        R"("sub":"user\nname")",
+    };
+    for (const auto& claim : unsafe_claims) {
+        const std::string payload =
+            claim.starts_with(R"("sub":)")
+            ? "{" + claim + R"(,"zepto_role":"reader","exp":4102444800})"
+            : R"({"sub":"jwt_restricted","zepto_role":"reader",)" +
+                claim + R"(,"exp":4102444800})";
+        const auto decision = mgr.check(
+            "POST", "/", "Bearer " + make_hs256_jwt(payload, SECRET),
+            "127.0.0.1");
+        EXPECT_EQ(decision.status, AuthStatus::FORBIDDEN) << claim;
+        EXPECT_EQ(decision.reason,
+                  "Authenticated identity contains an invalid authorization scope");
+    }
+}
+
+TEST_F(AuthManagerTest, ApiKeyRejectsAmbiguousAuthorizationListEntry) {
+    AuthManager mgr = make_manager();
+    EXPECT_THROW(
+        (void)mgr.create_api_key(
+            "restricted", Role::READER, {}, {"trades\n"}),
+        std::invalid_argument);
 }
 
 TEST_F(AuthManagerTest, MalformedBearerHeaderReturnsUnauthorized) {
@@ -872,6 +1220,26 @@ TEST(RateLimiterTest, BucketCountTracked) {
     EXPECT_EQ(limiter.identity_bucket_count(), 3u);
 }
 
+TEST(RateLimiterTest, BucketMapsStayBoundedUnderKeyChurn) {
+    RateLimiter::Config cfg;
+    cfg.requests_per_minute = 6000;
+    cfg.burst_capacity = 100;
+    cfg.per_ip_rpm = 6000;
+    cfg.ip_burst = 100;
+    cfg.max_identity_buckets = 3;
+    cfg.max_ip_buckets = 2;
+    RateLimiter limiter(cfg);
+
+    for (int i = 0; i < 20; ++i) {
+        EXPECT_EQ(limiter.check_identity("identity-" + std::to_string(i)),
+                  RateDecision::ALLOWED);
+        EXPECT_EQ(limiter.check_ip("192.0.2." + std::to_string(i)),
+                  RateDecision::ALLOWED);
+    }
+    EXPECT_LE(limiter.identity_bucket_count(), 3u);
+    EXPECT_LE(limiter.ip_bucket_count(), 2u);
+}
+
 TEST(RateLimiterTest, CleanupRemovesStaleBuckets) {
     RateLimiter::Config cfg;
     cfg.requests_per_minute = 6000;
@@ -911,6 +1279,27 @@ TEST(RateLimiterTest, AuthManagerIntegration) {
     auto d = mgr.check("POST", "/", "Bearer " + key, "");
     EXPECT_EQ(d.status, AuthStatus::FORBIDDEN);
     EXPECT_NE(d.reason.find("Rate limit"), std::string::npos);
+
+    std::filesystem::remove(key_file);
+}
+
+TEST(RateLimiterTest, InvalidCredentialsAreLimitedBeforeCryptoValidation) {
+    std::string key_file = tmp_key_file();
+    AuthManager::Config cfg;
+    cfg.enabled = true;
+    cfg.api_keys_file = key_file;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = true;
+    cfg.rate_limit.requests_per_minute = 1000;
+    cfg.rate_limit.burst_capacity = 100;
+    cfg.rate_limit.per_ip_rpm = 1;
+    cfg.rate_limit.ip_burst = 1;
+    AuthManager mgr(cfg);
+
+    EXPECT_EQ(mgr.check("POST", "/", "Bearer invalid", "192.0.2.10").status,
+              AuthStatus::UNAUTHORIZED);
+    EXPECT_EQ(mgr.check("POST", "/", "Bearer invalid", "192.0.2.10").status,
+              AuthStatus::FORBIDDEN);
 
     std::filesystem::remove(key_file);
 }
@@ -1386,8 +1775,23 @@ TEST(TenantManagerTest, QuotaEnforcement) {
     EXPECT_TRUE(mgr->acquire_query_slot("q1")); // Now succeeds
 
     auto usage = mgr->usage("q1");
-    ASSERT_NE(usage, nullptr);
-    EXPECT_EQ(usage->active_queries.load(), 2u);
+    ASSERT_TRUE(usage.has_value());
+    EXPECT_EQ(usage->active_queries, 2u);
+}
+
+TEST(TenantManagerTest, UsageReturnsStableValueSnapshot) {
+    TenantManager manager;
+    TenantConfig config;
+    config.tenant_id = "snapshot";
+    ASSERT_TRUE(manager.create_tenant(config));
+    ASSERT_TRUE(manager.acquire_query_slot("snapshot"));
+
+    const auto snapshot = manager.usage("snapshot");
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_TRUE(manager.drop_tenant("snapshot"));
+    EXPECT_EQ(snapshot->active_queries, 1u);
+    EXPECT_EQ(snapshot->total_queries, 1u);
+    EXPECT_FALSE(manager.usage("snapshot").has_value());
 }
 
 TEST(TenantManagerTest, TableNamespace) {
@@ -1399,6 +1803,12 @@ TEST(TenantManagerTest, TableNamespace) {
 
     EXPECT_TRUE(mgr->can_access_table("ns1", "deskA.trades"));
     EXPECT_FALSE(mgr->can_access_table("ns1", "public_trades"));
+}
+
+TEST(TenantManagerTest, UnknownTenantFailsClosed) {
+    TenantManager manager;
+    EXPECT_FALSE(manager.can_access_table("missing", "trades"));
+    EXPECT_FALSE(manager.acquire_query_slot("missing"));
 }
 
 // ============================================================================
@@ -1608,6 +2018,61 @@ TEST_F(SsoIdentityProviderTest, ExtractJsonStringArrayMissing) {
     EXPECT_TRUE(groups.empty());
 }
 
+TEST_F(SsoIdentityProviderTest, ArrayHelperDoesNotBorrowLaterMember) {
+    const std::string json =
+        R"({"groups":"Admins","other":["Admins"]})";
+    EXPECT_TRUE(
+        SsoIdentityProvider::extract_json_string_array(json, "groups").empty());
+}
+
+TEST_F(SsoIdentityProviderTest, StandardRestrictionClaimsDefaultOn) {
+    const IdpConfig config;
+    EXPECT_EQ(config.tenant_claim, "tenant_id");
+    EXPECT_EQ(config.tables_claim, "allowed_tables");
+    EXPECT_EQ(config.default_role, Role::UNKNOWN);
+
+    const SsoIdentity identity;
+    EXPECT_EQ(identity.role, Role::UNKNOWN);
+}
+
+TEST_F(SsoIdentityProviderTest, MissingRoleFailsClosedByDefault) {
+    const IdpConfig config;
+    EXPECT_EQ(SsoIdentityProvider::resolve_role(
+                  config, {"Unmapped"}, Role::UNKNOWN),
+              Role::UNKNOWN);
+}
+
+TEST_F(SsoIdentityProviderTest, ExplicitReaderFallbackRemainsAvailable) {
+    IdpConfig config;
+    config.default_role = Role::READER;
+    EXPECT_EQ(SsoIdentityProvider::resolve_role(
+                  config, {"Unmapped"}, Role::UNKNOWN),
+              Role::READER);
+}
+
+TEST_F(SsoIdentityProviderTest, GroupMappingDoesNotInheritPrivilegedDefault) {
+    auto cfg = make_idp_config();
+    cfg.default_role = Role::READER;
+    cfg.group_role_map["Metrics"] = Role::METRICS;
+
+    EXPECT_EQ(SsoIdentityProvider::resolve_group_role(cfg, {"Analysts"}),
+              Role::ANALYST);
+    EXPECT_EQ(SsoIdentityProvider::resolve_group_role(cfg, {"Metrics"}),
+              Role::METRICS);
+    EXPECT_EQ(SsoIdentityProvider::resolve_group_role(
+                  cfg, {"Metrics", "Admins"}),
+              Role::ADMIN);
+    EXPECT_FALSE(SsoIdentityProvider::resolve_group_role(
+                     cfg, {"Unmapped"})
+                     .has_value());
+    EXPECT_EQ(SsoIdentityProvider::resolve_role(
+                  cfg, {"Unmapped"}, Role::UNKNOWN),
+              Role::READER);
+    EXPECT_EQ(SsoIdentityProvider::resolve_role(
+                  cfg, {"Unmapped"}, Role::METRICS),
+              Role::METRICS);
+}
+
 TEST_F(SsoIdentityProviderTest, ExtractJsonString) {
     std::string json = R"({"tenant_id":"desk_a","name":"Test"})";
     EXPECT_EQ(SsoIdentityProvider::extract_json_string(json, "tenant_id"), "desk_a");
@@ -1635,6 +2100,12 @@ TEST_F(SsoIdentityProviderTest, CacheTtlExpiry) {
     // Add an IdP — even though resolve will fail (no JWKS/HS256),
     // the cache itself should handle TTL correctly
     EXPECT_EQ(provider.cache_size(), 0u);
+}
+
+TEST_F(SsoIdentityProviderTest, NegativeCacheTtlIsRejected) {
+    SsoIdentityProvider::Config cfg;
+    cfg.cache_ttl_s = -1;
+    EXPECT_THROW((void)SsoIdentityProvider{cfg}, std::invalid_argument);
 }
 
 TEST_F(SsoIdentityProviderTest, MultipleIdps) {
@@ -1709,6 +2180,45 @@ TEST(OidcDiscoveryTest, FetchReturnsNulloptForInvalidUrl) {
     EXPECT_FALSE(meta.has_value());
 }
 
+TEST(OidcDiscoveryTest, MetadataIssuerMustMatchConfiguredIssuer) {
+    OidcMetadata metadata;
+    metadata.issuer = "https://attacker.example";
+    metadata.jwks_uri = "https://idp.example/jwks";
+    metadata.authorization_endpoint = "https://idp.example/authorize";
+    metadata.token_endpoint = "https://idp.example/token";
+    EXPECT_FALSE(OidcDiscovery::validate_metadata(
+        "https://idp.example", metadata));
+}
+
+TEST(OidcDiscoveryTest, CredentialEndpointsMustUseHttps) {
+    OidcMetadata metadata;
+    metadata.issuer = "https://idp.example";
+    metadata.jwks_uri = "https://idp.example/jwks";
+    metadata.authorization_endpoint = "https://idp.example/authorize";
+    metadata.token_endpoint = "http://attacker.example/token";
+    EXPECT_FALSE(OidcDiscovery::validate_metadata(
+        "https://idp.example", metadata));
+}
+
+TEST(OidcDiscoveryTest, RequiredEndpointsCannotBeMissing) {
+    OidcMetadata metadata;
+    metadata.issuer = "https://idp.example";
+    metadata.jwks_uri = "https://idp.example/jwks";
+    metadata.authorization_endpoint = "https://idp.example/authorize";
+    EXPECT_FALSE(OidcDiscovery::validate_metadata(
+        "https://idp.example", metadata));
+}
+
+TEST(OidcDiscoveryTest, ValidHttpsMetadataAllowsTrailingIssuerSlash) {
+    OidcMetadata metadata;
+    metadata.issuer = "https://idp.example";
+    metadata.jwks_uri = "https://keys.example/jwks";
+    metadata.authorization_endpoint = "https://login.example/authorize";
+    metadata.token_endpoint = "https://token.example/token";
+    EXPECT_TRUE(OidcDiscovery::validate_metadata(
+        "https://idp.example/", metadata));
+}
+
 // ============================================================================
 // SessionStore Tests
 // ============================================================================
@@ -1729,12 +2239,29 @@ TEST_F(SessionStoreTest, CreateAndGet) {
     SessionStore store(make_config());
     auto sid = store.create("user1", "user1", Role::READER, "test");
     EXPECT_FALSE(sid.empty());
+    EXPECT_EQ(sid.size(), 64u);
     EXPECT_EQ(store.size(), 1u);
 
     auto session = store.get(sid);
     ASSERT_TRUE(session.has_value());
     EXPECT_EQ(session->subject, "user1");
     EXPECT_EQ(session->role, Role::READER);
+}
+
+TEST_F(SessionStoreTest, SessionIdsAreUniqueCryptographicTokens) {
+    auto config = make_config();
+    config.max_sessions = 128;
+    SessionStore store(config);
+    std::unordered_set<std::string> ids;
+    for (int i = 0; i < 128; ++i) {
+        const auto id = store.create(
+            "user" + std::to_string(i), "user", Role::READER, "test");
+        EXPECT_EQ(id.size(), 64u);
+        EXPECT_TRUE(std::all_of(id.begin(), id.end(), [](unsigned char c) {
+            return std::isxdigit(c) != 0;
+        }));
+        EXPECT_TRUE(ids.insert(id).second);
+    }
 }
 
 TEST_F(SessionStoreTest, GetReturnsNulloptForUnknownId) {
@@ -1784,6 +2311,38 @@ TEST_F(SessionStoreTest, UpdateRefreshToken) {
     EXPECT_EQ(session->refresh_token, "new_token");
 }
 
+TEST_F(SessionStoreTest, RefreshReplacesAuthorizationContext) {
+    SessionStore store(make_config());
+    const auto sid = store.create(
+        "user1", "old-name", Role::ADMIN, "oidc", {"AAPL"},
+        "tenant_a", "old-token", {"admin_table"});
+    ASSERT_TRUE(store.update_identity(
+        sid, "new-name", Role::READER, "oidc-refresh", {}, "tenant_b",
+        {"public_table"}, "new-token"));
+
+    const auto session = store.get(sid);
+    ASSERT_TRUE(session.has_value());
+    EXPECT_EQ(session->subject, "user1");
+    EXPECT_EQ(session->name, "new-name");
+    EXPECT_EQ(session->role, Role::READER);
+    EXPECT_TRUE(session->allowed_symbols.empty());
+    EXPECT_EQ(session->tenant_id, "tenant_b");
+    EXPECT_EQ(session->allowed_tables,
+              std::vector<std::string>({"public_table"}));
+    EXPECT_EQ(session->refresh_token, "new-token");
+}
+
+TEST_F(SessionStoreTest, AbsoluteLifetimeCapsSlidingSession) {
+    auto config = make_config(60);
+    config.refresh_window_s = 60;
+    config.max_session_lifetime_s = 1;
+    SessionStore store(config);
+    const auto sid = store.create("user", "user", Role::READER, "test");
+    ASSERT_TRUE(store.get(sid).has_value());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    EXPECT_FALSE(store.get(sid).has_value());
+}
+
 TEST_F(SessionStoreTest, MakeCookie) {
     SessionStore store(make_config());
     auto cookie = store.make_cookie("abc123");
@@ -1791,6 +2350,14 @@ TEST_F(SessionStoreTest, MakeCookie) {
     EXPECT_NE(cookie.find("Path=/"), std::string::npos);
     EXPECT_NE(cookie.find("HttpOnly"), std::string::npos);
     EXPECT_NE(cookie.find("SameSite=Lax"), std::string::npos);
+}
+
+TEST_F(SessionStoreTest, CookieAgeUsesAbsoluteLifetimeCap) {
+    auto config = make_config(3600);
+    config.max_session_lifetime_s = 900;
+    SessionStore store(config);
+    EXPECT_NE(store.make_cookie("abc").find("Max-Age=900"),
+              std::string::npos);
 }
 
 TEST_F(SessionStoreTest, MakeClearCookie) {
@@ -1812,6 +2379,56 @@ TEST_F(SessionStoreTest, MultipleSessions) {
     ASSERT_TRUE(sess2.has_value());
     EXPECT_EQ(sess1->role, Role::ADMIN);
     EXPECT_EQ(sess2->role, Role::WRITER);
+}
+
+TEST_F(SessionStoreTest, CapacityRejectsWithoutEvictingValidSessions) {
+    auto config = make_config();
+    config.max_sessions = 2;
+    SessionStore store(config);
+    const auto first = store.create("first", "first", Role::READER, "test");
+    const auto second = store.create("second", "second", Role::READER, "test");
+
+    EXPECT_THROW(
+        store.create("third", "third", Role::READER, "test"),
+        std::runtime_error);
+
+    EXPECT_EQ(store.size(), 2u);
+    EXPECT_TRUE(store.get(first).has_value());
+    EXPECT_TRUE(store.get(second).has_value());
+}
+
+TEST_F(SessionStoreTest, CapacityReclaimsExpiredSessions) {
+    auto config = make_config(0);
+    config.max_sessions = 1;
+    SessionStore store(config);
+    store.create("expired", "expired", Role::READER, "test");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+    EXPECT_NO_THROW(
+        store.create("replacement", "replacement", Role::READER, "test"));
+    EXPECT_EQ(store.size(), 1u);
+}
+
+TEST_F(SessionStoreTest, ZeroCapacityRejectsSessionCreation) {
+    auto config = make_config();
+    config.max_sessions = 0;
+    SessionStore store(config);
+    EXPECT_THROW(store.create("user", "user", Role::READER, "test"),
+                 std::runtime_error);
+}
+
+TEST_F(SessionStoreTest, InvalidTimingConfigFailsClosed) {
+    auto config = make_config();
+    config.session_ttl_s = -1;
+    EXPECT_THROW((void)SessionStore{config}, std::invalid_argument);
+
+    config = make_config();
+    config.refresh_window_s = -1;
+    EXPECT_THROW((void)SessionStore{config}, std::invalid_argument);
+
+    config = make_config();
+    config.max_session_lifetime_s = -1;
+    EXPECT_THROW((void)SessionStore{config}, std::invalid_argument);
 }
 
 // ============================================================================
@@ -1868,13 +2485,51 @@ TEST(AuthManagerSessionTest, SessionCheckFromCookie) {
     ASSERT_NE(store, nullptr);
 
     // Create a session manually
-    auto sid = store->create("session_user", "session_user", Role::ADMIN, "test");
+    auto sid = store->create("session_user", "session_user", Role::ADMIN,
+                             "test", {"AAPL"}, "tenant_a", "",
+                             {"trades"});
 
     // Check session via cookie header
     auto resolved = mgr.check_session("zepto_sid=" + sid);
     ASSERT_TRUE(resolved.has_value());
     EXPECT_EQ(resolved->subject, "session_user");
     EXPECT_EQ(resolved->role, Role::ADMIN);
+    EXPECT_EQ(resolved->allowed_symbols,
+              std::vector<std::string>({"AAPL"}));
+    EXPECT_EQ(resolved->tenant_id, "tenant_a");
+    EXPECT_EQ(resolved->allowed_tables,
+              std::vector<std::string>({"trades"}));
+    EXPECT_FALSE(mgr.check_session("other=zepto_sid=" + sid).has_value());
+    EXPECT_TRUE(mgr.check_session(
+        "theme=dark; zepto_sid=" + sid + "; locale=en").has_value());
+
+    std::filesystem::remove(key_file);
+}
+
+TEST(AuthManagerSessionTest, SessionCookieAuthenticationUsesRateLimiter) {
+    std::string key_file = tmp_key_file();
+    AuthManager::Config cfg;
+    cfg.enabled = true;
+    cfg.api_keys_file = key_file;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = true;
+    cfg.rate_limit.requests_per_minute = 1;
+    cfg.rate_limit.burst_capacity = 1;
+    cfg.rate_limit.per_ip_rpm = 0;
+    cfg.sessions_enabled = true;
+
+    AuthManager mgr(cfg);
+    auto* store = mgr.session_store();
+    ASSERT_NE(store, nullptr);
+    const auto sid = store->create(
+        "rate-limited-session", "rate-limited-session",
+        Role::READER, "session");
+    const std::string cookie = "zepto_sid=" + sid;
+
+    EXPECT_EQ(mgr.check("POST", "/", "", "127.0.0.1", cookie).status,
+              AuthStatus::OK);
+    EXPECT_EQ(mgr.check("POST", "/", "", "127.0.0.1", cookie).status,
+              AuthStatus::FORBIDDEN);
 
     std::filesystem::remove(key_file);
 }
@@ -1916,5 +2571,56 @@ TEST(AuthManagerSessionTest, OidcPublicPathsArePublic) {
     auto d3 = mgr.check("POST", "/auth/logout", "", "127.0.0.1");
     EXPECT_EQ(d3.status, AuthStatus::OK);
 
+    auto d4 = mgr.check("POST", "/auth/session", "", "127.0.0.1");
+    EXPECT_EQ(d4.status, AuthStatus::OK);
+
     std::filesystem::remove(key_file);
+}
+
+TEST(AuthManagerSessionTest, OidcPublicEndpointsUseSourceIpRateLimit) {
+    AuthManager::Config cfg;
+    cfg.enabled = true;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = true;
+    cfg.rate_limit.per_ip_rpm = 1;
+    cfg.rate_limit.ip_burst = 1;
+    AuthManager mgr(cfg);
+
+    EXPECT_EQ(mgr.check("GET", "/auth/login", "", "192.0.2.10").status,
+              AuthStatus::OK);
+    const auto limited = mgr.check(
+        "GET", "/auth/callback", "", "192.0.2.10");
+    EXPECT_EQ(limited.status, AuthStatus::FORBIDDEN);
+    EXPECT_EQ(limited.reason, "Rate limit exceeded");
+
+    // Health checks remain public and do not consume the OIDC bucket.
+    EXPECT_EQ(mgr.check("GET", "/ping", "", "192.0.2.11").status,
+              AuthStatus::OK);
+    EXPECT_EQ(mgr.check("GET", "/ping", "", "192.0.2.11").status,
+              AuthStatus::OK);
+}
+
+TEST(AuthManagerSessionTest, AuthenticateValidatesCredentialsOnPublicPath) {
+    static constexpr const char* SECRET = "public-path-jwt-secret";
+    AuthManager::Config cfg;
+    cfg.enabled = true;
+    cfg.jwt_enabled = true;
+    cfg.jwt.hs256_secret = SECRET;
+    cfg.audit_enabled = false;
+    cfg.rate_limit_enabled = false;
+    AuthManager mgr(cfg);
+
+    const auto token = make_hs256_jwt(
+        R"({"sub":"callback-user","zepto_role":"reader","exp":4102444800})",
+        SECRET);
+    const auto public_decision = mgr.check(
+        "GET", "/auth/callback", "Bearer " + token, "127.0.0.1");
+    ASSERT_EQ(public_decision.status, AuthStatus::OK);
+    EXPECT_EQ(public_decision.context.source, "public");
+
+    const auto authenticated = mgr.authenticate(
+        "GET", "/auth/callback", "Bearer " + token, "127.0.0.1");
+    ASSERT_EQ(authenticated.status, AuthStatus::OK);
+    EXPECT_EQ(authenticated.context.subject, "callback-user");
+    EXPECT_EQ(authenticated.context.source, "jwt");
 }

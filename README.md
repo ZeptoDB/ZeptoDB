@@ -103,7 +103,7 @@ New to the project? Start with the website:
 |--------|---------|
 | **Binary** | Download from [GitHub Releases](https://github.com/ZeptoDB/ZeptoDB/releases) |
 | **Homebrew** | `brew install ZeptoDB/tap/zeptodb` |
-| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.1.7` |
+| **Docker** | `docker run -p 8123:8123 zeptodb/zeptodb:0.1.8` |
 | **PyPI** | `pip install zeptodb` |
 | **Source** | [Build instructions below](#build-from-source) |
 
@@ -111,12 +111,12 @@ New to the project? Start with the website:
 
 ```bash
 # amd64
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-linux-amd64-0.1.7.tar.gz
-tar xzf zeptodb-linux-amd64-0.1.7.tar.gz
-./zeptodb-linux-amd64-0.1.7/zepto_http_server --port 8123
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.8/zeptodb-linux-amd64-0.1.8.tar.gz
+tar xzf zeptodb-linux-amd64-0.1.8.tar.gz
+./zeptodb-linux-amd64-0.1.8/zepto_http_server --port 8123
 
 # arm64 (AWS Graviton)
-curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-linux-arm64-0.1.7.tar.gz
+curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.8/zeptodb-linux-arm64-0.1.8.tar.gz
 ```
 
 > **Note:** Prebuilt binaries require runtime libraries (LLVM 19, Arrow, etc.). See the [Binary Installation Guide](docs/getting-started/BINARY_INSTALL.md) for prerequisites and troubleshooting.
@@ -124,7 +124,7 @@ curl -LO https://github.com/ZeptoDB/ZeptoDB/releases/download/v0.1.7/zeptodb-lin
 ### Docker
 
 ```bash
-docker run -p 8123:8123 zeptodb/zeptodb:0.1.7
+docker run -p 8123:8123 zeptodb/zeptodb:0.1.8
 
 # Insert data
 curl -X POST http://localhost:8123/ \
@@ -280,18 +280,20 @@ Full SQL reference: [SQL_REFERENCE.md](docs/api/SQL_REFERENCE.md) — INSERT, UP
 |---------|---------|
 | TLS/HTTPS | OpenSSL 3.2, cert/key PEM |
 | Authentication | API Key (SHA256) + JWT/OIDC (HS256/RS256, JWKS auto-fetch) |
-| Authorization | RBAC: 5 roles + symbol-level ACL + multi-tenancy |
+| Authorization | RBAC: 5 roles + table/tenant ACL; symbol scopes fail closed pending row filtering |
 | Rate Limiting | Token bucket per-identity + per-IP |
 | Secrets | Vault KV v2 → K8s secrets → env var (priority chain) |
-| Audit Log | 7-year retention, SOC2/EMIR/MiFID II compliant |
+| Audit Log | Structured audit events; external immutable retention/SIEM required for compliance |
 
 ---
 
 ## 🚢 Deployment
 
 ```bash
-# Docker
-docker run -p 8123:8123 zeptodb/zeptodb
+# Docker (after creating auth/api_keys.txt as shown in the deployment guide)
+docker run --rm -p 127.0.0.1:8123:8123 \
+  -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
+  zeptodb/zeptodb:0.1.8
 
 # Helm
 helm install zeptodb ./deploy/helm/zeptodb

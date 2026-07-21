@@ -102,7 +102,7 @@
   - Incident response procedures (key compromise, JWT secret compromise)
   - Multi-tenant symbol isolation model
   - Security hardening checklist (network, key management, operational)
-- FR-8.8: **Multi-Tenancy** — TenantManager per-tenant resource quotas (concurrent queries, memory), table namespace isolation, usage tracking, AuthContext tenant_id binding
+- FR-8.8: **Multi-Tenancy** — TenantManager enforces per-tenant concurrent-query quotas and table namespace isolation, tracks usage, and binds `AuthContext.tenant_id`. Memory, query-rate, and ingestion-rate quota fields are reserved and are not production controls.
 
 ---
 

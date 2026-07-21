@@ -7,7 +7,7 @@ ZeptoDB multi-node cluster configuration and operations guide.
 ## Architecture
 
 ```
-┌─────────────────────┐       TCP RPC        ┌──────────────────┐
+┌─────────────────────┐  Authenticated TCP   ┌──────────────────┐
 │  Coordinator (HTTP)  │◄───────────────────►│  Data Node 1     │
 │  zepto_http_server   │                      │  zepto_data_node │
 │  port 8123           │       TCP RPC        │  port 9001       │
@@ -38,6 +38,7 @@ ZeptoDB multi-node cluster configuration and operations guide.
 | `--no-auth` | false | Disable authentication |
 | `--node-id` | 0 | Cluster ID for this node |
 | `--add-node id:host:port` | — | Register a remote data node (can be used multiple times) |
+| `--allow-insecure-cluster` | false | Allow unauthenticated cluster RPC for isolated development only |
 | `--log-level` | info | Log level (debug/info/warn/error) |
 
 The Coordinator is always active. If there are no data nodes, it operates in standalone mode.
@@ -58,6 +59,34 @@ When nodes are added via `--add-node` or `POST /admin/nodes`, it automatically s
 | `--coordinator host:port` | — | Auto-register with the Coordinator |
 | `--api-key` | — | Admin API key to use for registration |
 | `--advertise-host` | localhost | Host address to advertise to the Coordinator |
+| `--allow-insecure-cluster` | false | Allow unauthenticated cluster RPC for isolated development only |
+
+---
+
+## Required RPC Authentication
+
+Production cluster processes require the same shared secret on every node.
+Use a mounted secret file where possible:
+
+```bash
+install -d -m 0700 /run/secrets/zeptodb
+openssl rand -hex 32 > /run/secrets/zeptodb/cluster-rpc
+chmod 0400 /run/secrets/zeptodb/cluster-rpc
+export ZEPTO_CLUSTER_SECRET_FILE=/run/secrets/zeptodb/cluster-rpc
+```
+
+Distribute the same file through the platform secret manager rather than
+copying it manually. `ZEPTO_CLUSTER_SECRET` is supported as an alternative;
+do not put the secret on the command line. Setting both sources, using a secret
+shorter than 32 bytes, an unreadable file, or a build without OpenSSL causes
+cluster startup to fail. `--allow-insecure-cluster` is only for an isolated
+development network.
+
+RPC authentication prevents unauthorized peers and replayed proofs, but the
+TCP payload is not encrypted. Keep RPC ports private and use network policy,
+security groups, and an encrypted overlay/service mesh where required. Native
+RPC TLS/mTLS is not implemented. Rotation requires a coordinated restart of
+all nodes.
 
 ---
 
@@ -71,6 +100,9 @@ ninja zepto_http_server zepto_data_node
 ```
 
 ### 2. Method A: Start Coordinator first → Data Nodes auto-register
+
+The commands below assume `ZEPTO_CLUSTER_SECRET_FILE` is exported in every
+terminal as described above.
 
 ```bash
 # Terminal 1 — Coordinator

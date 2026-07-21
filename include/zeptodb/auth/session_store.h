@@ -29,10 +29,11 @@ struct Session {
     std::string  session_id;
     std::string  subject;
     std::string  name;
-    Role         role = Role::READER;
+    Role         role = Role::UNKNOWN;
     std::string  source;
     std::vector<std::string> allowed_symbols;
     std::string  tenant_id;
+    std::vector<std::string> allowed_tables;
     std::string  refresh_token;   // OAuth2 refresh token (if available)
     int64_t      created_at_ns  = 0;
     int64_t      expires_at_ns  = 0;
@@ -44,6 +45,9 @@ public:
     struct Config {
         int64_t session_ttl_s    = 3600;
         int64_t refresh_window_s = 300;
+        int64_t max_session_lifetime_s = 28800;  // absolute lifetime (8h)
+        // At capacity, expired sessions are reclaimed; valid sessions are
+        // never evicted to admit a new login.
         size_t  max_sessions     = 10000;
         std::string cookie_name  = "zepto_sid";
         bool    cookie_secure    = false;
@@ -58,7 +62,8 @@ public:
                        Role role, const std::string& source,
                        const std::vector<std::string>& allowed_symbols = {},
                        const std::string& tenant_id = "",
-                       const std::string& refresh_token = "");
+                       const std::string& refresh_token = "",
+                       const std::vector<std::string>& allowed_tables = {});
 
     /// Lookup session by ID. Returns nullopt if expired or not found.
     /// Extends session TTL if within refresh window.
@@ -70,6 +75,15 @@ public:
     /// Update the refresh token for a session.
     bool update_refresh_token(const std::string& session_id,
                               const std::string& new_refresh_token);
+
+    /// Replace authorization context after a validated OIDC refresh.
+    bool update_identity(
+        const std::string& session_id, const std::string& name, Role role,
+        const std::string& source,
+        const std::vector<std::string>& allowed_symbols,
+        const std::string& tenant_id,
+        const std::vector<std::string>& allowed_tables,
+        const std::string& refresh_token);
 
     /// Number of active sessions.
     size_t size() const;

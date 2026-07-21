@@ -190,7 +190,7 @@ Kinesis because it is a cloud/IoT streaming connector. Metrics are exposed
 through `PulsarConsumer::format_prometheus` and can be appended to `/metrics`
 with `HttpServer::add_metrics_provider()`.
 
-## Experimental Physical AI edge/fleet connector (devlogs 202-205, 212-213)
+## Experimental Physical AI edge/fleet connector (devlogs 202-205, 212-215, 222)
 
 `EdgeFleetFeedConnector` adds an experimental runtime state machine for bounded
 Physical AI edge-to-fleet Action-Outcome evidence transfer. It is deliberately
@@ -254,6 +254,15 @@ prefix, and the feed state machine exposes `max_failures_per_pass` plus
 Admin POST/DELETE outcomes are audited through the server auth audit buffer
 when auth/audit is enabled.
 
+Devlog 215 closes the remaining live promotion-evidence gap for the server
+runtime. The SQL/HTTP adapter now checks remote ACK idempotency by numeric
+`stream_seq` and then compares `feed_event_id` client-side, avoiding drift from
+remote string-column comparison while preserving `feed_event_id` as the stable
+idempotency key. CI-safe regressions cover repeated server-runtime restart
+soak, replacement runtime takeover over the same checkpoint and ACK ledger, and
+two live ZeptoDB HTTP nodes connected through `edge_sql_url` and
+`fleet_sql_url`.
+
 The SQL/HTTP sink contract is intentionally idempotent at the ACK boundary.
 `feed_event_id` is the stable idempotency key, the fleet ACK table is the
 durable delivery ledger, and an event that applies its final fleet row but
@@ -262,12 +271,15 @@ it. ZeptoDB's default bootstrap tables are append-only, so operators should use
 the ACK ledger as source of truth and add external uniqueness/dedupe policy for
 fleet projections when the deployment target supports it.
 
-This is not yet a promoted ZeptoDB replication feature. The validated SQL/HTTP
-adapter is now available both as the standalone experiment tool and as a
-server-owned runtime adapter, but the path remains experimental. Product
-promotion still requires longer-running soak/fault tests and a GA/operator
-rollout decision; generic multi-table transactions remain out of scope for this
-connector.
+The product rollout decision is controlled pilot only. The validated SQL/HTTP
+adapter is available both as the standalone experiment tool and as a
+server-owned runtime adapter for admin-gated, opt-in pilot environments that
+follow `docs/operations/PHYSICAL_AI_EDGE_FLEET_CONTROLLED_PILOT.md`. This is
+not a promoted ZeptoDB replication feature, not default-on operator behavior,
+and not a GA/SLA commitment. Generic multi-table transactions remain out of
+scope for this connector. Limited Operator Feature promotion requires pilot
+soak/fault evidence, dashboard/alert coverage, public support-boundary wording,
+and a new production gate.
 
 ## Experimental Physical AI Action-Outcome supervisor (devlog 206)
 
@@ -369,10 +381,14 @@ with a higher epoch; non-owners and stale epochs fail closed to idle passes.
 This is a SQL lease/heartbeat guard, not a full consensus subsystem.
 
 The HTTP server owns admin-gated process-local lifecycle state through
-`GET`/`POST`/`DELETE /admin/action-outcome-supervisor`. The runtime is not a
-robot-control or actuator-enforcement API. It records advisory decisions in
-shadow mode so operators can validate whether historical action-outcome memory
-would have suppressed unsafe or low-evidence actions.
+`GET`/`POST`/`DELETE /admin/action-outcome-supervisor`. Devlog 216 makes the
+rollout decision explicit in the runtime/API: only
+`rollout_stage="controlled_shadow_pilot"` is accepted, and
+`promoted_operator_feature` is rejected until GA/operator gates are deliberately
+reopened. The runtime is not a robot-control or actuator-enforcement API. It
+records advisory decisions in shadow mode so operators can validate whether
+historical action-outcome memory would have suppressed unsafe or low-evidence
+actions.
 
 Experiment 022 validates a node-replacement shaped sequence for the SQL lease:
 node A commits one proposal, node B takes over the expired lease with a higher
@@ -383,7 +399,7 @@ ledger. These close the current P0 validation items for controlled shadow
 pilots while keeping the documented limits: the SQL lease is not a consensus
 subsystem, and the commit ledger is not a generic multi-table transaction.
 
-Last updated: 2026-07-09 (Action-Outcome supervisor experiment 022/023 closure - devlog 211)
+Last updated: 2026-07-11 (Action-Outcome supervisor controlled rollout decision - devlog 216)
 
 ## Table-aware ingest (Stage B — devlog 084)
 

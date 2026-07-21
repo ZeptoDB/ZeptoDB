@@ -52,9 +52,10 @@ enum class RpcType : uint32_t {
     METRICS_RESULT  = 12, // Response with metrics history JSON array
     RING_UPDATE     = 13, // RingSnapshot broadcast (coordinator → followers)
     RING_ACK        = 14, // Acknowledgement of RING_UPDATE
-    AUTH_HANDSHAKE  = 15, // Client → Server: nonce + HMAC (40 bytes)
-    AUTH_OK         = 16, // Server → Client: authentication accepted
-    AUTH_REJECT     = 17, // Server → Client: authentication rejected
+    AUTH_CLIENT_HELLO = 15, // Client -> server: client nonce (32 bytes)
+    AUTH_HANDSHAKE = AUTH_CLIENT_HELLO, // Deprecated source alias; v1 wire is rejected
+    AUTH_OK         = 16, // Server -> client: mutual authentication accepted
+    AUTH_REJECT     = 17, // Either direction: authentication rejected
     AGENT_MEMORY_PUT    = 18, // Opaque Agent Memory MemoryRecord payload
     AGENT_MEMORY_RESULT = 19, // Opaque Agent Memory StoreResult payload
     AGENT_CACHE_STORE   = 20, // Opaque Agent Memory CacheEntry payload
@@ -73,6 +74,8 @@ enum class RpcType : uint32_t {
     TYPED_ROW_ACK    = 33, // 1-byte status response (0x01 = accepted)
     AGENT_MEMORY_STATS = 34, // Opaque Agent Memory stats request
     AGENT_MEMORY_STATS_RESULT = 35, // Opaque Agent Memory stats response
+    AUTH_SERVER_CHALLENGE = 36, // Server -> client: nonce + server proof (64 bytes)
+    AUTH_CLIENT_PROOF = 37, // Client -> server: client proof (32 bytes)
 };
 
 // ============================================================================
@@ -89,6 +92,13 @@ struct RpcHeader {
 #pragma pack(pop)
 
 static_assert(sizeof(RpcHeader) == 24, "RpcHeader must be 24 bytes");
+
+// Defensive decode limits. The byte-level response cap is enforced by the TCP
+// client before allocation; these structural limits prevent a small malicious
+// payload from claiming dimensions whose in-memory vector overhead is huge.
+inline constexpr uint32_t RPC_RESULT_MAX_COLUMNS = 4096;
+inline constexpr uint32_t RPC_RESULT_MAX_ROWS = 1'000'000;
+inline constexpr uint32_t RPC_RESULT_MAX_STRING_CELLS = 1'000'000;
 
 // ============================================================================
 // Write helpers (append to byte vector)
@@ -175,8 +185,11 @@ inline std::vector<uint8_t> serialize_result(const zeptodb::sql::QueryResultSet&
 
     proto_write_u32(buf, static_cast<uint32_t>(r.rows.size()));
     for (const auto& row : r.rows) {
-        for (int64_t v : row) {
-            proto_write_i64(buf, v);
+        // The wire format is fixed-width even though a few metadata results
+        // (for example SHOW TABLES and DESCRIBE) keep only their numeric cells
+        // in `rows`.  Padding keeps the following decoded-string tail aligned.
+        for (uint32_t ci = 0; ci < ncols; ++ci) {
+            proto_write_i64(buf, ci < row.size() ? row[ci] : 0);
         }
     }
 
@@ -206,10 +219,17 @@ inline std::vector<uint8_t> serialize_result(const zeptodb::sql::QueryResultSet&
 // ============================================================================
 inline zeptodb::sql::QueryResultSet deserialize_result(const uint8_t* data, size_t len) {
     zeptodb::sql::QueryResultSet r;
+    if (data == nullptr) {
+        r.error = "proto: null result payload";
+        return r;
+    }
     const uint8_t* p   = data;
     const uint8_t* end = data + len;
 
-    auto need = [&](size_t n) -> bool { return (p + n) <= end; };
+    auto remaining = [&]() -> size_t {
+        return static_cast<size_t>(end - p);
+    };
+    auto need = [&](size_t n) -> bool { return n <= remaining(); };
 
     // Error string
     if (!need(4)) { r.error = "proto: truncated(error_len)"; return r; }
@@ -221,21 +241,50 @@ inline zeptodb::sql::QueryResultSet deserialize_result(const uint8_t* data, size
     // Column metadata
     if (!need(4)) { r.error = "proto: truncated(col_count)"; return r; }
     uint32_t ncols = proto_read_u32(p); p += 4;
+    if (ncols > RPC_RESULT_MAX_COLUMNS) {
+        r.error = "proto: col_count exceeds limit";
+        return r;
+    }
     r.column_names.resize(ncols);
     r.column_types.resize(ncols);
 
     for (uint32_t i = 0; i < ncols; ++i) {
         if (!need(4)) { r.error = "proto: truncated(name_len)"; return r; }
         uint32_t nlen = proto_read_u32(p); p += 4;
-        if (!need(nlen + 1)) { r.error = "proto: truncated(name)"; return r; }
+        if (!need(nlen) || remaining() - nlen < 1) {
+            r.error = "proto: truncated(name)";
+            return r;
+        }
         r.column_names[i].assign(reinterpret_cast<const char*>(p), nlen);
         p += nlen;
-        r.column_types[i] = static_cast<zeptodb::storage::ColumnType>(*p++);
+        const uint8_t raw_type = *p++;
+        if (raw_type >
+            static_cast<uint8_t>(zeptodb::storage::ColumnType::STRING)) {
+            r.error = "proto: invalid column type";
+            return r;
+        }
+        r.column_types[i] =
+            static_cast<zeptodb::storage::ColumnType>(raw_type);
     }
 
     // Rows
     if (!need(4)) { r.error = "proto: truncated(row_count)"; return r; }
     uint32_t nrows = proto_read_u32(p); p += 4;
+    if (nrows > RPC_RESULT_MAX_ROWS) {
+        r.error = "proto: row_count exceeds limit";
+        return r;
+    }
+    if (nrows > 0 && ncols == 0) {
+        r.error = "proto: rows require at least one column";
+        return r;
+    }
+    if (ncols > 0) {
+        const size_t row_width = static_cast<size_t>(ncols) * sizeof(int64_t);
+        if (nrows > remaining() / row_width) {
+            r.error = "proto: truncated(values)";
+            return r;
+        }
+    }
     r.rows.resize(nrows, std::vector<int64_t>(ncols, 0));
 
     for (uint32_t ri = 0; ri < nrows; ++ri) {
@@ -251,6 +300,15 @@ inline zeptodb::sql::QueryResultSet deserialize_result(const uint8_t* data, size
     if (p < end) {
         if (!need(4)) { r.error = "proto: truncated(string_count)"; return r; }
         uint32_t string_count = proto_read_u32(p); p += 4;
+        // `string_rows` is also the standalone text-row representation used
+        // by DDL and EXPLAIN results, so it is not necessarily derivable from
+        // nrows or the declared column types.  Bound it by the protocol cap
+        // and by the minimum bytes required for each encoded string instead.
+        if (string_count > RPC_RESULT_MAX_STRING_CELLS ||
+            string_count > remaining() / sizeof(uint32_t)) {
+            r.error = "proto: string_count exceeds limit";
+            return r;
+        }
         r.string_rows.reserve(string_count);
         for (uint32_t i = 0; i < string_count; ++i) {
             if (!need(4)) { r.error = "proto: truncated(string_len)"; return r; }
@@ -259,6 +317,10 @@ inline zeptodb::sql::QueryResultSet deserialize_result(const uint8_t* data, size
             r.string_rows.emplace_back(reinterpret_cast<const char*>(p), slen);
             p += slen;
         }
+    }
+
+    if (p != end) {
+        r.error = "proto: trailing result payload";
     }
 
     return r;
@@ -359,6 +421,11 @@ inline bool deserialize_typed_row(const uint8_t* data, size_t len,
     out.timestamp = read_i64();
     const uint32_t column_count = read_u32();
     if (table_id > std::numeric_limits<uint16_t>::max()) return false;
+    constexpr size_t kMinEncodedColumnSize = 4 + 1 + 8 + 8 + 4 + 1;
+    if (column_count > RPC_RESULT_MAX_COLUMNS ||
+        column_count > (len - off) / kMinEncodedColumnSize) {
+        return false;
+    }
     out.table_id = static_cast<uint16_t>(table_id);
     out.symbol_id = static_cast<zeptodb::SymbolId>(symbol_id);
     out.columns.clear();
@@ -382,6 +449,10 @@ inline bool deserialize_typed_row(const uint8_t* data, size_t len,
     if (off == len) return true;
     if (!need(4)) return false;
     const uint32_t string_count = read_u32();
+    if (string_count > column_count ||
+        string_count > (len - off) / (2 * sizeof(uint32_t))) {
+        return false;
+    }
     for (uint32_t i = 0; i < string_count; ++i) {
         if (!need(4)) return false;
         const uint32_t column_index = read_u32();

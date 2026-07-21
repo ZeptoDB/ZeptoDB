@@ -25,6 +25,7 @@
 #include "zeptodb/core/pipeline.h"
 #include "zeptodb/sql/executor.h"
 #include <atomic>
+#include <cstddef>
 #include <future>
 #include <memory>
 #include <optional>
@@ -40,14 +41,84 @@ namespace zeptodb::cluster {
 // ============================================================================
 class QueryCoordinator {
 public:
+    /// Policy for the bounded coordinator-local small-table JOIN path.
+    /// `Disabled` rejects simple cross-node hash JOIN candidates explicitly;
+    /// `BoundedBroadcast` fetches both sides under configured row/byte/latency
+    /// caps before delegating semantics to a temporary local executor.
+    enum class SmallTableJoinPolicy {
+        Disabled,
+        BoundedBroadcast,
+    };
+
+    /// Runtime guardrails for bounded small-table JOIN materialization.
+    /// Thread-safe to update through `set_small_table_join_config()`; values
+    /// are snapshotted per query. `row_limit` is rows per JOIN side,
+    /// `max_materialized_bytes` is an estimated byte cap across both sides,
+    /// and `max_latency_us=0` disables latency rejection.
+    struct SmallTableJoinConfig {
+        SmallTableJoinPolicy policy = SmallTableJoinPolicy::BoundedBroadcast;
+        size_t row_limit = 4096;
+        size_t max_materialized_bytes = 8 * 1024 * 1024;
+        uint64_t max_latency_us = 0;
+    };
+
+    /// Telemetry counters and last-attempt gauges for bounded small-table JOIN.
+    /// All fields are monotonically increasing counters except `last_*`, which
+    /// describe the most recent candidate attempt. Units are rows, bytes, and
+    /// microseconds as named.
     struct SmallTableJoinTelemetrySnapshot {
         uint64_t candidates = 0;
         uint64_t accepted = 0;
         uint64_t rejected_row_cap = 0;
+        uint64_t rejected_byte_cap = 0;
+        uint64_t rejected_latency_cap = 0;
         uint64_t errors = 0;
         uint64_t rows_materialized = 0;
+        uint64_t bytes_materialized = 0;
         uint64_t last_left_rows = 0;
         uint64_t last_right_rows = 0;
+        uint64_t last_materialized_bytes = 0;
+        uint64_t last_latency_us = 0;
+    };
+
+    /// Policy for coordinator-local full-data window materialization.
+    /// `Disabled` rejects distributed queries that require all rows on the
+    /// coordinator; `BoundedCoordinatorLocal` allows the path under configured
+    /// row/byte/latency caps.
+    enum class WindowMaterializationPolicy {
+        Disabled,
+        BoundedCoordinatorLocal,
+    };
+
+    /// Runtime guardrails for cluster-mode full-data window materialization.
+    /// Thread-safe to update through `set_window_materialization_config()`;
+    /// values are snapshotted per query. `row_limit` bounds fetched base rows,
+    /// `max_materialized_bytes` is an estimated byte cap, and
+    /// `max_latency_us=0` disables latency rejection.
+    struct WindowMaterializationConfig {
+        WindowMaterializationPolicy policy =
+            WindowMaterializationPolicy::BoundedCoordinatorLocal;
+        size_t row_limit = 65536;
+        size_t max_materialized_bytes = 64 * 1024 * 1024;
+        uint64_t max_latency_us = 0;
+    };
+
+    /// Telemetry counters and last-attempt gauges for bounded full-data
+    /// materialization. All fields are monotonically increasing counters except
+    /// `last_*`, which describe the most recent candidate attempt. Units are
+    /// rows, bytes, and microseconds as named.
+    struct WindowMaterializationTelemetrySnapshot {
+        uint64_t candidates = 0;
+        uint64_t accepted = 0;
+        uint64_t rejected_row_cap = 0;
+        uint64_t rejected_byte_cap = 0;
+        uint64_t rejected_latency_cap = 0;
+        uint64_t errors = 0;
+        uint64_t rows_materialized = 0;
+        uint64_t bytes_materialized = 0;
+        uint64_t last_rows = 0;
+        uint64_t last_materialized_bytes = 0;
+        uint64_t last_latency_us = 0;
     };
 
     QueryCoordinator()  = default;
@@ -179,12 +250,38 @@ public:
     bool clear_table_placement(const std::string& table_name,
                                std::string* error = nullptr);
 
+    /// Re-apply persisted table placement metadata from local schema catalogs.
+    /// Intended for restart/reload paths after schemas have been restored.
+    bool apply_catalog_table_placements(std::string* error = nullptr);
+
     /// Snapshot bounded small-table JOIN telemetry.
     [[nodiscard]] SmallTableJoinTelemetrySnapshot small_table_join_stats() const;
 
     /// Reset bounded small-table JOIN telemetry. Intended for tests and
     /// benchmark/replay harnesses that measure deltas explicitly.
     void reset_small_table_join_stats();
+
+    /// Configure the bounded coordinator-local JOIN path. This is an
+    /// explicit feature policy, not a general optimizer rule.
+    bool set_small_table_join_config(SmallTableJoinConfig config,
+                                     std::string* error = nullptr);
+    [[nodiscard]] SmallTableJoinConfig small_table_join_config() const;
+
+    /// Snapshot bounded full-data window materialization telemetry.
+    [[nodiscard]] WindowMaterializationTelemetrySnapshot
+    window_materialization_stats() const;
+
+    /// Reset bounded full-data window materialization telemetry. Intended for
+    /// focused tests and replay harnesses that measure deltas explicitly.
+    void reset_window_materialization_stats();
+
+    /// Configure the bounded coordinator-local window/full-data path. This
+    /// path fails closed when disabled or when a cap is exceeded; it does not
+    /// fall back to partial scatter semantics.
+    bool set_window_materialization_config(WindowMaterializationConfig config,
+                                           std::string* error = nullptr);
+    [[nodiscard]] WindowMaterializationConfig
+    window_materialization_config() const;
 
     // ----------------------------------------------------------------
     // Router access (internal or shared)
@@ -230,6 +327,26 @@ private:
     std::vector<zeptodb::sql::QueryResultSet> scatter_to(
         const std::string& sql, const std::unordered_set<size_t>& node_indices);
 
+    enum class BoundedFetchStatus {
+        Ok,
+        RowLimitExceeded,
+        ByteLimitExceeded,
+        Error,
+    };
+
+    struct BoundedFetchResult {
+        zeptodb::sql::QueryResultSet result;
+        BoundedFetchStatus status = BoundedFetchStatus::Ok;
+        size_t rows_observed = 0;
+        size_t estimated_bytes = 0;
+    };
+
+    /// Fetch and concatenate a base-table query one node at a time, shrinking
+    /// each node's LIMIT and RPC response allowance by the cumulative budget.
+    BoundedFetchResult fetch_concat_bounded(const std::string& base_sql,
+                                            size_t row_limit,
+                                            size_t max_materialized_bytes);
+
     /// Execute a bounded coordinator-local hash JOIN by fetching both small
     /// operational tables, materializing them into a temporary typed pipeline,
     /// and delegating the actual JOIN semantics to the SQL executor.
@@ -252,14 +369,43 @@ private:
     std::optional<zeptodb::storage::TableSchema> schema_snapshot_locked(
         const std::string& table_name) const;
 
+    /// Return unique local pipelines in deterministic pointer order while
+    /// mutex_ is already held. Used to lock catalog transactions without
+    /// cross-coordinator deadlocks.
+    std::vector<zeptodb::core::ZeptoPipeline*> local_pipelines_locked() const;
+
+    bool apply_catalog_table_placements_locked(std::string* error);
+    bool apply_schema_placement_locked(
+        const zeptodb::storage::TableSchema& schema,
+        std::string* error);
+
     struct SmallTableJoinTelemetry {
         std::atomic<uint64_t> candidates{0};
         std::atomic<uint64_t> accepted{0};
         std::atomic<uint64_t> rejected_row_cap{0};
+        std::atomic<uint64_t> rejected_byte_cap{0};
+        std::atomic<uint64_t> rejected_latency_cap{0};
         std::atomic<uint64_t> errors{0};
         std::atomic<uint64_t> rows_materialized{0};
+        std::atomic<uint64_t> bytes_materialized{0};
         std::atomic<uint64_t> last_left_rows{0};
         std::atomic<uint64_t> last_right_rows{0};
+        std::atomic<uint64_t> last_materialized_bytes{0};
+        std::atomic<uint64_t> last_latency_us{0};
+    };
+
+    struct WindowMaterializationTelemetry {
+        std::atomic<uint64_t> candidates{0};
+        std::atomic<uint64_t> accepted{0};
+        std::atomic<uint64_t> rejected_row_cap{0};
+        std::atomic<uint64_t> rejected_byte_cap{0};
+        std::atomic<uint64_t> rejected_latency_cap{0};
+        std::atomic<uint64_t> errors{0};
+        std::atomic<uint64_t> rows_materialized{0};
+        std::atomic<uint64_t> bytes_materialized{0};
+        std::atomic<uint64_t> last_rows{0};
+        std::atomic<uint64_t> last_materialized_bytes{0};
+        std::atomic<uint64_t> last_latency_us{0};
     };
 
     mutable std::shared_mutex                        mutex_;
@@ -271,6 +417,9 @@ private:
     PartitionRouter*                                 external_router_ = nullptr;
     std::shared_mutex*                               external_router_mu_ = nullptr;
     SmallTableJoinTelemetry                          small_table_join_stats_;
+    SmallTableJoinConfig                             small_table_join_config_;
+    WindowMaterializationTelemetry                   window_materialization_stats_;
+    WindowMaterializationConfig                      window_materialization_config_;
 };
 
 } // namespace zeptodb::cluster

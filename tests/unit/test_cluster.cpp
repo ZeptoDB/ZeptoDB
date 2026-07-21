@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <thread>
@@ -43,6 +44,20 @@ static const uint16_t PORT_OFF = static_cast<uint16_t>(
      ^ static_cast<unsigned>(
          std::chrono::steady_clock::now().time_since_epoch().count())) % 30000);
 static inline uint16_t P(uint16_t n) { return static_cast<uint16_t>(n + PORT_OFF); }
+
+static std::string request_stats_until_contains(const std::string& host,
+                                                uint16_t port,
+                                                const std::string& needle) {
+    std::string last;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    do {
+        zeptodb::cluster::TcpRpcClient client(host, port);
+        last = client.request_stats();
+        if (last.find(needle) != std::string::npos) return last;
+        std::this_thread::sleep_for(20ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    return last;
+}
 
 // Helper: load an all-features Enterprise license into the global singleton
 static void ensure_enterprise_license() {
@@ -893,6 +908,35 @@ std::string http_get(const std::string& host, uint16_t port,
     return pos != std::string::npos ? response.substr(pos + 4) : response;
 }
 
+std::string http_post(const std::string& host, uint16_t port,
+                      const std::string& path, const std::string& body,
+                      const std::string& auth = "") {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return "";
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        close(fd);
+        return "";
+    }
+    std::string req = "POST " + path + " HTTP/1.1\r\nHost: " + host +
+        "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
+    if (!auth.empty()) req += "Authorization: Bearer " + auth + "\r\n";
+    req += "Connection: close\r\n\r\n" + body;
+    send(fd, req.data(), req.size(), 0);
+
+    std::string response;
+    char buf[4096];
+    ssize_t n;
+    while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
+        response.append(buf, static_cast<size_t>(n));
+    }
+    close(fd);
+    return response;
+}
+
 // Helper: create AuthManager with a temp key file
 struct TestAuth {
     std::string key_path;
@@ -916,7 +960,57 @@ struct TestAuth {
     ~TestAuth() { std::remove(key_path.c_str()); }
 };
 
+class ScopedUnsetClusterSecret {
+public:
+    ScopedUnsetClusterSecret() {
+        capture("ZEPTO_CLUSTER_SECRET", secret_, had_secret_);
+        capture("ZEPTO_CLUSTER_SECRET_FILE", secret_file_, had_secret_file_);
+        (void)::unsetenv("ZEPTO_CLUSTER_SECRET");
+        (void)::unsetenv("ZEPTO_CLUSTER_SECRET_FILE");
+    }
+
+    ~ScopedUnsetClusterSecret() {
+        restore("ZEPTO_CLUSTER_SECRET", secret_, had_secret_);
+        restore("ZEPTO_CLUSTER_SECRET_FILE", secret_file_, had_secret_file_);
+    }
+
+    ScopedUnsetClusterSecret(const ScopedUnsetClusterSecret&) = delete;
+    ScopedUnsetClusterSecret& operator=(const ScopedUnsetClusterSecret&) = delete;
+
+private:
+    static void capture(const char* name, std::string& value, bool& present) {
+        const char* current = std::getenv(name);
+        present = current != nullptr;
+        if (present) value = current;
+    }
+
+    static void restore(const char* name, const std::string& value,
+                        bool present) {
+        if (present) {
+            (void)::setenv(name, value.c_str(), 1);
+        } else {
+            (void)::unsetenv(name);
+        }
+    }
+
+    std::string secret_;
+    std::string secret_file_;
+    bool had_secret_ = false;
+    bool had_secret_file_ = false;
+};
+
 } // anonymous namespace
+
+TEST(HttpCluster, BindFailureIsReportedSynchronously) {
+    TestNode node;
+    zeptodb::auth::TlsConfig listener;
+    listener.bind_host = "256.256.256.256";
+    zeptodb::server::HttpServer server(
+        *node.executor, P(18700), listener, nullptr);
+
+    EXPECT_FALSE(server.start_async());
+    EXPECT_FALSE(server.running());
+}
 
 // ── Test: standalone mode returns mode=standalone ──
 TEST(HttpCluster, StandaloneMode_ReturnsStandalone) {
@@ -1026,6 +1120,7 @@ TEST(HttpCluster, ClusterMode_ReturnsClusterAndMultipleNodes) {
     zeptodb::server::HttpServer server(*coord_node.executor, http_port,
                                         zeptodb::auth::TlsConfig{}, auth.mgr);
     server.set_coordinator(&coordinator);
+    server.set_allow_experimental_distributed_queries(true);
     server.set_ready(true);
     server.start_async();
     std::this_thread::sleep_for(50ms);
@@ -1081,12 +1176,61 @@ TEST(HttpCluster, ClusterMode_ReturnsClusterAndMultipleNodes) {
     rpc_srv.stop();
 }
 
+TEST(HttpCluster, PostDdlStillReplicatesAfterPreparedCacheMove) {
+    TestNode coordinator_node;
+    TestNode data_node;
+
+    const uint16_t rpc_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(rpc_port, 0u);
+    TcpRpcServer rpc_server;
+    rpc_server.start(rpc_port, [&](const std::string& sql) {
+        return data_node.executor->execute(sql);
+    });
+    ASSERT_TRUE(rpc_server.is_running());
+    std::this_thread::sleep_for(20ms);
+
+    QueryCoordinator coordinator;
+    coordinator.add_local_node({"127.0.0.1", P(18822), 0},
+                               *coordinator_node.pipeline);
+    coordinator.add_remote_node({"127.0.0.1", rpc_port, 1});
+
+    TestAuth auth(
+        zepto_test_util::unique_test_path("keys_http_ddl_replication").string());
+    const uint16_t http_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(http_port, 0u);
+    zeptodb::server::HttpServer server(
+        *coordinator_node.executor, http_port, zeptodb::auth::TlsConfig{},
+        auth.mgr);
+    server.set_coordinator(&coordinator);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    const auto response = http_post(
+        "localhost", http_port, "/",
+        "CREATE TABLE replicated_after_cache (symbol INT64, price INT64)",
+        auth.admin_key);
+    EXPECT_NE(response.find(" 200 "), std::string::npos) << response;
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!data_node.pipeline->schema_registry().exists(
+               "replicated_after_cache") &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(data_node.pipeline->schema_registry().exists(
+        "replicated_after_cache"));
+
+    server.stop();
+    rpc_server.stop();
+}
+
 // ── Test: data node stats include id/host/port fields ──
 TEST(HttpCluster, DataNodeStats_IncludesIdHostPort) {
     TestNode data_node;
     data_node.ingest(50);
 
-    uint16_t rpc_port = P(18803);
+    uint16_t rpc_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(rpc_port, 0u);
     zeptodb::cluster::TcpRpcServer rpc_srv;
     rpc_srv.set_stats_callback([&]() {
         const auto& s = data_node.pipeline->stats();
@@ -1102,11 +1246,9 @@ TEST(HttpCluster, DataNodeStats_IncludesIdHostPort) {
     rpc_srv.start(rpc_port, [&](const std::string& sql) {
         return data_node.executor->execute(sql);
     });
-    std::this_thread::sleep_for(50ms);
 
     // Request stats via RPC client
-    zeptodb::cluster::TcpRpcClient client("127.0.0.1", rpc_port);
-    auto stats = client.request_stats();
+    auto stats = request_stats_until_contains("127.0.0.1", rpc_port, "\"id\":42");
     EXPECT_NE(stats.find("\"id\":42"), std::string::npos);
     EXPECT_NE(stats.find("\"host\":\"127.0.0.1\""), std::string::npos);
     EXPECT_NE(stats.find("\"port\":" + std::to_string(rpc_port)), std::string::npos);
@@ -1120,7 +1262,8 @@ TEST(HttpCluster, TcpRpcClient_ResolvesHostname) {
     TestNode data_node;
     data_node.ingest(10);
 
-    uint16_t rpc_port = P(18804);
+    uint16_t rpc_port = zepto_test_util::pick_free_port();
+    ASSERT_NE(rpc_port, 0u);
     zeptodb::cluster::TcpRpcServer rpc_srv;
     rpc_srv.set_stats_callback([]() {
         return std::string("{\"id\":99,\"state\":\"ACTIVE\"}");
@@ -1128,16 +1271,13 @@ TEST(HttpCluster, TcpRpcClient_ResolvesHostname) {
     rpc_srv.start(rpc_port, [&](const std::string& sql) {
         return data_node.executor->execute(sql);
     });
-    std::this_thread::sleep_for(50ms);
 
     // "localhost" should resolve via getaddrinfo fallback
-    zeptodb::cluster::TcpRpcClient client("localhost", rpc_port);
-    auto stats = client.request_stats();
+    auto stats = request_stats_until_contains("localhost", rpc_port, "\"id\":99");
     EXPECT_NE(stats.find("\"id\":99"), std::string::npos);
 
     // "127.0.0.1" should still work via inet_pton
-    zeptodb::cluster::TcpRpcClient client2("127.0.0.1", rpc_port);
-    auto stats2 = client2.request_stats();
+    auto stats2 = request_stats_until_contains("127.0.0.1", rpc_port, "\"id\":99");
     EXPECT_NE(stats2.find("\"id\":99"), std::string::npos);
 
     rpc_srv.stop();
@@ -1278,6 +1418,38 @@ TEST(HttpCluster, RuntimeNodeAdd_ViaPostAPI) {
 
     server.stop();
     rpc_srv.stop();
+}
+
+TEST(HttpCluster, RuntimeNodeAddRequiresClusterSecretInProductionMode) {
+    ensure_enterprise_license();
+    ScopedUnsetClusterSecret environment;
+    TestNode coord_node;
+
+    zeptodb::cluster::QueryCoordinator coordinator;
+    const uint16_t http_port = P(18809);
+    coordinator.add_local_node({"127.0.0.1", http_port, 1},
+                               *coord_node.pipeline);
+
+    TestAuth auth(
+        zepto_test_util::unique_test_path("keys_runtime_secure").string());
+    zeptodb::server::HttpServer server(*coord_node.executor, http_port,
+                                       zeptodb::auth::TlsConfig{}, auth.mgr);
+    server.set_coordinator(&coordinator);
+    server.set_allow_insecure_cluster(false);
+    server.set_ready(true);
+    server.start_async();
+    std::this_thread::sleep_for(50ms);
+
+    const auto response = http_post(
+        "localhost", http_port, "/admin/nodes",
+        R"({"id":5,"host":"127.0.0.1","port":19005})",
+        auth.admin_key);
+    EXPECT_NE(response.find("503 Service Unavailable"), std::string::npos);
+    EXPECT_NE(response.find("Cluster RPC authentication is required"),
+              std::string::npos);
+    EXPECT_EQ(coordinator.node_count(), 1u);
+
+    server.stop();
 }
 
 // ============================================================================

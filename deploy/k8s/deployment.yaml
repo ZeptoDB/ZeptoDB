@@ -1,3 +1,17 @@
+# WARNING: this legacy manifest mounts a PVC and enables tiered mode, but the
+# current runtime does not yet guarantee SQL-visible restart durability. Hot
+# partition WAL/recovery and HDB SQL merge remain release blockers. Use only for
+# controlled evaluation; the Helm chart carries an explicit acknowledgement.
+#
+# Security prerequisites (create these before applying the workload objects):
+#   kubectl create namespace zeptodb
+#   kubectl -n zeptodb create secret generic zeptodb-auth \
+#     --from-file=api-keys=/secure/path/api_keys.txt
+#   openssl rand -base64 48 > /secure/path/cluster-secret
+#   kubectl -n zeptodb create secret generic zeptodb-cluster \
+#     --from-file=cluster-secret=/secure/path/cluster-secret
+# The API-key file stores hashes, not raw credentials. Keep the corresponding
+# raw administrator key in an external secrets manager.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -31,27 +45,37 @@ metadata:
   namespace: zeptodb
   labels:
     app: zeptodb
-    version: v1.0.0
+    version: "0.1.8"
 spec:
-  replicas: 3
+  # This legacy manifest is standalone. Use the Helm cluster mode for multiple
+  # replicas; independent standalone replicas would split client writes.
+  replicas: 1
   selector:
     matchLabels:
       app: zeptodb
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      # RWO-safe replacement: release the volume before scheduling the new pod.
+      maxSurge: 0
+      maxUnavailable: 1
   template:
     metadata:
       labels:
         app: zeptodb
-        version: v1.0.0
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8123"
-        prometheus.io/path: "/metrics"
+        version: "0.1.8"
+      # /metrics requires a metrics-role Bearer token. Configure credential-aware
+      # Prometheus scraping externally; unauthenticated pod annotations are unsafe.
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         # Pod 분산 배치 (같은 노드에 여러 pod 방지)
         podAntiAffinity:
@@ -67,8 +91,32 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: zeptodb
-        image: zeptodb/zeptodb:v1.0.0
+        image: zeptodb/zeptodb:0.1.8
         imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+        args:
+        - --bind
+        - 0.0.0.0
+        - --allow-plaintext-http
+        - --secure-cookie
+        - --port
+        - "8123"
+        - --ticks
+        - "0"
+        - --storage-mode
+        - tiered
+        - --hdb-dir
+        - /opt/zeptodb/data
+        - --acknowledge-incomplete-durability
+        - --api-keys-file
+        - /run/secrets/zeptodb-auth/api_keys.txt
+        - --no-bootstrap-dev-keys
+        - --web-dir
+        - /opt/zeptodb/web
         ports:
         - containerPort: 8123
           name: http
@@ -97,12 +145,20 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+        - name: ZEPTO_CLUSTER_SECRET_FILE
+          value: /run/secrets/zeptodb-cluster/cluster-secret
         volumeMounts:
         - name: config
           mountPath: /opt/zeptodb/config
           readOnly: true
         - name: data
           mountPath: /opt/zeptodb/data
+        - name: auth
+          mountPath: /run/secrets/zeptodb-auth
+          readOnly: true
+        - name: cluster-security
+          mountPath: /run/secrets/zeptodb-cluster
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /health
@@ -119,11 +175,6 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 2
           failureThreshold: 2
-        lifecycle:
-          preStop:
-            exec:
-              # Graceful shutdown: drain 완료 대기
-              command: ["/bin/sh", "-c", "sleep 15"]
       terminationGracePeriodSeconds: 30
       volumes:
       - name: config
@@ -132,6 +183,20 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: zeptodb-pvc
+      - name: auth
+        secret:
+          secretName: zeptodb-auth
+          defaultMode: 0444
+          items:
+          - key: api-keys
+            path: api_keys.txt
+      - name: cluster-security
+        secret:
+          secretName: zeptodb-cluster
+          defaultMode: 0444
+          items:
+          - key: cluster-secret
+            path: cluster-secret
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -154,7 +219,8 @@ metadata:
   labels:
     app: zeptodb
 spec:
-  type: LoadBalancer
+  # Terminate TLS at an operator-managed ingress/load balancer before exposure.
+  type: ClusterIP
   sessionAffinity: ClientIP  # 같은 클라이언트 → 같은 pod
   selector:
     app: zeptodb
@@ -178,41 +244,22 @@ spec:
     targetPort: 8123
     name: http
 ---
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
-  name: zeptodb-hpa
+  name: zeptodb
   namespace: zeptodb
 spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: zeptodb
-  minReplicas: 3
-  maxReplicas: 10
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 300  # 5분 안정화
-      policies:
-      - type: Percent
-        value: 50
-        periodSeconds: 60
-    scaleUp:
-      stabilizationWindowSeconds: 60
-      policies:
-      - type: Percent
-        value: 100
-        periodSeconds: 30
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
+  podSelector:
+    matchLabels:
+      app: zeptodb
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8123
+          protocol: TCP
+      # Add an explicit namespaceSelector + podSelector for any approved TLS
+      # ingress controller or external-namespace monitoring workload.
+      from:
+        - podSelector: {}

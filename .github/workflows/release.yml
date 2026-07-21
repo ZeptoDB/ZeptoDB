@@ -10,23 +10,111 @@ on:
         required: false
         type: string
       update_latest:
-        description: Also refresh latest and latest-<arch> Docker tags.
+        description: Refresh latest tags only when this is the highest published semantic version.
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions:
-  contents: write
-  id-token: write  # PyPI trusted publishing
+  contents: read
 
 env:
   IMAGE_NAME: zeptodb/zeptodb
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  release_context:
+    name: Resolve immutable release source
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && inputs.version != '')
+      }}
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.context.outputs.source_ref }}
+      version: ${{ steps.context.outputs.version }}
+      update_latest: ${{ steps.context.outputs.update_latest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and verify release tag
+        id: context
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_UPDATE_LATEST: ${{ inputs.update_latest }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            version="${INPUT_VERSION#v}"
+            tag="v${version}"
+          fi
+
+          version="${tag#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release version must be MAJOR.MINOR.PATCH, got '$version'."
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" >/dev/null; then
+            echo "::error::Release source tag '${tag}' does not exist."
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "::error::Release tag '${tag}' is not reachable from origin/main."
+            exit 1
+          fi
+
+          cmake_version="$(git show "${tag}:CMakeLists.txt" | \
+            sed -n 's/^[[:space:]]*VERSION[[:space:]]\+\([0-9][0-9.]*\)$/\1/p' | head -n1)"
+          python_version="$(git show "${tag}:zepto_py/__init__.py" | \
+            sed -n 's/^__version__ = "\([0-9][0-9.]*\)"$/\1/p')"
+          chart_app_version="$(git show "${tag}:deploy/helm/zeptodb/Chart.yaml" | \
+            sed -n 's/^appVersion: "\([0-9][0-9.]*\)"$/\1/p')"
+          web_version="$(git show "${tag}:web/package.json" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          for component_version in "$cmake_version" "$python_version" "$chart_app_version" "$web_version"; do
+            if [ "$component_version" != "$version" ]; then
+              echo "::error::Release metadata does not match tag ${tag}: CMake=${cmake_version}, Python=${python_version}, chart appVersion=${chart_app_version}, Web=${web_version}."
+              exit 1
+            fi
+          done
+
+          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -1)"
+          update_latest=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && \
+             [ "$INPUT_UPDATE_LATEST" = "true" ] && [ "$tag" != "$latest_tag" ]; then
+            echo "::error::Refusing to move latest from ${latest_tag} backward to ${tag}."
+            exit 1
+          fi
+          if [ "$tag" = "$latest_tag" ] && \
+             { [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || \
+               [ "$INPUT_UPDATE_LATEST" = "true" ]; }; then
+            update_latest=true
+          fi
+
+          echo "source_ref=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "update_latest=$update_latest" >> "$GITHUB_OUTPUT"
+
+  production_gate:
+    name: Validate release source
+    needs: release_context
+    permissions:
+      contents: read
+    uses: ./.github/workflows/production-gate.yml
+    with:
+      source_ref: ${{ needs.release_context.outputs.source_ref }}
+
   # ── Build binaries (matrix: amd64 + arm64) ──
   build:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release_context, production_gate]
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     strategy:
@@ -43,9 +131,11 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.release_context.outputs.source_ref }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ccache
           key: release-ccache-${{ matrix.arch }}-${{ github.sha }}
@@ -120,10 +210,33 @@ jobs:
             -DZEPTO_USE_PARQUET=ON \
             -DZEPTO_USE_FLIGHT=ON \
             -DZEPTO_BUILD_PYTHON=OFF \
+            -DZEPTO_BUILD_BENCH=OFF \
             -DAPEX_USE_IO_URING=ON \
-            -DBUILD_TESTS=OFF
-          ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli
-          strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli
+            -DZEPTO_BUILD_TESTS=OFF
+          if grep -Fq -- '-march=native' build.ninja; then
+            echo "::error::Portable release build unexpectedly contains -march=native"
+            exit 1
+          fi
+          grep -Fq -- "-march=${{ matrix.march }}" build.ninja
+          ninja -j$(nproc) zepto_http_server zepto_data_node zepto_flight_server zepto-cli \
+            zepto_ingest_node zepto_action_outcome_soak zepto-opcua-browse
+          strip zepto_http_server zepto_data_node zepto_flight_server zepto-cli \
+            zepto_ingest_node zepto_action_outcome_soak zepto-opcua-browse
+
+      - name: Smoke test native production CLI and direct TLS
+        env:
+          SERVER_BIN: ${{ github.workspace }}/build/zepto_http_server
+        run: bash tests/integration/test_http_server_prod_cli.sh
+
+      - name: Smoke test Arrow Flight TLS and fail-closed ingestion
+        env:
+          SERVER_BIN: ${{ github.workspace }}/build/zepto_flight_server
+        run: bash tests/integration/test_flight_server_tls.sh
+
+      - name: Verify system OpenSSL precedes Arrow providers
+        env:
+          BUILD_DIR: ${{ github.workspace }}/build
+        run: bash tests/integration/test_openssl_dependency_order.sh
 
       - name: Print ccache stats
         if: always()
@@ -132,20 +245,20 @@ jobs:
       # Package
       - name: Package binaries
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.release_context.outputs.version }}"
           DIR="${{ matrix.artifact }}-${VERSION}"
           mkdir -p "$DIR"
           cp build/zepto_http_server build/zepto_data_node \
              build/zepto_flight_server build/zepto-cli "$DIR/"
           tar czf "${{ matrix.artifact }}-${VERSION}.tar.gz" "$DIR"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact }}
           path: "*.tar.gz"
 
-  # ── Docker image cache warm-up (native amd64 + arm64) ──
-  docker-cache:
+  # ── Verify native Docker images before any registry publication ──
+  docker_verify:
     if: >-
       ${{
         startsWith(github.ref, 'refs/tags/v') ||
@@ -163,20 +276,172 @@ jobs:
             platform: linux/arm64
             dockerfile: deploy/docker/Dockerfile.arm64
     runs-on: ${{ matrix.runner }}
+    needs: [release_context, production_gate]
+    env:
+      SMOKE_IMAGE: zeptodb-release-smoke:${{ matrix.arch }}-${{ github.sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.release_context.outputs.source_ref }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Warm Docker build cache
-        uses: docker/build-push-action@v6
+      - name: Build native image for verification
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           push: false
+          load: true
+          tags: ${{ env.SMOKE_IMAGE }}
+          build-args: |
+            ZEPTO_VERSION=${{ needs.release_context.outputs.version }}
           cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-docker-${{ matrix.arch }}
+
+      - name: Verify image version label
+        run: |
+          actual="$(docker image inspect "$SMOKE_IMAGE" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          expected="${{ needs.release_context.outputs.version }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Image version label mismatch: expected=$expected actual=$actual"
+            exit 1
+          fi
+
+      - name: Smoke test fail-closed authentication startup
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          missing_log="$RUNNER_TEMP/zeptodb-missing-secret-${ARCH}.log"
+          set +e
+          timeout 15s docker run --rm "$SMOKE_IMAGE" >"$missing_log" 2>&1
+          missing_status=$?
+          set -e
+          if [ "$missing_status" -ne 1 ]; then
+            echo "::error::Image did not fail closed without its API-key store (status=$missing_status)."
+            sed -n '1,120p' "$missing_log"
+            exit 1
+          fi
+          if ! grep -Fq 'API-key file does not exist' "$missing_log"; then
+            echo "::error::Image failed for an unexpected reason without its API-key store."
+            sed -n '1,120p' "$missing_log"
+            exit 1
+          fi
+
+          smoke_dir="$RUNNER_TEMP/zeptodb-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          key_file="$smoke_dir/api_keys.txt"
+          container_name="zeptodb-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          install -d -m 0700 "$smoke_dir"
+          admin_key="zepto_$(openssl rand -hex 32)"
+          key_hash="$(printf '%s' "$admin_key" | sha256sum | cut -d' ' -f1)"
+          printf '# zeptodb-keys-v1\nak_ci|ci-admin|%s|admin||1|0|||0\n' \
+            "$key_hash" > "$key_file"
+          chmod 0444 "$key_file"
+
+          cleanup() {
+            docker rm -f "$container_name" >/dev/null 2>&1 || true
+            rm -f "$key_file"
+            rmdir "$smoke_dir" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach --rm \
+            --name "$container_name" \
+            --publish 127.0.0.1:18123:8123 \
+            --volume "$key_file:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
+            "$SMOKE_IMAGE"
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18123/ready >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail-with-body --silent http://127.0.0.1:18123/ready >/dev/null
+
+          unauthenticated_status="$(
+            curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:18123/whoami
+          )"
+          if [ "$unauthenticated_status" != 401 ]; then
+            echo "::error::Unauthenticated request returned HTTP $unauthenticated_status instead of 401."
+            exit 1
+          fi
+          curl --fail-with-body --silent \
+            --header "Authorization: Bearer $admin_key" \
+            http://127.0.0.1:18123/whoami >/dev/null
+
+      - name: Generate CycloneDX image SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.SMOKE_IMAGE }}
+          scanners: vuln
+          format: cyclonedx
+          output: zeptodb-${{ matrix.arch }}.cdx.json
+          exit-code: '0'
+
+      - name: Upload image SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: zeptodb-sbom-${{ matrix.arch }}
+          path: zeptodb-${{ matrix.arch }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Block HIGH or CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.SMOKE_IMAGE }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+          skip-setup-trivy: true
+
+      - name: Archive the verified image
+        run: docker save "$SMOKE_IMAGE" | gzip -1 > "zeptodb-image-${{ matrix.arch }}.tar.gz"
+
+      - name: Upload the verified image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: zeptodb-image-${{ matrix.arch }}
+          path: zeptodb-image-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish_ready:
+    name: Require all validation before publishing
+    if: >-
+      ${{
+        always() &&
+        (
+          startsWith(github.ref, 'refs/tags/v') ||
+          (github.event_name == 'workflow_dispatch' && inputs.version != '')
+        )
+      }}
+    needs: [release_context, production_gate, build, docker_verify]
+    runs-on: ubuntu-latest
+    env:
+      PRODUCTION_RESULT: ${{ needs.production_gate.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      DOCKER_VERIFY_RESULT: ${{ needs.docker_verify.result }}
+    steps:
+      - name: Confirm release validation results
+        run: |
+          if [ "$PRODUCTION_RESULT" != success ] || [ "$DOCKER_VERIFY_RESULT" != success ]; then
+            echo "::error::Release validation failed: production=$PRODUCTION_RESULT docker=$DOCKER_VERIFY_RESULT"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] && [ "$BUILD_RESULT" != success ]; then
+            echo "::error::Release binary build did not pass: build=$BUILD_RESULT"
+            exit 1
+          fi
+          echo "Release source, binaries, images, tests, security scan, and SBOM are verified."
 
   # ── Docker image publish (native per-arch images) ──
   docker:
@@ -190,20 +455,19 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
-            platform: linux/amd64
-            dockerfile: deploy/docker/Dockerfile
           - arch: arm64
             runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            dockerfile: deploy/docker/Dockerfile.arm64
     runs-on: ${{ matrix.runner }}
-    needs: docker-cache
+    needs: [release_context, publish_ready]
+    env:
+      VERIFIED_IMAGE: zeptodb-release-smoke:${{ matrix.arch }}-${{ github.sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: zeptodb-image-${{ matrix.arch }}
+          path: verified-image
 
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -211,34 +475,30 @@ jobs:
       - name: Extract version
         id: meta
         env:
-          INPUT_VERSION: ${{ inputs.version }}
-          UPDATE_LATEST: ${{ inputs.update_latest }}
+          UPDATE_LATEST: ${{ needs.release_context.outputs.update_latest }}
           ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.release_context.outputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          if [ -n "$INPUT_VERSION" ]; then
-            version="${INPUT_VERSION#v}"
-          fi
-
           {
-            echo "version=$version"
+            echo "version=$VERSION"
             echo "tags<<EOF"
-            echo "${IMAGE_NAME}:${version}-${ARCH}"
-            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$UPDATE_LATEST" = "true" ]; then
+            echo "${IMAGE_NAME}:${VERSION}-${ARCH}"
+            if [ "$UPDATE_LATEST" = "true" ]; then
               echo "${IMAGE_NAME}:latest-${ARCH}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=release-docker-${{ matrix.arch }}
+      - name: Publish the exact verified image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          gzip -dc "verified-image/zeptodb-image-${{ matrix.arch }}.tar.gz" | docker load
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag "$VERIFIED_IMAGE" "$tag"
+            docker push "$tag"
+          done <<< "$TAGS"
 
   # ── Docker manifest publish (public multi-arch tags) ──
   docker-manifest:
@@ -248,37 +508,30 @@ jobs:
         (github.event_name == 'workflow_dispatch' && inputs.version != '')
       }}
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [release_context, docker]
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract version
         id: meta
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          if [ -n "$INPUT_VERSION" ]; then
-            version="${INPUT_VERSION#v}"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: echo "version=${{ needs.release_context.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Publish multi-arch manifests
         env:
           VERSION: ${{ steps.meta.outputs.version }}
-          UPDATE_LATEST: ${{ inputs.update_latest }}
+          UPDATE_LATEST: ${{ needs.release_context.outputs.update_latest }}
         run: |
           docker buildx imagetools create \
             -t "${IMAGE_NAME}:${VERSION}" \
             "${IMAGE_NAME}:${VERSION}-amd64" \
             "${IMAGE_NAME}:${VERSION}-arm64"
 
-          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$UPDATE_LATEST" = "true" ]; then
+          if [ "$UPDATE_LATEST" = "true" ]; then
             docker buildx imagetools create \
               -t "${IMAGE_NAME}:latest" \
               "${IMAGE_NAME}:latest-amd64" \
@@ -289,28 +542,52 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [build, docker-manifest]
+    needs: [release_context, build, docker-manifest, publish_ready]
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           pattern: zeptodb-linux-*
           merge-multiple: true
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: artifacts
+          pattern: zeptodb-sbom-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: artifacts
+          pattern: zeptodb-python-dist
+          merge-multiple: true
+
       - name: Extract version
         id: meta
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${{ needs.release_context.outputs.version }}" >> "$GITHUB_OUTPUT"
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: ZeptoDB v${{ steps.meta.outputs.version }}
           generate_release_notes: true
-          files: artifacts/*.tar.gz
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.cdx.json
+            artifacts/*.whl
           body: |
             ## Docker
             ```bash
             docker pull zeptodb/zeptodb:${{ steps.meta.outputs.version }}
-            docker run -p 8123:8123 zeptodb/zeptodb:${{ steps.meta.outputs.version }}
+            mkdir -m 0700 -p auth
+            export ZEPTO_ADMIN_KEY="zepto_$(openssl rand -hex 32)"
+            KEY_HASH="$(printf '%s' "$ZEPTO_ADMIN_KEY" | sha256sum | cut -d' ' -f1)"
+            printf '# zeptodb-keys-v1\nak_docker|release-admin|%s|admin||1|0|||0\n' "$KEY_HASH" > auth/api_keys.txt
+            chmod 0444 auth/api_keys.txt  # Hash-only store; parent directory remains private.
+            docker run --rm -p 127.0.0.1:8123:8123 \
+              -v "$PWD/auth/api_keys.txt:/run/secrets/zeptodb-auth/api_keys.txt:ro" \
+              zeptodb/zeptodb:${{ steps.meta.outputs.version }}
             ```
 
             ## Binaries
@@ -326,24 +603,19 @@ jobs:
   pypi:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: build
+    needs: [release_context, build, publish_ready]
     environment: pypi
     permissions:
+      contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          python-version: "3.12"
-
-      - name: Build package
-        run: |
-          pip install build
-          python -m build
+          name: zeptodb-python-dist
+          path: dist
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
 
   # ── Update Homebrew Formula ──
   homebrew:
@@ -352,7 +624,7 @@ jobs:
     needs: release
     steps:
       - name: Trigger homebrew-tap update
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4
         with:
           token: ${{ secrets.SITE_DEPLOY_TOKEN }}
           repository: ZeptoDB/homebrew-tap

@@ -29,6 +29,8 @@ The workflow:
    - `CMakeLists.txt`
    - `zepto_py/__init__.py`
    - `web/package.json`
+   - `deploy/helm/zeptodb/Chart.yaml`
+   - both production Dockerfile `ZEPTO_VERSION` defaults
 3. Compares the highest tag version with the highest checked-in version file.
 4. Uses the checked-in version when it is ahead of the latest tag; otherwise
    bumps the latest tag's patch component.
@@ -59,17 +61,18 @@ Release binary builds use ccache with per-architecture restore keys so repeated
 tag builds can reuse unchanged C++ compilation results. Docker release builds
 use the repository `.dockerignore` to keep local build directories, web build
 output, docs, Git metadata, and benchmark artifacts out of the build context.
-The Docker image path is split into native amd64/arm64 cache-warming jobs,
-native per-architecture publish jobs, and a manifest job that composes the
-public multi-arch tags. The GitHub Release job waits for both the binary matrix
-and the Docker manifest, preserving release gating while avoiding an
-amd64-only Docker artifact.
+The Docker image path builds and smoke-tests native amd64/arm64 images, verifies
+their version labels, generates SBOMs, blocks HIGH/CRITICAL vulnerabilities,
+archives those exact verified images, and only then publishes the per-arch tags
+and multi-arch manifest. Published images are therefore the same image bytes
+that passed verification rather than a later rebuild.
 
 The `Graviton ARM64 Build & Test` workflow is not run for release-bot
-`chore(release): vX.Y.Z` version bump commits. Those commits are validated by
-the tag-triggered `Release` binary matrix, which builds both amd64 and arm64
-artifacts. Release-version commits use a separate Graviton concurrency key so
-they do not cancel the main-merge Graviton run that preceded the version bump.
+`chore(release): vX.Y.Z` version bump commits. The tag-triggered `Release`
+workflow calls the hosted x86_64 and ARM64 full production gate before building
+portable release binaries and verified native images. Release-version commits
+use a separate Graviton concurrency key so they do not cancel the main-merge
+Graviton run that preceded the version bump.
 
 ## Repository Settings
 

@@ -61,6 +61,8 @@ struct Args {
     size_t recall_queries = 1;
     size_t cluster_count = 64;
     double cluster_noise = 0.05;
+    size_t tenant_count = 2;
+    size_t query_tenant_index = 0;
     std::vector<size_t> sweep_records = {10'000, 100'000, 1'000'000};
     std::string ann_mode = "off";
     std::string ann_label;
@@ -76,6 +78,10 @@ struct Args {
     size_t ann_hnsw_ef_search = 64;
     size_t ann_ivf_centroids = 256;
     size_t ann_ivf_probe = 8;
+    double recall_avg_threshold = 0.95;
+    double recall_min_threshold = 0.90;
+    double ann_build_threshold_ms = 60'000.0;
+    double ann_memory_threshold_mb = 0.0;
 };
 
 struct BenchSummary {
@@ -99,6 +105,8 @@ struct BenchSummary {
     uint64_t ann_fallback_count = 0;
     std::string fixture = "mixed";
     std::string ann_mode = "off";
+    size_t tenant_count = 2;
+    std::string query_tenant;
     size_t ann_max_candidates = 0;
     size_t ann_oversample = 0;
     size_t ann_tables = 0;
@@ -258,6 +266,29 @@ static size_t fixture_cluster_count(const Args& args) {
     return std::max<size_t>(1, args.cluster_count);
 }
 
+static std::string tenant_id_for_slot(size_t slot) {
+    if (slot == 0) return "tenant_a";
+    if (slot == 1) return "tenant_b";
+    return "tenant_" + std::to_string(slot);
+}
+
+static size_t tenant_slot_for_record(const Args& args, size_t record_index) {
+    return record_index % args.tenant_count;
+}
+
+static std::string tenant_id_for_record(const Args& args, size_t record_index) {
+    return tenant_id_for_slot(tenant_slot_for_record(args, record_index));
+}
+
+static std::string query_tenant_id(const Args& args) {
+    return tenant_id_for_slot(args.query_tenant_index);
+}
+
+static size_t first_record_index_for_query_tenant(const Args& args,
+                                                  size_t query_index) {
+    return args.query_tenant_index + query_index * args.tenant_count;
+}
+
 static std::vector<float> make_clustered_embedding(size_t dim,
                                                    size_t cluster,
                                                    size_t member_seed,
@@ -272,7 +303,7 @@ static std::vector<float> make_clustered_embedding(size_t dim,
 }
 
 static size_t record_cluster(const Args& args, size_t record_index) {
-    return (record_index / 2) % fixture_cluster_count(args);
+    return (record_index / args.tenant_count) % fixture_cluster_count(args);
 }
 
 static std::vector<float> make_memory_embedding(const Args& args,
@@ -292,6 +323,12 @@ static std::vector<float> make_memory_embedding(const Args& args,
 static std::vector<float> make_query_embedding(const Args& args,
                                                size_t query_index) {
     if (args.fixture == "real" && args.real_fixture) {
+        const size_t first_target_record =
+            first_record_index_for_query_tenant(args, query_index);
+        if (first_target_record < args.records) {
+            return args.real_fixture->vectors[
+                first_target_record % real_fixture_size(args)];
+        }
         return args.real_fixture->vectors[
             real_fixture_index_for_tenant_a(args, query_index)];
     }
@@ -307,6 +344,12 @@ static std::vector<float> make_query_embedding(const Args& args,
 static std::vector<float> make_cache_embedding(const Args& args,
                                                size_t cache_index) {
     if (args.fixture == "real" && args.real_fixture) {
+        const size_t first_target_record =
+            first_record_index_for_query_tenant(args, cache_index);
+        if (first_target_record < args.records) {
+            return args.real_fixture->vectors[
+                first_target_record % real_fixture_size(args)];
+        }
         return args.real_fixture->vectors[
             real_fixture_index_for_tenant_a(args, cache_index)];
     }
@@ -374,6 +417,10 @@ static Args parse_args(int argc, char* argv[]) {
             args.cluster_count = static_cast<size_t>(std::atoll(argv[++i]));
         } else if (arg == "--cluster-noise" && i + 1 < argc) {
             args.cluster_noise = std::atof(argv[++i]);
+        } else if (arg == "--tenant-count" && i + 1 < argc) {
+            args.tenant_count = static_cast<size_t>(std::atoll(argv[++i]));
+        } else if (arg == "--query-tenant-index" && i + 1 < argc) {
+            args.query_tenant_index = static_cast<size_t>(std::atoll(argv[++i]));
         } else if (arg == "--sweep-records" && i + 1 < argc) {
             args.sweep_records = parse_record_list(argv[++i]);
         } else if (arg == "--skip-snapshot") {
@@ -410,6 +457,14 @@ static Args parse_args(int argc, char* argv[]) {
             args.ann_ivf_centroids = static_cast<size_t>(std::atoll(argv[++i]));
         } else if (arg == "--ann-ivf-probe" && i + 1 < argc) {
             args.ann_ivf_probe = static_cast<size_t>(std::atoll(argv[++i]));
+        } else if (arg == "--recall-avg-threshold" && i + 1 < argc) {
+            args.recall_avg_threshold = std::atof(argv[++i]);
+        } else if (arg == "--recall-min-threshold" && i + 1 < argc) {
+            args.recall_min_threshold = std::atof(argv[++i]);
+        } else if (arg == "--ann-build-threshold-ms" && i + 1 < argc) {
+            args.ann_build_threshold_ms = std::atof(argv[++i]);
+        } else if (arg == "--ann-memory-threshold-mb" && i + 1 < argc) {
+            args.ann_memory_threshold_mb = std::atof(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0]
                       << " [--records 10000] [--dim 128] [--iters 100]\n"
@@ -418,6 +473,7 @@ static Args parse_args(int argc, char* argv[]) {
                       << "       [--fixture mixed|semantic|clustered|real]\n"
                       << "       [--embedding-file PATH]\n"
                       << "       [--clusters 64] [--cluster-noise 0.05]\n"
+                      << "       [--tenant-count 2] [--query-tenant-index 0]\n"
                       << "       [--sweep-records 10000,100000,1000000]\n"
                       << "       [--skip-snapshot]\n"
                       << "       [--recall-queries 1]\n"
@@ -432,7 +488,11 @@ static Args parse_args(int argc, char* argv[]) {
                       << "       [--ann-hnsw-ef-search 64]\n"
                       << "       [--ann-ivf-centroids 256]\n"
                       << "       [--ann-ivf-probe 8]\n"
-                      << "       [--ann-threshold-ms 10.0]\n";
+                      << "       [--ann-threshold-ms 10.0]\n"
+                      << "       [--recall-avg-threshold 0.95]\n"
+                      << "       [--recall-min-threshold 0.90]\n"
+                      << "       [--ann-build-threshold-ms 60000]\n"
+                      << "       [--ann-memory-threshold-mb 0]\n";
             std::exit(0);
         }
     }
@@ -443,6 +503,11 @@ static Args parse_args(int argc, char* argv[]) {
     args.recall_queries = std::max<size_t>(1, args.recall_queries);
     args.cluster_count = std::max<size_t>(1, args.cluster_count);
     args.cluster_noise = std::max(0.0, args.cluster_noise);
+    args.tenant_count = std::max<size_t>(1, args.tenant_count);
+    if (args.query_tenant_index >= args.tenant_count) {
+        std::cerr << "--query-tenant-index must be less than --tenant-count\n";
+        std::exit(1);
+    }
     args.ann_min_records = std::max<size_t>(1, args.ann_min_records);
     args.ann_max_candidates = std::max<size_t>(1, args.ann_max_candidates);
     args.ann_oversample = std::max<size_t>(1, args.ann_oversample);
@@ -455,6 +520,12 @@ static Args parse_args(int argc, char* argv[]) {
     args.ann_hnsw_ef_search = std::max<size_t>(1, args.ann_hnsw_ef_search);
     args.ann_ivf_centroids = std::max<size_t>(1, args.ann_ivf_centroids);
     args.ann_ivf_probe = std::max<size_t>(1, args.ann_ivf_probe);
+    args.recall_avg_threshold =
+        std::clamp(args.recall_avg_threshold, 0.0, 1.0);
+    args.recall_min_threshold =
+        std::clamp(args.recall_min_threshold, 0.0, 1.0);
+    args.ann_build_threshold_ms = std::max(0.0, args.ann_build_threshold_ms);
+    args.ann_memory_threshold_mb = std::max(0.0, args.ann_memory_threshold_mb);
     if (args.fixture != "mixed" && args.fixture != "semantic" &&
         args.fixture != "clustered" && args.fixture != "real") {
         std::cerr << "invalid --fixture: " << args.fixture << "\n";
@@ -483,6 +554,10 @@ static Args prepare_args(Args args) {
         std::cerr << "--records " << args.records
                   << " exceeds --embedding-file vector count "
                   << args.real_fixture->vectors.size() << "\n";
+        std::exit(1);
+    }
+    if (args.query_tenant_index >= args.records) {
+        std::cerr << "--query-tenant-index selects no records in --embedding-file\n";
         std::exit(1);
     }
     args.cluster_count = 0;
@@ -541,12 +616,16 @@ static void seed_store(AgentMemoryStore* store, const Args& args) {
         std::cerr << "--fixture real requires at least --records vectors\n";
         std::exit(1);
     }
+    if (args.query_tenant_index >= args.records) {
+        std::cerr << "--query-tenant-index selects no records\n";
+        std::exit(1);
+    }
     store->reserve_memory_capacity(args.records, std::min<size_t>(args.records, 512));
     const int64_t now = AgentMemoryStore::now_ns();
     for (size_t i = 0; i < args.records; ++i) {
         MemoryRecord r;
         r.memory_id = "mem_" + std::to_string(i);
-        r.tenant_id = i % 2 == 0 ? "tenant_a" : "tenant_b";
+        r.tenant_id = tenant_id_for_record(args, i);
         r.namespace_id = "agent";
         r.user_id = "user_" + std::to_string(i % 16);
         r.session_id = "session_" + std::to_string(i % 64);
@@ -575,7 +654,7 @@ static void seed_store(AgentMemoryStore* store, const Args& args) {
     for (size_t i = 0; i < std::min<size_t>(args.records, 512); ++i) {
         CacheEntry c;
         c.cache_id = "cache_" + std::to_string(i);
-        c.tenant_id = "tenant_a";
+        c.tenant_id = query_tenant_id(args);
         c.namespace_id = "agent";
         c.prompt = "question " + std::to_string(i);
         c.response = "cached answer " + std::to_string(i);
@@ -665,15 +744,16 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     configure_ann(store, args);
 
     const std::vector<float> query = make_query_embedding(args, 0);
+    const std::string tenant = query_tenant_id(args);
     MemoryQuery search_query;
-    search_query.tenant_id = "tenant_a";
+    search_query.tenant_id = tenant;
     search_query.namespace_id = "agent";
     search_query.query_embedding = query;
     search_query.limit = 16;
     search_query.update_access = !args.read_only_search;
 
     ContextRequest context_query;
-    context_query.tenant_id = "tenant_a";
+    context_query.tenant_id = tenant;
     context_query.namespace_id = "agent";
     context_query.query_embedding = query;
     context_query.limit = 64;
@@ -681,14 +761,14 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     context_query.update_access = !args.read_only_search;
 
     CacheLookup exact;
-    exact.tenant_id = "tenant_a";
+    exact.tenant_id = tenant;
     exact.namespace_id = "agent";
     const size_t cache_count = std::min<size_t>(args.records, 512);
     exact.prompt = " question "
         + std::to_string(std::min<size_t>(42, cache_count - 1)) + " ";
 
     CacheLookup semantic;
-    semantic.tenant_id = "tenant_a";
+    semantic.tenant_id = tenant;
     semantic.namespace_id = "agent";
     semantic.prompt = "semantic fallback";
     semantic.embedding = make_cache_embedding(args, 5);
@@ -698,6 +778,8 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
               << " records=" << args.records
               << " dim=" << args.dim
               << " iters=" << args.iters
+              << " tenants=" << args.tenant_count
+              << " query_tenant=" << tenant
               << " ann=" << ann_label(args)
               << " ann_candidates=" << args.ann_max_candidates
               << " ann_oversample=" << args.ann_oversample
@@ -727,6 +809,8 @@ static BenchSummary run_on_store(AgentMemoryStore* store, Args args) {
     BenchSummary summary;
     summary.records = args.records;
     summary.ann_mode = ann_label(args);
+    summary.tenant_count = args.tenant_count;
+    summary.query_tenant = tenant;
     summary.ann_max_candidates = args.ann_max_candidates;
     summary.ann_oversample = args.ann_oversample;
     summary.ann_tables = args.ann_tables;
@@ -986,12 +1070,48 @@ static std::vector<BenchSummary> run_compare(Args args) {
     return summaries;
 }
 
+static std::string ann_policy_status(const BenchSummary& summary,
+                                     double latency_threshold_ms,
+                                     double recall_avg_threshold,
+                                     double recall_min_threshold,
+                                     double ann_build_threshold_ms,
+                                     double ann_memory_threshold_mb) {
+    const bool exact = summary.ann_mode == "off" ||
+        summary.ann_mode == "exact_scan";
+    const bool latency_ok = summary.search_p50_ms <= latency_threshold_ms &&
+        summary.context_p50_ms <= latency_threshold_ms;
+    if (exact) return latency_ok ? "scan_ok" : "needs_ann";
+    if (summary.ann_indexed_vectors == 0) return "inactive";
+    if (summary.recall_at_k < recall_avg_threshold ||
+        summary.recall_min_at_k < recall_min_threshold) {
+        return "reject_recall";
+    }
+    if (!latency_ok) return "reject_latency";
+    if (ann_build_threshold_ms > 0.0 &&
+        summary.ann_build_ms > ann_build_threshold_ms) {
+        return "reject_build";
+    }
+    const double ann_memory_mb =
+        static_cast<double>(summary.ann_memory_bytes) / (1024.0 * 1024.0);
+    if (ann_memory_threshold_mb > 0.0 &&
+        ann_memory_mb > ann_memory_threshold_mb) {
+        return "reject_memory";
+    }
+    if (summary.ann_fallback_count > 0) return "has_fallbacks";
+    return "eligible";
+}
+
 static void print_decision_table(const std::vector<BenchSummary>& summaries,
-                                 double ann_threshold_ms) {
+                                 double ann_threshold_ms,
+                                 double recall_avg_threshold,
+                                 double recall_min_threshold,
+                                 double ann_build_threshold_ms,
+                                 double ann_memory_threshold_mb) {
     std::cout << "\n=== ANN Decision Summary ===\n";
     std::cout << std::left << std::setw(12) << "records"
               << std::setw(20) << "ann"
               << std::setw(12) << "fixture"
+              << std::setw(10) << "tenants"
               << std::setw(13) << "cand"
               << std::setw(8) << "os"
               << std::setw(8) << "tbl"
@@ -1012,14 +1132,19 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
               << std::setw(14) << "recall min"
               << std::setw(10) << "rq"
               << std::setw(14) << "fallbacks"
-              << std::setw(14) << "ANN?"
+              << std::setw(16) << "policy"
               << "\n";
     for (const auto& s : summaries) {
-        const bool ann_candidate = s.search_p50_ms > ann_threshold_ms ||
-            s.context_p50_ms > ann_threshold_ms;
+        const std::string status = ann_policy_status(s,
+                                                     ann_threshold_ms,
+                                                     recall_avg_threshold,
+                                                     recall_min_threshold,
+                                                     ann_build_threshold_ms,
+                                                     ann_memory_threshold_mb);
         std::cout << std::left << std::setw(12) << s.records
                   << std::setw(20) << s.ann_mode
                   << std::setw(12) << s.fixture
+                  << std::setw(10) << s.tenant_count
                   << std::setw(13) << s.ann_max_candidates
                   << std::setw(8) << s.ann_oversample
                   << std::setw(8) << s.ann_tables
@@ -1044,12 +1169,20 @@ static void print_decision_table(const std::vector<BenchSummary>& summaries,
                   << std::setw(14) << s.recall_min_at_k
                   << std::setw(10) << s.recall_queries
                   << std::setw(14) << s.ann_fallback_count
-                  << std::setw(14) << (ann_candidate ? "candidate" : "scan-ok")
+                  << std::setw(16) << status
                   << "\n";
     }
     std::cout << "threshold: p50 search/context > "
               << std::fixed << std::setprecision(2)
               << ann_threshold_ms << " ms\n";
+    std::cout << "policy gates: recall_avg >= " << std::fixed
+              << std::setprecision(2) << recall_avg_threshold
+              << ", recall_min >= " << recall_min_threshold
+              << ", ann_build <= " << ann_build_threshold_ms << " ms";
+    if (ann_memory_threshold_mb > 0.0) {
+        std::cout << ", ann_memory <= " << ann_memory_threshold_mb << " MiB";
+    }
+    std::cout << "\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -1061,7 +1194,12 @@ int main(int argc, char* argv[]) {
         } else {
             summaries.push_back(run_once(args));
         }
-        print_decision_table(summaries, args.ann_threshold_ms);
+        print_decision_table(summaries,
+                             args.ann_threshold_ms,
+                             args.recall_avg_threshold,
+                             args.recall_min_threshold,
+                             args.ann_build_threshold_ms,
+                             args.ann_memory_threshold_mb);
         return 0;
     }
 
@@ -1079,6 +1217,11 @@ int main(int argc, char* argv[]) {
             summaries.push_back(run_once(run_args));
         }
     }
-    print_decision_table(summaries, args.ann_threshold_ms);
+    print_decision_table(summaries,
+                         args.ann_threshold_ms,
+                         args.recall_avg_threshold,
+                         args.recall_min_threshold,
+                         args.ann_build_threshold_ms,
+                         args.ann_memory_threshold_mb);
     return 0;
 }

@@ -8,6 +8,40 @@ image:
   tag: "1.27-alpine"
   pullPolicy: IfNotPresent
 
+# The compatibility suite uses nginx as a stand-in, so override the ZeptoDB
+# entrypoint arguments and disable ZeptoDB-only secret wiring explicitly.
+container:
+  command: ["nginx"]
+  args: ["-g", "daemon off;"]
+
+auth:
+  enabled: false
+
+cluster:
+  enabled: false
+  security:
+    enabled: false
+
+validation:
+  allowUnsafeStandaloneScale: true
+
+# nginx binds port 80 in this compatibility-only fixture. Production ZeptoDB
+# values keep the distroless nonroot UID and fsGroup defaults.
+podSecurityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  runAsGroup: 0
+  fsGroup: 0
+  fsGroupChangePolicy: Always
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+    add: [NET_BIND_SERVICE]
+
 nodeSelector:
   kubernetes.io/arch: arm64
 
@@ -31,9 +65,6 @@ config:
   queryCacheSize: 100
   parallelThreshold: 10000
 
-cluster:
-  enabled: false
-
 persistence:
   enabled: false
 
@@ -52,6 +83,7 @@ probes:
     failureThreshold: 2
 
 gracefulShutdown:
+  preStopCommand: ["/bin/sh", "-c", "sleep 5"]
   preStopSleepSeconds: 5
   terminationGracePeriodSeconds: 15
 

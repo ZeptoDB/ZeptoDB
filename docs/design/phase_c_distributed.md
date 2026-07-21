@@ -467,26 +467,61 @@ declared schemas into a temporary typed pipeline, and executing the original
 hash JOIN locally. This is not a full distributed SQL optimizer: large
 cross-node hash JOINs still belong to future cost-based planning.
 
-**Experiment 012 experimental boundary (updated 2026-06-21):** symbol-less
+**Experiment 012 experimental boundary (updated 2026-07-11):** symbol-less
 operational tables can use explicit table-level runtime placement instead of
 depending on `(stable_table_id, symbol_id=0)` ownership. `PartitionRouter`
 supports default table+symbol hashing, table-only hashing, and pinned-node
 placement. `POST /admin/table-placement` applies the runtime policy through
 `QueryCoordinator`, while `/stats` and Prometheus expose bounded small-table
-JOIN telemetry: candidates, accepted joins, row-cap rejections, non-cap
-errors, rows materialized, and the last left/right row counts. Experiment 012
+JOIN telemetry: candidates, accepted joins, row/byte/latency cap rejections,
+non-cap errors, rows and estimated bytes materialized, last left/right row
+counts, last estimated materialized bytes, and last latency. Experiment 012
 pins Action-Outcome query/recommendation/retrieval tables to node 8 and the
 suppression table to node 1, then verifies full distributed SQL/JOIN/window
-replay with zero row-cap rejections and zero small-table JOIN errors. This is
-an experimental runtime path: placement is not yet persisted in the schema
-catalog, is not a rebalance/failover policy, and does not promote broad
-distributed JOIN/window support.
+replay with zero row-cap rejections and zero small-table JOIN errors. The
+placement policy remains an experimental runtime path; devlog 217 adds
+catalog/DDL persistence for the placement metadata. `CREATE TABLE ... WITH
+(placement = hash_by_table)` and `WITH (placement = pinned_node, node_id = N)`
+store placement in the schema catalog, `QueryCoordinator` re-applies catalog
+placement after restart, and `POST /admin/table-placement` persists successful
+admin updates to the local schema catalog. A catalog write failure returns an
+error and restores the prior schema and router placement instead of reporting a
+non-durable success. `PURE_IN_MEMORY` explicitly treats catalog persistence as
+a successful no-op. Placement is still not a
+rebalance/failover policy and does not promote broad distributed JOIN/window
+support.
+
+**Bounded small-table JOIN product boundary (updated 2026-07-11):** the
+coordinator-local small-table hash JOIN path is promoted for its documented
+scope: simple declared-table hash JOINs over small operational/control tables.
+It is controlled by `SmallTableJoinConfig`, defaults to
+`BoundedBroadcast`, can be explicitly disabled, fetches each side under a
+per-side row cap, rejects attempts over an estimated materialized-byte cap, and
+can optionally reject attempts over a latency cap. Row and byte budgets shrink
+across nodes while results are fetched; remote response payloads are rejected
+before receive-buffer allocation when they exceed the remaining bounded-RPC
+allowance. This is a feature flag and
+guardrail, not a general optimizer rule. General distributed hash JOINs,
+broadcast dimension planning, and cost-based optimizer selection remain future
+work.
+
+**Cluster window materialization product boundary (updated 2026-07-11):**
+coordinator-local full-data materialization is promoted for bounded declared
+operational/control-table queries that require global row order or full-row
+visibility, including window functions, `FIRST`/`LAST`, `COUNT(DISTINCT)`, and
+non-decomposable statistical aggregates. It is controlled by
+`WindowMaterializationConfig`, defaults to `BoundedCoordinatorLocal`, can be
+explicitly disabled, fetches base rows under a row cap, rejects attempts over
+an estimated materialized-byte cap, and can optionally reject attempts over a
+latency cap. Row and byte budgets are cumulative across nodes and remote RPC
+payloads are bounded before allocation. Cap failures return explicit errors;
+the coordinator does not
+fall back to partial scatter semantics because that would produce incorrect
+window state. This is still not a general MPP window optimizer.
 
 Research-to-product promotion follows
 `docs/research/EXPERIMENT_GOVERNANCE.md`. Current promotion blockers are:
-persisted placement metadata, product limits for bounded small-table JOIN,
-telemetry and limits for full-data window materialization, and an explicit
-optimizer/cost rule before any larger cross-node JOIN claim.
+an explicit optimizer/cost rule before any larger cross-node JOIN/window claim.
 
 ---
 
@@ -601,9 +636,26 @@ HPA replica increase trigger Karpenter node provisioning normally.
   - Tier B: scatter-gather to all nodes → partial aggregation merge
 - `TcpRpcServer` / `TcpRpcClient` — POSIX socket transport
   - 24-byte `RpcHeader` (magic, type, request_id, payload_len, epoch)
+  - Protocol-v2 mutual shared-secret authentication: client nonce, fresh server
+    nonce plus HMAC-SHA256 server proof, HMAC-SHA256 client proof, then
+    `AUTH_OK`. Proofs are domain-separated, bind both nonces, and are compared
+    in constant time. Exact payload lengths are required, captured client
+    proofs cannot be replayed against a new server challenge, and legacy
+    one-message authentication payloads fail closed.
+  - `TcpRpcServer` and `TcpRpcClient` derive their default security config from
+    exactly one of `ZEPTO_CLUSTER_SECRET_FILE` or `ZEPTO_CLUSTER_SECRET`.
+    Configured authentication requires OpenSSL and a secret of at least 32
+    bytes. Production cluster CLIs require it unless the operator explicitly
+    selects `--allow-insecure-cluster`.
+  - Authentication does not encrypt payloads. RPC ports require a private
+    network or encrypted overlay/service mesh; native TCP TLS/mTLS remains a
+    promotion follow-up.
   - Binary `QueryResultSet` wire format (error, column names/types, packed int64 rows,
     plus an optional decoded string tail for `SYMBOL`/`STRING` columns so
-    node-local dictionary codes do not leak through distributed concat merge)
+    node-local dictionary codes do not leak through distributed concat merge).
+    Clients enforce a 64 MiB default response ceiling plus structural limits of
+    4,096 columns, 1,000,000 rows, and 1,000,000 decoded string cells before
+    allocating result vectors.
   - Binary `TypedRowMessage` write format for `TYPED_ROW_INGEST`, with a
     backwards-compatible optional tail carrying original `SYMBOL`/`STRING`
     text by column index; receivers reject inconsistent dictionary code/text

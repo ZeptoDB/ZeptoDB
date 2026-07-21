@@ -253,7 +253,14 @@ TEST(TableScopedPartitioning, SchemaRegistryPersistsAcrossRestart) {
     {
         SchemaRegistry r;
         ASSERT_TRUE(r.create("t_a", {{"x", ColumnType::INT64}}));
-        ASSERT_TRUE(r.create("t_b", {{"y", ColumnType::INT64}, {"z", ColumnType::INT32}}));
+        TablePlacementOptions placement;
+        placement.configured = true;
+        placement.mode = TablePlacementMode::PinnedNode;
+        placement.node_id = 8;
+        ASSERT_TRUE(r.create("t_b",
+                             {{"y", ColumnType::INT64},
+                              {"z", ColumnType::INT32}},
+                             placement));
         ASSERT_TRUE(r.set_ttl("t_b", 3600LL * 1'000'000'000LL));
         r.mark_has_data("t_a");
         ASSERT_TRUE(r.save_to(path));
@@ -272,6 +279,9 @@ TEST(TableScopedPartitioning, SchemaRegistryPersistsAcrossRestart) {
         EXPECT_TRUE(a->has_data);
         EXPECT_FALSE(b->has_data);
         EXPECT_EQ(b->ttl_ns, 3600LL * 1'000'000'000LL);
+        EXPECT_TRUE(b->placement.configured);
+        EXPECT_EQ(b->placement.mode, TablePlacementMode::PinnedNode);
+        EXPECT_EQ(b->placement.node_id, 8u);
         EXPECT_EQ(b->columns.size(), 2u);
         EXPECT_EQ(b->columns[0].name, "y");
         // next_table_id_ must be > max(loaded table_id); creating a new one
@@ -284,6 +294,89 @@ TEST(TableScopedPartitioning, SchemaRegistryPersistsAcrossRestart) {
 
     std::error_code ec;
     fs_tsp::remove_all(tmp, ec);
+}
+
+TEST(TableScopedPartitioning, SchemaRegistryRejectsCorruptionAtomically) {
+    using namespace zeptodb::storage;
+    const auto tmp = fs_tsp::temp_directory_path() /
+        ("zepto_tsp_registry_corrupt_" +
+         std::to_string(std::chrono::steady_clock::now()
+                            .time_since_epoch().count()));
+    fs_tsp::create_directories(tmp);
+    const std::string path = (tmp / "_schema.json").string();
+
+    SchemaRegistry registry;
+    ASSERT_TRUE(registry.create("live", {{"value", ColumnType::INT64}}));
+    const uint16_t live_id = registry.get_table_id("live");
+
+    const std::vector<std::string> invalid_catalogs = {
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1)",
+        R"({"next_table_id":2,"tables":[]} trailing)",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1,"ttl_ns":0,"has_data":0,"columns":[{"name":"v","type":99}]}]})",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":0,"ttl_ns":0,"has_data":0,"columns":[]}]})",
+        R"({"next_table_id":3,"tables":[{"name":"a","table_id":1,"ttl_ns":0,"has_data":0,"columns":[]},{"name":"b","table_id":1,"ttl_ns":0,"has_data":0,"columns":[]}]})",
+        R"({"next_table_id":3,"tables":[{"name":"a","table_id":1,"ttl_ns":0,"has_data":0,"columns":[]},{"name":"a","table_id":2,"ttl_ns":0,"has_data":0,"columns":[]}]})",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1,"ttl_ns":0,"has_data":0,"columns":[{"name":"v"}]}]})",
+        R"({"next_table_id":2,"tables":[{"table_id":1,"ttl_ns":0,"has_data":0,"columns":[{"name":"nested_name","type":0}]}]})",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1,"ttl_ns":-1,"has_data":0,"columns":[]}]})",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1x,"ttl_ns":0,"has_data":0,"columns":[]}]})",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1,"ttl_ns":0,"has_data":0,"columns":[{"name":"v","type":0},{"name":"v","type":0}]}]})",
+        R"({"next_table_id":2,"tables":[{"name":"t","table_id":1,"ttl_ns":0,"has_data":0,"columns":[],"unexpected":1}]})",
+    };
+
+    for (const auto& payload : invalid_catalogs) {
+        {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(output.good());
+            output << payload;
+        }
+        EXPECT_EQ(registry.load_from_checked(path),
+                  SchemaCatalogLoadResult::Invalid)
+            << payload;
+        EXPECT_EQ(registry.table_count(), 1u);
+        EXPECT_EQ(registry.get_table_id("live"), live_id);
+    }
+
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(output.good());
+        output << R"({"next_table_id":2,"tables":[{"name":"columns","table_id":1,"ttl_ns":0,"has_data":0,"columns":[{"name":"name","type":0}]}]})";
+    }
+    EXPECT_EQ(registry.load_from_checked(path),
+              SchemaCatalogLoadResult::Loaded);
+    const auto keyword_schema = registry.get("columns");
+    ASSERT_TRUE(keyword_schema.has_value());
+    ASSERT_EQ(keyword_schema->columns.size(), 1u);
+    EXPECT_EQ(keyword_schema->columns[0].name, "name");
+
+    std::error_code error;
+    fs_tsp::remove_all(tmp, error);
+}
+
+TEST(TableScopedPartitioning, TieredPipelineFailsOnCorruptCatalog) {
+    const auto tmp = fs_tsp::temp_directory_path() /
+        ("zepto_tsp_pipeline_corrupt_" +
+         std::to_string(std::chrono::steady_clock::now()
+                            .time_since_epoch().count()));
+    fs_tsp::create_directories(tmp);
+    {
+        std::ofstream output(tmp / "_schema.json",
+                             std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(output.good());
+        output << R"({"next_table_id":2,"tables":[)";
+    }
+
+    PipelineConfig config;
+    config.storage_mode = StorageMode::TIERED;
+    config.hdb_base_path = tmp.string();
+    EXPECT_THROW(
+        {
+            ZeptoPipeline pipeline(config);
+        },
+        std::runtime_error);
+
+    std::error_code error;
+    fs_tsp::remove_all(tmp, error);
 }
 
 TEST(HDBFileHeader, V1BackwardCompatibleRead) {
@@ -500,8 +593,9 @@ TEST(ClusterRouting, ScatterGatherWithDurableSchemaRegistry) {
 // ----------------------------------------------------------------------------
 // Before: `save_to` took a shared_lock and wrote to a fixed `.tmp` suffix.
 // Two concurrent DDL callers could race on the tmp file / rename.
-// After: unique_lock serialises saves, and the tmp suffix is per-(pid,tid)
-// so cross-process writers never collide.
+// After: a dedicated save mutex serialises the full snapshot/write/rename
+// sequence, and the tmp suffix is per-(pid,tid) so cross-process writers never
+// collide or allow an older in-process snapshot to overwrite a newer one.
 // ============================================================================
 #include <atomic>
 #include <thread>
@@ -514,39 +608,38 @@ TEST(TableScopedPartitioning, SchemaRegistrySaveConcurrentSafe) {
          std::to_string(static_cast<unsigned long long>(
              std::chrono::steady_clock::now().time_since_epoch().count())));
     fs_d::create_directories(tmp);
-    const std::string path = (tmp / "_schema.json").string();
-
-    zeptodb::storage::SchemaRegistry reg;
+    constexpr int kRounds = 3;
     constexpr int kThreads = 8;
     constexpr int kPerThread = 10;
 
-    std::atomic<int> save_fails{0};
-    std::vector<std::thread> workers;
-    workers.reserve(kThreads);
-    for (int t = 0; t < kThreads; ++t) {
-        workers.emplace_back([&, t] {
-            for (int i = 0; i < kPerThread; ++i) {
-                std::string name = "t_" + std::to_string(t) + "_" + std::to_string(i);
-                reg.create(name, {});
-                if (!reg.save_to(path)) save_fails.fetch_add(1);
-            }
-        });
+    for (int round = 0; round < kRounds; ++round) {
+        const std::string path =
+            (tmp / ("_schema_" + std::to_string(round) + ".json")).string();
+        zeptodb::storage::SchemaRegistry reg;
+        std::atomic<int> save_fails{0};
+        std::vector<std::thread> workers;
+        workers.reserve(kThreads);
+        for (int t = 0; t < kThreads; ++t) {
+            workers.emplace_back([&, t] {
+                for (int i = 0; i < kPerThread; ++i) {
+                    const std::string name = "t_" + std::to_string(t) + "_" +
+                                             std::to_string(i);
+                    reg.create(name, {});
+                    if (!reg.save_to(path)) save_fails.fetch_add(1);
+                }
+            });
+        }
+        for (auto& worker : workers) worker.join();
+
+        ASSERT_EQ(save_fails.load(), 0);
+
+        // Do not take a final corrective save: the last concurrent saver must
+        // already contain every mutation whose worker has completed.
+        zeptodb::storage::SchemaRegistry reloaded;
+        ASSERT_TRUE(reloaded.load_from(path));
+        EXPECT_EQ(reloaded.table_count(),
+                  static_cast<size_t>(kThreads * kPerThread));
     }
-    for (auto& w : workers) w.join();
-
-    // No save should have failed outright (tmp-collision used to corrupt).
-    EXPECT_EQ(save_fails.load(), 0);
-
-    // Concurrent saves must not corrupt the file. Take one final serialized
-    // snapshot after all CREATEs so the loaded catalog represents final state,
-    // not whichever worker happened to save last during the race.
-    ASSERT_TRUE(reg.save_to(path));
-
-    // Final load must parse and contain all kThreads * kPerThread tables.
-    zeptodb::storage::SchemaRegistry reloaded;
-    ASSERT_TRUE(reloaded.load_from(path));
-    EXPECT_EQ(reloaded.table_count(),
-              static_cast<size_t>(kThreads * kPerThread));
 
     std::error_code ec;
     fs_d::remove_all(tmp, ec);

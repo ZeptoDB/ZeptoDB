@@ -35,7 +35,9 @@ class Logger {
 public:
     static Logger& instance();
 
-    // 초기화 (파일 경로, 레벨, 로테이션 설정)
+    // Initialize file + stdout logging. If the rotating file sink cannot be
+    // opened, initialization continues with stdout only and emits a bootstrap
+    // warning to stderr.
     void init(const std::string& log_dir = "/var/log/zeptodb",
               LogLevel level = LogLevel::INFO,
               size_t max_file_size_mb = 100,

@@ -1,16 +1,87 @@
-replicaCount: 3
+# Standalone mode is a single database process. Running multiple standalone
+# replicas behind one Service would split writes across independent stores.
+# Set cluster.enabled=true and choose an explicit replica count for scale-out.
+replicaCount: 1
 
 image:
   repository: zeptodb/zeptodb
-  tag: "0.0.2"
+  tag: "0.1.8"
+  # Set to the published `sha256:...` value at release time to override tag
+  # selection with an immutable image reference.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 
 service:
-  type: LoadBalancer
+  # ClusterIP is deliberate: terminate TLS and enforce network policy at an
+  # operator-managed ingress/load balancer before exposing the HTTP endpoint.
+  type: ClusterIP
   port: 8123
   sessionAffinity: ClientIP
+
+networkPolicy:
+  # Requires a CNI that enforces Kubernetes NetworkPolicy. This default limits
+  # ingress to the release namespace; add narrowly scoped peers for a TLS
+  # ingress controller or a Prometheus instance in another namespace.
+  enabled: true
+  http:
+    allowSameNamespace: true
+    # Each entry is a Kubernetes NetworkPolicyPeer. Example:
+    # - namespaceSelector:
+    #     matchLabels:
+    #       kubernetes.io/metadata.name: ingress-nginx
+    #   podSelector:
+    #     matchLabels:
+    #       app.kubernetes.io/name: ingress-nginx
+    additionalSources: []
+
+# HTTP authentication is fail-closed by default. When existingSecret is empty,
+# Helm creates and retains a bootstrap admin credential across upgrades. An
+# existing Secret must contain all three keys named below. Only apiKeysKey is
+# mounted into the database pod. The operator retrieves adminKeyKey explicitly;
+# the ServiceMonitor reads metricsKeyKey as a metrics-role Bearer credential.
+auth:
+  enabled: true
+  existingSecret: ""
+  apiKeysKey: api-keys
+  adminKeyKey: admin-api-key
+  metricsKeyKey: metrics-api-key
+  mountPath: /run/secrets/zeptodb-auth/api_keys.txt
+  # Change this opaque value after rotating an externally managed Secret to
+  # force a workload restart. The process loads the key store only at startup.
+  rolloutChecksum: ""
+
+# Optional command/argument overrides for custom images. Empty values use the
+# chart's production ZeptoDB arguments.
+container:
+  command: []
+  args: []
+
+validation:
+  # Test harnesses that substitute a non-ZeptoDB image may opt out. Never set
+  # this for a real ZeptoDB standalone deployment.
+  allowUnsafeStandaloneScale: false
+
+# The production images use the distroless nonroot UID. fsGroup makes newly
+# provisioned PVCs writable without a privileged chmod init container.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# ZeptoDB does not require Linux capabilities or a Kubernetes API token for the
+# current static topology. Future API-based discovery must opt in explicitly.
+automountServiceAccountToken: false
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
 
 headless:
   enabled: true
@@ -19,16 +90,15 @@ resources:
   # Defaults sized for mid-size factory / trading workloads (~200K–500K ticks/s).
   # Right-size per sector — see docs/operations/KUBERNETES_OPERATIONS.md
   # "Sizing and placement for enterprise factory workloads" section.
-  # For bare-metal trading (Guaranteed QoS + cpuset pinning), set
-  # requests.cpu == limits.cpu and keep hugepages-2Mi on both sides.
+  # For bare-metal trading (Guaranteed QoS + cpuset pinning), use a reviewed
+  # overlay with requests.cpu == limits.cpu. HugePages are intentionally absent
+  # from the portable defaults because nodes must reserve them before pods run.
   requests:
     cpu: "2000m"          # 2 cores — covers N drain threads + HTTP/RPC
     memory: "4Gi"         # 4 GiB — 32 MB arena × hundreds of partitions + ring buffers
-    hugepages-2Mi: "4Gi"
   limits:
     cpu: "4000m"          # allow burst to 4 cores under ingest spike
     memory: "8Gi"
-    hugepages-2Mi: "4Gi"
 
 config:
   port: 8123
@@ -59,9 +129,25 @@ cluster:
   enabled: false
   rpcPortOffset: 100       # rpc_port = service.port + offset
   heartbeatPort: 9100
+  security:
+    # Mutual shared-secret authentication protects cluster peer identity but
+    # does not encrypt RPC payloads. Keep RPC on a private network.
+    enabled: true
+    existingSecret: ""
+    secretKey: cluster-secret
+    mountPath: /run/secrets/zeptodb-cluster/cluster-secret
+    # Change only as part of a coordinated cluster-secret rotation. Mixed old
+    # and new processes cannot authenticate each other during a rolling restart.
+    rolloutChecksum: ""
 
 persistence:
-  enabled: true
+  # Portable defaults are deliberately in-memory. A PVC and tiered HDB path do
+  # not yet provide complete SQL-visible restart durability: hot-partition WAL
+  # coverage/recovery and HDB-row merging into general SQL reads remain open.
+  enabled: false
+  # Required to mount a PVC for durability evaluation before those promotion
+  # blockers close. This is not a production-readiness assertion.
+  acknowledgeIncompleteDurability: false
   storageClass: gp3
   size: 500Gi
   accessMode: ReadWriteOnce
@@ -81,12 +167,17 @@ probes:
     failureThreshold: 2
 
 gracefulShutdown:
+  # The distroless production image has no /bin/sh. Leave empty to rely on
+  # SIGTERM handling; custom images may supply an explicit preStop command.
+  preStopCommand: []
   preStopSleepSeconds: 15
   terminationGracePeriodSeconds: 30
 
 autoscaling:
-  enabled: true
-  minReplicas: 3
+  # Disabled until StatefulSet peer discovery dynamically tracks new ordinals.
+  # Static startup peer lists make HPA-created cluster members incomplete.
+  enabled: false
+  minReplicas: 1
   maxReplicas: 10
   targetCPU: 70
   targetMemory: 80
@@ -121,20 +212,28 @@ topologySpread:
 
 podDisruptionBudget:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1
 
 updateStrategy:
-  maxSurge: 1
-  maxUnavailable: 0
+  # RWO volumes cannot be attached to an old and replacement pod on different
+  # nodes at the same time. Stop the old standalone pod before replacement.
+  maxSurge: 0
+  maxUnavailable: 1
 
 prometheus:
-  scrape: true
+  # Pod annotations cannot attach the required Bearer credential. Use the
+  # credential-aware ServiceMonitor below, or an equivalent external config.
+  scrape: false
   port: 8123
   path: /metrics
 
 serviceMonitor:
   enabled: false
   interval: 15s
+  authorization:
+    # Required with auth.enabled=true. The generated metrics-only credential is
+    # referenced from the auth Secret without mounting the raw token in the pod.
+    enabled: true
 
 nodeSelector: {}
 tolerations: []
@@ -158,9 +257,10 @@ extraEnv: []
 performanceTuning:
   hostNetwork: false       # true → bypass CNI for cluster RPC (requires dnsPolicy override)
   hugepages:
-    enabled: true
+    # Opt in only on nodes with an audited pre-reserved HugePages pool and add
+    # matching hugepages-2Mi requests/limits in the same values overlay.
+    enabled: false
     size: "2Mi"
-    amount: "4Gi"
 
 # ---------------------------------------------------------------------------
 # Karpenter (Fleet API) — replaces Cluster Autoscaler
@@ -283,18 +383,23 @@ coldTier:
 # and forwards every tick to the correct storage pod via the
 # CoordinatorRoutingAdapter (devlog 111). Owns zero data.
 #
-# Enable with: --set ingest.enabled=true
+# The current binary cannot authenticate clients, so this workload is blocked
+# from production rendering. An isolated benchmark must opt into noAuth and
+# provide storage routes explicitly:
 # Storage node discovery is not yet automatic — pass storage peers explicitly
 # via extraArgs until the discovery init container lands (see
 # docs/devlog/113_stateless_ingest_node.md):
 #
 #   --set ingest.enabled=true \
+#   --set ingest.noAuth=true \
 #   --set-string 'ingest.extraArgs={--add-node,0:zeptodb-0.zeptodb-headless:8123,--add-node,1:zeptodb-1.zeptodb-headless:8123}'
 # ---------------------------------------------------------------------------
 ingest:
   enabled: false
   replicas: 2
-  noAuth: true
+  # zepto_ingest_node does not yet load the shared API-key store. false is the
+  # fail-closed default; true is an explicit isolated benchmark/dev override.
+  noAuth: false
   extraArgs: []
   service:
     type: ClusterIP

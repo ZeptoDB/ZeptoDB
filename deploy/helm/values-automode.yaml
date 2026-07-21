@@ -1,4 +1,4 @@
-# deploy/helm/values-automode.yaml — EKS Auto Mode deployment values
+# deploy/helm/values-automode.yaml — EKS Auto Mode test deployment values
 # Usage: helm install zeptodb ./deploy/helm/zeptodb -n zeptodb -f deploy/helm/values-automode.yaml
 
 replicaCount: 3
@@ -27,6 +27,10 @@ cluster:
   rpcPortOffset: 100
   heartbeatPort: 9100
 
+# Explicit benchmark/test exception. Never reuse this overlay for production.
+auth:
+  enabled: false
+
 persistence:
   enabled: false    # Use emptyDir for testing
 
@@ -48,6 +52,6 @@ karpenter:
   enabled: false    # Auto Mode manages Karpenter internally
 
 service:
-  type: LoadBalancer
+  type: ClusterIP
   port: 8123
   sessionAffinity: None

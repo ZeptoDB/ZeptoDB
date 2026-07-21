@@ -1,0 +1,41 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "zeptodb.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zeptodb.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "zeptodb.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if or .Values.networkPolicy.http.allowSameNamespace .Values.networkPolicy.http.additionalSources }}
+    - ports:
+        - port: http
+          protocol: TCP
+      from:
+        {{- if .Values.networkPolicy.http.allowSameNamespace }}
+        - podSelector: {}
+        {{- end }}
+        {{- with .Values.networkPolicy.http.additionalSources }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    {{- end }}
+    {{- if or .Values.cluster.enabled .Values.ingest.enabled }}
+    # Only pods from this Helm release may initiate unencrypted cluster RPC or
+    # heartbeat traffic. This provides isolation, not payload encryption.
+    - ports:
+        - port: {{ add .Values.config.port .Values.cluster.rpcPortOffset }}
+          protocol: TCP
+        - port: {{ .Values.cluster.heartbeatPort }}
+          protocol: UDP
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "zeptodb.selectorLabels" . | nindent 14 }}
+    {{- end }}
+{{- end }}

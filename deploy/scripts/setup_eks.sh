@@ -150,7 +150,7 @@ kubectl create namespace zeptodb 2>/dev/null || true
 helm upgrade --install zeptodb "${HELM_DIR}" \
   --namespace zeptodb \
   --set image.repository=zeptodb/zeptodb \
-  --set image.tag=0.0.2 \
+  --set image.tag=0.1.8 \
   --set karpenter.enabled=false \
   --wait --timeout 5m
 

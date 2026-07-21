@@ -90,7 +90,7 @@ public:
     /// Load a JWT string without signature verification (test-only).
     bool load_from_jwt_string_for_testing(const std::string& jwt);
 
-    /// Startup banner line, e.g. "ZeptoDB v0.1.0 (Enterprise — Acme Corp, 16 nodes, expires 2027-04-01)"
+    /// Startup banner line, e.g. "ZeptoDB vX.Y.Z (Enterprise — Acme Corp, 16 nodes, expires 2027-04-01)"
     std::string statusLine() const;
 
     /// Multi-line startup banner with optional upgrade hint for Community.

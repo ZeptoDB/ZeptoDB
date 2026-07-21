@@ -97,89 +97,110 @@ Timestamps within each partition are monotonically increasing (append-only). The
 
 Related code: `Partition::timestamp_range()`, `Partition::overlaps_time_range()`, `QueryExecutor::extract_time_range()`
 
-## 7. Data Durability — Intra-day Snapshot & Recovery
+## 7. RDB Snapshot and Recovery Boundary
 
-**Status:** ✅ Implemented (2026-03-23)
+**Status:** Graceful-restart path implemented; abrupt-crash durability is not
+promoted (hardened 2026-07-19).
 
-### Problem
+### 7.1 Generation publication
 
-ZeptoDB is an in-memory database. Without explicit persistence:
-- A process crash or node restart loses all RDB (ACTIVE partition) data since the last EOD flush.
-- SEALED partitions are only written to HDB by `FlushManager` on memory pressure — not on a time-based schedule.
+`FlushManager` writes every non-empty RDB partition, including ACTIVE
+partitions, into a new immutable generation. It publishes that generation only
+after every column succeeds:
 
-### Design
-
-Two orthogonal mechanisms together close the data loss window to at most `snapshot_interval_ms` (default 60 s):
-
-#### 7.1 Intra-day Auto-Snapshot
-
-`FlushManager` (background thread) writes a **binary snapshot** of every partition — including ACTIVE partitions that have not yet been sealed — to a configurable `snapshot_path` directory.
-
-```
-{snapshot_path}/{symbol_id}/{hour_epoch}/{col}.bin
-```
-
-The snapshot uses the same LZ4-compressed binary format as HDB flush (`HDBWriter::snapshot_partition()`), but skips the sealed-state check. Files are overwritten on every snapshot cycle, making recovery deterministic.
-
-**Config:**
-```cpp
-FlushConfig cfg;
-cfg.enable_auto_snapshot  = true;
-cfg.snapshot_interval_ms  = 60'000;   // 60s default
-cfg.snapshot_path         = "/var/zeptodb/snap";
+```text
+{snapshot_path}/
+  CURRENT
+  generations/
+    gen-{time}-{pid}-{sequence}/
+      _COMPLETE
+      {symbol_id}/{hour_epoch}/{column}.bin
+      t{table_id}/{symbol_id}/{hour_epoch}/{column}.bin
 ```
 
-**Manual trigger:**
-```cpp
-flush_manager->snapshot_now();  // synchronous
-```
+`_COMPLETE` records the generation name plus its partition and row totals.
+`CURRENT` is written to a temporary file and renamed after `_COMPLETE` exists.
+A partially written generation is therefore never mixed with the previously
+published generation. The previous generation is retained during cleanup.
 
-**Implementation:** `src/storage/flush_manager.cpp` — `do_snapshot()`, `snapshot_now()`
-
-Timer check is inside `flush_loop()`:
-```
-every check_interval_ms:
-  → do_flush_sealed()          // existing SEALED flush
-  → if now - last_snapshot ≥ snapshot_interval_ms → do_snapshot()
-```
-
-#### 7.2 Recovery on Restart
-
-When `PipelineConfig::enable_recovery = true`, `ZeptoPipeline::start()` reloads the snapshot directory **before** starting drain threads. Recovery is safe at all `StorageMode` levels (PURE_IN_MEMORY, TIERED, PURE_ON_DISK).
+Column files use the HDB v2 format. Each column is also written to a unique
+temporary file and renamed, and snapshot writing pins the partition set, then
+holds each partition write lock while verifying that every column has the same
+non-zero row count and a valid type. Create/evict operations may proceed while
+pinned objects remain alive. Periodic snapshots are per-partition consistent,
+not a cross-partition transactional point-in-time cut.
 
 ```cpp
-PipelineConfig cfg;
-cfg.enable_recovery          = true;
-cfg.recovery_snapshot_path   = "/var/zeptodb/snap";
-
-ZeptoPipeline pipeline(cfg);
-pipeline.start();  // reads snapshot → store_tick() each row → starts drain
+FlushConfig flush;
+flush.enable_auto_snapshot = true;
+flush.snapshot_interval_ms = 60'000;
+flush.snapshot_path = "/var/lib/zeptodb/_rdb_snapshots";
 ```
 
-Recovery path:
-1. `std::filesystem::directory_iterator` enumerates `{snap}/{symbol}/{hour}` directories.
-2. `HDBReader::read_column()` mmap-reads `timestamp`, `price`, `volume`, `msg_type`.
-3. Each row reconstructed as `TickMessage` and replayed via `store_tick()`.
-4. Drain threads start after all rows are loaded — no concurrency hazard.
+`ZeptoPipeline::stop()` stops the flush worker, joins the drain workers, drains
+the remaining ingest queue, and then publishes one final generation. It returns
+`false` if that final publication fails. An empty final generation is valid and
+supersedes older non-empty state. Embedders must quiesce external producers
+first; the HTTP server stops its listener before it stops the pipeline.
 
-**Implementation:** `src/core/pipeline.cpp` — `ZeptoPipeline::start()` recovery block
+### 7.2 Fail-closed recovery
 
-### Guarantees
+With `PipelineConfig::enable_recovery`, `start()` resolves only the generation
+named by `CURRENT` before any worker starts. A referenced partial/corrupt
+generation aborts startup; recovery does not silently skip a partition or fall
+back to a different generation.
 
-| Property | Value |
-|----------|-------|
-| Max data loss window | ≤ `snapshot_interval_ms` (default 60 s) |
-| Snapshot overhead | Negligible — sequential write, same thread as flush_loop |
-| Recovery time | Proportional to snapshot size (mmap → store_tick) |
-| Thread safety | Recovery runs single-threaded before drain threads start |
-| Storage format | Same binary `.bin` as HDB — no additional format |
+Validation includes:
 
-### Integration Test Coverage
+- bounded `CURRENT` and `_COMPLETE` manifests and path-safe generation names;
+- exact HDB header/payload sizes, supported compression/type values, and
+  overflow-safe `row_count * element_size` checks;
+- exact table id, required/only-expected columns, column types, equal row
+  counts, canonical route directories, hour routing, and named `symbol`
+  routing when the schema carries that column;
+- exact recovered partition/row totals matching `_COMPLETE`.
 
-| Test | What is verified |
-|------|-----------------|
-| `HDBTest.AutoSnapshot_CreatesFiles` | `snapshot_now()` creates `price.bin` in snapshot dir for ACTIVE partition |
-| `HDBTest.Recovery_ReloadsData` | New pipeline with `enable_recovery=true` restores all 50 rows from snapshot |
+Legacy table-id 0 tick partitions and schema-backed numeric, floating-point,
+timestamp, and boolean tables are replayed into RDB. This makes their rows
+visible to the normal `QueryExecutor` SQL path after a graceful restart.
+Generation publication rejects `STRING`/`SYMBOL` columns, and recovery rejects
+such columns in an existing generation, because the process-wide
+`StringDictionary` does not yet have a durable snapshot format. Graceful stop
+therefore reports failure instead of publishing a generation it cannot reload.
+
+### 7.3 Explicit non-guarantees
+
+- Column data and snapshot-directory renames are not followed by the complete
+  file-and-directory `fsync` sequence needed for a power-loss guarantee.
+- Column payloads do not carry checksums, so structurally valid silent bit
+  corruption is outside the current detection guarantee.
+- The ingestion WAL is not wired into this pipeline recovery path, so rows
+  newer than the last successfully published generation can be lost on an
+  abrupt process/node failure. No 60-second maximum-loss SLA is claimed.
+- General SQL still does not merge arbitrary HDB-only partitions. Tiered
+  pipelines therefore default `reclaim_after_flush` to `false`, reject
+  `reclaim_after_flush=true`, and reject memory-limit eviction. Retained RDB
+  rows trade bounded memory for query correctness until HDB merge lands.
+- The schema catalog is persisted separately. Its own atomic validation is
+  required, but snapshots are not a general multi-table transaction mechanism.
+- A snapshot root has one pipeline writer. Publication does not coordinate
+  multiple processes that share the same root.
+
+### 7.4 Focused coverage
+
+| Test | Evidence |
+|------|----------|
+| `HDBTest.GracefulStopSnapshotRestoresGeneralSqlRows` | SQL write, final stop snapshot, destroy/recreate, recovery, `COUNT` and `SUM` through `QueryExecutor` |
+| `HDBTest.GracefulStopReportsSnapshotPublicationFailure` | A blocked snapshot path makes graceful stop return failure |
+| `HDBTest.GracefulStopRejectsDictionarySnapshot` | Unsupported dictionary columns fail shutdown publication instead of creating an unrecoverable generation |
+| `HDBTest.RecoveryRejectsCorruptPublishedGeneration` | Truncated referenced column aborts startup before workers start |
+| `HDBTest.RecoveryIgnoresUnpublishedPartialGeneration` | An unreferenced partial generation cannot contaminate the published snapshot |
+| `HDBTest.RecoveryRejectsUnexpectedPublishedContent` | Unexpected files/directories in a published generation fail recovery closed |
+| `HDBTest.EmptyGracefulSnapshotSupersedesPriorState` | Empty generations publish and recover as empty |
+| `HDBTest.TieredPipelineRejectsPostFlushReclaim` | Unsupported reclaim configuration fails at construction |
+| `HDBTest.PipelineRejectsUnsafeDurabilityConfiguration` | Missing HDB path, tiered eviction, and zero snapshot intervals fail at construction |
+| `HDBTest.SnapshotVisitorPinsPartitionAcrossConcurrentEviction` | Snapshot callbacks retain partition lifetime without blocking concurrent eviction |
+| `HDBTest.SnapshotRejectsZeroFirstColumnWithNonEmptyPeer` | A malformed partition cannot masquerade as a valid empty snapshot |
 
 ---
 
@@ -207,7 +228,12 @@ offset  size  field
  34     6     reserved[6] (zero)
 ```
 
-Readers dispatch on the `version` byte at offset 5: v1 files are read with a 32-byte header and `table_id` is forced to `0`. v2 files read the full 40 bytes. A caller passing `table_id != 0` to `HDBReader::read_column` will be rejected if the on-disk header carries a different `table_id` (cross-table leak guard).
+Readers dispatch on the `version` byte at offset 5: v1 files are read with a
+32-byte header and `table_id` is forced to `0`; v2 files read the full 40 bytes.
+The requested directory scope and header table id must match exactly. Readers
+also reject unknown types/compression, zero or overflowing dimensions,
+truncated/trailing payloads, and uncompressed-size/row-count disagreement
+before exposing a span.
 
 ### 8.1 Directory Layout
 

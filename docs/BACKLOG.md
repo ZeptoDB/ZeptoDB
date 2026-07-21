@@ -1,19 +1,138 @@
 # ZeptoDB Backlog
 
 > Completed features: [`COMPLETED.md`](COMPLETED.md) | latest local C++ gate:
-> x86_64 reported 0 failed out of 1727 run tests
+> x86_64 reported 0 failed out of 1742 run tests
 > (`ctest -E "Benchmark\.|K8s"`); the default suite has no disabled tests.
 > Latest live S3 opt-in smoke passed separately, 2/2, with temporary bucket
 > cleanup verified. aarch64 is covered by the Graviton CI gate on PR/main.
 >
-> Last cleaned: 2026-07-10
+> Last cleaned: 2026-07-19
 >
-> Devlog: last `214_release_docker_multiarch_and_perf_smoke.md` -> next `215_*.md`
+> Devlog: last `234_physical_ai_vla_trajectory_window_preflight.md`
+> -> next `235_*.md`
 
 ---
 
 ## Recent completions (last 2 weeks)
 
+- ✅ **P3 Physical AI VLA trajectory-window preflight, Experiment 035**
+  (devlog 234) — exact Experiment 034 evidence and pinned source metadata
+  contracts passed a local research diagnostic, then failed closed before
+  bank/VLA/EKS work.
+  Source contact and source-aligned semantic phase are not observable, and
+  suite task 0's candidate-plus-cooldown ceiling under the frozen Experiment
+  034 precheck mask is 65/377 (17.24%), below its required
+  76/377. No cloud resources or retrieved actions were used; this is not safety
+  evidence.
+- ✅ **P3 Physical AI VLA task-attribution correction, Experiments 033-034**
+  (devlogs 232-233) — Experiment 034 reproduced all 595 shadow steps and 127
+  candidate rows while correcting suite 0 -> manifest 5 and suite 5 ->
+  manifest 9. The 58 missing-memory outcomes are suite-task-5 open-hold demand
+  against manifest-task-9 open-hold count zero. No retrieved action executed
+  and AWS cleanup passed. Separability remains underpowered and source/time
+  confounded; this is not routing or safety evidence.
+- ✅ **P3 Physical AI VLA calibration failure attribution, Experiment 032**
+  (devlog 231) — all 48 counterfactual grid rows failed reuse and projected
+  latency. Cooldown capped 127 candidates at 65/595 (10.9%), while the
+  configured negative veto matched 123/127 and left two actions after
+  cooldown. All candidates came from task 0 `open_hold`; ZeptoDB search p95
+  was 7.741 ms. The diagnostic passed with zero routed actions and complete
+  AWS cleanup; calibration remained non-viable.
+- ✅ **P3 Physical AI risk-partitioned calibration, Experiment 031**
+  (devlog 230) — only 127/595 observations passed precheck and none of 48
+  confidence/margin regions was viable, so held-out and routed execution did
+  not start. Experiment 032 reproduced its preserved anchors and showed that
+  the observed structural ceilings and configured gates precluded the target.
+- ✅ **P3 Physical AI confidence-safety dual gate, Experiment 030**
+  (devlog 229) — safety alone classified 22.0% of shadow observations low
+  risk, but confidence, safety, and cooldown overlapped on only 1.6%.
+  Accepted action MAE p95 was 0.0981; routed execution stopped at preflight
+  because the slice was too small for practical compute savings.
+- ✅ **P3 Physical AI VLA trajectory-cause validation, Experiment 029**
+  (devlog 228) — 14 exact-state forks found measurable state/pixel drift and
+  0.960 action-error/state-drift correlation, but no retrieval effect:
+  control and historical branches both remained eligible 94.6% of the time.
+  Immediate one-action confidence collapse does not explain Experiment 028.
+- ✅ **P3 Physical AI VLA skip-region discovery, Experiment 028**
+  (devlog 227) — task-partitioned shadow calibration found a region with 28.8%
+  projected skips and 25.8% projected latency reduction. The two-task
+  closed-loop pilot had zero paired regressions but only 13.3% actual skips,
+  so the staged gate stopped before the remaining eight tasks. The pilot
+  latency comparison had a timer-scope mismatch and is not evidence.
+- ✅ **P3 Physical AI VLA closed-loop validation, Experiment 027**
+  (devlog 226) — completed paired real-simulator execution on all ten
+  LIBERO-10 tasks. Direct and routed paths both succeeded 5/10 with zero
+  paired regressions, but the fixed offline threshold produced zero skips and
+  100% fallback; routed mean latency was 3.4% higher and GPU time 2.6% higher.
+  This is a completed negative research result, not a promoted router.
+- ✅ **P3 Physical AI real-VLA early exit, Experiment 026**
+  (devlog 225) — the pinned SmolVLA baseline and ZeptoDB-routed path ran on an
+  NVIDIA L40S with disjoint 50-query calibration/evaluation splits. The routed
+  path skipped 50/50 evaluation VLA calls, reduced mean decision latency by
+  97.9% and online GPU time by 98.5%, and remained inside the offline
+  normalized-action-MAE limit. Closed-loop task success remains open.
+- ✅ **P3 Physical AI real-vision EKS retrieval, Experiment 025**
+  (devlog 224) — encoded 290 held-out/memory LIBERO frames with SigLIP on an
+  NVIDIA L40S and searched 190 memories through real ZeptoDB Agent Memory.
+  Image-plus-instruction retrieval reached 0.90 Recall@1 and 1.00 Recall@5
+  with 1.361 ms search p95; all temporary EKS/EC2 resources were removed.
+- ✅ **P3 Physical AI Agent Memory EKS replay, Experiment 024**
+  (devlog 223) — added a research-only amd64/arm64 EKS harness for 20 memory
+  episodes and 5 held-out robot decisions. Context-gated recovery Top-1 was
+  1.00 on both architectures, hazardous top-action rate was 0.00, and warm
+  search p95 through kubectl port-forward was 8.519 ms on amd64 and 18.023 ms
+  on arm64. The result does not include a real vision encoder, VLA model, GPU,
+  or simulator.
+- ✅ **P3 Physical AI edge/fleet controlled pilot rollout scope**
+  (devlog 222) — recorded the product decision as controlled pilot only and
+  added the operator runbook covering supported scope, non-goals, required
+  configuration, idempotency, monitoring/alerts, fault/restart validation,
+  rollback, and promotion criteria.
+- ✅ **aarch64 cluster stats test port hardening** (devlog 221) —
+  switched the cluster stats RPC and hostname-resolution tests to
+  kernel-assigned test ports plus bounded stats-readiness retries after the
+  Graviton release gate exposed a single parallel CTest race.
+- ✅ **P3 Agent Memory ANN production policy gate** (devlog 220) —
+  `bench_agent_memory` now supports tenant-filter-heavy production evaluation
+  with `--tenant-count` and `--query-tenant-index`, then prints an explicit
+  policy status using recall, latency, ANN build-time, and optional ANN-memory
+  thresholds. Exact scan remains the default until a real embedding dump passes
+  those gates.
+- ✅ **P3 cluster window materialization product policy and limits**
+  (devlog 219) — promoted the coordinator-local full-data window
+  materialization path for declared operational/control tables under explicit
+  guardrails. `WindowMaterializationConfig` now disables the path or enforces
+  row, estimated-byte, and optional latency caps, failing closed instead of
+  falling back to partial scatter semantics. `/stats` and Prometheus expose
+  candidate, accepted, cap rejection, materialized row/byte, and last-attempt
+  latency telemetry.
+- ✅ **P3 bounded small-table JOIN product policy and limits**
+  (devlog 218) — promoted the coordinator-local small-table hash JOIN path for
+  its documented operational/control-table scope. `SmallTableJoinConfig` now
+  acts as the feature policy, can disable matching candidates explicitly, and
+  enforces per-side row, estimated materialized-byte, and optional latency
+  caps. `/stats` and Prometheus expose row/byte/latency cap rejections,
+  materialized-byte totals, and last-attempt latency/byte gauges.
+- ✅ **P3 Operational table placement catalog and DDL persistence**
+  (devlog 217) — promoted Experiment 012 placement metadata from runtime-only
+  control state into schema-catalog metadata and `CREATE TABLE ... WITH`
+  options. Coordinators re-apply catalog placement after node registration and
+  DDL, and successful admin placement updates persist back to the local schema
+  catalog. Placement remains experimental until rebalance/failover semantics
+  are promoted separately.
+- ✅ **P0 Physical AI Action-Outcome supervisor rollout decision**
+  (devlog 216) — added explicit runtime/API rollout-stage gating. The only
+  accepted stage is now `controlled_shadow_pilot`; attempts to configure
+  `promoted_operator_feature` are rejected until GA/operator gates are
+  deliberately reopened. Status, metrics, server-local config persistence, and
+  SQL catalog-backed config now carry the rollout stage.
+- ✅ **P3 Physical AI edge/fleet live promotion validation** (devlog 215) —
+  added server-runtime restart soak, node-replacement, and two-live-HTTP-node
+  regressions for the built-in SQL/HTTP adapter. The remote ACK lookup now
+  narrows by numeric `stream_seq` and verifies `feed_event_id` client-side, so
+  remote HTTP string-column comparison drift cannot starve bounded replay past
+  ACKed prefixes. Devlog 222 records the controlled-pilot rollout decision and
+  keeps Limited Operator Feature promotion as future soak/fault evidence work.
 - ✅ **Release Docker multi-arch and perf smoke closure** (devlog 214) —
   converted Kafka, MQTT, and OPC-UA hot-path perf harnesses into default
   CI-safe smoke tests; the local CTest gate now runs 1727 tests with no
@@ -25,9 +144,9 @@
   checkpoint-backed ACK/cursor reload, idempotent sink docs, explicit
   `outbox_query_limit`/`max_outbox_bytes` SQL load bounds with ACK-ledger paging,
   `max_failures_per_pass` and `retry_backoff_ms` runtime controls, and
-  mutating admin audit/rate-limit regression coverage. The connector remains
-  experimental while long-running server-runtime soak/fault validation and
-  node-replacement evidence remain before promotion.
+  mutating admin audit/rate-limit regression coverage. Devlog 215 closes the
+  remaining server-runtime restart soak and node-replacement evidence gap;
+  devlog 222 records controlled pilot as the supported rollout scope.
 - ✅ **P3 Physical AI edge/fleet built-in SQL/HTTP adapter** (devlog 212) —
   added `EdgeFleetSqlHttpAdapterConfig`, local table bootstrap, SQL/HTTP
   outbox loading, fleet inbox/final/ACK/telemetry sinks, and
@@ -108,9 +227,9 @@
   lifecycle counters, last-pass telemetry, HTTP status fields, Prometheus
   worker metrics, and admin lifecycle tests with installed hooks. This closes
   the server-owned worker lifecycle gap; devlog 212 adds the built-in SQL/HTTP
-  adapter. The remaining product-promotion blockers are persisted connector
-  config, idempotent sink documentation, long-running soak/fault tests,
-  backpressure, and cross-architecture verification.
+  adapter. Devlogs 213 and 215 close the persisted config, idempotent sink,
+  backpressure, cross-architecture, restart soak, and node-replacement evidence
+  gaps; only the GA/operator rollout decision remains.
 - ✅ **P3 Physical AI edge/fleet server lifecycle** (devlog 204) —
   added `EdgeFleetConnectorRuntime` and admin endpoints for the experimental
   connector lifecycle: `GET`, `POST`, and `DELETE`
@@ -127,9 +246,9 @@
   through native SQL, materializes fleet inbox/final/ACK/telemetry rows through
   SQL inserts, and validates outage, dropped, duplicate, late, restart, ACK
   convergence, recovery JOIN, and suppression audit JOIN behavior. This closes
-  the SQL/HTTP source-sink adapter validation gap, while product promotion
-  still needs server lifecycle hooks, RBAC/admin controls, catalog or documented
-  runtime persistence, and operator docs.
+  the standalone SQL/HTTP source-sink adapter validation gap; devlogs 204-215
+  add the server lifecycle, RBAC/admin controls, persistence, operator-facing
+  docs, and live server-runtime promotion evidence.
 - ✅ **P3 Physical AI edge/fleet runtime connector** (devlog 202) —
   promoted the bounded edge-to-fleet feed semantics into an experimental C++
   runtime connector. `EdgeFleetFeedConnector` now owns bounded passes,
@@ -182,9 +301,9 @@
   operational/Action-Outcome tables, exposed admin-only runtime placement
   through `POST /admin/table-placement`, and surfaced bounded small-table JOIN
   candidates, accepted joins, row-cap rejections, errors, materialized rows,
-  and last-side row counts through `/stats` and Prometheus. Product promotion
-  still requires persisted catalog/DDL placement and broader operational
-  semantics.
+  and last-side row counts through `/stats` and Prometheus. Devlog 217 closes
+  the catalog/DDL persistence gap; product promotion still requires broader
+  rebalance/failover semantics.
 - ✅ **P3 experimental small-table distributed hash JOIN validation**
   (devlog 195) — added a bounded coordinator-local hash JOIN path for small
   operational tables. Experiment 011 now reports `suppression_join` as pass
@@ -479,7 +598,7 @@
 - ✅ **Agent Memory Layer** (devlog 120) — additive AI memory/context subsystem on top of ZeptoDB Core. Adds in-memory `MemoryRecord` storage, parallel exact top-K filtered embedding search, token-budget context assembly, exact prompt cache, semantic cache fallback, sidecar persistence with configurable flush cadence, bounded eviction, optional sparse-projection ANN candidate indexing, `/api/ai/stats` and Prometheus metrics, HTTP `/api/ai/*` endpoints, Python `connection.memory` / `connection.cache` helpers, provider-cache and LangGraph-style examples, optional OpenAI/Anthropic/LangGraph adapters, production-shaped AgentOps telemetry demo, and `bench_agent_memory` baseline/sweep harness. Current-instance 128-dim exact scan is under the 10 ms target at 100K and 300K records and ~16.7 ms at 1M; non-TTL 1M fixture load now completes in seconds instead of rescanning on every write. Sparse projection is faster but recall-sensitive. v0 uses client-supplied `float32[]` embeddings and deliberately avoids server-side LLM or embedding-provider calls.
 - ✅ **Arrow IPC query response** (devlog 119) — `POST /` (port 8123) now honours Arrow IPC content negotiation: `Accept: application/vnd.apache.arrow.stream`, `?default_format=Arrow` (ClickHouse-style), or `?format=arrow` returns an Arrow IPC RecordBatchStream (~2–3× faster than JSON on large result sets, same DuckDB engine). JSON remains the default. Errors stay JSON regardless of Accept (matches ClickHouse). Built with `ZEPTO_USE_FLIGHT=ON` (default) → working; built without → `406 Not Acceptable` with JSON error. Pulled the Arrow encoder out of `flight_server.cpp` into a shared `zepto_arrow_ipc` static lib so HTTP and Flight share one `to_arrow_type` / `build_schema` / `result_to_batch`; encoder also now maps `SYMBOL` columns to Arrow `utf8` via `symbol_dict` (was returning raw int64 codes). +7 tests in new `test_http_arrow_ipc.cpp`. Closes P4 "Arrow IPC query response" (S effort).
 - ✅ **S3 Parquet sink connector** (devlog 118) — operator-facing surface for the cold-tier S3 Parquet path that has shipped as C++ infra since devlog 012. New `S3Layout::HIVE` (default) emits Athena/DuckDB/Polars/Spark auto-discoverable `year=YYYY/month=MM/day=DD/symbol={ID}/{ID}-{hour_epoch}[-{hash}].parquet` keys; FLAT kept byte-identical for backward compat. New Helm `coldTier:` block, matching `--cold-tier-*` CLI flags, `ZEPTO_COLD_TIER_*` env vars (Helm interop), per-pod hostname-hash filename collision protection, new operator recipe doc (`docs/operations/COLD_TIER_S3.md`). +14 tests (`test_s3_sink.cpp`, `test_parquet_writer.cpp`, `test_cold_tier.cpp`). Closes the P5 row.
-- ✅ **Ingest-rate HPA** (devlog 117) — `zepto_ingest_ticks_per_sec` per-pod gauge on `/metrics`, wired into the Helm HPA as a custom `Pods` metric (`autoscaling.ingestRateEnabled`). Kubernetes now autoscales on real ingest load instead of CPU/memory proxies; CPU/memory remain configured as the safety net. Closes P8-I4.
+- ✅ **Ingest-rate HPA metric wiring** (devlog 117) — `zepto_ingest_ticks_per_sec` per-pod gauge on `/metrics`, wired into the retained Helm HPA template as a custom `Pods` metric (`autoscaling.ingestRateEnabled`). Automatic deployment is blocked until the dynamic membership item below is complete. Closes the metric-wiring portion of P8-I4.
 - ✅ **Marketing site rebrand** (devlog 115) — 5-page IA (`/home`, `/solutions`, `/features`, `/performance`, `/pricing`) pivots the site from "HFT/quant-only" to "general-purpose industry time-series DB" serving Physical AI, Finance, Game, IoT/Smart Factory, and real-time observability. WEBSITE_PRD.md updated to the Next.js + MUI stack that actually shipped. Unblocks the P2 demo-video item.
 - ✅ **Python cluster hook** (devlog 114) — `Pipeline.enable_cluster_routing(self_id, peers, …)` pybind11 method. In-process cluster front-door finally wired. Closes P8-I5.
 - ✅ **Stateless `zepto_ingest_node`** (devlog 113) — ingest-only binary, forwards all ticks to storage pods. Helm opt-in. Closes P8-I3.
@@ -505,12 +624,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
-| **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint. Next: larger production embedding-dump runs and tenant-filter/default-policy evaluation before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
-| **Persisted operational table placement option** | Devlog 196 validates the experimental runtime control-plane path and Experiment 012 telemetry proof. The next product step is to persist placement in the catalog/DDL layer, e.g. a table option for `hash_by_table`, default table+symbol hashing, or pinned operational tables, instead of relying on an admin-only runtime override. | M |
-| **Productize bounded small-table JOIN policy** | Devlog 195 validates coordinator-local small-table JOIN under a strict row cap. Before promotion, decide whether it stays automatic, becomes a feature flag, or moves behind an optimizer rule with cost checks, and document memory/latency limits for operational/control tables. | M |
-| **Bounded distributed window materialization policy** | Devlog 194 fixes correctness for the validated Action-Outcome window replay shape. Product promotion needs explicit row/memory limits, telemetry for full-data materialization, and fallback/error semantics for large tables. | M |
-| **Physical AI edge/fleet promotion validation** | Devlogs 212-213 add the server-owned SQL/HTTP outbox-loader plus fleet-sink adapter, local contract bootstrap, config persistence, checkpoint reload coverage, idempotent sink docs, bounded SQL/backpressure controls, and admin audit/rate-limit coverage. Product promotion still needs long-running server-runtime soak/fault injection and node-replacement validation over live edge/fleet tables before a GA/operator rollout decision. | M |
-| **Productize Physical AI Action-Outcome supervisor** | Devlogs 206-211 add the admin-gated shadow runtime, hook contract, SQL-backed proposal/history/decision/evidence adapter, server-local and SQL catalog-backed durable config, live HTTP restart reinstall regressions, atomic commit-ledger sink repair, managed SQL worker lease/heartbeat with owner id/epoch fencing, admin RBAC/audit/rate-limit coverage, per-pass decision/sink error budgets, a SQL-backed soak/fault harness, matching x86_64/aarch64 CTest verification, node-replacement handoff validation, and commit-ledger stress validation. Product promotion now needs an explicit GA/operator rollout decision; the current design keeps the SQL lease supervisor-specific rather than consensus, and keeps generic multi-table transactions as a separate future SQL capability. | M |
+| **Physical AI VLA closed-loop router calibration and robustness** | Experiment 035 stopped the planned trajectory bank before source/VLA/EKS work. The frozen source provides neither authoritative historical contact nor source-aligned semantic phase, and the suite-task-0 ceiling under the frozen Experiment 034 precheck mask is 65/377 after cooldown (17.24%), below the required 20%; fixing manifest-task-9 open-hold coverage cannot repair that separate failure. Next, pre-register multi-seed direct-VLA simulator traces to measure contact eligibility and cooldown placement before any bank encoding or retrieval. Resume trajectory-bank work only if pooled and every task can reach the reuse/latency floors, and only after obtaining provenance-preserving contact plus source-aligned semantic labels, or a verified raw-demo replay map that reconstructs both. Keep the veto/cooldown unchanged; stale/corrupted/OOD stress, source-diversity analysis, held-out shadow, cost per successful episode, and routed execution remain later gates. Do not claim risk-free actions. | M |
+| **Agent Memory stronger ANN family** | Sparse projection, optional hnswlib HNSW, and dependency-free IVF are now comparable with the devlog 121/123/172/220 harness. Clean ANN indexes support append, embedding update, delete, tombstone accounting, and compacting row-id remaps; stats expose ANN memory bytes and persisted sidecar footprint; the benchmark now has tenant-heavy policy-gate thresholds. Next: run larger production embedding dumps through that gate before choosing a production default ANN mode. Persisted ANN index sidecars remain optional future work only if rebuild cost becomes the bottleneck. | M |
+| **Physical AI edge/fleet controlled-pilot soak and promotion evidence** | Devlog 222 records the rollout decision as controlled pilot only and adds the operator runbook. Next: run 24h+ pilot soak/fault windows, prove dashboard/alert coverage, collect node-replacement/restart evidence from real pilot environments, and only then open a new production gate for Limited Operator Feature promotion. | M |
+| **Promote Physical AI Action-Outcome supervisor operator feature** | Devlogs 206-216 now make the production decision explicit: the supported path is a `controlled_shadow_pilot` runtime only. The code rejects `promoted_operator_feature`, keeps the runtime shadow-only, persists the rollout stage in server-local/catalog config, and exposes it in status/metrics. Future operator promotion needs a new GA gate decision, public/operator docs, release-grade x86_64/aarch64 validation, and a documented consensus/transaction stance rather than relying on the supervisor-specific SQL lease and commit ledger. | M |
 | **Optional managed embedding provider** | Enterprise convenience only; default path remains client-supplied embeddings. | M |
 
 > ✅ Done: v0 Agent Memory Layer (devlog 120) — `MemoryRecord` store, parallel top-K filtered search, sparse-projection ANN candidate index, context assembly, exact/semantic cache, sidecar persistence with configurable flush cadence, bounded eviction, HTTP stats/metrics, Python client, examples, optional provider/framework adapters, AgentOps schema/demo, and current-instance benchmark report.
@@ -556,6 +673,7 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 | **Cloud Marketplace** | AWS/GCP one-click | M |
 | **Geo-replication** | Multi-region trading desks | L |
 | **SAML 2.0** | Bank/insurance SAML-only environments | L |
+| **OIDC CLI role/group policy configuration** | The standalone CLI currently requires a signed `zepto_role` claim and fails closed otherwise. Expose explicit role-claim name, group-claim/map, default-role, and multi-IdP configuration without reintroducing implicit read access. | M |
 
 ---
 
@@ -585,6 +703,11 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
+| **Native TCP RPC TLS/mTLS and hot secret rotation** | The shipped HMAC-SHA256 mutual challenge authenticates peers and blocks proof replay but does not encrypt payloads. Until native TLS/mTLS and connection-draining rotation land, production must use private networking plus an encrypted overlay/service mesh and coordinated restarts. | M |
+| **Dynamic StatefulSet peer discovery and HPA membership convergence** | The Helm StatefulSet currently builds a static peer list from `replicaCount`, so HPA-created ordinals cannot discover a complete topology. Helm rejects all HPA rendering until discovery, join/leave convergence, and scale-down safety are verified. | M |
+| **Abrupt HTTP SQL restart durability** | A PVC plus `--storage-mode tiered --hdb-dir` is not yet a full durability guarantee. Graceful stop now publishes a complete RDB generation and the HTTP CLI reloads it before binding, with focused write → stop → destroy/restart → general SQL `COUNT`/`SUM` proof. Remaining promotion work is hot-partition WAL replay for abrupt node loss, per-column checksums, complete file/directory `fsync` evidence, durable `StringDictionary` metadata, and full HDB-row merge into general SQL reads. | L |
+| **End-to-end bounded/cancellable distributed HTTP SELECT** | Multi-node coordinator SELECT does not carry the HTTP request-owned AST limit or cancellation token across RPC. Production HTTP rejects it by default; `--allow-experimental-distributed-queries` is an isolated-test opt-in until per-node/global row+byte budgets, distributed cancellation, telemetry, and failure tests land. | M |
+| **Atomic Arrow Flight DoPut** | The compatibility writer commits rows individually and cannot roll back a later stream failure. DoPut is disabled by default; `--allow-non-atomic-put` is an isolated-test opt-in until atomic commit, retry/idempotency, crash recovery, and partial-failure telemetry are implemented. | M |
 | **Tier C cold query offload** | Historical data → DuckDB on S3. **Elevated importance after Arc analysis (2026-05-13)**: Parquet+S3 is now the de-facto cold-tier standard, and shipping this neutralises the "vendor lock-in" critique without sacrificing our hot-tier differentiation. | M |
 | **Global symbol registry** | Distributed string symbol routing | M |
 
@@ -592,9 +715,10 @@ Manual tasks: DB-Engines registration, demo GIF, Show HN, Reddit (5 subs). See `
 
 | Task | Why | Effort |
 |------|-----|--------|
+| **Shared authentication for `zepto_ingest_node`** | The Helm tier now defaults to fail-closed, but the ingest binary does not load the shared API-key store/session/JWT configuration. Production use needs the common `AuthManager` bootstrap (or an explicitly documented authenticated proxy) before the tier can accept protected writes. | S |
 | **Bench: symbol-aware / batched HTTP client** | Current HTTP bench is latency-bound at ~90/s under N≥2 (RPC hop per non-local INSERT). Need a driver that either batches or computes ownership client-side. | S |
 
-> ✅ Done: P8-I4 ingest-rate HPA (devlog 117), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103), and full cross-arch EKS live rebalance integrity closure (devlog 158). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
+> ✅ Done: P8-I4 ingest-rate metric and HPA-template wiring (devlog 117; deployment remains blocked on dynamic membership), P8-I5 Python cluster hook (devlog 114), P8-I3-wire (devlog 111), P8-I3 ingest node (devlog 113; authenticated production ingress remains above), P8-DDL-replication (devlog 112), Pod placement (devlog 104), Ingest Phase 1 (devlog 102), Cluster-aware INSERT routing (devlog 103), and full cross-arch EKS live rebalance integrity closure (devlog 158). Live rebalancing, dual-write, partial-move, bandwidth throttling, PTP clock sync all shipped earlier.
 
 ---
 
@@ -639,17 +763,17 @@ No open P9 backlog items remain.
 | Priority | Category | Open | Next action |
 |----------|----------|:----:|-------------|
 | **P2** | Visibility & Launch | 1 + 4 manual | Demo video → Show HN → Reddit |
-| **P3** | Agent Memory / AI Context | 2 | Production embedding-dump ANN policy → optional embedding provider |
+| **P3** | Agent Memory / AI Context | 5 | VLA closed-loop validation → edge/fleet soak → ANN policy |
 | **P4** | Tool Integration | 2 | ClickHouse wire protocol (L) → JDBC/ODBC drivers (L) |
 | **P5** | Data Pipelines | 2 | CDC connector (M) → Kafka Connect Sink (M) |
-| **P6** | Enterprise / Cloud | 3 | Marketplace |
+| **P6** | Enterprise / Cloud | 4 | OIDC CLI policy configuration → Marketplace |
 | **P7** | Engine Performance | 3 | JOINs/Window virtual tables |
 | **P8** | Cluster | 8 | RDMA transport, Tier C cold offload (elevated) |
 | **P9** | Physical AI / IoT | 0 | Closed |
 | **P10** | Extensions | 11 | Continuous queries scheduler, single-binary CLI |
 
-**Total open: 32 items + 4 manual tasks**
+**Total open: 38 items + 4 manual tasks**
 
-**Critical path: P5 CDC connector → P2 demo video / launch collateral**
+**Critical path: P3 experiment promotions → P5 CDC connector → P2 launch collateral**
 
 > **2026-05-13 — Arc competitive analysis**: 9 new items added across P2/P4/P5/P10 and the P8 Tier C cold-offload row was elevated. Each added item is tagged "From Arc analysis (2026-05-13)" in its `Why` cell. Headline lessons: (1) batched columnar wire formats (Arrow IPC, MessagePack) are the single biggest ingest-throughput unlock; (2) Arrow IPC query responses are a near-free 2–3× win on large result sets; (3) ecosystem connectors (Telegraf/MQTT/S3 Parquet sink) are higher leverage than yet-another-streaming-source consumer; (4) the MPP-cluster vs replication-cluster distinction is now captured in `docs/design/phase_c_distributed.md` (devlog 181) as a launch and enterprise-sales artefact. We do **not** chase Arc's storage-first / batch-flush model — our memory-first / per-tick-durable / immediately-queryable architecture is the differentiator and stays.

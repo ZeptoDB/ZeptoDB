@@ -1,6 +1,6 @@
 # ZeptoDB HTTP API Reference
 
-*Last updated: 2026-07-04*
+*Last updated: 2026-07-19*
 
 The HTTP server (port 8123) is **ClickHouse-compatible**. Grafana can connect directly
 using the ClickHouse data source plugin with no modification.
@@ -43,14 +43,17 @@ using the ClickHouse data source plugin with no modification.
 # Build (see README for full build instructions)
 cd build && ninja -j$(nproc)
 
-# Start with default settings (port 8123, no auth, in-memory)
-./zepto_http_server --port 8123
+# Local development without authentication (loopback, in-memory)
+./zepto_http_server --port 8123 --no-auth
 
-# Persist catalog & HDB tier to disk (survives restart)
-./zepto_http_server --port 8123 --hdb-dir /var/lib/zeptodb/hdb
+# Evaluate graceful-restart persistence after accepting current crash limits
+./zepto_http_server --port 8123 --no-auth \
+  --hdb-dir /var/lib/zeptodb/hdb \
+  --acknowledge-incomplete-durability
 
 # Start with TLS + auth enabled
-./zepto_http_server --port 8123 --tls-cert server.crt --tls-key server.key
+./zepto_http_server --port 8123 --tls-cert server.crt --tls-key server.key \
+  --api-keys-file /run/secrets/zeptodb/api_keys.txt
 ```
 
 ### Storage CLI flags
@@ -58,7 +61,9 @@ cd build && ninja -j$(nproc)
 | Flag | Value | Effect |
 |------|-------|--------|
 | `--hdb-dir <path>` | directory path | Enables tiered storage (RDB + HDB) rooted at `<path>`. `_schema.json` and column files live under this dir. Implies `--storage-mode tiered`. |
-| `--storage-mode <mode>` | `pure` (default) \| `tiered` | `pure` = in-memory only (fastest, lost on exit). `tiered` = persist to `--hdb-dir` or `/tmp/zepto_hdb` if unset. |
+| `--storage-mode <mode>` | `pure` (default) \| `tiered` | `pure` = in-memory only (fastest, lost on exit). `tiered` requires both an explicit `--hdb-dir` and `--acknowledge-incomplete-durability`. |
+| `--acknowledge-incomplete-durability` | flag | Required for tiered or cold storage. Confirms that graceful snapshots exist but abrupt-loss WAL replay, complete `fsync` evidence, durable string dictionaries, and arbitrary HDB-only SQL reads are not yet guaranteed. |
+| `--allow-experimental-distributed-queries` | flag | Enables multi-node SELECT without end-to-end request-owned row bounds/cancellation. Production default is fail-closed (`503`). |
 | `--agent-memory-dir <path>` | directory path | Enables Agent Memory sidecar persistence. Standalone mode writes directly under this path; routed mode writes under `node-{node_id}/shard-0/`. When HDB is enabled and this flag is omitted, defaults to `<hdb-dir>/agent_memory`. |
 | `--agent-memory-flush-every N` | mutation count | Saves Agent Memory sidecar snapshots after `N` memory/cache mutations. `0` means flush only during server stop. Default: `100`. |
 | `--agent-memory-max-memories N` | entry count | Maximum retained Agent Memory records. `0` means unbounded. Pinned memories are protected from capacity eviction. Default: `0`. |
@@ -77,17 +82,29 @@ cd build && ninja -j$(nproc)
 | `--health-dead-ms N` | milliseconds | Time before a missing peer becomes `DEAD` and triggers failover. Default: `10000`. |
 | `--tenant <id:namespace>` | `tenant-id:prefix` | **(repeatable, devlog 091)** Register a tenant at startup with a table-namespace prefix. Any request carrying `X-Zepto-Tenant-Id: <id>` is then limited to tables whose names start with `<namespace>`. A tenant with an empty namespace is unrestricted. Example: `--tenant deska_:deska_` restricts tenant `deska_` to tables like `deska_trades`, `deska_quotes`. |
 
-When `--hdb-dir` is supplied, `CREATE TABLE` DDL is persisted to
-`<path>/_schema.json` on every call and reloaded on server start, so tables
-survive restarts. See [devlog 086](../devlog/086_residual_limits_closed.md)
-for the underlying mechanism.
+When `--hdb-dir` is supplied, `CREATE TABLE` DDL and graceful-shutdown RDB
+snapshots are persisted and reloaded before the listener binds. Abrupt
+process/node loss is not yet a complete durability contract. See
+[devlog 235](../devlog/235_production_readiness_hardening.md).
+
+### Experimental distributed SELECT override
+
+`--allow-experimental-distributed-queries` is an **Experimental runtime path**
+for isolated compatibility tests only. Its workload scope is small,
+pre-bounded SELECTs on a private test cluster. It does not carry the HTTP
+request-owned AST limit or cancellation token through the coordinator, so its
+row/byte cap is post-materialization and a client timeout cannot stop all
+remote work. It provides no new persistence guarantee. The default failure
+behavior is a fail-closed `503`; rollback is immediate by removing the flag.
+Promotion requires global and per-node row/byte budgets, distributed
+cancellation, timeout/cap telemetry, and fault tests proving bounded cleanup.
 
 ### Tenant identity headers
 
 | Header | Purpose |
 |--------|---------|
-| `X-Zepto-Tenant-Id` | Identifies the calling tenant. In authenticated mode this header is stamped automatically from the API key / JWT claim. In `--no-auth` mode the client supplies it directly. When present **and** the server was started with a matching `--tenant <id:namespace>`, every statement's touched table is checked against the namespace prefix — non-matching requests get `403 "Tenant 't' cannot access table 'x'"`. |
-| `X-Zepto-Allowed-Tables` | Comma-separated list of tables the caller is permitted to touch (SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/ALTER/DESCRIBE). Stamped from API key / JWT `allowed_tables` claim. |
+| `X-Zepto-Tenant-Id` | Identifies the calling tenant. In authenticated mode this header is stamped automatically from an API key, direct JWT, SSO identity, or session. In `--no-auth` mode the client supplies it directly. When present **and** the server was started with a matching `--tenant <id:namespace>`, every statement's touched table is checked against the namespace prefix — non-matching requests get `403 "Tenant 't' cannot access table 'x'"`. |
+| `X-Zepto-Allowed-Tables` | Internal comma-separated table ACL stamped from an API key, direct JWT/SSO `allowed_tables` array, or the resulting server-side session. Caller-supplied values are discarded. |
 
 ### Run your first query
 
@@ -165,7 +182,7 @@ print(df)
 | `POST` | `/` | yes | Execute SQL query |
 | `POST` | `/insert/arrow` | yes | Ingest Apache Arrow IPC RecordBatchStream rows |
 | `POST` | `/insert/msgpack` | yes | Ingest MessagePack map-of-column-arrays rows |
-| `GET` | `/` | yes | Execute SQL via `?query=` param |
+| `GET` | `/` | yes | Execute read-only SQL via `?query=` param |
 | `GET` | `/ping` | no | Health check — returns `"Ok\n"` |
 | `GET` | `/health` | no | Kubernetes liveness probe |
 | `GET` | `/ready` | no | Kubernetes readiness probe |
@@ -197,9 +214,9 @@ print(df)
 | `POST` | `/admin/nodes` | admin | Add remote node to cluster |
 | `DELETE` | `/admin/nodes/:id` | admin | Remove node from cluster |
 | `GET` | `/admin/cluster` | admin | Cluster overview |
-| `GET` | `/admin/edge-fleet-connector` | admin | Experimental Physical AI edge/fleet connector lifecycle status |
-| `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the experimental connector |
-| `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the experimental connector config |
+| `GET` | `/admin/edge-fleet-connector` | admin | Controlled-pilot Physical AI edge/fleet connector lifecycle status |
+| `POST` | `/admin/edge-fleet-connector` | admin | Configure and optionally enable the controlled-pilot connector |
+| `DELETE` | `/admin/edge-fleet-connector` | admin | Disable and clear the controlled-pilot connector config |
 | `GET` | `/admin/action-outcome-supervisor` | admin | Experimental Physical AI Action-Outcome supervisor lifecycle status |
 | `POST` | `/admin/action-outcome-supervisor` | admin | Configure and optionally enable the experimental supervisor |
 | `DELETE` | `/admin/action-outcome-supervisor` | admin | Disable and clear the experimental supervisor config |
@@ -675,6 +692,36 @@ Hit response:
 
 Send a SQL string as the request body. Content-Type is not required.
 
+The default request-body ceiling is 64 MiB. Top-level `SELECT` results are
+bounded to 100,000 materialized rows and the encoded JSON or Arrow response is
+limited to 64 MiB. The byte check occurs after query materialization and
+encoding; it prevents an oversized response from being sent but is not yet a
+streaming memory bound. The default 30-second timeout is cooperative: the
+server requests cancellation and waits for the executor to stop, and remote
+cluster work is not yet cancelled.
+
+Authenticated SQL authorization is statement-aware on `POST /`. The
+`GET /?query=...` compatibility surface is always read-only, including when
+authentication is disabled: only `SELECT`, `SHOW TABLES`, and `DESCRIBE` are
+accepted. DML and DDL over GET return `405 Method Not Allowed` with
+`Allow: POST`, which prevents session cookies from turning cross-site
+top-level GET requests into state changes.
+
+| Statement | Required permission |
+| --- | --- |
+| `SELECT`, `SHOW TABLES`, `DESCRIBE` | `READ` |
+| `INSERT`, `UPDATE`, `DELETE` | `WRITE` |
+| `CREATE`, `DROP`, `ALTER`, materialized-view DDL | `ADMIN` |
+
+Malformed or unclassified SQL fails closed with `403` when authentication is
+enabled. Table allowlists and tenant namespaces apply to all referenced tables,
+including JOIN sides, CTEs, subqueries, set-operation branches, and
+materialized-view definitions. Client-supplied `X-Zepto-Role`,
+`X-Zepto-Allowed-Tables`, `X-Zepto-Tenant-Id`, and related internal identity
+headers are discarded in authenticated mode; only the validated server context
+is trusted. The sole disabled-auth exception is `X-Zepto-Tenant-Id`, which is
+preserved for the documented `--no-auth --tenant` namespace contract.
+
 ```bash
 curl -X POST http://localhost:8123/ \
   -d 'SELECT vwap(price, volume), count(*) FROM trades WHERE symbol = 1'
@@ -1040,20 +1087,44 @@ curl http://localhost:8123/stats \
 | `last_ingest_latency_ns` | Latency of the most recent ingest (nanoseconds) |
 
 When the HTTP server is wired to a `QueryCoordinator`, `/stats` also includes
-experimental bounded small-table JOIN telemetry:
+bounded small-table JOIN telemetry:
 
 | Field | Description |
 |-------|-------------|
 | `small_table_join.candidates` | Bounded small-table JOIN candidates seen by the coordinator |
 | `small_table_join.accepted` | Candidates accepted and executed through coordinator-local materialization |
 | `small_table_join.rejected_row_cap` | Candidates rejected because a JOIN side exceeded the row cap |
-| `small_table_join.errors` | Non-row-cap failures in the bounded small-table JOIN path |
+| `small_table_join.rejected_byte_cap` | Candidates rejected because estimated materialized bytes exceeded the byte cap |
+| `small_table_join.rejected_latency_cap` | Candidates rejected because coordinator-local execution exceeded the latency cap |
+| `small_table_join.errors` | Non-cap failures in the bounded small-table JOIN path |
 | `small_table_join.rows_materialized` | Rows replayed into temporary coordinator-local JOIN tables |
+| `small_table_join.bytes_materialized` | Estimated bytes replayed into temporary coordinator-local JOIN tables for accepted JOINs |
 | `small_table_join.last_left_rows` | Left-side row count from the most recent bounded JOIN attempt |
 | `small_table_join.last_right_rows` | Right-side row count from the most recent bounded JOIN attempt |
+| `small_table_join.last_materialized_bytes` | Estimated materialized bytes from the most recent bounded JOIN attempt |
+| `small_table_join.last_latency_us` | Coordinator-local latency of the most recent bounded JOIN attempt, in microseconds |
 
 These fields describe the narrow coordinator-local small-table JOIN path. They
 are not a signal that arbitrary distributed JOIN planning is supported.
+
+`/stats` also includes bounded full-data window materialization telemetry:
+
+| Field | Description |
+|-------|-------------|
+| `window_materialization.candidates` | Full-data materialization candidates seen by the coordinator |
+| `window_materialization.accepted` | Candidates accepted and executed through coordinator-local materialization |
+| `window_materialization.rejected_row_cap` | Candidates rejected because fetched rows exceeded the row cap |
+| `window_materialization.rejected_byte_cap` | Candidates rejected because estimated materialized bytes exceeded the byte cap |
+| `window_materialization.rejected_latency_cap` | Candidates rejected because coordinator-local execution exceeded the latency cap |
+| `window_materialization.errors` | Non-cap failures in the full-data materialization path |
+| `window_materialization.rows_materialized` | Rows replayed into temporary coordinator-local tables for accepted attempts |
+| `window_materialization.bytes_materialized` | Estimated bytes replayed into temporary coordinator-local tables for accepted attempts |
+| `window_materialization.last_rows` | Base row count from the most recent materialization attempt |
+| `window_materialization.last_materialized_bytes` | Estimated materialized bytes from the most recent materialization attempt |
+| `window_materialization.last_latency_us` | Coordinator-local latency of the most recent materialization attempt, in microseconds |
+
+Cap rejections fail closed with an explicit SQL error. The coordinator does not
+fall back to partial scatter semantics for these queries.
 
 ---
 
@@ -1094,13 +1165,25 @@ zepto_small_table_join_accepted_total 4
 # TYPE zepto_small_table_join_row_cap_rejections_total counter
 zepto_small_table_join_row_cap_rejections_total 0
 
-# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside row-cap rejection
+# HELP zepto_small_table_join_byte_cap_rejections_total Bounded small-table JOINs rejected because estimated materialized bytes exceeded the cap
+# TYPE zepto_small_table_join_byte_cap_rejections_total counter
+zepto_small_table_join_byte_cap_rejections_total 0
+
+# HELP zepto_small_table_join_latency_cap_rejections_total Bounded small-table JOINs rejected because coordinator-local latency exceeded the cap
+# TYPE zepto_small_table_join_latency_cap_rejections_total counter
+zepto_small_table_join_latency_cap_rejections_total 0
+
+# HELP zepto_small_table_join_errors_total Bounded small-table JOIN errors outside configured cap rejections
 # TYPE zepto_small_table_join_errors_total counter
 zepto_small_table_join_errors_total 0
 
 # HELP zepto_small_table_join_rows_materialized_total Rows materialized into coordinator-local temporary tables for bounded small-table JOINs
 # TYPE zepto_small_table_join_rows_materialized_total counter
 zepto_small_table_join_rows_materialized_total 327
+
+# HELP zepto_small_table_join_bytes_materialized_total Estimated bytes materialized into coordinator-local temporary tables for accepted bounded small-table JOINs
+# TYPE zepto_small_table_join_bytes_materialized_total counter
+zepto_small_table_join_bytes_materialized_total 65536
 
 # HELP zepto_small_table_join_last_left_rows Last bounded small-table JOIN left-side row count
 # TYPE zepto_small_table_join_last_left_rows gauge
@@ -1109,6 +1192,58 @@ zepto_small_table_join_last_left_rows 72
 # HELP zepto_small_table_join_last_right_rows Last bounded small-table JOIN right-side row count
 # TYPE zepto_small_table_join_last_right_rows gauge
 zepto_small_table_join_last_right_rows 6
+
+# HELP zepto_small_table_join_last_materialized_bytes Last bounded small-table JOIN estimated materialized bytes
+# TYPE zepto_small_table_join_last_materialized_bytes gauge
+zepto_small_table_join_last_materialized_bytes 8192
+
+# HELP zepto_small_table_join_last_latency_us Last bounded small-table JOIN coordinator-local latency in microseconds
+# TYPE zepto_small_table_join_last_latency_us gauge
+zepto_small_table_join_last_latency_us 2100
+
+# HELP zepto_window_materialization_candidates_total Cluster full-data window materialization candidates seen by the coordinator
+# TYPE zepto_window_materialization_candidates_total counter
+zepto_window_materialization_candidates_total 3
+
+# HELP zepto_window_materialization_accepted_total Cluster full-data window materializations accepted and executed by the coordinator
+# TYPE zepto_window_materialization_accepted_total counter
+zepto_window_materialization_accepted_total 3
+
+# HELP zepto_window_materialization_row_cap_rejections_total Cluster full-data window materializations rejected because rows exceeded the cap
+# TYPE zepto_window_materialization_row_cap_rejections_total counter
+zepto_window_materialization_row_cap_rejections_total 0
+
+# HELP zepto_window_materialization_byte_cap_rejections_total Cluster full-data window materializations rejected because estimated materialized bytes exceeded the cap
+# TYPE zepto_window_materialization_byte_cap_rejections_total counter
+zepto_window_materialization_byte_cap_rejections_total 0
+
+# HELP zepto_window_materialization_latency_cap_rejections_total Cluster full-data window materializations rejected because coordinator-local latency exceeded the cap
+# TYPE zepto_window_materialization_latency_cap_rejections_total counter
+zepto_window_materialization_latency_cap_rejections_total 0
+
+# HELP zepto_window_materialization_errors_total Cluster full-data window materialization errors outside configured cap rejections
+# TYPE zepto_window_materialization_errors_total counter
+zepto_window_materialization_errors_total 0
+
+# HELP zepto_window_materialization_rows_materialized_total Rows materialized into coordinator-local temporary tables for accepted full-data window queries
+# TYPE zepto_window_materialization_rows_materialized_total counter
+zepto_window_materialization_rows_materialized_total 144
+
+# HELP zepto_window_materialization_bytes_materialized_total Estimated bytes materialized into coordinator-local temporary tables for accepted full-data window queries
+# TYPE zepto_window_materialization_bytes_materialized_total counter
+zepto_window_materialization_bytes_materialized_total 32768
+
+# HELP zepto_window_materialization_last_rows Last full-data window materialization row count
+# TYPE zepto_window_materialization_last_rows gauge
+zepto_window_materialization_last_rows 48
+
+# HELP zepto_window_materialization_last_materialized_bytes Last full-data window materialization estimated bytes
+# TYPE zepto_window_materialization_last_materialized_bytes gauge
+zepto_window_materialization_last_materialized_bytes 8192
+
+# HELP zepto_window_materialization_last_latency_us Last full-data window materialization coordinator-local latency in microseconds
+# TYPE zepto_window_materialization_last_latency_us gauge
+zepto_window_materialization_last_latency_us 2600
 
 # HELP zepto_rows_scanned_total Total rows scanned
 # TYPE zepto_rows_scanned_total counter
@@ -1629,9 +1764,14 @@ Requires cluster mode (`set_coordinator()` must be called). Idempotent — addin
 
 #### `POST /admin/table-placement` — Set experimental declared table placement
 
-Sets or clears an experimental runtime placement policy for a declared table in
-cluster mode. This is intended for small operational/control tables whose rows
-often use `symbol_id=0`.
+Sets or clears an experimental placement policy for a declared table in cluster
+mode. This is intended for small operational/control tables whose rows often
+use `symbol_id=0`. Successful updates are now persisted into the local schema
+catalog, so a coordinator can re-apply the placement after restart when the
+schema catalog is loaded. If the catalog cannot be saved, the endpoint returns
+an error and restores the previous catalog and router placement; it does not
+report a non-durable success. A `PURE_IN_MEMORY` pipeline has no durable catalog
+and treats persistence as a successful no-op.
 
 ```bash
 curl -X POST http://localhost:8123/admin/table-placement \
@@ -1653,16 +1793,28 @@ Supported `policy` values:
 | `pinned_node` | All rows for the table route to `node_id`; `node_id` is required |
 | `clear` | Remove the override and return to default routing |
 
-The table must already exist in the local schema registry. Placement updates are
-admin-only runtime control-plane state; they are not yet persisted in DDL or the
-catalog, are not replayed automatically after restart, and are not a
-rebalance/failover policy. Promote this endpoint only after the product gates in
-`docs/research/EXPERIMENT_GOVERNANCE.md` are met.
+The table must already exist in the local schema registry. Placement can also
+be declared at create time:
 
-#### `GET /admin/edge-fleet-connector` — Experimental connector lifecycle status
+```sql
+CREATE TABLE action_outcome_vendor_suppressions_010 (
+  query_id STRING,
+  candidate_id STRING,
+  timestamp_ns TIMESTAMP_NS
+) WITH (placement = pinned_node, node_id = 1)
+```
 
-Returns server-owned lifecycle state for the experimental Physical AI
-edge/fleet connector.
+Supported DDL placement values are `hash_by_table`,
+`hash_by_table_and_symbol`, and `pinned_node` with `node_id`. This remains an
+experimental placement feature: persisted metadata is available, but it is not
+a rebalance/failover policy.
+
+#### `GET /admin/edge-fleet-connector` — Controlled-pilot connector lifecycle status
+
+Returns server-owned lifecycle state for the Physical AI edge/fleet connector.
+The supported rollout status is controlled pilot only: admin-gated, opt-in,
+SQL/HTTP contract deployments that follow
+`docs/operations/PHYSICAL_AI_EDGE_FLEET_CONTROLLED_PILOT.md`.
 
 ```bash
 curl http://localhost:8123/admin/edge-fleet-connector \
@@ -1790,6 +1942,10 @@ Idempotent sink contract:
 - The fleet ACK table is the durable delivery ledger. The SQL/HTTP sink checks
   it before applying fleet final rows and inserts an ACK only after the final
   row succeeds.
+- Remote SQL/HTTP ACK checks narrow by numeric `stream_seq` and compare
+  `feed_event_id` client-side, so bounded replay can page past ACKed prefixes
+  even when the remote SQL string-column comparison path differs from local
+  symbol encoding.
 - If final-row materialization succeeds but ACK insertion fails, the sink
   returns `AppliedButAckFailed`; the next pass replays the event and must be
   safe for duplicate final-row attempts.
@@ -1810,8 +1966,10 @@ checkpoint path is configured, clears the process-local runtime config, and
 removes the persisted SQL/HTTP adapter config file when config persistence is
 enabled.
 
-This lifecycle surface is experimental. The server runtime can run a bounded
-worker with embedding-provided hooks or with the built-in SQL/HTTP adapter.
+This lifecycle surface is controlled-pilot only. The server runtime can run a
+bounded worker with embedding-provided hooks or with the built-in SQL/HTTP
+adapter, but broad GA/operator positioning remains blocked until a later
+production gate explicitly changes the rollout status.
 Connector configuration is file-persisted when enabled by embedding code, but
 the path is still experimental and should not be described as a promoted
 replication feature until the promotion gates in
@@ -1837,6 +1995,7 @@ curl http://localhost:8123/admin/action-outcome-supervisor \
   "failure_budget_exhausted": false,
   "name": "physical_ai_action_outcome",
   "mode": "shadow",
+  "rollout_stage": "controlled_shadow_pilot",
   "history_table": "physical_ai_action_history",
   "proposal_table": "physical_ai_action_proposals",
   "decision_table": "physical_ai_supervision_decisions",
@@ -1893,6 +2052,7 @@ curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
     "name": "physical_ai_action_outcome",
     "enabled": true,
     "mode": "shadow",
+    "rollout_stage": "controlled_shadow_pilot",
     "history_table": "physical_ai_action_history",
     "proposal_table": "physical_ai_action_proposals",
     "decision_table": "physical_ai_supervision_decisions",
@@ -1916,7 +2076,10 @@ curl -X POST http://localhost:8123/admin/action-outcome-supervisor \
   }'
 ```
 
-Only `mode="shadow"` is accepted. `batch_limit`,
+Only `mode="shadow"` and `rollout_stage="controlled_shadow_pilot"` are
+accepted. `rollout_stage="promoted_operator_feature"` is intentionally rejected
+until the GA/operator gates in `docs/research/EXPERIMENT_GOVERNANCE.md` are
+explicitly reopened. `batch_limit`,
 `worker_poll_interval_ms`, `max_consecutive_failures`,
 `max_decision_errors_per_pass`, and `max_sink_errors_per_pass` must be
 positive. The decision and sink error budgets bound one pass during
@@ -2329,15 +2492,19 @@ curl http://localhost:8123/admin/version -H "Authorization: Bearer $ADMIN_KEY"
 | Role | Query | Ingest | Stats | Metrics | Admin |
 |------|:-----:|:------:|:-----:|:-------:|:-----:|
 | `admin` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `writer` | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `writer` | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `reader` | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `analyst` | ✅ | ❌ | ✅ | ✅ | ❌ |
+| `analyst` | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `metrics` | ❌ | ❌ | ✅ | ✅ | ❌ |
+
+`analyst` is a reserved, fail-closed role until executor-level symbol filtering
+is implemented. It currently grants no permissions.
 
 ### Table-Level ACL
 
-API keys can be restricted to specific tables. When `allowed_tables` is set,
-queries against any other table return `403 Forbidden`.
+API keys, direct JWTs, and multi-IdP SSO identities can be restricted to
+specific tables. For JWT/SSO, `allowed_tables` is a JSON string array. When it
+is set, queries against any other physical table return `403 Forbidden`.
 
 ```bash
 # Create a key restricted to trades and quotes tables only
@@ -2348,9 +2515,10 @@ curl -X POST https://zepto:8443/admin/keys \
 # This key can query trades and quotes, but not risk_positions
 ```
 
-When `allowed_tables` is empty (default), the key has access to all tables.
-Table ACL is enforced at the HTTP layer before SQL execution — the SQL parser
-extracts the target table from the query and checks it against the key's whitelist.
+When `allowed_tables` is empty (default), the identity has access to all tables.
+Table ACL is enforced at the HTTP layer before SQL execution. The SQL parser
+recursively checks every physical table reached through JOINs, CTEs,
+subqueries, set operations, and materialized-view definitions.
 
 Covered statement kinds (devlog 090):
 
@@ -2363,15 +2531,17 @@ Covered statement kinds (devlog 090):
 - `ALTER TABLE <table> ...`
 - `DESCRIBE <table>`
 
-A key with `allowed_tables: ["trades"]` attempting `CREATE TABLE forbidden (...)`
-or `DESCRIBE secret` receives `403 Forbidden`. `SHOW TABLES` is not table-scoped
-and is not gated by this ACL.
+An identity with `allowed_tables: ["trades"]` attempting
+`CREATE TABLE forbidden (...)` or `DESCRIBE secret` receives `403 Forbidden`.
+`SHOW TABLES` is filtered so restricted identities only see table names and row
+counts they are authorized to access.
 
 ### Tenant Namespace Enforcement (devlog 090)
 
-When an API key / JWT carries a non-empty `tenant_id` and the server has a
-`TenantManager` configured with a `table_namespace` for that tenant, every
-POST / query is additionally checked against the namespace prefix. A tenant
+When an API key, direct JWT, SSO identity, or session carries a non-empty
+`tenant_id`, the server requires a `TenantManager` with that tenant registered.
+Every SQL query is additionally checked against the configured namespace
+prefix. A tenant
 with `table_namespace: "deskA."` cannot query / write / describe any table
 whose name does not start with `deskA.` — the server returns:
 
@@ -2380,16 +2550,19 @@ HTTP/1.1 403 Forbidden
 {"error":"Tenant 'deskA' cannot access table 'deskB.trades'"}
 ```
 
-Tenant namespace enforcement runs after the `allowed_tables` check and
-before query execution. Tenants with empty `table_namespace` are unrestricted.
+Tenant namespace enforcement runs after the `allowed_tables` check and before
+query execution. Registered tenants with empty `table_namespace` are
+unrestricted; unknown tenants and tenant-scoped embeddings without a manager
+fail closed.
 
 | ACL Type | Scope | Example |
 |----------|-------|---------|
-| Symbol ACL | Row-level filter by symbol | `allowed_symbols: ["AAPL","GOOGL"]` |
+| Symbol scope | Fail-closed compatibility field; row filtering not shipped | `allowed_symbols: ["AAPL","GOOGL"]` |
 | Table ACL | Table-level access control | `allowed_tables: ["trades","quotes"]` |
 
-Both can be combined: a key with `allowed_tables: ["trades"]` and
-`allowed_symbols: ["AAPL"]` can only query AAPL data from the trades table.
+A key with `allowed_tables: ["trades"]` can query only that table. Adding a
+non-empty `allowed_symbols` field currently denies its data requests rather
+than filtering rows; do not use symbol scope as a production isolation policy.
 
 ---
 

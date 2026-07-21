@@ -14,4 +14,11 @@ spec:
     - port: http
       path: {{ .Values.prometheus.path }}
       interval: {{ .Values.serviceMonitor.interval }}
+      {{- if and .Values.auth.enabled .Values.serviceMonitor.authorization.enabled }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "zeptodb.authSecretName" . }}
+          key: {{ .Values.auth.metricsKeyKey }}
+      {{- end }}
 {{- end }}

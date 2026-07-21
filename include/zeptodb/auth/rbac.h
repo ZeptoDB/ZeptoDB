@@ -18,7 +18,7 @@ enum class Role : uint8_t {
     ADMIN       = 0,  // Full access: DDL, queries, user management
     WRITER      = 1,  // Read + write (SQL + ingest API)
     READER      = 2,  // SELECT queries only
-    ANALYST     = 3,  // SELECT, restricted to allowed_symbols whitelist
+    ANALYST     = 3,  // Reserved until symbol-level filtering is enforced
     METRICS     = 4,  // /metrics /health /stats endpoints only (Prometheus scraper)
     UNKNOWN     = 255,
 };
@@ -55,7 +55,9 @@ inline Permission role_permissions(Role r) {
         case Role::READER:
             return Permission::READ;
         case Role::ANALYST:
-            return Permission::READ;
+            // Fail closed: carrying a symbol allowlist without executor-level
+            // filtering must never degrade into unrestricted reads.
+            return Permission::NONE;
         case Role::METRICS:
             return Permission::METRICS;
         default:

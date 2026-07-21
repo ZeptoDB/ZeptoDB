@@ -39,7 +39,7 @@ std::vector<TenantConfig> TenantManager::list_tenants() const {
 bool TenantManager::acquire_query_slot(const std::string& tenant_id) {
     std::lock_guard lk(mu_);
     auto tc = tenants_.find(tenant_id);
-    if (tc == tenants_.end()) return true;  // unknown tenant = no quota
+    if (tc == tenants_.end()) return false;  // unknown tenant fails closed
 
     auto& u = usage_[tenant_id];
     if (tc->second.max_concurrent_queries > 0 &&
@@ -65,7 +65,7 @@ bool TenantManager::can_access_table(const std::string& tenant_id,
                                       const std::string& table_name) const {
     std::lock_guard lk(mu_);
     auto it = tenants_.find(tenant_id);
-    if (it == tenants_.end()) return true;  // unknown tenant = unrestricted
+    if (it == tenants_.end()) return false;  // unknown tenant fails closed
 
     const auto& ns = it->second.table_namespace;
     if (ns.empty()) return true;  // no namespace = unrestricted
@@ -74,10 +74,17 @@ bool TenantManager::can_access_table(const std::string& tenant_id,
     return table_name.rfind(ns, 0) == 0;
 }
 
-const TenantUsage* TenantManager::usage(const std::string& tenant_id) const {
+std::optional<TenantUsageSnapshot> TenantManager::usage(
+    const std::string& tenant_id) const {
     std::lock_guard lk(mu_);
     auto it = usage_.find(tenant_id);
-    return (it != usage_.end()) ? &it->second : nullptr;
+    if (it == usage_.end()) return std::nullopt;
+    return TenantUsageSnapshot{
+        it->second.active_queries.load(std::memory_order_relaxed),
+        it->second.total_queries.load(std::memory_order_relaxed),
+        it->second.total_ticks_ingested.load(std::memory_order_relaxed),
+        it->second.rejected_queries.load(std::memory_order_relaxed),
+    };
 }
 
 bool TenantManager::has_tenants() const {

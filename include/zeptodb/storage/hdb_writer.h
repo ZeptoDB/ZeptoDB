@@ -67,6 +67,13 @@ enum class HDBCompression : uint8_t {
     LZ4  = 1,
 };
 
+/// Result of writing one immutable partition snapshot generation.
+struct HDBSnapshotWriteResult {
+    bool ok = false;
+    size_t bytes_written = 0;
+    size_t rows_written = 0;
+};
+
 // ============================================================================
 // HDBWriter: Partition → 디스크 직렬화
 // ============================================================================
@@ -85,11 +92,18 @@ public:
     /// @note  디스크 오류 시 경고 로그 후 0 반환 (예외 없음)
     size_t flush_partition(const Partition& partition);
 
-    /// 파티션 상태(ACTIVE/SEALED 무관)를 snapshot_dir에 스냅샷
-    /// 기존 파일 덮어쓰기 — 장중 크래시 복구용
-    /// @return 기록된 바이트 수
+    /// Write an ACTIVE or SEALED partition below snapshot_dir.
+    /// @return Bytes written, or zero for an empty partition or failure.
+    /// @note Use FlushManager for atomic generation publication and recovery.
     size_t snapshot_partition(const Partition& partition,
                               const std::string& snapshot_dir);
+
+    /// Checked snapshot variant used by generation publication. It holds the
+    /// partition write lock, verifies equal row counts and valid types for all
+    /// columns, and distinguishes an empty partition from an I/O failure.
+    [[nodiscard]] HDBSnapshotWriteResult snapshot_partition_checked(
+        const Partition& partition,
+        const std::string& snapshot_dir);
 
     // --- 통계 ---
     [[nodiscard]] size_t total_bytes_written() const {

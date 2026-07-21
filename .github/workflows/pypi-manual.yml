@@ -1,28 +1,15 @@
-name: PyPI Publish (manual)
+name: PyPI Publish (retired manual path)
 
 on:
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+permissions: {}
 
 jobs:
-  pypi:
+  blocked:
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Build package
+      - name: Require the immutable release workflow
         run: |
-          pip install build
-          python -m build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+          echo "::error::Direct manual PyPI publication is disabled. Create an immutable version tag from main and use the Release workflow, which reuses the tested artifact after all production gates."
+          exit 1

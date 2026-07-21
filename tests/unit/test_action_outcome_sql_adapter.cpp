@@ -978,6 +978,12 @@ TEST(ActionOutcomeSqlAdapterConfigTest, RejectsUnsafeIdentifiersAndLimits) {
     EXPECT_NE(error.find("proposal_table"), std::string::npos);
 
     config.runtime.proposal_table = "physical_ai_action_proposals";
+    config.runtime.rollout_stage = "promoted_operator_feature";
+    EXPECT_FALSE(zeptodb::server::validateActionOutcomeSqlAdapterConfig(
+        config, &error));
+    EXPECT_NE(error.find("controlled_shadow_pilot"), std::string::npos);
+
+    config.runtime.rollout_stage = "controlled_shadow_pilot";
     config.history_evidence_limit = 0;
     EXPECT_FALSE(zeptodb::server::validateActionOutcomeSqlAdapterConfig(
         config, &error));

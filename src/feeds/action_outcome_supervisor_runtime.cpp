@@ -30,6 +30,10 @@ bool has_fail_closed_reason(const ActionOutcomeDecision& decision) {
            decision.decision == "suppress_no_evidence";
 }
 
+bool is_supported_rollout_stage(const std::string& rollout_stage) {
+    return rollout_stage == "controlled_shadow_pilot";
+}
+
 std::string exception_message(const std::string& context,
                               const std::exception& ex) {
     return context + ": " + ex.what();
@@ -61,6 +65,13 @@ bool ActionOutcomeSupervisorRuntime::validateConfig(
     }
     if (config.mode != "shadow") {
         if (error) *error = "only shadow mode is supported for the experimental runtime";
+        return false;
+    }
+    if (!is_supported_rollout_stage(config.rollout_stage)) {
+        if (error) {
+            *error = "only rollout_stage=controlled_shadow_pilot is supported; "
+                     "promoted_operator_feature remains blocked until GA gates pass";
+        }
         return false;
     }
     if (config.history_table.empty() || config.proposal_table.empty() ||
@@ -427,6 +438,7 @@ ActionOutcomeSupervisorRuntime::snapshot() const {
     snap.failure_budget_exhausted = failure_budget_exhausted_;
     snap.name = config_.name;
     snap.mode = config_.mode;
+    snap.rollout_stage = config_.rollout_stage;
     snap.history_table = config_.history_table;
     snap.proposal_table = config_.proposal_table;
     snap.decision_table = config_.decision_table;
@@ -479,6 +491,11 @@ std::string ActionOutcomeSupervisorRuntime::formatPrometheus() const {
     os << "# TYPE zepto_action_outcome_supervisor_worker_running gauge\n";
     os << "zepto_action_outcome_supervisor_worker_running{supervisor=\"" << label << "\"} "
        << (snap.worker_running ? 1 : 0) << "\n\n";
+
+    os << "# HELP zepto_action_outcome_supervisor_rollout_stage Action-Outcome supervisor rollout stage selector\n";
+    os << "# TYPE zepto_action_outcome_supervisor_rollout_stage gauge\n";
+    os << "zepto_action_outcome_supervisor_rollout_stage{supervisor=\"" << label
+       << "\",stage=\"" << sanitize_label_value(snap.rollout_stage) << "\"} 1\n\n";
 
     os << "# HELP zepto_action_outcome_supervisor_worker_passes_total Experimental Action-Outcome worker passes\n";
     os << "# TYPE zepto_action_outcome_supervisor_worker_passes_total counter\n";

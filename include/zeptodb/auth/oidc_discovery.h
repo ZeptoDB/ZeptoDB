@@ -32,6 +32,13 @@ public:
     /// Returns nullopt on network error or missing required fields.
     static std::optional<OidcMetadata> fetch(const std::string& issuer_url);
 
+    /// Validate discovery metadata before any authorization redirect, token
+    /// exchange, or JWKS fetch uses it. The returned issuer must match the
+    /// configured issuer (ignoring trailing slashes only), and every endpoint
+    /// that carries credentials or trust material must be present and HTTPS.
+    static bool validate_metadata(const std::string& configured_issuer,
+                                  const OidcMetadata& metadata);
+
     /// Build an IdpConfig from OIDC discovery + minimal user input.
     /// Caller still needs to set group_role_map and other policy fields.
     static std::string extract_json_string(const std::string& json,

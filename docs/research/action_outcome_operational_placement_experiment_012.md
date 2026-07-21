@@ -24,10 +24,9 @@ distinguishes safe bounded replay from unbounded distributed SQL planning.
 This experiment validates an experimental runtime path under
 `docs/research/EXPERIMENT_GOVERNANCE.md`.
 
-Promoted product support is not claimed yet. The current limitations are:
+Promoted product support is not claimed yet. Devlog 217 adds DDL/catalog
+persistence for placement metadata; the remaining limitations are:
 
-- Placement policy is admin-only runtime state, not DDL/catalog metadata.
-- Placement is not replayed automatically after restart.
 - Placement is not a rebalance, failover, or rolling-upgrade policy.
 - Bounded small-table JOIN is validated for small operational/control tables
   under the row cap, not arbitrary cross-node JOINs.
@@ -109,6 +108,7 @@ suppression JOIN remains correct because the bounded small-table JOIN path
 materializes both sides under a row cap and delegates JOIN semantics to the
 local SQL executor.
 
-The next product step is persistence: runtime placement proves the model, but
-production users will expect placement to be declared with the table or stored
-in the catalog.
+Devlog 217 closes the immediate persistence step by letting placement be
+declared with the table or stored in the schema catalog. The remaining product
+work is operator semantics for rebalance, failover, rolling upgrades, and large
+table rejection/alerting.
