@@ -269,7 +269,11 @@ passes catalog and general SQL row recovery.
 The Python suite passes 408/408. The Web gate passes 83/83 tests, lint, the
 Next.js production build, and the full `pnpm audit` with no known
 vulnerabilities. Patched overrides cover vulnerable transitive development
-dependencies as well as production dependencies.
+dependencies as well as production dependencies. After the July 20 advisory
+refresh, the `brace-expansion` 1.x and 5.x overrides move to 1.1.16 and 5.0.7,
+and `js-yaml` moves to 4.3.0. The hosted production gate now runs the full audit
+at `high` severity before tests, so newly disclosed development-tooling issues
+block promotion instead of relying on a pre-release manual check.
 Thirteen offline Helm security tests pass; the chart lints strictly, default,
 existing-secret, and three-node cluster profiles render and pass Kubernetes
 client dry-run, and the legacy manifest passes client dry-run. `actionlint`

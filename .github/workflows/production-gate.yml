@@ -333,6 +333,10 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile
 
+      - name: Audit Web dependency graph
+        working-directory: web
+        run: pnpm audit --audit-level=high
+
       - name: Run Web tests
         working-directory: web
         run: pnpm test
